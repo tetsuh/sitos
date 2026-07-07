@@ -26,6 +26,9 @@ jobs:
       - name: Test
         run: ctest --preset dev-linux
 
+      - name: Fixture validator (Python/struct independent check)
+        run: python tests/fixtures/validate_fixtures.py
+
   build-windows:
     runs-on: windows-latest
     steps:
@@ -39,3 +42,6 @@ jobs:
 
       - name: Test
         run: ctest --preset dev-windows
+
+      - name: Fixture validator (Python/struct independent check)
+        run: python tests/fixtures/validate_fixtures.py
