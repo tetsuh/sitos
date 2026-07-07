@@ -80,6 +80,18 @@ inline void GetReturnsTrueForExistingKey(sitos::StorageEngine& engine) {
   EXPECT_TRUE(called);
 }
 
+inline void GetReturnsTrueEvenIfSinkReturnsFalse(sitos::StorageEngine& engine) {
+  ASSERT_TRUE(engine.Put("foo", BytesFromString("bar")));
+  bool called = false;
+  bool ok = engine.Get("foo",
+                       [&](std::string_view /*key*/, sitos::Bytes /*value*/) {
+                         called = true;
+                         return false;
+                       });
+  EXPECT_TRUE(ok);
+  EXPECT_TRUE(called);
+}
+
 inline void GetReturnsFalseForMissingKey(sitos::StorageEngine& engine) {
   bool called = false;
   bool ok = engine.Get("nonexistent",
@@ -309,6 +321,9 @@ inline void HandlesOpaqueBytes(sitos::StorageEngine& engine) {
                                                                                             \
   TEST_P(SuiteName, GetReturnsTrueForExistingKey) {                                          \
     sitos_contract::GetReturnsTrueForExistingKey(engine());                                  \
+  }                                                                                         \
+  TEST_P(SuiteName, GetReturnsTrueEvenIfSinkReturnsFalse) {                                  \
+    sitos_contract::GetReturnsTrueEvenIfSinkReturnsFalse(engine());                          \
   }                                                                                         \
   TEST_P(SuiteName, GetReturnsFalseForMissingKey) {                                          \
     sitos_contract::GetReturnsFalseForMissingKey(engine());                                  \

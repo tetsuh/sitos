@@ -21,7 +21,8 @@ class SnapshotCopy : public StorageReader {
   bool Get(std::string_view key, const EntrySink& sink) const override {
     auto it = data_.find(key);
     if (it == data_.end()) return false;
-    return sink(it->first, it->second);
+    sink(it->first, it->second);
+    return true;
   }
 
   bool List(std::string_view prefix, const EntrySink& sink) const override {

@@ -34,7 +34,8 @@ class MockEngine : public sitos::StorageEngine {
     std::shared_lock lock(mutex_);
     auto it = data_.find(std::string(key));
     if (it == data_.end()) return false;
-    return sink(it->first, it->second);
+    sink(it->first, it->second);
+    return true;
   }
 
   bool List(std::string_view prefix, const sitos::EntrySink& sink) const override {
