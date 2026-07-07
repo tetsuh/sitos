@@ -20,8 +20,8 @@ main ─────●───────●───────●───
   changes go only through PRs
 * Working branches are **short-lived** (guideline: 1 issue = 1 branch = 1 PR,
   within a few days)
-* Branch name: `issue/<number>-<short-kebab-description>`
-  (example: `issue/3-param-value-codec`)
+* Branch name: `feat/<number>-<short-kebab-description>`
+  (example: `feat/3-param-value-codec`)
 * Releases are tags on main (`v0.1.0`, etc.). Do not create release branches
   until a hotfix is needed
 * Do not create long-lived develop / feature branches
