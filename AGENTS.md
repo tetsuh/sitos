@@ -15,7 +15,7 @@ project.
 ## Absolute Rules (Summary)
 
 1. **One issue, one branch, one PR**: branch name
-   `issue/<n>-<short-kebab-description>`, PR body contains `Closes #<n>`.
+   `feat/<n>-<short-kebab-description>`, PR body contains `Closes #<n>`.
 2. **TDD**: write the AC tests first and confirm RED before implementation.
    Record the RED-phase failure output in the PR description.
 3. **Conventional Commits**: header line
