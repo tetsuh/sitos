@@ -29,6 +29,23 @@ See the [design documents](docs/) and the
 [issue tracker](https://github.com/tetsuh/sitos/issues) for the roadmap
 (v0.1 → v1.0 milestones).
 
+## Building
+
+```bash
+# Linux
+cmake --preset dev-linux
+cmake --build --preset dev-linux
+ctest --preset dev-linux
+
+# Windows (Ninja)
+cmake --preset dev-windows
+cmake --build --preset dev-windows
+ctest --preset dev-windows
+```
+
+See [docs/06_build_test_packaging.md](docs/06_build_test_packaging.md) for
+full build options.
+
 ## License
 
 Apache-2.0

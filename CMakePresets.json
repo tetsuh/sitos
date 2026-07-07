@@ -1,0 +1,80 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "dev-linux",
+      "displayName": "Linux development build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/dev-linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SITOS_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "dev-windows",
+      "displayName": "Windows development build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/dev-windows",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SITOS_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SITOS_BUILD_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "python-wheel",
+      "displayName": "Python wheel build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/python-wheel",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SITOS_BUILD_PYTHON": "ON",
+        "SITOS_BUILD_TESTS": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev-linux",
+      "configurePreset": "dev-linux"
+    },
+    {
+      "name": "dev-windows",
+      "configurePreset": "dev-windows"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "python-wheel",
+      "configurePreset": "python-wheel"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "dev-linux",
+      "configurePreset": "dev-linux",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "dev-windows",
+      "configurePreset": "dev-windows",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
