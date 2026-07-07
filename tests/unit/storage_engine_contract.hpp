@@ -28,8 +28,7 @@
 
 #include "sitos/storage_engine.hpp"
 
-namespace sitos {
-namespace testing {
+namespace sitos::testing {
 
 /// Factory type: returns a freshly constructed engine (each test case gets its
 /// own instance so tests do not leak state).
@@ -48,8 +47,7 @@ class EngineContractTest : public ::testing::TestWithParam<EngineFactory> {
   std::unique_ptr<StorageEngine> engine_;
 };
 
-}  // namespace testing
-}  // namespace sitos
+}  // namespace sitos::testing
 
 // ---------------------------------------------------------------------------
 // Contract test bodies (defined as free functions so they can be reused
