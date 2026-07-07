@@ -28,3 +28,10 @@ add_executable(sitos_key_test unit/key_test.cpp)
 target_link_libraries(sitos_key_test PRIVATE GTest::gtest_main sitos::sitos)
 sitos_enable_warnings(sitos_key_test)
 gtest_discover_tests(sitos_key_test)
+
+add_executable(sitos_storage_engine_contract_test
+  unit/storage_engine_contract_test.cpp)
+target_link_libraries(sitos_storage_engine_contract_test
+  PRIVATE GTest::gtest_main sitos::sitos)
+sitos_enable_warnings(sitos_storage_engine_contract_test)
+gtest_discover_tests(sitos_storage_engine_contract_test)
