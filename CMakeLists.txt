@@ -15,18 +15,22 @@ option(SITOS_BUILD_EXAMPLES "Build examples" OFF)
 
 # Warnings as errors
 if(MSVC)
-  add_compile_options(/W4 /WX)
+  add_compile_options(/W4 /WX /utf-8)
 else()
   add_compile_options(-Wall -Wextra -Wpedantic -Werror)
 endif()
 
-# Public interface target
-add_library(sitos INTERFACE)
+# Core library
+add_library(sitos STATIC
+  src/param_value.cpp
+  src/batch.cpp
+)
 add_library(sitos::sitos ALIAS sitos)
-target_include_directories(sitos INTERFACE
+target_include_directories(sitos PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
+target_compile_features(sitos PUBLIC cxx_std_20)
 
 if(SITOS_BUILD_TESTS)
   enable_testing()
