@@ -1,9 +1,11 @@
-// Copyright 2026 Tetsuya Hayashi
+// Copyright 2026 sitos contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include <sitos/key.hpp>
-
 #include <gtest/gtest.h>
+
+#include <sitos/key.hpp>
+#include <string>
+#include <string_view>
 
 namespace sitos {
 namespace {
@@ -24,9 +26,7 @@ TEST(KeyValidationTest, ValidMultiChunkKey) {
   EXPECT_TRUE(IsValidKey("recon/fov/kernel"));
 }
 
-TEST(KeyValidationTest, InvalidEmptyKey) {
-  EXPECT_FALSE(IsValidKey(""));
-}
+TEST(KeyValidationTest, InvalidEmptyKey) { EXPECT_FALSE(IsValidKey("")); }
 
 TEST(KeyValidationTest, InvalidLeadingOrTrailingSlash) {
   EXPECT_FALSE(IsValidKey("/fov"));
@@ -155,6 +155,231 @@ TEST(KeyBuilderTest, RejectsInvalidComponents) {
   EXPECT_FALSE(BuildKey("sitos", "base", "recon*fov"));
   EXPECT_FALSE(BuildKey("sitos", "session/bad sid", "recon/fov"));
   EXPECT_FALSE(BuildKey("sitos prefix", "base", "recon/fov"));
+}
+
+// --- $batch builders (docs/03 §1.1) ---
+
+TEST(BatchKeyBuilderTest, BuildsBaseBatch) {
+  auto key = BuildBatchKey("sitos", "base");
+  ASSERT_TRUE(key.has_value());
+  EXPECT_EQ(*key, "sitos/base/$batch");
+}
+
+TEST(BatchKeyBuilderTest, BuildsSessionBatch) {
+  auto key = BuildBatchKey("sitos", "session/abc-123");
+  ASSERT_TRUE(key.has_value());
+  EXPECT_EQ(*key, "sitos/session/abc-123/$batch");
+}
+
+TEST(BatchKeyBuilderTest, BuildsBatchWithCustomPrefix) {
+  auto key = BuildBatchKey("my/app", "base");
+  ASSERT_TRUE(key.has_value());
+  EXPECT_EQ(*key, "my/app/base/$batch");
+}
+
+TEST(BatchKeyBuilderTest, RejectsSnapBatch) {
+  // Snap batch is not defined by the wire protocol.
+  EXPECT_FALSE(BuildBatchKey("sitos", "snap/abc-123"));
+}
+
+TEST(BatchKeyBuilderTest, RejectsInvalidBatchScope) {
+  EXPECT_FALSE(BuildBatchKey("", "base"));
+  EXPECT_FALSE(BuildBatchKey("sitos", "invalid"));
+  EXPECT_FALSE(BuildBatchKey("sitos", "session/bad sid"));
+  EXPECT_FALSE(BuildBatchKey("sitos prefix", "base"));
+}
+
+TEST(BatchKeyBuilderTest, UserKeyCannotSmuggleBatch) {
+  // '$' is reserved, so BuildKey rejects "$batch" as a user key. Batch paths
+  // can only be produced through BuildBatchKey.
+  EXPECT_FALSE(BuildKey("sitos", "base", "$batch"));
+}
+
+// --- meta builders (docs/03 §1.1) ---
+
+TEST(MetaKeyBuilderTest, BuildsMetaSession) {
+  auto key = BuildMetaSessionKey("sitos", "abc-123");
+  ASSERT_TRUE(key.has_value());
+  EXPECT_EQ(*key, "sitos/meta/session/abc-123");
+}
+
+TEST(MetaKeyBuilderTest, BuildsMetaAck) {
+  auto key = BuildMetaAckKey("sitos", "550e8400-e29b-41d4-a716-446655440000");
+  ASSERT_TRUE(key.has_value());
+  EXPECT_EQ(*key, "sitos/meta/ack/550e8400-e29b-41d4-a716-446655440000");
+}
+
+TEST(MetaKeyBuilderTest, RejectsInvalidMeta) {
+  EXPECT_FALSE(BuildMetaSessionKey("", "abc-123"));
+  EXPECT_FALSE(BuildMetaSessionKey("sitos", ""));
+  EXPECT_FALSE(BuildMetaSessionKey("sitos", "bad/sid"));
+  EXPECT_FALSE(BuildMetaSessionKey("sitos", "bad sid"));
+  EXPECT_FALSE(BuildMetaAckKey("", "uuid"));
+  EXPECT_FALSE(BuildMetaAckKey("sitos", "bad/uuid"));
+}
+
+// --- incoming-key parser (docs/03 §1.1, inverse of Build*) ---
+
+TEST(ParseKeyTest, ParsesBaseKey) {
+  auto p = ParseKey("sitos", "sitos/base/recon/fov");
+  ASSERT_TRUE(p.has_value());
+  EXPECT_EQ(p->kind, KeyKind::Base);
+  EXPECT_TRUE(p->sid.empty());
+  EXPECT_TRUE(p->uuid.empty());
+  EXPECT_EQ(p->relative_key, "recon/fov");
+  EXPECT_FALSE(p->is_batch);
+}
+
+TEST(ParseKeyTest, ParsesBaseBatchKey) {
+  auto p = ParseKey("sitos", "sitos/base/$batch");
+  ASSERT_TRUE(p.has_value());
+  EXPECT_EQ(p->kind, KeyKind::Base);
+  EXPECT_TRUE(p->relative_key.empty());
+  EXPECT_TRUE(p->is_batch);
+}
+
+TEST(ParseKeyTest, ParsesSessionKey) {
+  auto p = ParseKey("sitos", "sitos/session/abc-123/recon/fov");
+  ASSERT_TRUE(p.has_value());
+  EXPECT_EQ(p->kind, KeyKind::Session);
+  EXPECT_EQ(p->sid, "abc-123");
+  EXPECT_EQ(p->relative_key, "recon/fov");
+  EXPECT_FALSE(p->is_batch);
+}
+
+TEST(ParseKeyTest, ParsesSessionBatchKey) {
+  auto p = ParseKey("sitos", "sitos/session/abc-123/$batch");
+  ASSERT_TRUE(p.has_value());
+  EXPECT_EQ(p->kind, KeyKind::Session);
+  EXPECT_EQ(p->sid, "abc-123");
+  EXPECT_TRUE(p->relative_key.empty());
+  EXPECT_TRUE(p->is_batch);
+}
+
+TEST(ParseKeyTest, ParsesSnapshotKey) {
+  auto p = ParseKey("sitos", "sitos/snap/abc-123/recon/fov");
+  ASSERT_TRUE(p.has_value());
+  EXPECT_EQ(p->kind, KeyKind::Snapshot);
+  EXPECT_EQ(p->sid, "abc-123");
+  EXPECT_EQ(p->relative_key, "recon/fov");
+  EXPECT_FALSE(p->is_batch);
+}
+
+TEST(ParseKeyTest, ParsesMetaSession) {
+  auto p = ParseKey("sitos", "sitos/meta/session/abc-123");
+  ASSERT_TRUE(p.has_value());
+  EXPECT_EQ(p->kind, KeyKind::MetaSession);
+  EXPECT_EQ(p->sid, "abc-123");
+  EXPECT_TRUE(p->relative_key.empty());
+  EXPECT_FALSE(p->is_batch);
+}
+
+TEST(ParseKeyTest, ParsesMetaAck) {
+  auto p = ParseKey("sitos", "sitos/meta/ack/550e8400-e29b-41d4-a716-446655440000");
+  ASSERT_TRUE(p.has_value());
+  EXPECT_EQ(p->kind, KeyKind::MetaAck);
+  EXPECT_EQ(p->uuid, "550e8400-e29b-41d4-a716-446655440000");
+  EXPECT_TRUE(p->relative_key.empty());
+  EXPECT_FALSE(p->is_batch);
+}
+
+TEST(ParseKeyTest, ParsesWithCustomPrefix) {
+  auto p = ParseKey("my/app", "my/app/base/recon/fov");
+  ASSERT_TRUE(p.has_value());
+  EXPECT_EQ(p->kind, KeyKind::Base);
+  EXPECT_EQ(p->relative_key, "recon/fov");
+}
+
+TEST(ParseKeyTest, RejectsPrefixMismatchAndBarePrefix) {
+  EXPECT_FALSE(ParseKey("sitos", "other/base/recon/fov"));  // wrong prefix
+  EXPECT_FALSE(ParseKey("sitos", "sitos"));                 // prefix only
+  EXPECT_FALSE(ParseKey("sitos", "sitos/base"));            // base with no key
+  EXPECT_FALSE(ParseKey("sitos", "sitos/session/abc"));     // session/sid with no key
+  EXPECT_FALSE(ParseKey("sitos", "sitos/snap/abc"));        // snap/sid with no key
+}
+
+TEST(ParseKeyTest, RejectsInvalidKinds) {
+  EXPECT_FALSE(ParseKey("sitos", "sitos/unknown/recon/fov"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/meta/unknown/abc"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/meta/session/bad sid"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/meta/ack/bad/uuid"));
+}
+
+TEST(ParseKeyTest, RejectsSnapshotBatch) {
+  // snap has no $batch path; $ fails IsValidKey so the parse is rejected.
+  EXPECT_FALSE(ParseKey("sitos", "sitos/snap/abc-123/$batch"));
+}
+
+TEST(ParseKeyTest, RejectsInvalidRelativeKey) {
+  EXPECT_FALSE(ParseKey("sitos", "sitos/base/recon*fov"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/base/recon//fov"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/session/abc-123/recon$fov"));
+}
+
+// AC #2: round-trip build -> parse returns the original components.
+TEST(KeyRoundTripTest, BuildThenParseRecoversBase) {
+  auto built = BuildKey("sitos", "base", "recon/fov");
+  ASSERT_TRUE(built.has_value());
+  auto p = ParseKey("sitos", *built);
+  ASSERT_TRUE(p.has_value());
+  EXPECT_EQ(p->kind, KeyKind::Base);
+  EXPECT_EQ(p->relative_key, "recon/fov");
+  EXPECT_FALSE(p->is_batch);
+}
+
+TEST(KeyRoundTripTest, BuildThenParseRecoversSession) {
+  auto built = BuildKey("sitos", "session/abc-123", "recon/fov");
+  ASSERT_TRUE(built.has_value());
+  auto p = ParseKey("sitos", *built);
+  ASSERT_TRUE(p.has_value());
+  EXPECT_EQ(p->kind, KeyKind::Session);
+  EXPECT_EQ(p->sid, "abc-123");
+  EXPECT_EQ(p->relative_key, "recon/fov");
+}
+
+TEST(KeyRoundTripTest, BuildThenParseRecoversSnapshot) {
+  auto built = BuildKey("sitos", "snap/abc-123", "recon/fov");
+  ASSERT_TRUE(built.has_value());
+  auto p = ParseKey("sitos", *built);
+  ASSERT_TRUE(p.has_value());
+  EXPECT_EQ(p->kind, KeyKind::Snapshot);
+  EXPECT_EQ(p->sid, "abc-123");
+  EXPECT_EQ(p->relative_key, "recon/fov");
+  EXPECT_FALSE(p->is_batch);
+}
+
+TEST(KeyRoundTripTest, BuildThenParseRecoversBatch) {
+  auto built = BuildBatchKey("sitos", "base");
+  ASSERT_TRUE(built.has_value());
+  auto p = ParseKey("sitos", *built);
+  ASSERT_TRUE(p.has_value());
+  EXPECT_EQ(p->kind, KeyKind::Base);
+  EXPECT_TRUE(p->is_batch);
+
+  auto built2 = BuildBatchKey("sitos", "session/abc-123");
+  ASSERT_TRUE(built2.has_value());
+  auto p2 = ParseKey("sitos", *built2);
+  ASSERT_TRUE(p2.has_value());
+  EXPECT_EQ(p2->kind, KeyKind::Session);
+  EXPECT_EQ(p2->sid, "abc-123");
+  EXPECT_TRUE(p2->is_batch);
+}
+
+TEST(KeyRoundTripTest, BuildThenParseRecoversMeta) {
+  auto built = BuildMetaSessionKey("sitos", "abc-123");
+  ASSERT_TRUE(built.has_value());
+  auto p = ParseKey("sitos", *built);
+  ASSERT_TRUE(p.has_value());
+  EXPECT_EQ(p->kind, KeyKind::MetaSession);
+  EXPECT_EQ(p->sid, "abc-123");
+
+  const std::string uuid = "550e8400-e29b-41d4-a716-446655440000";
+  auto built2 = BuildMetaAckKey("sitos", uuid);
+  ASSERT_TRUE(built2.has_value());
+  auto p2 = ParseKey("sitos", *built2);
+  ASSERT_TRUE(p2.has_value());
+  EXPECT_EQ(p2->kind, KeyKind::MetaAck);
+  EXPECT_EQ(p2->uuid, uuid);
 }
 
 TEST(KeyTest, InvalidKeysAreRejected) {
