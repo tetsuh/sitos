@@ -31,6 +31,7 @@ add_library(sitos STATIC
   src/batch.cpp
   src/key.cpp
   src/storage_engine.cpp
+  src/in_memory_engine.cpp
 )
 add_library(sitos::sitos ALIAS sitos)
 target_include_directories(sitos PUBLIC
