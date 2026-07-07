@@ -28,6 +28,18 @@ target_include_directories(sitos INTERFACE
   $<INSTALL_INTERFACE:include>
 )
 
+# Implementation library
+add_library(sitos_internal STATIC)
+add_library(sitos::internal ALIAS sitos_internal)
+target_sources(sitos_internal PRIVATE
+  src/key.cpp
+)
+target_include_directories(sitos_internal PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(sitos INTERFACE sitos::internal)
+
 if(SITOS_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
