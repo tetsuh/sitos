@@ -1,0 +1,38 @@
+# Combined from the following gitattributes/gitattributes templates:
+# - Common: https://github.com/gitattributes/gitattributes/blob/master/.gitattributes
+# - C++: https://github.com/gitattributes/gitattributes/blob/master/C%2B%2B.gitattributes
+# - CMake: https://github.com/gitattributes/gitattributes/blob/master/CMake.gitattributes
+# - Python: https://github.com/gitattributes/gitattributes/blob/master/Python.gitattributes
+
+# Auto detect text files and perform LF normalization
+* text=auto eol=lf
+
+# Source code
+*.c text
+*.cc text
+*.cxx text
+*.cpp text
+*.h text
+*.hpp text
+*.py text
+*.cmake text
+CMakeLists.txt text
+
+# Scripts
+*.sh text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Documentation
+*.md text
+*.txt text
+
+# Configs
+*.yml text
+*.yaml text
+*.json text
+*.toml text
+*.ini text
+
+# Denote files that should not be modified
+*.patch -text

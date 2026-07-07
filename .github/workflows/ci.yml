@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      - name: Configure
+        run: cmake --preset dev-linux
+
+      - name: Build
+        run: cmake --build --preset dev-linux
+
+      - name: Test
+        run: ctest --preset dev-linux
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake --preset dev-windows
+
+      - name: Build
+        run: cmake --build --preset dev-windows
+
+      - name: Test
+        run: ctest --preset dev-windows

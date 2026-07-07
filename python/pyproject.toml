@@ -1,0 +1,22 @@
+[build-system]
+requires = ["scikit-build-core>=0.9", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "sitos"
+version = "0.0.1"
+description = "A distributed parameter store for compute pipelines"
+readme = "../README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+]
+
+[project.urls]
+Homepage = "https://github.com/tetsuh/sitos"
+Repository = "https://github.com/tetsuh/sitos"
+Documentation = "https://github.com/tetsuh/sitos/tree/main/docs"
+
+[tool.scikit-build]
+build-dir = "../build/python-wheel"
