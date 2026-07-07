@@ -27,11 +27,13 @@ struct BatchEntry {
 
 /// Encode a batch (sitos.v1.batch layout, docs/03 §5). Keys are written as the
 /// relative UTF-8 key; values reuse the payload v1 body (without type tag).
-std::vector<std::byte> EncodeBatch(std::span<const std::pair<std::string, ParamValue>> entries);
+[[nodiscard]] std::vector<std::byte> EncodeBatch(
+    std::span<const std::pair<std::string, ParamValue>> entries);
 
 /// Decode a batch payload. Returns std::nullopt on malformed input
 /// (short count, truncated key/value, unknown value tag, or trailing bytes).
-std::optional<std::vector<BatchEntry>> DecodeBatch(std::span<const std::byte> payload);
+[[nodiscard]] std::optional<std::vector<BatchEntry>> DecodeBatch(
+    std::span<const std::byte> payload);
 
 }  // namespace sitos
 

@@ -147,9 +147,18 @@ TEST(ParamValue, RoundTripsAllTypesAndBoundaries) {
   };
 
   // BOOL
-  ASSERT_TRUE(roundtrip(sitos::ParamValue(false))->As<bool>().has_value());
-  EXPECT_FALSE(*roundtrip(sitos::ParamValue(false))->As<bool>());
-  EXPECT_TRUE(*roundtrip(sitos::ParamValue(true))->As<bool>());
+  {
+    auto r = roundtrip(sitos::ParamValue(false));
+    ASSERT_TRUE(r.has_value());
+    ASSERT_TRUE(r->As<bool>().has_value());
+    EXPECT_FALSE(*r->As<bool>());
+  }
+  {
+    auto r = roundtrip(sitos::ParamValue(true));
+    ASSERT_TRUE(r.has_value());
+    ASSERT_TRUE(r->As<bool>().has_value());
+    EXPECT_TRUE(*r->As<bool>());
+  }
 
   // S64 boundaries
   for (std::int64_t v :
@@ -181,7 +190,9 @@ TEST(ParamValue, RoundTripsAllTypesAndBoundaries) {
 
   // STR
   for (const std::string& s : {std::string(""), std::string("abc"), std::string("穀"),
-                               std::string("multi\nline\x00with\tnul")}) {
+                               // length-prefixed construction so the embedded
+                               // NUL is kept (the const char* ctor would truncate).
+                               std::string("multi\nline\x00with\tnul", 19)}) {
     auto r = roundtrip(sitos::ParamValue(s));
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->type(), sitos::ValueType::Str);
@@ -293,14 +304,19 @@ TEST(ParamValue, RejectsMalformedBatches) {
   // good count + key length but key truncated
   expect_invalid({std::byte{0x01}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
                   std::byte{0x09}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}});
-  // trailing bytes after a valid entry
+  // trailing bytes after a fully valid entry (count=1, kLen=0, tag=BOOL,
+  // vLen=1, body=0x00, then an extra 0xFF). This reaches the trailing-bytes
+  // guard rather than failing earlier at the key-length check.
   expect_invalid({std::byte{0x01}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
-                  std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x04},
-                  std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x01}});
-  // unknown value tag in an entry
-  std::vector<std::byte> bad{
-      std::byte{0x01}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0},
-      // kLen=0, tag=0xFE (unknown), vLen=0
-      std::byte{0}, std::byte{0xFE}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}};
+                  std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
+                  std::byte{0x00}, std::byte{0x01}, std::byte{0x00}, std::byte{0x00},
+                  std::byte{0x00}, std::byte{0x00}, std::byte{0xFF}});
+  // unknown value tag inside a syntactically well-formed entry (count=1,
+  // kLen=0, tag=0xFE, vLen=0). This reaches ParamValue::Decode's unknown-tag
+  // rejection rather than the key-length guard.
+  std::vector<std::byte> bad{std::byte{0x01}, std::byte{0}, std::byte{0}, std::byte{0},
+                             std::byte{0},    std::byte{0}, std::byte{0}, std::byte{0},
+                             std::byte{0xFE}, std::byte{0}, std::byte{0}, std::byte{0},
+                             std::byte{0}};
   expect_invalid(bad);
 }

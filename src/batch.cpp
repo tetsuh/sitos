@@ -5,6 +5,7 @@
 
 #include "sitos/batch.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -60,7 +61,8 @@ std::optional<std::vector<BatchEntry>> DecodeBatch(std::span<const std::byte> pa
   for (std::uint32_t i = 0; i < *count; ++i) {
     auto k_len = ReadLeU32(payload, off);
     if (!k_len) return std::nullopt;
-    if (off + *k_len > payload.size()) return std::nullopt;
+    // Use remaining-capacity form to avoid unsigned wraparound on `off + *k_len`.
+    if (*k_len > payload.size() - off) return std::nullopt;
     std::string key(reinterpret_cast<const char*>(payload.data() + off), *k_len);
     off += *k_len;
 
@@ -70,7 +72,8 @@ std::optional<std::vector<BatchEntry>> DecodeBatch(std::span<const std::byte> pa
 
     auto v_len = ReadLeU32(payload, off);
     if (!v_len) return std::nullopt;
-    if (off + *v_len > payload.size()) return std::nullopt;
+    // Same remaining-capacity form for `off + *v_len`.
+    if (*v_len > payload.size() - off) return std::nullopt;
 
     // ParamValue::Decode expects tag + body; reassemble a single-value payload.
     std::vector<std::byte> single;

@@ -95,7 +95,8 @@ def main() -> int:
     else:
         print("OK   batch_base_two_entries")
 
-    print(f"PASS (fixture validator): {len(singles)} singles + 1 batch")
+    status = "PASS" if failures == 0 else "FAIL"
+    print(f"{status} (fixture validator): {len(singles)} singles + 1 batch, {failures} failure(s)")
     return 1 if failures else 0
 
 

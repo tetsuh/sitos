@@ -99,8 +99,9 @@ class ParamValue {
   }
 
   /// View a Bytes value as an array of T (zero-copy). T must be trivially
-  /// copyable. Returns std::nullopt if the value is not Bytes or its size is
-  /// not a multiple of sizeof(T).
+  /// copyable. Returns std::nullopt if the value is not Bytes, its size is
+  /// not a multiple of sizeof(T), or the underlying storage is not aligned to
+  /// alignof(T) (reinterpret_cast from a misaligned address would be UB).
   template <typename T>
   std::optional<std::span<const T>> AsSpan() const {
     static_assert(std::is_trivially_copyable_v<T>,
@@ -109,6 +110,8 @@ class ParamValue {
     if (p == nullptr) return std::nullopt;
     if (p->size() % sizeof(T) != 0) return std::nullopt;
     if (p->empty()) return std::span<const T>{};
+    auto addr = reinterpret_cast<std::uintptr_t>(p->data());
+    if (addr % alignof(T) != 0) return std::nullopt;
     auto* data = reinterpret_cast<const T*>(p->data());
     return std::span<const T>{data, p->size() / sizeof(T)};
   }
