@@ -3,6 +3,8 @@
 
 #include "sitos/in_memory_engine.hpp"
 
+#include <mutex>
+
 namespace sitos {
 
 bool InMemoryEngine::Put(std::string_view key, Bytes value) {
