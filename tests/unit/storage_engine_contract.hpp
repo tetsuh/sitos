@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <string>
@@ -248,6 +249,51 @@ inline void SnapshotIsIsolatedFromBasePut(sitos::StorageEngine& engine) {
   EXPECT_FALSE(found);
 }
 
+// Verifies that engines treat values as opaque byte sequences.  Values with
+// embedded null bytes and arbitrary binary patterns must survive a Put/Get
+// round-trip unchanged (no truncation, encoding conversion, or modification).
+inline void HandlesOpaqueBytes(sitos::StorageEngine& engine) {
+  // Bytes that include embedded nulls (positions 0, 3, last).
+  const std::vector<std::byte> with_nulls = {
+      std::byte{0x00}, std::byte{0x41}, std::byte{0x42},
+      std::byte{0x00}, std::byte{0x43},
+      std::byte{0x00},
+  };
+  ASSERT_TRUE(engine.Put("nulls", with_nulls));
+  bool ok = engine.Get("nulls",
+                       [&](std::string_view /*key*/, sitos::Bytes value) {
+                         EXPECT_EQ(value.size(), with_nulls.size());
+                         EXPECT_EQ(std::memcmp(value.data(), with_nulls.data(),
+                                               with_nulls.size()),
+                                   0);
+                         return true;
+                       });
+  EXPECT_TRUE(ok);
+
+  // Full byte range: 0x00 .. 0xFF.
+  std::vector<std::byte> all_bytes(256);
+  for (int i = 0; i < 256; ++i) all_bytes[i] = static_cast<std::byte>(i);
+  ASSERT_TRUE(engine.Put("all", all_bytes));
+  ok = engine.Get("all",
+                  [&](std::string_view /*key*/, sitos::Bytes value) {
+                    EXPECT_EQ(value.size(), 256u);
+                    EXPECT_EQ(std::memcmp(value.data(), all_bytes.data(), 256), 0);
+                    return true;
+                  });
+  EXPECT_TRUE(ok);
+
+  // Non-UTF8 single byte (0xFF alone is invalid UTF-8).
+  const std::vector<std::byte> non_utf8 = {std::byte{0xFF}};
+  ASSERT_TRUE(engine.Put("non_utf8", non_utf8));
+  ok = engine.Get("non_utf8",
+                  [&](std::string_view /*key*/, sitos::Bytes value) {
+                    EXPECT_EQ(value.size(), 1u);
+                    EXPECT_EQ(value[0], std::byte{0xFF});
+                    return true;
+                  });
+  EXPECT_TRUE(ok);
+}
+
 }  // namespace sitos_contract
 
 // ---------------------------------------------------------------------------
@@ -296,6 +342,9 @@ inline void SnapshotIsIsolatedFromBasePut(sitos::StorageEngine& engine) {
   }                                                                                         \
   TEST_P(SuiteName, SnapshotIsIsolatedFromBasePut) {                                         \
     sitos_contract::SnapshotIsIsolatedFromBasePut(engine());                                 \
+  }                                                                                         \
+  TEST_P(SuiteName, HandlesOpaqueBytes) {                                                    \
+    sitos_contract::HandlesOpaqueBytes(engine());                                            \
   }                                                                                         \
                                                                                             \
   INSTANTIATE_TEST_SUITE_P(, SuiteName, ::testing::Values(FactoryExpr))
