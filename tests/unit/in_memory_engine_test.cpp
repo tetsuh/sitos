@@ -5,7 +5,6 @@
 
 #include "storage_engine_contract.hpp"
 
-#include <algorithm>
 #include <atomic>
 #include <thread>
 #include <vector>
@@ -84,7 +83,6 @@ TEST(InMemoryEngineStressTest, SnapshotReadDuringWrite) {
   ASSERT_NE(snap, nullptr);
 
   std::atomic<bool> done{false};
-  std::atomic<int> mutations{0};
 
   // Writer keeps modifying after snapshot.
   std::thread writer([&]() {
@@ -92,7 +90,6 @@ TEST(InMemoryEngineStressTest, SnapshotReadDuringWrite) {
       engine.Put("post_" + std::to_string(i),
                  std::vector<std::byte>{std::byte{static_cast<unsigned char>(i)}});
       engine.Delete("pre_" + std::to_string(i % 100));
-      ++mutations;
     }
   });
 
