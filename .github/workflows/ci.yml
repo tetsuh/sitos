@@ -34,6 +34,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup MSVC developer environment
+        uses: ilammy/msvc-dev-shell@v1
+        with:
+          arch: x64
+
       - name: Configure
         run: cmake --preset dev-windows
 
