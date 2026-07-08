@@ -3,7 +3,6 @@
 
 #include "sitos/in_memory_engine.hpp"
 
-#include <algorithm>
 #include <mutex>
 
 namespace sitos {
@@ -30,9 +29,11 @@ bool InMemoryEngine::Get(std::string_view key, const EntrySink& sink) const {
 
 bool InMemoryEngine::List(std::string_view prefix, const EntrySink& sink) const {
   std::shared_lock lock(mutex_);
-  return std::ranges::all_of(data_, [&](const auto& pair) {
-    return !pair.first.starts_with(prefix) || sink(pair.first, pair.second);
-  });
+  for (auto it = data_.lower_bound(prefix);
+       it != data_.end() && it->first.starts_with(prefix); ++it) {
+    if (!sink(it->first, it->second)) return false;
+  }
+  return true;
 }
 
 }  // namespace sitos
