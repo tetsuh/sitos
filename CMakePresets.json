@@ -13,7 +13,7 @@
     },
     {
       "name": "dev-windows",
-      "displayName": "Windows development build",
+      "displayName": "Windows development build (MSVC + Ninja)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/dev-windows",
       "cacheVariables": {
