@@ -5,6 +5,7 @@
 
 #include "sitos/param_value.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -22,9 +23,9 @@ void AppendLeU64(std::uint64_t u, std::vector<std::byte>& out) {
 
 // Canonical quiet-NaN body bytes (docs/03 §2.3 dp_nan). Already in LE order.
 // Corresponds to the bit pattern 0x7ff8000000000000.
-constexpr std::byte kCanonicalNanBody[8] = {std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
-                                            std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
-                                            std::byte{0xf8}, std::byte{0x7f}};
+constexpr std::array<std::byte, 8> kCanonicalNanBody = {
+    std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
+    std::byte{0x00}, std::byte{0x00}, std::byte{0xf8}, std::byte{0x7f}};
 
 }  // namespace
 
@@ -45,7 +46,7 @@ std::vector<std::byte> ParamValue::EncodeBody() const {
     case 2: {  // DP (normalize NaN to canonical pattern)
       double d = std::get<double>(value_);
       if (std::isnan(d)) {
-        body.insert(body.end(), kCanonicalNanBody, kCanonicalNanBody + sizeof(kCanonicalNanBody));
+        body.insert(body.end(), kCanonicalNanBody.begin(), kCanonicalNanBody.end());
       } else {
         std::uint64_t u = 0;
         std::memcpy(&u, &d, sizeof(u));
