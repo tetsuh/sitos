@@ -65,6 +65,8 @@ std::vector<std::byte> ParamValue::EncodeBody() const {
       body.insert(body.end(), b.begin(), b.end());
       break;
     }
+    default:
+      break;  // Unreachable: variant holds one of the 5 documented types.
   }
   return body;
 }
