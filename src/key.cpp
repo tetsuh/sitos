@@ -89,13 +89,13 @@ std::optional<Scope> ParseScope(std::string_view scope) {
   constexpr std::string_view kSessionPrefix = "session/";
   constexpr std::string_view kSnapPrefix = "snap/";
   if (scope.size() > kSessionPrefix.size() &&
-      scope.substr(0, kSessionPrefix.size()) == kSessionPrefix) {
+      scope.starts_with(kSessionPrefix)) {
     std::string_view sid = scope.substr(kSessionPrefix.size());
     if (IsValidSessionId(sid)) {
       return Scope{ScopeKind::Session, std::string(sid)};
     }
   }
-  if (scope.size() > kSnapPrefix.size() && scope.substr(0, kSnapPrefix.size()) == kSnapPrefix) {
+  if (scope.size() > kSnapPrefix.size() && scope.starts_with(kSnapPrefix)) {
     std::string_view sid = scope.substr(kSnapPrefix.size());
     if (IsValidSessionId(sid)) {
       return Scope{ScopeKind::Snap, std::string(sid)};
@@ -136,7 +136,7 @@ std::optional<std::string> BuildBatchKey(std::string_view prefix, std::string_vi
   }
   constexpr std::string_view kSessionPrefix = "session/";
   if (scope.size() > kSessionPrefix.size() &&
-      scope.substr(0, kSessionPrefix.size()) == kSessionPrefix) {
+      scope.starts_with(kSessionPrefix)) {
     std::string_view sid = scope.substr(kSessionPrefix.size());
     if (!IsValidSessionId(sid)) {
       return std::nullopt;
@@ -192,7 +192,7 @@ std::optional<std::string_view> StripPrefix(std::string_view prefix, std::string
   if (full_key.size() <= prefix.size() || full_key[prefix.size()] != '/') {
     return std::nullopt;
   }
-  if (full_key.substr(0, prefix.size()) != prefix) {
+  if (!full_key.starts_with(prefix)) {
     return std::nullopt;
   }
   return full_key.substr(prefix.size() + 1);
