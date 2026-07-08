@@ -10,7 +10,7 @@ jobs:
   build-linux:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
         run: |
@@ -32,16 +32,14 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Configure
-        run: cmake --preset dev-windows
-
-      - name: Build
-        run: cmake --build --preset dev-windows
-
-      - name: Test
-        run: ctest --preset dev-windows
+      - name: Configure, build and test (MSVC + Ninja)
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          cmd /c "call `"$vsPath\VC\Auxiliary\Build\vcvars64.bat`" && cmake --preset dev-windows && cmake --build --preset dev-windows && ctest --preset dev-windows"
 
       - name: Fixture validator (Python/struct independent check)
         run: python tests/fixtures/validate_fixtures.py
