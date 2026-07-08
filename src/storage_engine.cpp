@@ -40,12 +40,12 @@ class SnapshotCopy : public StorageReader {
 }  // namespace
 
 std::shared_ptr<const StorageReader> StorageEngine::TakeSnapshot() const {
-  auto data = std::make_shared<std::map<std::string, std::vector<std::byte>, std::less<>>>();
+  std::map<std::string, std::vector<std::byte>, std::less<>> data;
   List("", [&data](std::string_view key, Bytes value) {
-    data->emplace(std::string(key), std::vector<std::byte>(value.begin(), value.end()));
+    data.emplace(std::string(key), std::vector<std::byte>(value.begin(), value.end()));
     return true;
   });
-  return std::make_shared<SnapshotCopy>(std::move(*data));
+  return std::make_shared<SnapshotCopy>(std::move(data));
 }
 
 }  // namespace sitos
