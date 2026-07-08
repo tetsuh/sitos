@@ -35,3 +35,10 @@ target_link_libraries(sitos_storage_engine_contract_test
   PRIVATE GTest::gtest_main sitos::sitos)
 sitos_enable_warnings(sitos_storage_engine_contract_test)
 gtest_discover_tests(sitos_storage_engine_contract_test)
+
+add_executable(sitos_in_memory_engine_test
+  unit/in_memory_engine_test.cpp)
+target_link_libraries(sitos_in_memory_engine_test
+  PRIVATE GTest::gtest_main sitos::sitos)
+sitos_enable_warnings(sitos_in_memory_engine_test)
+gtest_discover_tests(sitos_in_memory_engine_test)
