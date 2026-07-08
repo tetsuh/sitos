@@ -119,14 +119,21 @@ class ParamValue {
   /// Encode to payload v1 (type tag + little-endian body).
   std::vector<std::byte> Encode() const;
 
+  /// Encode only the body (no type tag). Shared with the batch codec, which
+  /// writes the type tag separately and frames the body with a length prefix.
+  std::vector<std::byte> EncodeBody() const;
+
   /// Decode a payload v1 byte sequence. Returns std::nullopt for empty, unknown,
   /// or truncated payloads. NaN payloads normalize to the canonical quiet NaN.
   static std::optional<ParamValue> Decode(std::span<const std::byte> payload);
 
- private:
-  /// Body only (no type tag). Shared with the batch codec.
-  std::vector<std::byte> EncodeBody() const;
+  /// Decode a body given an already-extracted type tag (used by the batch
+  /// codec, which reads the tag and length separately). Returns std::nullopt
+  /// for unknown tags or truncated/over-long bodies.
+  static std::optional<ParamValue> Decode(std::uint8_t tag,
+                                          std::span<const std::byte> body);
 
+ private:
   Variant value_;
 };
 
