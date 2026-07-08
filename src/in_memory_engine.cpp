@@ -21,7 +21,7 @@ bool InMemoryEngine::Delete(std::string_view key) {
 
 bool InMemoryEngine::Get(std::string_view key, const EntrySink& sink) const {
   std::shared_lock lock(mutex_);
-  auto it = data_.find(std::string(key));
+  auto it = data_.find(key);
   if (it == data_.end()) return false;
   sink(it->first, it->second);
   return true;
