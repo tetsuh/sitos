@@ -42,7 +42,7 @@ class SnapshotCopy : public StorageReader {
 std::shared_ptr<const StorageReader> StorageEngine::TakeSnapshot() const {
   std::map<std::string, std::vector<std::byte>, std::less<>> data;
   List("", [&data](std::string_view key, Bytes value) {
-    data.emplace(std::string(key), std::vector<std::byte>(value.begin(), value.end()));
+    data.try_emplace(std::string(key), value.begin(), value.end());
     return true;
   });
   return std::make_shared<SnapshotCopy>(std::move(data));
