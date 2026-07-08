@@ -40,11 +40,9 @@ std::vector<std::byte> EncodeBatch(std::span<const std::pair<std::string, ParamV
     const auto* kp = reinterpret_cast<const std::byte*>(key.data());
     out.insert(out.end(), kp, kp + key.size());
     out.push_back(static_cast<std::byte>(static_cast<std::uint8_t>(value.type())));
-    auto full = value.Encode();
-    // full[0] is the type tag (already written); body is full[1..].
-    const auto body_len = static_cast<std::uint32_t>(full.size() - 1);
-    AppendLeU32(body_len, out);
-    out.insert(out.end(), full.begin() + 1, full.end());
+    auto body = value.EncodeBody();
+    AppendLeU32(static_cast<std::uint32_t>(body.size()), out);
+    out.insert(out.end(), body.begin(), body.end());
   }
   return out;
 }
@@ -75,15 +73,9 @@ std::optional<std::vector<BatchEntry>> DecodeBatch(std::span<const std::byte> pa
     // Same remaining-capacity form for `off + *v_len`.
     if (*v_len > payload.size() - off) return std::nullopt;
 
-    // ParamValue::Decode expects tag + body; reassemble a single-value payload.
-    std::vector<std::byte> single;
-    single.reserve(1 + *v_len);
-    single.push_back(static_cast<std::byte>(tag));
-    single.insert(single.end(), payload.data() + off, payload.data() + off + *v_len);
-    off += *v_len;
-
-    auto value = ParamValue::Decode(single);
+    auto value = ParamValue::Decode(tag, payload.subspan(off, *v_len));
     if (!value) return std::nullopt;
+    off += *v_len;
     result.push_back({std::move(key), std::move(*value)});
   }
   if (off != payload.size()) return std::nullopt;

@@ -26,8 +26,9 @@ class SnapshotCopy : public StorageReader {
   }
 
   bool List(std::string_view prefix, const EntrySink& sink) const override {
-    for (const auto& [k, v] : data_) {
-      if (k.starts_with(prefix) && !sink(k, v)) return false;
+    for (auto it = data_.lower_bound(prefix);
+         it != data_.end() && it->first.starts_with(prefix); ++it) {
+      if (!sink(it->first, it->second)) return false;
     }
     return true;
   }
@@ -39,12 +40,12 @@ class SnapshotCopy : public StorageReader {
 }  // namespace
 
 std::shared_ptr<const StorageReader> StorageEngine::TakeSnapshot() const {
-  auto data = std::make_shared<std::map<std::string, std::vector<std::byte>, std::less<>>>();
+  std::map<std::string, std::vector<std::byte>, std::less<>> data;
   List("", [&data](std::string_view key, Bytes value) {
-    data->emplace(std::string(key), std::vector<std::byte>(value.begin(), value.end()));
+    data.try_emplace(std::string(key), value.begin(), value.end());
     return true;
   });
-  return std::make_shared<SnapshotCopy>(std::move(*data));
+  return std::make_shared<SnapshotCopy>(std::move(data));
 }
 
 }  // namespace sitos

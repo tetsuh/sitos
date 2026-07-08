@@ -79,9 +79,11 @@ std::vector<std::byte> ParamValue::Encode() const {
 
 std::optional<ParamValue> ParamValue::Decode(std::span<const std::byte> payload) {
   if (payload.empty()) return std::nullopt;
-  std::uint8_t tag = static_cast<std::uint8_t>(payload[0]);
-  auto body = payload.subspan(1);
+  return Decode(static_cast<std::uint8_t>(payload[0]), payload.subspan(1));
+}
 
+std::optional<ParamValue> ParamValue::Decode(std::uint8_t tag,
+                                             std::span<const std::byte> body) {
   switch (tag) {
     case 0: {  // Bool
       if (body.size() != 1) return std::nullopt;

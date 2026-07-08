@@ -89,6 +89,10 @@ std::optional<std::string> BuildMetaAckKey(std::string_view prefix, std::string_
 /// given prefix. Strips the prefix and classifies the remainder according to
 /// docs/03 §1.1. Returns std::nullopt if the prefix does not match or the
 /// remainder is not a valid sitos key.
+///
+/// Precondition: `prefix` must be a valid prefix (IsValidPrefix == true).
+/// Callers validate the prefix once at setup (e.g. StorageNode::Start) rather
+/// than on every message, so ParseKey does not re-validate it.
 std::optional<ParsedKey> ParseKey(std::string_view prefix, std::string_view full_key);
 
 }  // namespace sitos
