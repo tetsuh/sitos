@@ -211,9 +211,6 @@ std::optional<std::pair<std::string_view, std::string_view>> SplitFirst(std::str
 }  // namespace
 
 std::optional<ParsedKey> ParseKey(std::string_view prefix, std::string_view full_key) {
-  if (!IsValidPrefix(prefix)) {
-    return std::nullopt;
-  }
   auto rest_opt = StripPrefix(prefix, full_key);
   if (!rest_opt) {
     return std::nullopt;
