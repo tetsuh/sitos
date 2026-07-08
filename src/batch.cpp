@@ -50,7 +50,7 @@ std::vector<std::byte> EncodeBatch(std::span<const std::pair<std::string, ParamV
 std::optional<std::vector<BatchEntry>> DecodeBatch(std::span<const std::byte> payload) {
   std::size_t off = 0;
   auto count = ReadLeU32(payload, off);
-  if (!count) return std::nullopt;
+  if (!count.has_value()) return std::nullopt;
   // A single entry is at least 4 (kLen) + 0 (key) + 1 (tag) + 4 (vLen) = 9 bytes.
   if (*count > payload.size() / 9 + 1) return std::nullopt;
 
@@ -58,7 +58,7 @@ std::optional<std::vector<BatchEntry>> DecodeBatch(std::span<const std::byte> pa
   result.reserve(std::min<std::size_t>(*count, payload.size()));
   for (std::uint32_t i = 0; i < *count; ++i) {
     auto k_len = ReadLeU32(payload, off);
-    if (!k_len) return std::nullopt;
+    if (!k_len.has_value()) return std::nullopt;
     // Use remaining-capacity form to avoid unsigned wraparound on `off + *k_len`.
     if (*k_len > payload.size() - off) return std::nullopt;
     std::string key(reinterpret_cast<const char*>(payload.data() + off), *k_len);
@@ -69,7 +69,7 @@ std::optional<std::vector<BatchEntry>> DecodeBatch(std::span<const std::byte> pa
     off += 1;
 
     auto v_len = ReadLeU32(payload, off);
-    if (!v_len) return std::nullopt;
+    if (!v_len.has_value()) return std::nullopt;
     // Same remaining-capacity form for `off + *v_len`.
     if (*v_len > payload.size() - off) return std::nullopt;
 
