@@ -97,11 +97,15 @@ class ZenohTransport : public Transport {
   ZenohTransport() {
     z_owned_config_t config;
     z_config_default(&config);
-    z_open(&session_, z_move(config), nullptr);
+    session_valid_ = (z_open(&session_, z_move(config), nullptr) == Z_OK);
   }
 
+  bool IsSessionValid() const { return session_valid_; }
+
   ~ZenohTransport() override {
-    z_close(z_session_loan_mut(&session_), nullptr);
+    if (session_valid_) {
+      z_close(z_session_loan_mut(&session_), nullptr);
+    }
     z_drop(z_move(session_));
   }
 
@@ -113,6 +117,8 @@ class ZenohTransport : public Transport {
     z_owned_bytes_t p;
     z_bytes_copy_from_buf(&p, reinterpret_cast<const uint8_t*>(payload.data()),
                           payload.size());
+
+    if (!session_valid_) return Result<void>::Err(MakeError(-1));
 
     z_put_options_t opts;
     z_put_options_default(&opts);
@@ -128,6 +134,8 @@ class ZenohTransport : public Transport {
   Result<void> Delete(std::string_view key, PutOptions /*options*/) override {
     z_owned_keyexpr_t ke;
     z_keyexpr_from_str(&ke, std::string(key).c_str());
+
+    if (!session_valid_) return Result<void>::Err(MakeError(-1));
 
     z_delete_options_t opts;
     z_delete_options_default(&opts);
@@ -184,6 +192,8 @@ class ZenohTransport : public Transport {
         nullptr,  // drop — Ctx is stack-allocated, no cleanup needed
         &ctx);
 
+    if (!session_valid_) return Result<void>::Err(MakeError(-1));
+
     z_get_options_t opts;
     z_get_options_default(&opts);
 
@@ -208,6 +218,7 @@ class ZenohTransport : public Transport {
       std::function<void(TransportQuery&)> callback) override {
     Queryable q;
     q.impl_ = std::make_unique<Queryable::Impl>();
+    if (!session_valid_) return q;
 
     z_owned_keyexpr_t ke;
     z_keyexpr_from_str(&ke, std::string(keyexpr_str).c_str());
@@ -241,10 +252,13 @@ class ZenohTransport : public Transport {
 
  private:
   z_owned_session_t session_;
+  bool session_valid_ = false;
 };
 
 }  // namespace sitos
 
 std::unique_ptr<sitos::Transport> sitos::MakeZenohTransport() {
-  return std::make_unique<sitos::ZenohTransport>();
+  auto t = std::make_unique<sitos::ZenohTransport>();
+  if (!t->IsSessionValid()) return nullptr;
+  return t;
 }
