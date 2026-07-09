@@ -149,7 +149,7 @@ class ZenohTransport : public Transport {
   }
 
   Result<void> Get(std::string_view keyexpr, const QueryResultSink& sink,
-                   std::chrono::milliseconds /*timeout*/) override {
+                   std::chrono::milliseconds timeout) override {
     z_owned_keyexpr_t ke;
     z_keyexpr_from_str(&ke, std::string(keyexpr).c_str());
 
@@ -196,6 +196,7 @@ class ZenohTransport : public Transport {
 
     z_get_options_t opts;
     z_get_options_default(&opts);
+    opts.timeout_ms = static_cast<uint64_t>(timeout.count());
 
     z_result_t rc =
         z_get(z_session_loan(&session_), z_keyexpr_loan(&ke), "",
