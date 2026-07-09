@@ -46,7 +46,7 @@ TransportQuery::TransportQuery(TransportQuery&&) noexcept = default;
 TransportQuery& TransportQuery::operator=(TransportQuery&&) noexcept = default;
 
 void TransportQuery::Reply(std::string_view key, std::span<const std::byte> payload,
-                           Encoding /*encoding*/) {
+                           Encoding encoding) {
   if (!impl_ || !impl_->query) return;
 
   z_owned_keyexpr_t ke;
@@ -58,6 +58,12 @@ void TransportQuery::Reply(std::string_view key, std::span<const std::byte> payl
 
   z_query_reply_options_t opts;
   z_query_reply_options_default(&opts);
+
+  z_owned_encoding_t z_enc;
+  if (z_encoding_from_str(&z_enc, encoding.id.c_str()) == Z_OK) {
+    opts.encoding = z_move(z_enc);
+  }
+
   z_query_reply(impl_->query, z_keyexpr_loan(&ke), z_move(p), &opts);
   z_drop(z_move(ke));
 }
