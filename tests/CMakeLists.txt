@@ -53,4 +53,11 @@ if(SITOS_WITH_ZENOH)
   # under -Werror that we cannot fix.
   sitos_copy_zenohc(sitos_zenoh_smoke_test)
   gtest_discover_tests(sitos_zenoh_smoke_test)
+
+  add_executable(sitos_transport_test
+    integration/transport_test.cpp)
+  target_link_libraries(sitos_transport_test
+    PRIVATE GTest::gtest_main sitos::sitos)
+  sitos_copy_zenohc(sitos_transport_test)
+  gtest_discover_tests(sitos_transport_test)
 endif()

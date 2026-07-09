@@ -49,6 +49,11 @@ target_include_directories(sitos PUBLIC
 target_compile_features(sitos PUBLIC cxx_std_20)
 sitos_enable_warnings(sitos)
 
+if(SITOS_WITH_ZENOH)
+  target_sources(sitos PRIVATE src/transport/zenoh_transport.cpp)
+  target_link_libraries(sitos PUBLIC zenohc::zenohc)
+endif()
+
 if(SITOS_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
