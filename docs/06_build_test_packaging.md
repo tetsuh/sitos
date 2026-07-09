@@ -5,7 +5,8 @@
 ```
 sitos/
   CMakeLists.txt              # Top level. Options: SITOS_WITH_ROCKSDB,
-                              #   SITOS_BUILD_PYTHON, SITOS_BUILD_TESTS, SITOS_BUILD_EXAMPLES
+                              #   SITOS_BUILD_PYTHON, SITOS_BUILD_TESTS, SITOS_BUILD_EXAMPLES,
+                              #   SITOS_BUILD_GATEWAY (optional HTTP gateway, ADR-0015)
   cmake/                      # zenoh-c integration (FetchContent/Corrosion/find_package)
   include/sitos/              # Public headers (API from 04_api_cpp.md)
   src/                        # Implementation
@@ -41,6 +42,8 @@ sitos/
     Also provide a Corrosion (Rust) path for environments that need source builds
   - **RocksDB** (when `SITOS_WITH_ROCKSDB=ON`): `find_package(RocksDB)`.
     Supplied by vcpkg / apt / brew
+  - **cpp-httplib** (when `SITOS_BUILD_GATEWAY=ON`): header-only, MIT. Pulled only
+    for the optional `sitos-gateway` component; the core build is unaffected when OFF [ADR-0015]
   - **gtest / benchmark**: FetchContent
 * Presets: define `dev-windows`, `dev-linux`, `release`, and `python-wheel` in
   `CMakePresets.json`
