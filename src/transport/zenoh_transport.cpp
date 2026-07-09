@@ -116,7 +116,7 @@ class ZenohTransport : public Transport {
   }
 
   Result<void> Put(std::string_view key, std::span<const std::byte> payload,
-                   Encoding /*encoding*/, PutOptions /*options*/) override {
+                   Encoding encoding, PutOptions /*options*/) override {
     z_owned_keyexpr_t ke;
     z_keyexpr_from_str(&ke, std::string(key).c_str());
 
@@ -128,6 +128,11 @@ class ZenohTransport : public Transport {
 
     z_put_options_t opts;
     z_put_options_default(&opts);
+
+    z_owned_encoding_t z_enc;
+    if (z_encoding_from_str(&z_enc, encoding.id.c_str()) == Z_OK) {
+      opts.encoding = z_move(z_enc);
+    }
 
     z_result_t rc =
         z_put(z_session_loan(&session_), z_keyexpr_loan(&ke), z_move(p), &opts);
