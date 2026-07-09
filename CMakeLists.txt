@@ -51,7 +51,7 @@ sitos_enable_warnings(sitos)
 
 if(SITOS_WITH_ZENOH)
   target_sources(sitos PRIVATE src/transport/zenoh_transport.cpp)
-  target_link_libraries(sitos PUBLIC zenohc::zenohc)
+  target_link_libraries(sitos PRIVATE zenohc::zenohc)
 endif()
 
 if(SITOS_BUILD_TESTS)
