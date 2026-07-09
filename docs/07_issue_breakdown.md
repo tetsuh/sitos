@@ -18,7 +18,7 @@ Milestone = release boundary).
 | **v0.1** | The zenoh-independent core works. Payload fixtures and InMemoryEngine contract tests are green | #1, #4, #5, #6, #7 |
 | **v0.2** | StorageNode/ParamStore/ParamCache work in C++ through same-process zenoh sessions | #2, #3, #9–#13, #15, #18, #19, #21 |
 | **v0.3** | Basic Python APIs work (InMemory, ParamStore, ParamCache, NumPy read) | #22, #23, #24, #25, #27 |
-| **v0.4** | RocksDB, single-value interop, bench, and examples are in place | #8, #29, #31, #32, #33 |
+| **v0.4** | RocksDB, single-value interop, bench, examples, and session-scoped buffers are in place | #8, #29, #31, #32, #33, #56 |
 | **v1.0** | Public OSS quality. docs/release/wheels/ack/batch interop/GIL/custom engine completed | #14, #16, #17, #20, #26, #28, #30, #34, #35 |
 
 `ack`-related work (#14, #17) is useful, but implementation is heavy relative to initial value,
@@ -220,6 +220,21 @@ so it is not a v0.2 blocker. Include it by v1.0.
 * Scope: PutOptions::ack, ack timeout/retry, detailed Status mapping
 * Acceptance criteria: integration tests — ack success/failure/timeout, Disconnected/Timeout when StorageNode is stopped
 * Depends on: #14, #15
+
+### #56 Session-scoped buffers
+* Milestone: v0.4
+* References: ADR-0014, [02] §2/§4, [03] §1
+* Implementation targets: `include/sitos/key.hpp` (`KeyKind::Buffer`, `BuildBufferKey`,
+  `ParseKey`), `src/storage_node.cpp` (`buffers/**` routing), SessionController
+  (`BufferPersistence`, per-session disk engine), `Config`/`SessionOptions`
+* Scope: independent `<prefix>/buffers/<sid>/<key>` scope; single put = full-payload push to
+  live subscribers + store to a per-session disk engine (`kDurable`) / push-only (`kEphemeral`);
+  get from the per-session engine; querying-subscriber late-join; purge on `CloseSession`.
+  No `$batch`, no snapshot
+* Acceptance criteria: key round-trip; push==get byte equality; late-join no-loss;
+  `kEphemeral` no-store/no-get; `CloseSession` purge → not-found; ParamCache scope isolation
+  (`session/**` never receives `buffers/**`); raw-zenoh interop
+* Depends on: #12 (session management), #8 (RocksDBEngine, disk-backed `kDurable`)
 
 ---
 
