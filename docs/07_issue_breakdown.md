@@ -18,8 +18,8 @@ Milestone = release boundary).
 | **v0.1** | The zenoh-independent core works. Payload fixtures and InMemoryEngine contract tests are green | #1, #4, #5, #6, #7 |
 | **v0.2** | StorageNode/ParamStore/ParamCache work in C++ through same-process zenoh sessions | #2, #3, #9–#13, #15, #18, #19, #21 |
 | **v0.3** | Basic Python APIs work (InMemory, ParamStore, ParamCache, NumPy read) | #22, #23, #24, #25, #27 |
-| **v0.4** | RocksDB, single-value interop, bench, and examples are in place | #8, #29, #31, #32, #33 |
-| **v1.0** | Public OSS quality. docs/release/wheels/ack/batch interop/GIL/custom engine completed | #14, #16, #17, #20, #26, #28, #30, #34, #35 |
+| **v0.4** | RocksDB, single-value interop, bench, examples, and session-scoped buffers are in place | #8, #29, #31, #32, #33, #56 |
+| **v1.0** | Public OSS quality. docs/release/wheels/ack/batch interop/GIL/custom engine and the optional HTTP gateway completed | #14, #16, #17, #20, #26, #28, #30, #34, #35, #57 |
 
 `ack`-related work (#14, #17) is useful, but implementation is heavy relative to initial value,
 so it is not a v0.2 blocker. Include it by v1.0.
@@ -221,6 +221,21 @@ so it is not a v0.2 blocker. Include it by v1.0.
 * Acceptance criteria: integration tests — ack success/failure/timeout, Disconnected/Timeout when StorageNode is stopped
 * Depends on: #14, #15
 
+### #56 Session-scoped buffers
+* Milestone: v0.4
+* References: ADR-0014, [02] §2/§4, [03] §1
+* Implementation targets: `include/sitos/key.hpp` (`KeyKind::Buffer`, `BuildBufferKey`,
+  `ParseKey`), `src/storage_node.cpp` (`buffers/**` routing), SessionController
+  (`BufferPersistence`, per-session disk engine), `Config`/`SessionOptions`
+* Scope: independent `<prefix>/buffers/<sid>/<key>` scope; single put = full-payload push to
+  live subscribers + store to a per-session disk engine (`kDurable`) / push-only (`kEphemeral`);
+  get from the per-session engine; querying-subscriber late-join; purge on `CloseSession`.
+  No `$batch`, no snapshot
+* Acceptance criteria: key round-trip; push==get byte equality; late-join no-loss;
+  `kEphemeral` no-store/no-get; `CloseSession` purge → not-found; ParamCache scope isolation
+  (`session/**` never receives `buffers/**`); raw-zenoh interop
+* Depends on: #12 (session management), #8 (RocksDBEngine, disk-backed `kDurable`)
+
 ---
 
 ## M3: ParamCache and SessionView
@@ -398,6 +413,23 @@ so it is not a v0.2 blocker. Include it by v1.0.
 * Scope: NOTICE, complete the pre-publication checklist, reserve PyPI/crates names, release-please
 * Acceptance criteria: All checklist items completed, dry-run publish to TestPyPI succeeds
 * Depends on: M4 completed, #34
+
+---
+
+## M6: Optional HTTP gateway (optional component)
+
+### #57 Optional HTTP gateway component
+* Milestone: v1.0 (earliest v0.4)
+* References: ADR-0015, ADR-0003, ADR-0007, ADR-0014, [09]
+* Implementation targets: `sitos-gateway` library + thin binary (cpp-httplib),
+  CMake option `SITOS_BUILD_GATEWAY` (default OFF)
+* Scope: params/sessions/buffers routes typed over `sitos.v1`; SSE session deltas;
+  loopback-default bind + pluggable auth; `Router` extension point for host routes.
+  Core build unaffected when the option is OFF (cpp-httplib not fetched)
+* Acceptance criteria: OFF build unaffected; typed param round-trip; prefix List;
+  buffer GET (durable) / not-found (ephemeral); SSE observable with `curl -N`;
+  host route served on the same port; loopback-default + auth hook invoked
+* Depends on: #15/#16 (ParamStore), #18/#19 (ParamCache), #12 (sessions), #56 (buffers)
 
 ---
 

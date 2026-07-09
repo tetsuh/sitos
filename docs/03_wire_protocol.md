@@ -11,6 +11,7 @@ A standard zenoh client can interoperate with sitos simply by following this spe
 <prefix>/base/<key>
 <prefix>/session/<sid>/<key>
 <prefix>/snap/<sid>/<key>
+<prefix>/buffers/<sid>/<key>
 <prefix>/meta/session/<sid>
 <prefix>/meta/ack/<uuid>
 <prefix>/base/$batch
@@ -20,6 +21,9 @@ A standard zenoh client can interoperate with sitos simply by following this spe
 * `<prefix>`: Default is `sitos`. Configurable. One or more zenoh chunks
 * `<sid>`: session ID. `[0-9a-zA-Z_-]+` (UUID recommended). One chunk
 * `<key>`: User key. One or more chunks (hierarchical keys allowed)
+* `buffers/<sid>/<key>`: session-scoped large binary values. `<sid>` and `<key>` follow the
+  same grammar as other scopes. No `$batch` and no `snap` counterpart. The persistence mode
+  (durable/ephemeral) is a host-side session option and is **not** encoded on the wire [ADR-0014]
 
 ### 1.2 User-key grammar
 

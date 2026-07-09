@@ -57,6 +57,7 @@ see [03_wire_protocol.md](03_wire_protocol.md).
 <prefix>/base/<key...>                 # master data
 <prefix>/session/<sid>/<key...>        # session overlay (Put during execution)
 <prefix>/snap/<sid>/<key...>           # read view of the session snapshot (read-only)
+<prefix>/buffers/<sid>/<key...>        # session-scoped, disk-backed large values (pull+push) [ADR-0014]
 <prefix>/meta/session/<sid>            # session metadata (state, creation time)
 ```
 
@@ -67,6 +68,13 @@ see [03_wire_protocol.md](03_wire_protocol.md).
 * get to `snap/<sid>/**` → StorageNode responds from the snapshot view.
   put/delete through the library API returns a `ReadOnly` error; raw zenoh put/delete is
   fire-and-forget, so it is ignored + a warning is logged [F05, F08]
+* put to `buffers/<sid>/**` → for a `kDurable` session the StorageNode subscriber writes bytes
+  to the per-session buffer engine, and zenoh distributes the same bytes to live subscribers
+  (full-payload push); for `kEphemeral` nothing is stored [ADR-0014]
+* get to `buffers/<sid>/**` → for `kDurable`, the StorageNode queryable responds from the
+  per-session buffer engine; for `kEphemeral`, not-found. Buffers use no snapshot view [ADR-0014]
+* buffers live for the session lifetime: get-able from `CreateSession` until `CloseSession`,
+  which purges the per-session buffer store [ADR-0014]
 
 ## 3. StorageEngine Abstraction
 
@@ -117,14 +125,18 @@ Conventions:
    - `base/**` → engine
    - `snap/<sid>/**` → view in the snapshot table
    - `session/<sid>/**` → overlay table
+   - `buffers/<sid>/**` → per-session buffer engine (`kDurable`); not-found (`kEphemeral`) [ADR-0014]
 2. Declare zenoh `subscriber`: receive put/delete for `<prefix>/**`
    - `base/**` → apply to engine
    - `session/<sid>/**` → apply to overlay
    - put to `snap/**` → ignore + warning log (read-only)
+   - `buffers/<sid>/**` → per-session buffer engine (`kDurable`); no store (`kEphemeral`) [ADR-0014]
 3. Session lifecycle (via SessionController):
    - `CreateSession(sid)`: obtain `engine->TakeSnapshot()` and register it in
-     `snapshots_[sid]`. Create an empty `overlays_[sid]`
-   - `CloseSession(sid)`: delete both tables (release shared_ptr) [F10]
+     `snapshots_[sid]`. Create an empty `overlays_[sid]`. For buffers, create a
+     per-session disk buffer engine when the session is `kDurable` [ADR-0014]
+   - `CloseSession(sid)`: delete both tables (release shared_ptr) [F10], and purge
+     the per-session buffer engine [ADR-0014]
 
 ### 4.2 Data Structures
 
