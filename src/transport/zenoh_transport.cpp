@@ -187,6 +187,9 @@ class ZenohTransport : public Transport {
           std::string key_str(z_string_data(z_view_string_loan(&ks)),
                               z_string_len(z_view_string_loan(&ks)));
 
+          // TODO(#3): Extract encoding from z_sample_encoding(sample).
+          // zenoh-c 1.9.0 does not expose encoding-to-string conversion;
+          // "sitos.v1" is the only encoding used in v0.1.
           Encoding enc;
           enc.id = "sitos.v1";
 
