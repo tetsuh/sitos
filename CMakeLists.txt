@@ -13,13 +13,21 @@ option(SITOS_BUILD_PYTHON "Build Python bindings" OFF)
 option(SITOS_BUILD_TESTS "Build tests" ON)
 option(SITOS_BUILD_EXAMPLES "Build examples" OFF)
 
+# --- zenoh-c build integration ---
+# Only required when building tests or examples that use the transport layer.
+option(SITOS_WITH_ZENOH "Download and link prebuilt zenoh-c" OFF)
+
+if(SITOS_WITH_ZENOH)
+  include(cmake/zenohc.cmake)
+endif()
+
 # Scoped warning flags. Applied per-target (not globally) so vendored deps
 # such as GoogleTest (FetchContent) are not pinned to -Werror and break on a
 # new compiler warning. Callers of sitos get the flags only via PUBLIC when they
 # compile sitos headers; that is fine because sitos headers are warning-clean.
 function(sitos_enable_warnings target)
   if(MSVC)
-    target_compile_options(${target} PRIVATE /W4 /WX /utf-8)
+    target_compile_options(${target} PRIVATE /W4 /WX /utf-8 /EHsc)
   else()
     target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()

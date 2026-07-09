@@ -42,3 +42,15 @@ target_link_libraries(sitos_in_memory_engine_test
   PRIVATE GTest::gtest_main sitos::sitos)
 sitos_enable_warnings(sitos_in_memory_engine_test)
 gtest_discover_tests(sitos_in_memory_engine_test)
+
+# --- Zenoh smoke test (integration) ---
+if(SITOS_WITH_ZENOH)
+  add_executable(sitos_zenoh_smoke_test
+    integration/zenoh_smoke_test.cpp)
+  target_link_libraries(sitos_zenoh_smoke_test
+    PRIVATE GTest::gtest_main zenohc::zenohc)
+  # Do NOT apply sitos_enable_warnings: the zenoh C header may trigger warnings
+  # under -Werror that we cannot fix.
+  sitos_copy_zenohc(sitos_zenoh_smoke_test)
+  gtest_discover_tests(sitos_zenoh_smoke_test)
+endif()
