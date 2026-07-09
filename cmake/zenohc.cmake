@@ -16,19 +16,16 @@ set(ZENOHC_ARCHIVE "zenoh-c-${ZENOHC_VERSION}-${ZENOHC_PLATFORM}-standalone.zip"
 set(ZENOHC_URL "https://github.com/eclipse-zenoh/zenoh-c/releases/download/${ZENOHC_VERSION}/${ZENOHC_ARCHIVE}")
 
 include(FetchContent)
-# FetchContent_Populate is used because zenoh-c standalone does not provide a
-# CMakeLists.txt; we only need the extracted archive.
-cmake_policy(SET CMP0169 OLD)
+# zenoh-c standalone has no CMakeLists.txt; MakeAvailable populates the archive
+# and, on encountering no CMakeLists.txt at the source directory, does not call
+# add_subdirectory() — so no CMakeLists.txt is required.
 FetchContent_Declare(
   zenohc
   URL ${ZENOHC_URL}
   SOURCE_DIR ${CMAKE_BINARY_DIR}/_deps/zenohc-src
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
-FetchContent_GetProperties(zenohc)
-if(NOT zenohc_POPULATED)
-  FetchContent_Populate(zenohc)
-endif()
+FetchContent_MakeAvailable(zenohc)
 
 # Paths resolved after Populate (zenohc_SOURCE_DIR is set by Populate).
 set(ZENOHC_INCLUDE_DIR "${zenohc_SOURCE_DIR}/include")
