@@ -18,3 +18,4 @@ See [docs/10_adr_process.md](../10_adr_process.md) for the process.
 | [0011](0011-develop-in-public-from-day-one.md) | Develop in public from day one |
 | [0012](0012-google-cpp-style-with-100-column-limit.md) | Google C++ style with 100-column limit |
 | [0013](0013-default-to-zenoh-scouting-with-explicit-endpoint-override.md) | Default to zenoh scouting with explicit endpoint override |
+| [0014](0014-session-scoped-buffers.md) | Add a session-scoped, disk-backed buffers key space |
