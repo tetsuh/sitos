@@ -54,4 +54,37 @@ TEST_F(TransportTest, GetCompletesWithoutCrash) {
   // No assertion on callback_called — may or may not receive results.
 }
 
+TEST_F(TransportTest, QueryableRoundTrip) {
+  // Declare a queryable that replies with a known payload, then query it.
+  const std::string kQueryKey = "sitos/test/query/roundtrip";
+  const std::vector<std::byte> kExpectedPayload = {
+      std::byte{0xAA}, std::byte{0xBB}, std::byte{0xCC}};
+
+  sitos::Encoding enc;
+  enc.id = std::string(sitos::Encoding::kSitosV1);
+
+  auto q = transport_->DeclareQueryable(
+      kQueryKey,
+      [&](sitos::TransportQuery& tq) {
+        tq.Reply(kQueryKey, kExpectedPayload, enc);
+      });
+
+  bool received = false;
+  std::vector<std::byte> received_payload;
+
+  auto result = transport_->Get(
+      kQueryKey,
+      [&](std::string_view /*key*/, std::span<const std::byte> payload,
+          const sitos::Encoding& /*enc*/) {
+        received = true;
+        received_payload.assign(payload.begin(), payload.end());
+        return false;  // stop after first result
+      },
+      std::chrono::milliseconds(2000));
+
+  EXPECT_TRUE(result.IsOk()) << "Get failed: " << result.Error().message();
+  EXPECT_TRUE(received) << "Queryable did not respond";
+  EXPECT_EQ(received_payload, kExpectedPayload);
+}
+
 }  // namespace
