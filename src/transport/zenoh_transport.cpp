@@ -74,6 +74,91 @@ std::error_code MakeError(TransportErrc ec) {
   return {static_cast<int>(ec), ZenohCategory()};
 }
 
+// RAII wrapper for any z_owned_*_t. Calls z_drop(z_move(obj)) on destruction
+// and on close of the owning scope, removing the manual z_drop chains that
+// were previously duplicated across Put()/Reply(). Move-only; copying is
+// deleted to preserve single ownership.
+template <typename T>
+class ZenohOwned {
+ public:
+  ZenohOwned() = default;
+  explicit ZenohOwned(T obj) : obj_(obj) {}
+
+  ZenohOwned(const ZenohOwned&) = delete;
+  ZenohOwned& operator=(const ZenohOwned&) = delete;
+
+  ZenohOwned(ZenohOwned&& other) noexcept : obj_(other.obj_) {
+    other.moved_ = true;
+  }
+  ZenohOwned& operator=(ZenohOwned&& other) noexcept {
+    if (this != &other) {
+      Drop();
+      obj_ = other.obj_;
+      moved_ = other.moved_;
+      other.moved_ = true;
+    }
+    return *this;
+  }
+
+  ~ZenohOwned() { Drop(); }
+
+  // Lender: returns a pointer suitable for z_move(obj_out) output parameters.
+  T* get() { return &obj_; }
+
+  // Lender: returns a moved handle for APIs that take z_moved_*_t*.
+  auto moved() { return z_move(obj_); }
+
+  // Loan for APIs that take z_loaned_*_t*.
+  auto loan() { return z_loan(obj_); }
+
+  explicit operator bool() const { return !moved_; }
+
+  // Called by helpers after a successful z_*_from_* populates obj_.
+  void mark_valid() { moved_ = false; }
+
+ private:
+  void Drop() {
+    if (!moved_) z_drop(z_move(obj_));
+    moved_ = true;
+  }
+
+  T obj_{};
+  bool moved_ = true;  // default-constructed state is "empty/moved-from"
+};
+
+// Build a z_owned_keyexpr_t from a string. Returns an error Result if zenoh
+// rejects the key.
+Result<ZenohOwned<z_owned_keyexpr_t>> MakeKeyexpr(std::string_view key) {
+  ZenohOwned<z_owned_keyexpr_t> ke;
+  z_result_t rc = z_keyexpr_from_str(ke.get(), std::string(key).c_str());
+  if (rc != Z_OK) return Result<ZenohOwned<z_owned_keyexpr_t>>::Err(MakeError(rc));
+  ke.mark_valid();  // ownership acquired
+  return Result<ZenohOwned<z_owned_keyexpr_t>>::Ok(std::move(ke));
+}
+
+// Build a z_owned_encoding_t from an Encoding id string.
+Result<ZenohOwned<z_owned_encoding_t>> MakeEncoding(const Encoding& enc) {
+  ZenohOwned<z_owned_encoding_t> z_enc;
+  z_result_t rc = z_encoding_from_str(z_enc.get(), enc.id.c_str());
+  if (rc != Z_OK) {
+    return Result<ZenohOwned<z_owned_encoding_t>>::Err(MakeError(rc));
+  }
+  z_enc.mark_valid();
+  return Result<ZenohOwned<z_owned_encoding_t>>::Ok(std::move(z_enc));
+}
+
+// Build a z_owned_bytes_t from a byte payload.
+Result<ZenohOwned<z_owned_bytes_t>> MakeBytes(std::span<const std::byte> payload) {
+  ZenohOwned<z_owned_bytes_t> p;
+  z_result_t rc = z_bytes_copy_from_buf(
+      p.get(), reinterpret_cast<const uint8_t*>(payload.data()), payload.size());
+  if (rc != Z_OK) {
+    return Result<ZenohOwned<z_owned_bytes_t>>::Err(MakeError(rc));
+  }
+  p.mark_valid();
+  return Result<ZenohOwned<z_owned_bytes_t>>::Ok(std::move(p));
+}
+
 struct GetReplyCtx {
   const Transport::QueryResultSink* sink;
   std::atomic<bool> stop{false};
@@ -133,35 +218,22 @@ Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::by
     return Result<void>::Err(MakeError(kErrNoQuery));
   }
 
-  z_owned_encoding_t z_enc;
-  z_result_t enc_rc = z_encoding_from_str(&z_enc, encoding.id.c_str());
-  if (enc_rc != Z_OK) return Result<void>::Err(MakeError(enc_rc));
+  auto enc = MakeEncoding(encoding);
+  if (!enc.IsOk()) return Result<void>::Err(enc.Error());
 
-  z_owned_keyexpr_t ke;
-  z_result_t ke_rc = z_keyexpr_from_str(&ke, std::string(key).c_str());
-  if (ke_rc != Z_OK) {
-    z_drop(z_move(z_enc));
-    return Result<void>::Err(MakeError(ke_rc));
-  }
+  auto ke = MakeKeyexpr(key);
+  if (!ke.IsOk()) return Result<void>::Err(ke.Error());
 
-  z_owned_bytes_t p;
-  z_result_t bp_rc =
-      z_bytes_copy_from_buf(&p, reinterpret_cast<const uint8_t*>(payload.data()),
-                            payload.size());
-  if (bp_rc != Z_OK) {
-    z_drop(z_move(ke));
-    z_drop(z_move(z_enc));
-    return Result<void>::Err(MakeError(bp_rc));
-  }
+  auto p = MakeBytes(payload);
+  if (!p.IsOk()) return Result<void>::Err(p.Error());
 
   z_query_reply_options_t opts;
   z_query_reply_options_default(&opts);
-  opts.encoding = z_move(z_enc);
+  opts.encoding = enc.Value().moved();
 
   z_result_t rc =
-      z_query_reply(impl_->query, z_keyexpr_loan(&ke), z_move(p), &opts);
+      z_query_reply(impl_->query, ke.Value().loan(), p.Value().moved(), &opts);
 
-  z_drop(z_move(ke));
   if (rc != Z_OK) return Result<void>::Err(MakeError(rc));
   return Result<void>::Ok();
 }
@@ -236,35 +308,22 @@ class ZenohTransport : public Transport {
                    Encoding encoding, PutOptions /*options*/) override {
     if (!session_valid_) return Result<void>::Err(MakeError(kErrDisconnected));
 
-    z_owned_encoding_t z_enc;
-    z_result_t enc_rc = z_encoding_from_str(&z_enc, encoding.id.c_str());
-    if (enc_rc != Z_OK) return Result<void>::Err(MakeError(enc_rc));
+    auto enc = MakeEncoding(encoding);
+    if (!enc.IsOk()) return Result<void>::Err(enc.Error());
 
-    z_owned_keyexpr_t ke;
-    z_result_t ke_rc = z_keyexpr_from_str(&ke, std::string(key).c_str());
-    if (ke_rc != Z_OK) {
-      z_drop(z_move(z_enc));
-      return Result<void>::Err(MakeError(ke_rc));
-    }
+    auto ke = MakeKeyexpr(key);
+    if (!ke.IsOk()) return Result<void>::Err(ke.Error());
 
-    z_owned_bytes_t p;
-    z_result_t bp_rc =
-        z_bytes_copy_from_buf(&p, reinterpret_cast<const uint8_t*>(payload.data()),
-                              payload.size());
-    if (bp_rc != Z_OK) {
-      z_drop(z_move(ke));
-      z_drop(z_move(z_enc));
-      return Result<void>::Err(MakeError(bp_rc));
-    }
+    auto p = MakeBytes(payload);
+    if (!p.IsOk()) return Result<void>::Err(p.Error());
 
     z_put_options_t opts;
     z_put_options_default(&opts);
-    opts.encoding = z_move(z_enc);
+    opts.encoding = enc.Value().moved();
 
     z_result_t rc =
-        z_put(z_session_loan(&session_), z_keyexpr_loan(&ke), z_move(p), &opts);
+        z_put(z_session_loan(&session_), ke.Value().loan(), p.Value().moved(), &opts);
 
-    z_drop(z_move(ke));
     if (rc != Z_OK) return Result<void>::Err(MakeError(rc));
     return Result<void>::Ok();
   }
@@ -272,17 +331,15 @@ class ZenohTransport : public Transport {
   Result<void> Delete(std::string_view key, PutOptions /*options*/) override {
     if (!session_valid_) return Result<void>::Err(MakeError(kErrDisconnected));
 
-    z_owned_keyexpr_t ke;
-    z_result_t ke_rc = z_keyexpr_from_str(&ke, std::string(key).c_str());
-    if (ke_rc != Z_OK) return Result<void>::Err(MakeError(ke_rc));
+    auto ke = MakeKeyexpr(key);
+    if (!ke.IsOk()) return Result<void>::Err(ke.Error());
 
     z_delete_options_t opts;
     z_delete_options_default(&opts);
 
     z_result_t rc =
-        z_delete(z_session_loan(&session_), z_keyexpr_loan(&ke), &opts);
+        z_delete(z_session_loan(&session_), ke.Value().loan(), &opts);
 
-    z_drop(z_move(ke));
     if (rc != Z_OK) return Result<void>::Err(MakeError(rc));
     return Result<void>::Ok();
   }
@@ -292,9 +349,8 @@ class ZenohTransport : public Transport {
     if (!session_valid_) return Result<void>::Err(MakeError(kErrDisconnected));
     if (timeout.count() < 0) return Result<void>::Err(MakeError(kErrInvalidArg));
 
-    z_owned_keyexpr_t ke;
-    z_result_t ke_rc = z_keyexpr_from_str(&ke, std::string(keyexpr).c_str());
-    if (ke_rc != Z_OK) return Result<void>::Err(MakeError(ke_rc));
+    auto ke = MakeKeyexpr(keyexpr);
+    if (!ke.IsOk()) return Result<void>::Err(ke.Error());
 
     GetReplyCtx reply_ctx{&sink, false};
 
@@ -306,10 +362,9 @@ class ZenohTransport : public Transport {
     opts.timeout_ms = static_cast<uint64_t>(timeout.count());
 
     z_result_t rc =
-        z_get(z_session_loan(&session_), z_keyexpr_loan(&ke), "",
+        z_get(z_session_loan(&session_), ke.Value().loan(), "",
               z_move(closure), &opts);
 
-    z_drop(z_move(ke));
     if (rc != Z_OK) return Result<void>::Err(MakeError(rc));
     return Result<void>::Ok();
   }
@@ -335,9 +390,8 @@ class ZenohTransport : public Transport {
 
     q.impl_->callback = callback;
 
-    z_owned_keyexpr_t ke;
-    z_result_t ke_rc = z_keyexpr_from_str(&ke, std::string(keyexpr_str).c_str());
-    if (ke_rc != Z_OK) {
+    auto ke = MakeKeyexpr(keyexpr_str);
+    if (!ke.IsOk()) {
       q.impl_.reset();
       return q;
     }
@@ -367,9 +421,8 @@ class ZenohTransport : public Transport {
 
     z_result_t decl_rc = z_declare_queryable(
         z_session_loan(&session_), &q.impl_->queryable,
-        z_keyexpr_loan(&ke), z_move(closure), &q_opts);
+        ke.Value().loan(), z_move(closure), &q_opts);
 
-    z_drop(z_move(ke));
     if (decl_rc != Z_OK) {
       q.impl_.reset();
     }
