@@ -42,7 +42,7 @@ struct TransportSample {
 
 struct TransportQuery {
     std::string keyexpr;
-    void Reply(std::string_view key,
+    Result<void> Reply(std::string_view key,
                std::span<const std::byte> payload,
                Encoding encoding);
 };
