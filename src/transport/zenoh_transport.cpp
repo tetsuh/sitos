@@ -179,7 +179,8 @@ class ZenohTransport : public Transport {
     struct Ctx {
       const QueryResultSink* sink;
       bool stop = false;
-    } ctx{&sink, false};
+    };
+    Ctx ctx{&sink, false};
 
     z_owned_closure_reply_t closure;
     z_closure_reply(
