@@ -77,7 +77,9 @@ struct Subscription::Impl {
 };
 
 Subscription::Subscription() = default;
-Subscription::~Subscription() = default;
+Subscription::~Subscription() {
+  z_drop(z_move(impl_->subscriber));
+}
 Subscription::Subscription(Subscription&&) noexcept = default;
 Subscription& Subscription::operator=(Subscription&&) noexcept = default;
 
@@ -87,10 +89,13 @@ Subscription& Subscription::operator=(Subscription&&) noexcept = default;
 
 struct Queryable::Impl {
   z_owned_queryable_t queryable;
+  std::function<void(TransportQuery&)> callback;
 };
 
 Queryable::Queryable() = default;
-Queryable::~Queryable() = default;
+Queryable::~Queryable() {
+  z_drop(z_move(impl_->queryable));
+}
 Queryable::Queryable(Queryable&&) noexcept = default;
 Queryable& Queryable::operator=(Queryable&&) noexcept = default;
 
@@ -237,15 +242,15 @@ class ZenohTransport : public Transport {
 
   Queryable DeclareQueryable(
       std::string_view keyexpr_str,
-      std::function<void(TransportQuery&)> callback) override {
+      const std::function<void(TransportQuery&)>& callback) override {
     Queryable q;
     q.impl_ = std::make_unique<Queryable::Impl>();
     if (!session_valid_) return q;
 
+    q.impl_->callback = callback;
+
     z_owned_keyexpr_t ke;
     z_keyexpr_from_str(&ke, std::string(keyexpr_str).c_str());
-
-    auto* cb = new std::function<void(TransportQuery&)>(std::move(callback));
 
     z_owned_closure_query_t closure;
     z_closure_query(
@@ -257,10 +262,8 @@ class ZenohTransport : public Transport {
           tq.impl_->query = query;
           (*f)(tq);
         },
-        +[](void* context) {
-          delete static_cast<std::function<void(TransportQuery&)>*>(context);
-        },
-        cb);
+        nullptr,  // impl_->callback is owned by Queryable::Impl, no cleanup
+        &q.impl_->callback);
 
     z_queryable_options_t q_opts;
     z_queryable_options_default(&q_opts);

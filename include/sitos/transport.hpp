@@ -189,7 +189,7 @@ class Transport {
   /// Declare a queryable that answers queries under keyexpr.
   virtual Queryable DeclareQueryable(
       std::string_view keyexpr,
-      std::function<void(TransportQuery&)> callback) = 0;
+      const std::function<void(TransportQuery&)>& callback) = 0;
 };
 
 }  // namespace sitos
