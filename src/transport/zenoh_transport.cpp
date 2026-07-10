@@ -33,7 +33,7 @@ namespace {
 // NOTE: full migration to the project "Status" enum (docs/04_api_cpp.md §1)
 // is tracked separately; these named sentinels are an interim improvement
 // over the bare MakeError(-1) magic number.
-enum TransportErrc {
+enum class TransportErrc {
   kErrDisconnected = -1,  // session not opened or already closed
   kErrInvalidArg = -2,    // invalid argument (e.g. negative timeout)
   kErrNoQuery = -3,       // queryable destroyed or query unavailable
@@ -47,11 +47,11 @@ class ZenohErrorCategory : public std::error_category {
 
   std::string message(int ev) const override {
     switch (ev) {
-      case kErrDisconnected:
+      case static_cast<int>(TransportErrc::kErrDisconnected):
         return "zenoh session is not available";
-      case kErrInvalidArg:
+      case static_cast<int>(TransportErrc::kErrInvalidArg):
         return "invalid argument";
-      case kErrNoQuery:
+      case static_cast<int>(TransportErrc::kErrNoQuery):
         return "query is no longer valid (queryable destroyed)";
       default:
         if (ev == Z_OK) return "ok";
@@ -215,7 +215,7 @@ TransportQuery& TransportQuery::operator=(TransportQuery&&) noexcept = default;
 Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::byte> payload,
                            Encoding encoding) {
   if (!impl_ || !impl_->query || !*impl_->query_alive_) {
-    return Result<void>::Err(MakeError(kErrNoQuery));
+    return Result<void>::Err(MakeError(TransportErrc::kErrNoQuery));
   }
 
   auto enc = MakeEncoding(encoding);
@@ -306,7 +306,7 @@ class ZenohTransport : public Transport {
 
   Result<void> Put(std::string_view key, std::span<const std::byte> payload,
                    Encoding encoding, PutOptions /*options*/) override {
-    if (!session_valid_) return Result<void>::Err(MakeError(kErrDisconnected));
+    if (!session_valid_) return Result<void>::Err(MakeError(TransportErrc::kErrDisconnected));
 
     auto enc = MakeEncoding(encoding);
     if (!enc.IsOk()) return Result<void>::Err(enc.Error());
@@ -329,7 +329,7 @@ class ZenohTransport : public Transport {
   }
 
   Result<void> Delete(std::string_view key, PutOptions /*options*/) override {
-    if (!session_valid_) return Result<void>::Err(MakeError(kErrDisconnected));
+    if (!session_valid_) return Result<void>::Err(MakeError(TransportErrc::kErrDisconnected));
 
     auto ke = MakeKeyexpr(key);
     if (!ke.IsOk()) return Result<void>::Err(ke.Error());
@@ -346,8 +346,8 @@ class ZenohTransport : public Transport {
 
   Result<void> Get(std::string_view keyexpr, const QueryResultSink& sink,
                    std::chrono::milliseconds timeout) override {
-    if (!session_valid_) return Result<void>::Err(MakeError(kErrDisconnected));
-    if (timeout.count() < 0) return Result<void>::Err(MakeError(kErrInvalidArg));
+    if (!session_valid_) return Result<void>::Err(MakeError(TransportErrc::kErrDisconnected));
+    if (timeout.count() < 0) return Result<void>::Err(MakeError(TransportErrc::kErrInvalidArg));
 
     auto ke = MakeKeyexpr(keyexpr);
     if (!ke.IsOk()) return Result<void>::Err(ke.Error());
