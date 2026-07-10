@@ -266,7 +266,9 @@ class ZenohTransport : public Transport {
   Subscription DeclareSubscriber(
       std::string_view /*keyexpr*/,
       std::function<void(const TransportSample&)> /*callback*/) override {
-    // TODO(#3): implement subscriber
+    // TODO(#3): implement subscriber — currently a stub that silently discards
+    // both keyexpr and callback. The caller receives an empty Subscription
+    // (impl_ == nullptr) that never delivers samples.
     return {};
   }
 
