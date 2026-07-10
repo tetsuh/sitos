@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <memory>
 #include <string>
 
 namespace sitos {
@@ -76,6 +77,7 @@ void OnGetReply(z_loaned_reply_t* reply, void* context) {
 
 struct TransportQuery::Impl {
   const z_loaned_query_t* query = nullptr;
+  std::shared_ptr<bool> query_alive_;
 };
 
 TransportQuery::TransportQuery() = default;
@@ -85,7 +87,7 @@ TransportQuery& TransportQuery::operator=(TransportQuery&&) noexcept = default;
 
 void TransportQuery::Reply(std::string_view key, std::span<const std::byte> payload,
                            Encoding encoding) {
-  if (!impl_ || !impl_->query) return;
+  if (!impl_ || !impl_->query || !*impl_->query_alive_) return;
 
   z_owned_encoding_t z_enc;
   z_result_t enc_rc = z_encoding_from_str(&z_enc, encoding.id.c_str());
@@ -138,11 +140,15 @@ Subscription& Subscription::operator=(Subscription&&) noexcept = default;
 struct Queryable::Impl {
   z_owned_queryable_t queryable;
   std::function<void(TransportQuery&)> callback;
+  std::shared_ptr<bool> query_alive_{std::make_shared<bool>(true)};
 };
 
 Queryable::Queryable() = default;
 Queryable::~Queryable() {
-  if (impl_) z_drop(z_move(impl_->queryable));
+  if (impl_) {
+    *impl_->query_alive_ = false;
+    z_drop(z_move(impl_->queryable));
+  }
 }
 Queryable::Queryable(Queryable&&) noexcept = default;
 Queryable& Queryable::operator=(Queryable&&) noexcept = default;
@@ -286,20 +292,21 @@ class ZenohTransport : public Transport {
     z_closure_query(
         &closure,
         +[](z_loaned_query_t* query, void* context) {
-          auto* f = static_cast<std::function<void(TransportQuery&)>*>(context);
+          auto* impl = static_cast<Queryable::Impl*>(context);
           TransportQuery tq;
           tq.impl_ = std::make_unique<TransportQuery::Impl>();
           tq.impl_->query = query;
+          tq.impl_->query_alive_ = impl->query_alive_;
 
           z_view_string_t qks;
           z_keyexpr_as_view_string(z_query_keyexpr(query), &qks);
           tq.keyexpr = std::string(z_string_data(z_view_string_loan(&qks)),
                                    z_string_len(z_view_string_loan(&qks)));
 
-          (*f)(tq);
+          (impl->callback)(tq);
         },
-        nullptr,  // impl_->callback is owned by Queryable::Impl, no cleanup
-        &q.impl_->callback);
+        nullptr,  // impl is owned by Queryable::Impl, no cleanup
+        q.impl_.get());
 
     z_queryable_options_t q_opts;
     z_queryable_options_default(&q_opts);
