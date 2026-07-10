@@ -14,6 +14,7 @@
 
 #include "sitos/transport.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <string>
 
@@ -32,12 +33,12 @@ std::error_code MakeError(z_result_t rc) {
 
 struct GetReplyCtx {
   const Transport::QueryResultSink* sink;
-  bool stop = false;
+  std::atomic<bool> stop{false};
 };
 
 void OnGetReply(z_loaned_reply_t* reply, void* context) {
   auto* c = static_cast<GetReplyCtx*>(context);
-  if (c->stop) return;
+  if (c->stop.load(std::memory_order_relaxed)) return;
 
   const z_loaned_sample_t* sample = z_reply_ok(reply);
   if (!sample) return;
@@ -62,7 +63,7 @@ void OnGetReply(z_loaned_reply_t* reply, void* context) {
   enc.id = "sitos.v1";
 
   if (!(*c->sink)(key_str, std::span<const std::byte>(data, len), enc)) {
-    c->stop = true;
+    c->stop.store(true, std::memory_order_relaxed);
   }
   z_drop(z_move(slice));
 }
