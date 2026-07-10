@@ -8,7 +8,9 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -69,21 +71,34 @@ TEST_F(TransportTest, QueryableRoundTrip) {
         tq.Reply(kQueryKey, kExpectedPayload, enc);
       });
 
-  bool received = false;
+  std::mutex mtx;
+  std::condition_variable cv;
+  bool done = false;
   std::vector<std::byte> received_payload;
 
   auto result = transport_->Get(
       kQueryKey,
       [&](std::string_view /*key*/, std::span<const std::byte> payload,
           const sitos::Encoding& /*enc*/) {
-        received = true;
-        received_payload.assign(payload.begin(), payload.end());
+        {
+          std::lock_guard<std::mutex> lock(mtx);
+          received_payload.assign(payload.begin(), payload.end());
+          done = true;
+        }
+        cv.notify_one();
         return false;  // stop after first result
       },
       std::chrono::milliseconds(2000));
 
   EXPECT_TRUE(result.IsOk()) << "Get failed: " << result.Error().message();
-  EXPECT_TRUE(received) << "Queryable did not respond";
+
+  {
+    std::unique_lock<std::mutex> lock(mtx);
+    EXPECT_TRUE(cv.wait_for(lock, std::chrono::seconds(3),
+                            [&] { return done; }))
+        << "Timed out waiting for queryable reply";
+  }
+
   EXPECT_EQ(received_payload, kExpectedPayload);
 }
 
