@@ -239,6 +239,7 @@ class ZenohTransport : public Transport {
   Result<void> Get(std::string_view keyexpr, const QueryResultSink& sink,
                    std::chrono::milliseconds timeout) override {
     if (!session_valid_) return Result<void>::Err(MakeError(-1));
+    if (timeout.count() < 0) return Result<void>::Err(MakeError(-1));
 
     z_owned_keyexpr_t ke;
     z_result_t ke_rc = z_keyexpr_from_str(&ke, std::string(keyexpr).c_str());
