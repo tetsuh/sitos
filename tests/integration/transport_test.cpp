@@ -40,8 +40,9 @@ TEST_F(TransportTest, PutAndDeleteReturnOk) {
   ASSERT_TRUE(del_result.IsOk()) << "Delete failed: " << del_result.Error().message();
 }
 
-TEST_F(TransportTest, GetCompletesWithoutCrash) {
-  // Even without a matching queryable, Get should complete without crashing.
+TEST_F(TransportTest, GetWithoutQueryableDoesNotInvokeSink) {
+  // With no matching queryable registered, Get should complete without
+  // crashing and the sink should not be invoked.
   bool callback_called = false;
   auto result = transport_->Get(
       "sitos/test/**",
@@ -53,8 +54,8 @@ TEST_F(TransportTest, GetCompletesWithoutCrash) {
       std::chrono::milliseconds(500));
 
   EXPECT_TRUE(result.IsOk());
-  EXPECT_FALSE(callback_called) << "No queryable is registered, so the sink "
-                                   "should not be invoked";
+  EXPECT_FALSE(callback_called)
+      << "No queryable is registered, so the sink should not be invoked";
 }
 
 TEST_F(TransportTest, QueryableRoundTrip) {
