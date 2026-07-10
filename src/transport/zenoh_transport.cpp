@@ -290,6 +290,12 @@ class ZenohTransport : public Transport {
           TransportQuery tq;
           tq.impl_ = std::make_unique<TransportQuery::Impl>();
           tq.impl_->query = query;
+
+          z_view_string_t qks;
+          z_keyexpr_as_view_string(z_query_keyexpr(query), &qks);
+          tq.keyexpr = std::string(z_string_data(z_view_string_loan(&qks)),
+                                   z_string_len(z_view_string_loan(&qks)));
+
           (*f)(tq);
         },
         nullptr,  // impl_->callback is owned by Queryable::Impl, no cleanup
