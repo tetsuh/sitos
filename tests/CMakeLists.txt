@@ -58,6 +58,7 @@ if(SITOS_WITH_ZENOH)
     integration/transport_test.cpp)
   target_link_libraries(sitos_transport_test
     PRIVATE GTest::gtest_main sitos::sitos)
+  sitos_enable_warnings(sitos_transport_test)
   sitos_copy_zenohc(sitos_transport_test)
   gtest_discover_tests(sitos_transport_test)
 endif()
