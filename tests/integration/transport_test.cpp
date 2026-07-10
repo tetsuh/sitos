@@ -53,7 +53,8 @@ TEST_F(TransportTest, GetCompletesWithoutCrash) {
       std::chrono::milliseconds(500));
 
   EXPECT_TRUE(result.IsOk());
-  // No assertion on callback_called — may or may not receive results.
+  EXPECT_FALSE(callback_called) << "No queryable is registered, so the sink "
+                                   "should not be invoked";
 }
 
 TEST_F(TransportTest, QueryableRoundTrip) {
