@@ -166,14 +166,14 @@ class ZenohTransport : public Transport {
 
   Result<void> Put(std::string_view key, std::span<const std::byte> payload,
                    Encoding encoding, PutOptions /*options*/) override {
+    if (!session_valid_) return Result<void>::Err(MakeError(-1));
+
     z_owned_keyexpr_t ke;
     z_keyexpr_from_str(&ke, std::string(key).c_str());
 
     z_owned_bytes_t p;
     z_bytes_copy_from_buf(&p, reinterpret_cast<const uint8_t*>(payload.data()),
                           payload.size());
-
-    if (!session_valid_) return Result<void>::Err(MakeError(-1));
 
     z_put_options_t opts;
     z_put_options_default(&opts);
@@ -192,10 +192,10 @@ class ZenohTransport : public Transport {
   }
 
   Result<void> Delete(std::string_view key, PutOptions /*options*/) override {
+    if (!session_valid_) return Result<void>::Err(MakeError(-1));
+
     z_owned_keyexpr_t ke;
     z_keyexpr_from_str(&ke, std::string(key).c_str());
-
-    if (!session_valid_) return Result<void>::Err(MakeError(-1));
 
     z_delete_options_t opts;
     z_delete_options_default(&opts);
@@ -210,6 +210,8 @@ class ZenohTransport : public Transport {
 
   Result<void> Get(std::string_view keyexpr, const QueryResultSink& sink,
                    std::chrono::milliseconds timeout) override {
+    if (!session_valid_) return Result<void>::Err(MakeError(-1));
+
     z_owned_keyexpr_t ke;
     z_keyexpr_from_str(&ke, std::string(keyexpr).c_str());
 
@@ -217,8 +219,6 @@ class ZenohTransport : public Transport {
 
     z_owned_closure_reply_t closure;
     z_closure_reply(&closure, OnGetReply, nullptr, &reply_ctx);
-
-    if (!session_valid_) return Result<void>::Err(MakeError(-1));
 
     z_get_options_t opts;
     z_get_options_default(&opts);
