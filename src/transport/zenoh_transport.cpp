@@ -146,6 +146,9 @@ Subscription& Subscription::operator=(Subscription&&) noexcept = default;
 struct Queryable::Impl {
   z_owned_queryable_t queryable;
   std::function<void(TransportQuery&)> callback;
+  // Shared with in-flight TransportQuery callbacks to detect
+  // use-after-destruction. Set to false in ~Queryable() before dropping
+  // the queryable, so any late Reply() call becomes a no-op.
   std::shared_ptr<bool> query_alive_{std::make_shared<bool>(true)};
 };
 
