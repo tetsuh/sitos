@@ -115,7 +115,7 @@ struct Subscription::Impl {
 
 Subscription::Subscription() = default;
 Subscription::~Subscription() {
-  z_drop(z_move(impl_->subscriber));
+  if (impl_) z_drop(z_move(impl_->subscriber));
 }
 Subscription::Subscription(Subscription&&) noexcept = default;
 Subscription& Subscription::operator=(Subscription&&) noexcept = default;
@@ -131,7 +131,7 @@ struct Queryable::Impl {
 
 Queryable::Queryable() = default;
 Queryable::~Queryable() {
-  z_drop(z_move(impl_->queryable));
+  if (impl_) z_drop(z_move(impl_->queryable));
 }
 Queryable::Queryable(Queryable&&) noexcept = default;
 Queryable& Queryable::operator=(Queryable&&) noexcept = default;
