@@ -98,13 +98,20 @@ Queryable& Queryable::operator=(Queryable&&) noexcept = default;
 // ZenohTransport
 // ---------------------------------------------------------------------------
 
+namespace {
+
+bool OpenZenohSession(z_owned_session_t* session) {
+  z_owned_config_t config;
+  z_config_default(&config);
+  return z_open(session, z_move(config), nullptr) == Z_OK;
+}
+
+}  // namespace
+
 class ZenohTransport : public Transport {
  public:
-  ZenohTransport() {
-    z_owned_config_t config;
-    z_config_default(&config);
-    session_valid_ = (z_open(&session_, z_move(config), nullptr) == Z_OK);
-  }
+  ZenohTransport()
+      : session_valid_(OpenZenohSession(&session_)) {}
 
   bool IsSessionValid() const { return session_valid_; }
 
