@@ -126,7 +126,7 @@ struct TransportQuery {
   TransportQuery(const TransportQuery&) = delete;
   TransportQuery& operator=(const TransportQuery&) = delete;
 
-  void Reply(std::string_view key, std::span<const std::byte> payload,
+  Result<void> Reply(std::string_view key, std::span<const std::byte> payload,
              Encoding encoding);
 
  private:

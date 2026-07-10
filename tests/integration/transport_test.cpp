@@ -68,7 +68,9 @@ TEST_F(TransportTest, QueryableRoundTrip) {
   auto q = transport_->DeclareQueryable(
       kQueryKey,
       [&](sitos::TransportQuery& tq) {
-        tq.Reply(kQueryKey, kExpectedPayload, enc);
+        auto reply_result = tq.Reply(kQueryKey, kExpectedPayload, enc);
+        EXPECT_TRUE(reply_result.IsOk())
+            << "Queryable reply failed: " << reply_result.Error().message();
       });
 
   std::mutex mtx;

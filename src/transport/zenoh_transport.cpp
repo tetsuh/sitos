@@ -85,19 +85,21 @@ TransportQuery::~TransportQuery() = default;
 TransportQuery::TransportQuery(TransportQuery&&) noexcept = default;
 TransportQuery& TransportQuery::operator=(TransportQuery&&) noexcept = default;
 
-void TransportQuery::Reply(std::string_view key, std::span<const std::byte> payload,
+Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::byte> payload,
                            Encoding encoding) {
-  if (!impl_ || !impl_->query || !*impl_->query_alive_) return;
+  if (!impl_ || !impl_->query || !*impl_->query_alive_) {
+    return Result<void>::Err(MakeError(-1));
+  }
 
   z_owned_encoding_t z_enc;
   z_result_t enc_rc = z_encoding_from_str(&z_enc, encoding.id.c_str());
-  if (enc_rc != Z_OK) return;
+  if (enc_rc != Z_OK) return Result<void>::Err(MakeError(enc_rc));
 
   z_owned_keyexpr_t ke;
   z_result_t ke_rc = z_keyexpr_from_str(&ke, std::string(key).c_str());
   if (ke_rc != Z_OK) {
     z_drop(z_move(z_enc));
-    return;
+    return Result<void>::Err(MakeError(ke_rc));
   }
 
   z_owned_bytes_t p;
@@ -107,15 +109,19 @@ void TransportQuery::Reply(std::string_view key, std::span<const std::byte> payl
   if (bp_rc != Z_OK) {
     z_drop(z_move(ke));
     z_drop(z_move(z_enc));
-    return;
+    return Result<void>::Err(MakeError(bp_rc));
   }
 
   z_query_reply_options_t opts;
   z_query_reply_options_default(&opts);
   opts.encoding = z_move(z_enc);
 
-  z_query_reply(impl_->query, z_keyexpr_loan(&ke), z_move(p), &opts);
+  z_result_t rc =
+      z_query_reply(impl_->query, z_keyexpr_loan(&ke), z_move(p), &opts);
+
   z_drop(z_move(ke));
+  if (rc != Z_OK) return Result<void>::Err(MakeError(rc));
+  return Result<void>::Ok();
 }
 
 // ---------------------------------------------------------------------------
