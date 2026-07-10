@@ -87,9 +87,16 @@ void TransportQuery::Reply(std::string_view key, std::span<const std::byte> payl
                            Encoding encoding) {
   if (!impl_ || !impl_->query) return;
 
+  z_owned_encoding_t z_enc;
+  z_result_t enc_rc = z_encoding_from_str(&z_enc, encoding.id.c_str());
+  if (enc_rc != Z_OK) return;
+
   z_owned_keyexpr_t ke;
   z_result_t ke_rc = z_keyexpr_from_str(&ke, std::string(key).c_str());
-  if (ke_rc != Z_OK) return;
+  if (ke_rc != Z_OK) {
+    z_drop(z_move(z_enc));
+    return;
+  }
 
   z_owned_bytes_t p;
   z_result_t bp_rc =
@@ -97,16 +104,13 @@ void TransportQuery::Reply(std::string_view key, std::span<const std::byte> payl
                             payload.size());
   if (bp_rc != Z_OK) {
     z_drop(z_move(ke));
+    z_drop(z_move(z_enc));
     return;
   }
 
   z_query_reply_options_t opts;
   z_query_reply_options_default(&opts);
-
-  z_owned_encoding_t z_enc;
-  if (z_encoding_from_str(&z_enc, encoding.id.c_str()) == Z_OK) {
-    opts.encoding = z_move(z_enc);
-  }
+  opts.encoding = z_move(z_enc);
 
   z_query_reply(impl_->query, z_keyexpr_loan(&ke), z_move(p), &opts);
   z_drop(z_move(ke));
@@ -175,9 +179,16 @@ class ZenohTransport : public Transport {
                    Encoding encoding, PutOptions /*options*/) override {
     if (!session_valid_) return Result<void>::Err(MakeError(-1));
 
+    z_owned_encoding_t z_enc;
+    z_result_t enc_rc = z_encoding_from_str(&z_enc, encoding.id.c_str());
+    if (enc_rc != Z_OK) return Result<void>::Err(MakeError(enc_rc));
+
     z_owned_keyexpr_t ke;
     z_result_t ke_rc = z_keyexpr_from_str(&ke, std::string(key).c_str());
-    if (ke_rc != Z_OK) return Result<void>::Err(MakeError(ke_rc));
+    if (ke_rc != Z_OK) {
+      z_drop(z_move(z_enc));
+      return Result<void>::Err(MakeError(ke_rc));
+    }
 
     z_owned_bytes_t p;
     z_result_t bp_rc =
@@ -185,16 +196,13 @@ class ZenohTransport : public Transport {
                               payload.size());
     if (bp_rc != Z_OK) {
       z_drop(z_move(ke));
+      z_drop(z_move(z_enc));
       return Result<void>::Err(MakeError(bp_rc));
     }
 
     z_put_options_t opts;
     z_put_options_default(&opts);
-
-    z_owned_encoding_t z_enc;
-    if (z_encoding_from_str(&z_enc, encoding.id.c_str()) == Z_OK) {
-      opts.encoding = z_move(z_enc);
-    }
+    opts.encoding = z_move(z_enc);
 
     z_result_t rc =
         z_put(z_session_loan(&session_), z_keyexpr_loan(&ke), z_move(p), &opts);
