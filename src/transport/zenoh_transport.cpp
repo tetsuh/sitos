@@ -27,9 +27,51 @@ namespace sitos {
 
 namespace {
 
+// Error codes for conditions zenoh-c does not distinguish. These are
+// negative so they never collide with z_result_t values (>= 0).
+//
+// NOTE: full migration to the project "Status" enum (docs/04_api_cpp.md §1)
+// is tracked separately; these named sentinels are an interim improvement
+// over the bare MakeError(-1) magic number.
+enum TransportErrc {
+  kErrDisconnected = -1,  // session not opened or already closed
+  kErrInvalidArg = -2,    // invalid argument (e.g. negative timeout)
+  kErrNoQuery = -3,       // queryable destroyed or query unavailable
+};
+
+// A custom error_category so std::error_code::message() produces meaningful
+// text instead of the platform-dependent generic_category() strings.
+class ZenohErrorCategory : public std::error_category {
+ public:
+  const char* name() const noexcept override { return "sitos.zenoh"; }
+
+  std::string message(int ev) const override {
+    switch (ev) {
+      case kErrDisconnected:
+        return "zenoh session is not available";
+      case kErrInvalidArg:
+        return "invalid argument";
+      case kErrNoQuery:
+        return "query is no longer valid (queryable destroyed)";
+      default:
+        if (ev == Z_OK) return "ok";
+        return "zenoh error code " + std::to_string(ev);
+    }
+  }
+};
+
+const std::error_category& ZenohCategory() {
+  static const ZenohErrorCategory kCategory;
+  return kCategory;
+}
+
 std::error_code MakeError(z_result_t rc) {
   if (rc == Z_OK) return {};
-  return {static_cast<int>(rc), std::generic_category()};
+  return {static_cast<int>(rc), ZenohCategory()};
+}
+
+std::error_code MakeError(TransportErrc ec) {
+  return {static_cast<int>(ec), ZenohCategory()};
 }
 
 struct GetReplyCtx {
@@ -88,7 +130,7 @@ TransportQuery& TransportQuery::operator=(TransportQuery&&) noexcept = default;
 Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::byte> payload,
                            Encoding encoding) {
   if (!impl_ || !impl_->query || !*impl_->query_alive_) {
-    return Result<void>::Err(MakeError(-1));
+    return Result<void>::Err(MakeError(kErrNoQuery));
   }
 
   z_owned_encoding_t z_enc;
@@ -192,7 +234,7 @@ class ZenohTransport : public Transport {
 
   Result<void> Put(std::string_view key, std::span<const std::byte> payload,
                    Encoding encoding, PutOptions /*options*/) override {
-    if (!session_valid_) return Result<void>::Err(MakeError(-1));
+    if (!session_valid_) return Result<void>::Err(MakeError(kErrDisconnected));
 
     z_owned_encoding_t z_enc;
     z_result_t enc_rc = z_encoding_from_str(&z_enc, encoding.id.c_str());
@@ -228,7 +270,7 @@ class ZenohTransport : public Transport {
   }
 
   Result<void> Delete(std::string_view key, PutOptions /*options*/) override {
-    if (!session_valid_) return Result<void>::Err(MakeError(-1));
+    if (!session_valid_) return Result<void>::Err(MakeError(kErrDisconnected));
 
     z_owned_keyexpr_t ke;
     z_result_t ke_rc = z_keyexpr_from_str(&ke, std::string(key).c_str());
@@ -247,8 +289,8 @@ class ZenohTransport : public Transport {
 
   Result<void> Get(std::string_view keyexpr, const QueryResultSink& sink,
                    std::chrono::milliseconds timeout) override {
-    if (!session_valid_) return Result<void>::Err(MakeError(-1));
-    if (timeout.count() < 0) return Result<void>::Err(MakeError(-1));
+    if (!session_valid_) return Result<void>::Err(MakeError(kErrDisconnected));
+    if (timeout.count() < 0) return Result<void>::Err(MakeError(kErrInvalidArg));
 
     z_owned_keyexpr_t ke;
     z_result_t ke_rc = z_keyexpr_from_str(&ke, std::string(keyexpr).c_str());
