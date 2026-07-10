@@ -30,6 +30,43 @@ std::error_code MakeError(z_result_t rc) {
   return {static_cast<int>(rc), std::generic_category()};
 }
 
+struct GetReplyCtx {
+  const Transport::QueryResultSink* sink;
+  bool stop = false;
+};
+
+void OnGetReply(z_loaned_reply_t* reply, void* context) {
+  auto* c = static_cast<GetReplyCtx*>(context);
+  if (c->stop) return;
+
+  const z_loaned_sample_t* sample = z_reply_ok(reply);
+  if (!sample) return;
+
+  const z_loaned_bytes_t* payload = z_sample_payload(sample);
+  z_owned_slice_t slice;
+  z_bytes_to_slice(payload, &slice);
+
+  const auto* data =
+      reinterpret_cast<const std::byte*>(z_slice_data(z_slice_loan(&slice)));
+  auto len = z_slice_len(z_slice_loan(&slice));
+
+  z_view_string_t ks;
+  z_keyexpr_as_view_string(z_sample_keyexpr(sample), &ks);
+  std::string key_str(z_string_data(z_view_string_loan(&ks)),
+                      z_string_len(z_view_string_loan(&ks)));
+
+  // TODO(#3): Extract encoding from z_sample_encoding(sample).
+  // zenoh-c 1.9.0 does not expose encoding-to-string conversion;
+  // "sitos.v1" is the only encoding used in v0.1.
+  Encoding enc;
+  enc.id = "sitos.v1";
+
+  if (!(*c->sink)(key_str, std::span<const std::byte>(data, len), enc)) {
+    c->stop = true;
+  }
+  z_drop(z_move(slice));
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -176,48 +213,10 @@ class ZenohTransport : public Transport {
     z_owned_keyexpr_t ke;
     z_keyexpr_from_str(&ke, std::string(keyexpr).c_str());
 
-    struct Ctx {
-      const QueryResultSink* sink;
-      bool stop = false;
-    };
-    Ctx ctx{&sink, false};
+    GetReplyCtx reply_ctx{&sink, false};
 
     z_owned_closure_reply_t closure;
-    z_closure_reply(
-        &closure,
-        +[](z_loaned_reply_t* reply, void* context) {
-          auto* c = static_cast<Ctx*>(context);
-          if (c->stop) return;
-
-          const z_loaned_sample_t* sample = z_reply_ok(reply);
-          if (!sample) return;
-
-          const z_loaned_bytes_t* payload = z_sample_payload(sample);
-          z_owned_slice_t slice;
-          z_bytes_to_slice(payload, &slice);
-
-          const auto* data =
-              reinterpret_cast<const std::byte*>(z_slice_data(z_slice_loan(&slice)));
-          auto len = z_slice_len(z_slice_loan(&slice));
-
-          z_view_string_t ks;
-          z_keyexpr_as_view_string(z_sample_keyexpr(sample), &ks);
-          std::string key_str(z_string_data(z_view_string_loan(&ks)),
-                              z_string_len(z_view_string_loan(&ks)));
-
-          // TODO(#3): Extract encoding from z_sample_encoding(sample).
-          // zenoh-c 1.9.0 does not expose encoding-to-string conversion;
-          // "sitos.v1" is the only encoding used in v0.1.
-          Encoding enc;
-          enc.id = "sitos.v1";
-
-          if (!(*c->sink)(key_str, std::span<const std::byte>(data, len), enc)) {
-            c->stop = true;
-          }
-          z_drop(z_move(slice));
-        },
-        nullptr,  // drop — Ctx is stack-allocated, no cleanup needed
-        &ctx);
+    z_closure_reply(&closure, OnGetReply, nullptr, &reply_ctx);
 
     if (!session_valid_) return Result<void>::Err(MakeError(-1));
 
