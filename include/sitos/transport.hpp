@@ -7,6 +7,7 @@
 #ifndef SITOS_TRANSPORT_HPP
 #define SITOS_TRANSPORT_HPP
 
+#include <cassert>
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -39,10 +40,19 @@ class Result {
   bool IsOk() const { return !error_.has_value(); }
   explicit operator bool() const { return IsOk(); }
 
-  const T& Value() const { return *value_; }
-  T& Value() { return *value_; }
+  const T& Value() const {
+    assert(IsOk());
+    return *value_;
+  }
+  T& Value() {
+    assert(IsOk());
+    return *value_;
+  }
 
-  const std::error_code& Error() const { return *error_; }
+  const std::error_code& Error() const {
+    assert(!IsOk());
+    return *error_;
+  }
 
  private:
   Result() = default;
@@ -67,7 +77,10 @@ class Result<void> {
   bool IsOk() const { return !error_.has_value(); }
   explicit operator bool() const { return IsOk(); }
 
-  const std::error_code& Error() const { return *error_; }
+  const std::error_code& Error() const {
+    assert(!IsOk());
+    return *error_;
+  }
 
  private:
   Result() = default;
