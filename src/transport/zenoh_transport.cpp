@@ -87,11 +87,17 @@ void TransportQuery::Reply(std::string_view key, std::span<const std::byte> payl
   if (!impl_ || !impl_->query) return;
 
   z_owned_keyexpr_t ke;
-  z_keyexpr_from_str(&ke, std::string(key).c_str());
+  z_result_t ke_rc = z_keyexpr_from_str(&ke, std::string(key).c_str());
+  if (ke_rc != Z_OK) return;
 
   z_owned_bytes_t p;
-  z_bytes_copy_from_buf(&p, reinterpret_cast<const uint8_t*>(payload.data()),
-                        payload.size());
+  z_result_t bp_rc =
+      z_bytes_copy_from_buf(&p, reinterpret_cast<const uint8_t*>(payload.data()),
+                            payload.size());
+  if (bp_rc != Z_OK) {
+    z_drop(z_move(ke));
+    return;
+  }
 
   z_query_reply_options_t opts;
   z_query_reply_options_default(&opts);
@@ -169,11 +175,17 @@ class ZenohTransport : public Transport {
     if (!session_valid_) return Result<void>::Err(MakeError(-1));
 
     z_owned_keyexpr_t ke;
-    z_keyexpr_from_str(&ke, std::string(key).c_str());
+    z_result_t ke_rc = z_keyexpr_from_str(&ke, std::string(key).c_str());
+    if (ke_rc != Z_OK) return Result<void>::Err(MakeError(ke_rc));
 
     z_owned_bytes_t p;
-    z_bytes_copy_from_buf(&p, reinterpret_cast<const uint8_t*>(payload.data()),
-                          payload.size());
+    z_result_t bp_rc =
+        z_bytes_copy_from_buf(&p, reinterpret_cast<const uint8_t*>(payload.data()),
+                              payload.size());
+    if (bp_rc != Z_OK) {
+      z_drop(z_move(ke));
+      return Result<void>::Err(MakeError(bp_rc));
+    }
 
     z_put_options_t opts;
     z_put_options_default(&opts);
@@ -195,7 +207,8 @@ class ZenohTransport : public Transport {
     if (!session_valid_) return Result<void>::Err(MakeError(-1));
 
     z_owned_keyexpr_t ke;
-    z_keyexpr_from_str(&ke, std::string(key).c_str());
+    z_result_t ke_rc = z_keyexpr_from_str(&ke, std::string(key).c_str());
+    if (ke_rc != Z_OK) return Result<void>::Err(MakeError(ke_rc));
 
     z_delete_options_t opts;
     z_delete_options_default(&opts);
@@ -213,7 +226,8 @@ class ZenohTransport : public Transport {
     if (!session_valid_) return Result<void>::Err(MakeError(-1));
 
     z_owned_keyexpr_t ke;
-    z_keyexpr_from_str(&ke, std::string(keyexpr).c_str());
+    z_result_t ke_rc = z_keyexpr_from_str(&ke, std::string(keyexpr).c_str());
+    if (ke_rc != Z_OK) return Result<void>::Err(MakeError(ke_rc));
 
     GetReplyCtx reply_ctx{&sink, false};
 
@@ -245,12 +259,19 @@ class ZenohTransport : public Transport {
       const std::function<void(TransportQuery&)>& callback) override {
     Queryable q;
     q.impl_ = std::make_unique<Queryable::Impl>();
-    if (!session_valid_) return q;
+    if (!session_valid_) {
+      q.impl_.reset();
+      return q;
+    }
 
     q.impl_->callback = callback;
 
     z_owned_keyexpr_t ke;
-    z_keyexpr_from_str(&ke, std::string(keyexpr_str).c_str());
+    z_result_t ke_rc = z_keyexpr_from_str(&ke, std::string(keyexpr_str).c_str());
+    if (ke_rc != Z_OK) {
+      q.impl_.reset();
+      return q;
+    }
 
     z_owned_closure_query_t closure;
     z_closure_query(
@@ -268,10 +289,14 @@ class ZenohTransport : public Transport {
     z_queryable_options_t q_opts;
     z_queryable_options_default(&q_opts);
 
-    z_declare_queryable(z_session_loan(&session_), &q.impl_->queryable,
-                        z_keyexpr_loan(&ke), z_move(closure), &q_opts);
+    z_result_t decl_rc = z_declare_queryable(
+        z_session_loan(&session_), &q.impl_->queryable,
+        z_keyexpr_loan(&ke), z_move(closure), &q_opts);
 
     z_drop(z_move(ke));
+    if (decl_rc != Z_OK) {
+      q.impl_.reset();
+    }
     return q;
   }
 
