@@ -171,42 +171,39 @@ struct GetReplyCtx {
 
 void OnGetReply(z_loaned_reply_t* reply, void* context) {
   auto* c = static_cast<GetReplyCtx*>(context);
-  if (c->stop.load(std::memory_order_relaxed)) return;
-
-  const z_loaned_sample_t* sample = z_reply_ok(reply);
-  if (!sample) return;
-
-  const z_loaned_bytes_t* payload = z_sample_payload(sample);
-  z_owned_slice_t slice;
-  if (z_bytes_to_slice(payload, &slice) != Z_OK) return;
-
-  const auto* data = reinterpret_cast<const std::byte*>(z_slice_data(z_slice_loan(&slice)));
-  auto len = z_slice_len(z_slice_loan(&slice));
-
-  z_view_string_t ks;
-  z_keyexpr_as_view_string(z_sample_keyexpr(sample), &ks);
-  std::string key_str(z_string_data(z_view_string_loan(&ks)),
-                      z_string_len(z_view_string_loan(&ks)));
-
-  // TODO(#3): Extract encoding from z_sample_encoding(sample).
-  // zenoh-c 1.9.0 does not expose encoding-to-string conversion;
-  // "sitos.v1" is the only encoding used in v0.1.
-  Encoding enc;
-  enc.id = "sitos.v1";
-
   try {
-    if (c->sink) {
-      if (!c->sink(key_str, std::span<const std::byte>(data, len), enc)) {
-        c->stop.store(true, std::memory_order_relaxed);
-      }
+    if (c->stop.load(std::memory_order_relaxed)) return;
+
+    const z_loaned_sample_t* sample = z_reply_ok(reply);
+    if (!sample) return;
+
+    const z_loaned_bytes_t* payload = z_sample_payload(sample);
+    ZenohOwned<z_owned_slice_t> slice;
+    if (z_bytes_to_slice(payload, slice.get()) != Z_OK) return;
+    slice.mark_valid();
+
+    const auto* data = reinterpret_cast<const std::byte*>(z_slice_data(slice.loan()));
+    auto len = z_slice_len(slice.loan());
+
+    z_view_string_t ks;
+    z_keyexpr_as_view_string(z_sample_keyexpr(sample), &ks);
+    std::string key_str(z_string_data(z_view_string_loan(&ks)),
+                        z_string_len(z_view_string_loan(&ks)));
+
+    // TODO(#3): Extract encoding from z_sample_encoding(sample).
+    // zenoh-c 1.9.0 does not expose encoding-to-string conversion;
+    // "sitos.v1" is the only encoding used in v0.1.
+    Encoding enc;
+    enc.id = "sitos.v1";
+
+    if (c->sink && !c->sink(key_str, std::span<const std::byte>(data, len), enc)) {
+      c->stop.store(true, std::memory_order_relaxed);
     }
   } catch (...) {
-    // Contain user sink exceptions at the C ABI boundary (#67). Stop further
-    // replies for this Get so the closure drains without re-entering a
-    // throwing sink.
+    // Contain all C++ exceptions at the zenoh-c callback boundary (#67).
+    // The RAII slice owner drops a successfully-created slice while unwinding.
     c->stop.store(true, std::memory_order_relaxed);
   }
-  z_drop(z_move(slice));
 }
 
 }  // namespace
@@ -227,7 +224,7 @@ struct QueryableState {
 struct QueryCallbackState {
   const z_loaned_query_t* query = nullptr;
   std::shared_ptr<QueryableState> queryable;
-  bool active = true;
+  std::atomic<bool> active{true};
 };
 
 }  // namespace
@@ -261,7 +258,7 @@ Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::by
   // Hold the lock through z_query_reply() so Queryable::~Queryable() cannot
   // drop the underlying queryable while zenoh uses the loaned query.
   std::lock_guard<std::mutex> lock(queryable->mutex);
-  if (!callback_state->active || !queryable->alive || !callback_state->query) {
+  if (!callback_state->active.load() || !queryable->alive || !callback_state->query) {
     return Result<void>::Err(MakeError(TransportErrc::kErrNoQuery));
   }
 
@@ -327,6 +324,41 @@ bool OpenZenohSession(z_owned_session_t* session) {
 }  // namespace
 
 class ZenohTransport : public Transport {
+ private:
+  static void OnQueryable(z_loaned_query_t* query, void* context) {
+    std::shared_ptr<QueryCallbackState> callback_state;
+    try {
+      auto state = *static_cast<std::shared_ptr<QueryableState>*>(context);
+      callback_state = std::make_shared<QueryCallbackState>();
+      callback_state->query = query;
+      callback_state->queryable = state;
+
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (!state->alive) {
+          callback_state->active.store(false);
+          return;
+        }
+      }
+
+      TransportQuery tq;
+      tq.impl_ = std::make_unique<TransportQuery::Impl>();
+      tq.impl_->callback_state = callback_state;
+
+      z_view_string_t qks;
+      z_keyexpr_as_view_string(z_query_keyexpr(query), &qks);
+      tq.keyexpr = std::string(z_string_data(z_view_string_loan(&qks)),
+                               z_string_len(z_view_string_loan(&qks)));
+
+      if (state->callback) state->callback(tq);
+    } catch (...) {
+      // Contain all C++ exceptions at the zenoh-c callback boundary (#67).
+      if (callback_state) callback_state->active.store(false);
+      return;
+    }
+    callback_state->active.store(false);
+  }
+
  public:
   ZenohTransport() : session_valid_(OpenZenohSession(&session_)) {}
 
@@ -435,35 +467,7 @@ class ZenohTransport : public Transport {
     auto* context = new std::shared_ptr<QueryableState>(q.impl_->state);
     z_owned_closure_query_t closure;
     z_closure_query(
-        &closure,
-        +[](z_loaned_query_t* query, void* context) {
-          auto state = *static_cast<std::shared_ptr<QueryableState>*>(context);
-          auto callback_state = std::make_shared<QueryCallbackState>();
-          callback_state->query = query;
-          callback_state->queryable = state;
-
-          {
-            std::lock_guard<std::mutex> lock(state->mutex);
-            if (!state->alive) return;
-          }
-
-          TransportQuery tq;
-          tq.impl_ = std::make_unique<TransportQuery::Impl>();
-          tq.impl_->callback_state = callback_state;
-
-          z_view_string_t qks;
-          z_keyexpr_as_view_string(z_query_keyexpr(query), &qks);
-          tq.keyexpr = std::string(z_string_data(z_view_string_loan(&qks)),
-                                   z_string_len(z_view_string_loan(&qks)));
-
-          try {
-            if (state->callback) state->callback(tq);
-          } catch (...) {
-            // Contain user callback exceptions at the C ABI boundary (#67).
-          }
-          std::lock_guard<std::mutex> lock(state->mutex);
-          callback_state->active = false;
-        },
+        &closure, OnQueryable,
         +[](void* context) { delete static_cast<std::shared_ptr<QueryableState>*>(context); },
         context);
 

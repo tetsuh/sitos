@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -120,49 +121,64 @@ TEST_F(TransportTest, QueryableCallbackExceptionIsContained) {
   const std::string kQueryKey = "sitos/test/query/throws";
   sitos::Encoding enc;
   enc.id = std::string(sitos::Encoding::kSitosV1);
+  std::mutex callback_mutex;
+  std::condition_variable callback_cv;
+  bool callback_entered = false;
+  std::atomic<bool> sink_called{false};
 
-  auto q = transport_->DeclareQueryable(
-      kQueryKey,
-      [&](sitos::TransportQuery& /*tq*/) { throw std::runtime_error("boom"); });
+  auto q = transport_->DeclareQueryable(kQueryKey, [&](sitos::TransportQuery& /*tq*/) {
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex);
+      callback_entered = true;
+    }
+    callback_cv.notify_one();
+    throw std::runtime_error("boom");
+  });
 
-  // The queryable will be invoked but throws before replying. Get must return
-  // without crashing, and no reply should reach the sink.
-  bool sink_called = false;
+  // The queryable will be invoked but throws before replying. Wait until it
+  // starts before checking that no reply reached the sink.
   auto result = transport_->Get(
       kQueryKey,
       [&](std::string_view, std::span<const std::byte>, const sitos::Encoding&) {
-        sink_called = true;
+        sink_called.store(true);
         return true;
       },
       std::chrono::milliseconds(1000));
 
   EXPECT_TRUE(result.IsOk());
-  EXPECT_FALSE(sink_called)
+  {
+    std::unique_lock<std::mutex> lock(callback_mutex);
+    EXPECT_TRUE(callback_cv.wait_for(lock, std::chrono::seconds(3),
+                                     [&] { return callback_entered; }));
+  }
+  EXPECT_FALSE(sink_called.load())
       << "The queryable threw before replying, so no reply is expected";
 
   // Prove the session is still healthy by round-tripping a working queryable.
   const std::string kOkKey = "sitos/test/query/ok_after_throw";
   const std::vector<std::byte> kPayload = {std::byte{0x01}};
+  std::mutex reply_mutex;
+  std::condition_variable reply_cv;
+  bool reply_received = false;
   auto q2 = transport_->DeclareQueryable(
       kOkKey, [&](sitos::TransportQuery& tq) { tq.Reply(kOkKey, kPayload, enc); });
 
-  std::mutex mtx;
-  std::condition_variable cv;
-  bool done = false;
-  transport_->Get(
+  auto healthy_get = transport_->Get(
       kOkKey,
       [&](std::string_view, std::span<const std::byte> payload, const sitos::Encoding&) {
         {
-          std::lock_guard<std::mutex> lock(mtx);
+          std::lock_guard<std::mutex> lock(reply_mutex);
           std::vector<std::byte> copy(payload.begin(), payload.end());
-          if (copy == kPayload) done = true;
+          if (copy == kPayload) reply_received = true;
         }
-        cv.notify_one();
+        reply_cv.notify_one();
         return false;
       },
       std::chrono::milliseconds(2000));
-  std::unique_lock<std::mutex> lock(mtx);
-  EXPECT_TRUE(cv.wait_for(lock, std::chrono::seconds(3), [&] { return done; }))
+  EXPECT_TRUE(healthy_get.IsOk());
+  std::unique_lock<std::mutex> lock(reply_mutex);
+  EXPECT_TRUE(reply_cv.wait_for(lock, std::chrono::seconds(3),
+                                [&] { return reply_received; }))
       << "Session should remain usable after a contained callback exception";
 }
 
