@@ -178,7 +178,7 @@ void OnGetReply(z_loaned_reply_t* reply, void* context) {
 
   const z_loaned_bytes_t* payload = z_sample_payload(sample);
   z_owned_slice_t slice;
-  z_bytes_to_slice(payload, &slice);
+  if (z_bytes_to_slice(payload, &slice) != Z_OK) return;
 
   const auto* data = reinterpret_cast<const std::byte*>(z_slice_data(z_slice_loan(&slice)));
   auto len = z_slice_len(z_slice_loan(&slice));
