@@ -1,0 +1,100 @@
+# Dependency Upgrade CI — Acceptance criterion #3 for issue #3.
+#
+# Runs the build and tests against both the minimum supported zenoh-c version
+# and the latest stable release, on manual dispatch and nightly. See
+# docs/09_dependency_policy.md §4.2 for the policy.
+#
+# If the latest stable fails, do NOT break main (the locked default in
+# cmake/zenohc.cmake stays put). Open an issue labeled
+# `dependency: zenoh-upgrade` to track the fix, which should be limited to
+# src/transport/zenoh_transport.cpp and build/CI configuration.
+
+name: Dependency Upgrade
+
+on:
+  schedule:
+    # Nightly at 03:00 UTC.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      zenoh_version:
+        description: 'zenoh-c version to test as "latest stable" (default: resolve from GitHub releases)'
+        required: false
+
+# Least-privilege token: this workflow only reads the repo to build and test.
+# Declared per job (S8264) rather than at workflow level.
+
+jobs:
+  resolve-versions:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      minimum: ${{ steps.minimum.outputs.version }}
+      latest: ${{ steps.latest.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Resolve minimum supported zenoh-c version
+        id: minimum
+        run: |
+          version=$(sed -nE 's/^set\(ZENOHC_VERSION "([^"]+)".*/\1/p' cmake/zenohc.cmake)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve latest stable zenoh-c version
+        id: latest
+        env:
+          ZENOH_VERSION_INPUT: ${{ github.event.inputs.zenoh_version }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "$ZENOH_VERSION_INPUT" ]; then
+            version="$ZENOH_VERSION_INPUT"
+          else
+            version=$(curl -fsSL \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              https://api.github.com/repos/eclipse-zenoh/zenoh-c/releases/latest \
+              | jq -r .tag_name)
+          fi
+          test "$version" != "null"
+          echo "Resolved latest stable zenoh-c: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: resolve-versions
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: minimum-supported
+            version: ${{ needs.resolve-versions.outputs.minimum }}
+          - label: latest-stable
+            version: ${{ needs.resolve-versions.outputs.latest }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libssl-dev
+
+      - name: Configure (zenoh-c ${{ matrix.label }} = ${{ matrix.version }})
+        env:
+          ZENOHC_VERSION: ${{ matrix.version }}
+        run: cmake --preset dev-linux -DZENOHC_VERSION="$ZENOHC_VERSION"
+
+      - name: Build
+        run: cmake --build --preset dev-linux
+
+      - name: Test
+        run: ctest --preset dev-linux
+
+      - name: Fixture validator
+        run: python tests/fixtures/validate_fixtures.py

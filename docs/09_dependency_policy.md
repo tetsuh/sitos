@@ -16,17 +16,17 @@ sitos **owns its wire specification and thinly isolates zenoh as a transport dep
 Initial policy:
 
 ```
-zenoh >= 1.0, < 2.0
+zenoh-c >= 1.9.0, < 2.0
 ```
 
-* sitos v1.x supports the zenoh 1.x series
-* If zenoh 2.x support breaks wire/API compatibility, treat it as sitos v2.0
-* After validation by `dependency-upgrade.yml`, zenoh patch/minor updates are incorporated into
+* sitos v1.x supports zenoh-c 1.9.0 and later compatible 1.x releases
+* If zenoh-c 2.x support breaks wire/API compatibility, treat it as sitos v2.0
+* After validation by `dependency-upgrade.yml`, zenoh-c patch/minor updates are incorporated into
   sitos patch/minor releases
 
 ## 3. Transport adapter
 
-Only the transport adapter uses the zenoh-cpp API directly.
+Only the transport adapter uses the zenoh-c API directly.
 Higher-level components see only the following abstract API.
 
 ```cpp
@@ -42,7 +42,7 @@ struct TransportSample {
 
 struct TransportQuery {
     std::string keyexpr;
-    void Reply(std::string_view key,
+    Result<void> Reply(std::string_view key,
                std::span<const std::byte> payload,
                Encoding encoding);
 };
@@ -100,7 +100,7 @@ This version is fixed per release branch.
 
 `dependency-upgrade.yml` runs the following on nightly / manual triggers:
 
-1. **minimum supported**: the minimum version in the supported range
+1. **minimum supported**: the pinned `ZENOHC_VERSION` in `cmake/zenohc.cmake`
 2. **latest stable**: the latest stable release at execution time
 
 Validation targets:
