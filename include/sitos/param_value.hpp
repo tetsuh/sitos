@@ -16,6 +16,7 @@
 #include <span>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -97,7 +98,10 @@ class ParamValue {
       return std::nullopt;
     } else if constexpr (std::is_integral_v<D>) {
       if (auto* p = std::get_if<bool>(&value_)) return static_cast<T>(*p);
-      if (auto* p = std::get_if<std::int64_t>(&value_)) return static_cast<T>(*p);
+      if (auto* p = std::get_if<std::int64_t>(&value_)) {
+        if (IsOutsideIntegralRange<T>(*p)) return std::nullopt;
+        return static_cast<T>(*p);
+      }
       if (auto* p = std::get_if<double>(&value_)) {
         if (IsOutsideIntegralRange<T>(*p)) return std::nullopt;
         return static_cast<T>(*p);
@@ -159,22 +163,27 @@ class ParamValue {
                                           std::span<const std::byte> body);
 
  private:
-  /// Returns true when a double value cannot be stored in integral type T.
-  /// Rejects NaN/inf and values outside T's representable range.  Uses
-  /// correctly-rounded bounds so that int64_t max (which is not exactly
-  /// representable in double) is safely excluded.
+  /// Returns true when an S64 value cannot be represented by integral type T.
+  template <typename T>
+  static bool IsOutsideIntegralRange(std::int64_t v) {
+    return !std::in_range<T>(v);
+  }
+
+  /// Returns true when a DP value cannot be converted to integral type T.
+  /// Floating-to-integral conversion truncates first. Powers of two are exact
+  /// in binary64, so [-2^digits, 2^digits) gives exact signed bounds and
+  /// [0, 2^digits) gives exact unsigned bounds, including int64_t/uint64_t.
   template <typename T>
   static bool IsOutsideIntegralRange(double v) {
     if (!std::isfinite(v)) return true;
-    if (v < static_cast<double>(std::numeric_limits<T>::lowest())) return true;
-    if constexpr (sizeof(T) >= sizeof(std::int64_t)) {
-      // int64_t max is not exactly representable in double;
-      // static_cast<double>(max) rounds up, so ≥ is correct.
-      return v >= static_cast<double>(std::numeric_limits<T>::max());
+    const double truncated = std::trunc(v);
+    const double upper_bound = std::ldexp(1.0, std::numeric_limits<T>::digits);
+    if constexpr (std::is_signed_v<T>) {
+      if (truncated < -upper_bound) return true;
     } else {
-      // Smaller types' max is exactly representable; > keeps the max itself.
-      return v > static_cast<double>(std::numeric_limits<T>::max());
+      if (truncated < 0.0) return true;
     }
+    return truncated >= upper_bound;
   }
 
   /// Returns true when a double value is outside the range representable by

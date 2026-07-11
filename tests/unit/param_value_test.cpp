@@ -291,6 +291,31 @@ TEST(ParamValue, NumericCastsRejectUnrepresentableValues) {
   sitos::ParamValue two63{9.223372036854775808e18};  // exact 2^63
   EXPECT_FALSE(two63.As<int64_t>().has_value());
 
+  // Exact 2^64 is outside uint64_t range; the previous representable double
+  // below it remains convertible.
+  const double two64 = std::ldexp(1.0, 64);
+  sitos::ParamValue at_two64{two64};
+  EXPECT_FALSE(at_two64.As<uint64_t>().has_value());
+  sitos::ParamValue below_two64{std::nextafter(two64, 0.0)};
+  EXPECT_TRUE(below_two64.As<uint64_t>().has_value());
+
+  // Range checks follow floating-to-integral semantics: truncate first, then
+  // test whether the integral result is representable.
+  sitos::ParamValue upper_fraction{255.9};
+  EXPECT_EQ(upper_fraction.As<uint8_t>(), uint8_t{255});
+  sitos::ParamValue negative_fraction{-0.5};
+  EXPECT_EQ(negative_fraction.As<uint8_t>(), uint8_t{0});
+  sitos::ParamValue signed_lower_fraction{-128.9};
+  EXPECT_EQ(signed_lower_fraction.As<int8_t>(), int8_t{-128});
+
+  // Stored S64 values must not wrap when narrowed to a smaller integral type.
+  sitos::ParamValue s64_too_large{int64_t{256}};
+  EXPECT_FALSE(s64_too_large.As<uint8_t>().has_value());
+  sitos::ParamValue s64_negative{int64_t{-1}};
+  EXPECT_FALSE(s64_negative.As<uint8_t>().has_value());
+  sitos::ParamValue s64_in_range{int64_t{255}};
+  EXPECT_EQ(s64_in_range.As<uint8_t>(), uint8_t{255});
+
   // Normal finite double → int still works.
   sitos::ParamValue fine{3.14};
   auto fi = fine.As<int>();
