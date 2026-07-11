@@ -2,7 +2,9 @@
 # an imported target.
 #
 # Pinned zenoh-c version. Update this when upgrading the locked default.
-set(ZENOHC_VERSION "1.9.0")
+# Declared as a CACHE variable so the dependency-upgrade CI can override it
+# with -DZENOHC_VERSION=<version> to test other releases.
+set(ZENOHC_VERSION "1.9.0" CACHE STRING "Pinned zenoh-c standalone version")
 
 # Detect platform and set the archive name.
 if(WIN32)
