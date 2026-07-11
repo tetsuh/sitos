@@ -7,13 +7,16 @@
 #ifndef SITOS_PARAM_VALUE_HPP
 #define SITOS_PARAM_VALUE_HPP
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -46,7 +49,23 @@ class ParamValue {
     } else if constexpr (std::is_integral_v<D>) {
       value_ = static_cast<std::int64_t>(v);
     } else if constexpr (std::is_floating_point_v<D>) {
-      value_ = static_cast<double>(v);
+      if constexpr (std::is_same_v<D, long double>) {
+        if (!std::isfinite(v)) {
+          value_ = static_cast<double>(v);  // NaN, inf pass through
+          return;
+        }
+        if (v > static_cast<long double>(std::numeric_limits<double>::max())) {
+          value_ = std::numeric_limits<double>::infinity();
+          return;
+        }
+        if (v < static_cast<long double>(std::numeric_limits<double>::lowest())) {
+          value_ = -std::numeric_limits<double>::infinity();
+          return;
+        }
+        value_ = static_cast<double>(v);
+      } else {
+        value_ = static_cast<double>(v);
+      }
     } else if constexpr (std::is_convertible_v<D, std::string_view>) {
       value_ = std::string(std::forward<T>(v));
     } else if constexpr (std::is_same_v<D, std::vector<std::byte>>) {
@@ -68,7 +87,7 @@ class ParamValue {
 
   /// Typed extraction. Arithmetic casts are allowed among Bool/S64/Dp; string
   /// and bytes require an exact type match. Returns std::nullopt on
-  /// impossible conversions.
+  /// impossible or unrepresentable conversions.
   template <typename T>
   std::optional<T> As() const {
     using D = std::decay_t<T>;
@@ -79,13 +98,23 @@ class ParamValue {
       return std::nullopt;
     } else if constexpr (std::is_integral_v<D>) {
       if (auto* p = std::get_if<bool>(&value_)) return static_cast<T>(*p);
-      if (auto* p = std::get_if<std::int64_t>(&value_)) return static_cast<T>(*p);
-      if (auto* p = std::get_if<double>(&value_)) return static_cast<T>(*p);
+      if (auto* p = std::get_if<std::int64_t>(&value_)) {
+        if (IsOutsideIntegralRange<T>(*p)) return std::nullopt;
+        return static_cast<T>(*p);
+      }
+      if (auto* p = std::get_if<double>(&value_)) {
+        if (IsOutsideIntegralRange<T>(*p)) return std::nullopt;
+        return static_cast<T>(*p);
+      }
       return std::nullopt;
     } else if constexpr (std::is_floating_point_v<D>) {
       if (auto* p = std::get_if<bool>(&value_)) return static_cast<T>(*p);
       if (auto* p = std::get_if<std::int64_t>(&value_)) return static_cast<T>(*p);
-      if (auto* p = std::get_if<double>(&value_)) return static_cast<T>(*p);
+      if (auto* p = std::get_if<double>(&value_)) {
+        if (!std::isfinite(*p)) return static_cast<T>(*p);  // NaN, inf are fine for float
+        if (IsOutsideFloatRange<D>(*p)) return std::nullopt;
+        return static_cast<T>(*p);
+      }
       return std::nullopt;
     } else if constexpr (std::is_same_v<D, std::string>) {
       if (auto* p = std::get_if<std::string>(&value_)) return *p;
@@ -134,6 +163,42 @@ class ParamValue {
                                           std::span<const std::byte> body);
 
  private:
+  /// Returns true when an S64 value cannot be represented by integral type T.
+  template <typename T>
+  static bool IsOutsideIntegralRange(std::int64_t v) {
+    return !std::in_range<T>(v);
+  }
+
+  /// Returns true when a DP value cannot be converted to integral type T.
+  /// Floating-to-integral conversion truncates first. Powers of two are exact
+  /// in binary64, so [-2^digits, 2^digits) gives exact signed bounds and
+  /// [0, 2^digits) gives exact unsigned bounds, including int64_t/uint64_t.
+  template <typename T>
+  static bool IsOutsideIntegralRange(double v) {
+    if (!std::isfinite(v)) return true;
+    const double truncated = std::trunc(v);
+    const double upper_bound = std::ldexp(1.0, std::numeric_limits<T>::digits);
+    if constexpr (std::is_signed_v<T>) {
+      if (truncated < -upper_bound) return true;
+    } else {
+      if (truncated < 0.0) return true;
+    }
+    return truncated >= upper_bound;
+  }
+
+  /// Returns true when a double value is outside the range representable by
+  /// a narrower floating-point type D.  Always false when D is as wide as
+  /// double (no narrowing needed).
+  template <typename D>
+  static bool IsOutsideFloatRange(double v) {
+    if constexpr (sizeof(D) < sizeof(double)) {
+      return v > static_cast<double>(std::numeric_limits<D>::max()) ||
+             v < static_cast<double>(std::numeric_limits<D>::lowest());
+    } else {
+      return false;
+    }
+  }
+
   Variant value_;
 };
 
