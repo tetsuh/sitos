@@ -47,7 +47,9 @@ TEST(InMemoryEngineStressTest, ConcurrentPutGet) {
     for (int i = 0; i < kOpsPerThread; ++i) {
       engine.Get("no_such_key_" + std::to_string(i),
                  [](std::string_view /*k*/, sitos::Bytes /*v*/) { return true; });
-      engine.List("",
+      // Use a non-matching prefix to exercise concurrent List calls without
+      // repeatedly copying the entire growing map for this stress test.
+      engine.List("no_such_prefix/",
                   [](std::string_view /*k*/, sitos::Bytes /*v*/) { return true; });
     }
   };

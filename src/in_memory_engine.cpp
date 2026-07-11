@@ -20,18 +20,32 @@ bool InMemoryEngine::Delete(std::string_view key) {
 }
 
 bool InMemoryEngine::Get(std::string_view key, const EntrySink& sink) const {
-  std::shared_lock lock(mutex_);
-  auto it = data_.find(key);
-  if (it == data_.end()) return false;
-  sink(it->first, it->second);
+  std::string owned_key;
+  std::vector<std::byte> owned_value;
+  {
+    std::shared_lock lock(mutex_);
+    auto it = data_.find(key);
+    if (it == data_.end()) return false;
+    owned_key = it->first;
+    owned_value = it->second;
+  }
+
+  sink(owned_key, owned_value);
   return true;
 }
 
 bool InMemoryEngine::List(std::string_view prefix, const EntrySink& sink) const {
-  std::shared_lock lock(mutex_);
-  for (auto it = data_.lower_bound(prefix);
-       it != data_.end() && it->first.starts_with(prefix); ++it) {
-    if (!sink(it->first, it->second)) return false;
+  std::vector<std::pair<std::string, std::vector<std::byte>>> entries;
+  {
+    std::shared_lock lock(mutex_);
+    for (auto it = data_.lower_bound(prefix);
+         it != data_.end() && it->first.starts_with(prefix); ++it) {
+      entries.emplace_back(it->first, it->second);
+    }
+  }
+
+  for (const auto& [key, value] : entries) {
+    if (!sink(key, value)) return false;
   }
   return true;
 }

@@ -8,6 +8,7 @@
 #include "storage_engine_contract.hpp"
 
 #include <map>
+#include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <vector>
@@ -31,17 +32,31 @@ class MockEngine : public sitos::StorageEngine {
   }
 
   bool Get(std::string_view key, const sitos::EntrySink& sink) const override {
-    std::shared_lock lock(mutex_);
-    auto it = data_.find(key);
-    if (it == data_.end()) return false;
-    sink(it->first, it->second);
+    std::string owned_key;
+    std::vector<std::byte> owned_value;
+    {
+      std::shared_lock lock(mutex_);
+      auto it = data_.find(key);
+      if (it == data_.end()) return false;
+      owned_key = it->first;
+      owned_value = it->second;
+    }
+
+    sink(owned_key, owned_value);
     return true;
   }
 
   bool List(std::string_view prefix, const sitos::EntrySink& sink) const override {
-    std::shared_lock lock(mutex_);
-    for (const auto& [k, v] : data_) {
-      if (k.starts_with(prefix) && !sink(k, v)) return false;
+    std::vector<std::pair<std::string, std::vector<std::byte>>> entries;
+    {
+      std::shared_lock lock(mutex_);
+      for (const auto& [key, value] : data_) {
+        if (key.starts_with(prefix)) entries.emplace_back(key, value);
+      }
+    }
+
+    for (const auto& [key, value] : entries) {
+      if (!sink(key, value)) return false;
     }
     return true;
   }
