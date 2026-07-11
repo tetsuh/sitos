@@ -49,11 +49,14 @@ class ParamValue {
       value_ = static_cast<std::int64_t>(v);
     } else if constexpr (std::is_floating_point_v<D>) {
       if constexpr (std::is_same_v<D, long double>) {
-        if (std::isfinite(v) &&
-            (v > static_cast<long double>(std::numeric_limits<double>::max()) ||
-             v < static_cast<long double>(std::numeric_limits<double>::lowest()))) {
-          value_ = (v > 0.0L) ? std::numeric_limits<double>::infinity()
-                              : -std::numeric_limits<double>::infinity();
+        if (std::isfinite(v)) {
+          if (v > static_cast<long double>(std::numeric_limits<double>::max())) {
+            value_ = std::numeric_limits<double>::infinity();
+          } else if (v < static_cast<long double>(std::numeric_limits<double>::lowest())) {
+            value_ = -std::numeric_limits<double>::infinity();
+          } else {
+            value_ = static_cast<double>(v);
+          }
         } else {
           value_ = static_cast<double>(v);
         }
@@ -107,9 +110,8 @@ class ParamValue {
       if (auto* p = std::get_if<double>(&value_)) {
         if (!std::isfinite(*p)) return static_cast<T>(*p);  // NaN, inf are fine for float
         if constexpr (sizeof(D) < sizeof(double)) {
-          if (*p > static_cast<double>(std::numeric_limits<D>::max()) ||
-              *p < static_cast<double>(std::numeric_limits<D>::lowest()))
-            return std::nullopt;
+          if (*p > static_cast<double>(std::numeric_limits<D>::max())) return std::nullopt;
+          if (*p < static_cast<double>(std::numeric_limits<D>::lowest())) return std::nullopt;
         }
         return static_cast<T>(*p);
       }
