@@ -1,0 +1,73 @@
+# Dependency Upgrade CI — Acceptance criterion #3 for issue #3.
+#
+# Runs the build and tests against both the minimum supported zenoh-c version
+# and the latest stable release, on manual dispatch and nightly. See
+# docs/09_dependency_policy.md §4.2 for the policy.
+#
+# If the latest stable fails, do NOT break main (the locked default in
+# cmake/zenohc.cmake stays put). Open an issue labeled
+# `dependency: zenoh-upgrade` to track the fix, which should be limited to
+# src/transport/zenoh_transport.cpp and build/CI configuration.
+
+name: Dependency Upgrade
+
+on:
+  schedule:
+    # Nightly at 03:00 UTC.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      zenoh_version:
+        description: 'zenoh-c version to test as "latest stable" (default: resolve from GitHub releases)'
+        required: false
+
+jobs:
+  resolve-versions:
+    runs-on: ubuntu-24.04
+    outputs:
+      minimum: '1.9.0'
+      latest: ${{ steps.latest.outputs.version }}
+    steps:
+      - name: Resolve latest stable zenoh-c version
+        id: latest
+        run: |
+          if [ -n "${{ github.event.inputs.zenoh_version }}" ]; then
+            version="${{ github.event.inputs.zenoh_version }}"
+          else
+            version=$(curl -fsSL \
+              https://api.github.com/repos/eclipse-zenoh/zenoh-c/releases/latest \
+              | jq -r .tag_name)
+          fi
+          echo "Resolved latest stable zenoh-c: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: resolve-versions
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: minimum-supported
+            version: ${{ needs.resolve-versions.outputs.minimum }}
+          - label: latest-stable
+            version: ${{ needs.resolve-versions.outputs.latest }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libssl-dev
+
+      - name: Configure (zenoh-c ${{ matrix.label }} = ${{ matrix.version }})
+        run: cmake --preset dev-linux -DZENOHC_VERSION=${{ matrix.version }}
+
+      - name: Build
+        run: cmake --build --preset dev-linux
+
+      - name: Test
+        run: ctest --preset dev-linux
+
+      - name: Fixture validator
+        run: python tests/fixtures/validate_fixtures.py
