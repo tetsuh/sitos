@@ -189,6 +189,9 @@ TEST_F(TransportTest, GetSinkExceptionIsContained) {
   sitos::Encoding enc;
   enc.id = std::string(sitos::Encoding::kSitosV1);
   const std::vector<std::byte> kPayload = {std::byte{0x42}};
+  std::mutex sink_mutex;
+  std::condition_variable sink_cv;
+  bool sink_entered = false;
 
   auto q = transport_->DeclareQueryable(
       kQueryKey, [&](sitos::TransportQuery& tq) { tq.Reply(kQueryKey, kPayload, enc); });
@@ -197,12 +200,44 @@ TEST_F(TransportTest, GetSinkExceptionIsContained) {
       kQueryKey,
       [&](std::string_view, std::span<const std::byte>, const sitos::Encoding&)
           -> bool {
+        {
+          std::lock_guard<std::mutex> lock(sink_mutex);
+          sink_entered = true;
+        }
+        sink_cv.notify_one();
         throw std::runtime_error("sink boom");
       },
       std::chrono::milliseconds(2000));
 
   EXPECT_TRUE(result.IsOk());
-  // Reaching this assertion means the exception did not crash the process.
+  {
+    std::unique_lock<std::mutex> lock(sink_mutex);
+    EXPECT_TRUE(sink_cv.wait_for(lock, std::chrono::seconds(3),
+                                 [&] { return sink_entered; }))
+        << "The throwing sink must be invoked";
+  }
+
+  // Prove the session remains usable after the sink exception is contained.
+  std::mutex reply_mutex;
+  std::condition_variable reply_cv;
+  bool reply_received = false;
+  auto healthy_get = transport_->Get(
+      kQueryKey,
+      [&](std::string_view, std::span<const std::byte> payload, const sitos::Encoding&) {
+        {
+          std::lock_guard<std::mutex> lock(reply_mutex);
+          reply_received = std::vector<std::byte>(payload.begin(), payload.end()) == kPayload;
+        }
+        reply_cv.notify_one();
+        return false;
+      },
+      std::chrono::milliseconds(2000));
+
+  EXPECT_TRUE(healthy_get.IsOk());
+  std::unique_lock<std::mutex> lock(reply_mutex);
+  EXPECT_TRUE(reply_cv.wait_for(lock, std::chrono::seconds(3),
+                                [&] { return reply_received; }))
+      << "Session should remain usable after a contained sink exception";
 }
 
 // An empty queryable callback must have defined, safe behavior: no crash on
