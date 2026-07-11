@@ -49,17 +49,19 @@ class ParamValue {
       value_ = static_cast<std::int64_t>(v);
     } else if constexpr (std::is_floating_point_v<D>) {
       if constexpr (std::is_same_v<D, long double>) {
-        if (std::isfinite(v)) {
-          if (v > static_cast<long double>(std::numeric_limits<double>::max())) {
-            value_ = std::numeric_limits<double>::infinity();
-          } else if (v < static_cast<long double>(std::numeric_limits<double>::lowest())) {
-            value_ = -std::numeric_limits<double>::infinity();
-          } else {
-            value_ = static_cast<double>(v);
-          }
-        } else {
-          value_ = static_cast<double>(v);
+        if (!std::isfinite(v)) {
+          value_ = static_cast<double>(v);  // NaN, inf pass through
+          return;
         }
+        if (v > static_cast<long double>(std::numeric_limits<double>::max())) {
+          value_ = std::numeric_limits<double>::infinity();
+          return;
+        }
+        if (v < static_cast<long double>(std::numeric_limits<double>::lowest())) {
+          value_ = -std::numeric_limits<double>::infinity();
+          return;
+        }
+        value_ = static_cast<double>(v);
       } else {
         value_ = static_cast<double>(v);
       }
@@ -109,10 +111,7 @@ class ParamValue {
       if (auto* p = std::get_if<std::int64_t>(&value_)) return static_cast<T>(*p);
       if (auto* p = std::get_if<double>(&value_)) {
         if (!std::isfinite(*p)) return static_cast<T>(*p);  // NaN, inf are fine for float
-        if constexpr (sizeof(D) < sizeof(double)) {
-          if (*p > static_cast<double>(std::numeric_limits<D>::max())) return std::nullopt;
-          if (*p < static_cast<double>(std::numeric_limits<D>::lowest())) return std::nullopt;
-        }
+        if (IsOutsideFloatRange<D>(*p)) return std::nullopt;
         return static_cast<T>(*p);
       }
       return std::nullopt;
@@ -163,6 +162,19 @@ class ParamValue {
                                           std::span<const std::byte> body);
 
  private:
+  /// Returns true when a double value is outside the range representable by
+  /// a narrower floating-point type D.  Always false when D is as wide as
+  /// double (no narrowing needed).
+  template <typename D>
+  static bool IsOutsideFloatRange(double v) {
+    if constexpr (sizeof(D) < sizeof(double)) {
+      return v > static_cast<double>(std::numeric_limits<D>::max()) ||
+             v < static_cast<double>(std::numeric_limits<D>::lowest());
+    } else {
+      return false;
+    }
+  }
+
   Variant value_;
 };
 
