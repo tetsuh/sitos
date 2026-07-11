@@ -11,6 +11,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -110,6 +111,89 @@ TEST_F(TransportTest, QueryableRoundTrip) {
   }
 
   EXPECT_EQ(received_payload, kExpectedPayload);
+}
+
+// A throwing user callback must not let a C++ exception cross the C ABI
+// boundary of the zenoh-c queryable closure. The process must survive and
+// the session must remain usable afterward.
+TEST_F(TransportTest, QueryableCallbackExceptionIsContained) {
+  const std::string kQueryKey = "sitos/test/query/throws";
+  sitos::Encoding enc;
+  enc.id = std::string(sitos::Encoding::kSitosV1);
+
+  auto q = transport_->DeclareQueryable(
+      kQueryKey,
+      [&](sitos::TransportQuery& /*tq*/) { throw std::runtime_error("boom"); });
+
+  // The queryable will be invoked but throws before replying. Get must return
+  // without crashing, and no reply should reach the sink.
+  bool sink_called = false;
+  auto result = transport_->Get(
+      kQueryKey,
+      [&](std::string_view, std::span<const std::byte>, const sitos::Encoding&) {
+        sink_called = true;
+        return true;
+      },
+      std::chrono::milliseconds(1000));
+
+  EXPECT_TRUE(result.IsOk());
+  EXPECT_FALSE(sink_called)
+      << "The queryable threw before replying, so no reply is expected";
+
+  // Prove the session is still healthy by round-tripping a working queryable.
+  const std::string kOkKey = "sitos/test/query/ok_after_throw";
+  const std::vector<std::byte> kPayload = {std::byte{0x01}};
+  auto q2 = transport_->DeclareQueryable(
+      kOkKey, [&](sitos::TransportQuery& tq) { tq.Reply(kOkKey, kPayload, enc); });
+
+  std::mutex mtx;
+  std::condition_variable cv;
+  bool done = false;
+  transport_->Get(
+      kOkKey,
+      [&](std::string_view, std::span<const std::byte> payload, const sitos::Encoding&) {
+        {
+          std::lock_guard<std::mutex> lock(mtx);
+          std::vector<std::byte> copy(payload.begin(), payload.end());
+          if (copy == kPayload) done = true;
+        }
+        cv.notify_one();
+        return false;
+      },
+      std::chrono::milliseconds(2000));
+  std::unique_lock<std::mutex> lock(mtx);
+  EXPECT_TRUE(cv.wait_for(lock, std::chrono::seconds(3), [&] { return done; }))
+      << "Session should remain usable after a contained callback exception";
+}
+
+// A throwing Get result sink must not let a C++ exception cross the C ABI
+// boundary of the zenoh-c reply closure.
+TEST_F(TransportTest, GetSinkExceptionIsContained) {
+  const std::string kQueryKey = "sitos/test/sink/throws";
+  sitos::Encoding enc;
+  enc.id = std::string(sitos::Encoding::kSitosV1);
+  const std::vector<std::byte> kPayload = {std::byte{0x42}};
+
+  auto q = transport_->DeclareQueryable(
+      kQueryKey, [&](sitos::TransportQuery& tq) { tq.Reply(kQueryKey, kPayload, enc); });
+
+  auto result = transport_->Get(
+      kQueryKey,
+      [&](std::string_view, std::span<const std::byte>, const sitos::Encoding&)
+          -> bool {
+        throw std::runtime_error("sink boom");
+      },
+      std::chrono::milliseconds(2000));
+
+  EXPECT_TRUE(result.IsOk());
+  // Reaching this assertion means the exception did not crash the process.
+}
+
+// An empty queryable callback must have defined, safe behavior: no crash on
+// declaration or destruction, and the session remains usable.
+TEST_F(TransportTest, EmptyQueryableCallbackIsSafe) {
+  auto q = transport_->DeclareQueryable("sitos/test/empty_cb", {});
+  // Destruction of the (empty) handle must not crash; it goes out of scope.
 }
 
 }  // namespace

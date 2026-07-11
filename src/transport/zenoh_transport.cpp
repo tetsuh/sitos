@@ -194,7 +194,16 @@ void OnGetReply(z_loaned_reply_t* reply, void* context) {
   Encoding enc;
   enc.id = "sitos.v1";
 
-  if (!c->sink(key_str, std::span<const std::byte>(data, len), enc)) {
+  try {
+    if (c->sink) {
+      if (!c->sink(key_str, std::span<const std::byte>(data, len), enc)) {
+        c->stop.store(true, std::memory_order_relaxed);
+      }
+    }
+  } catch (...) {
+    // Contain user sink exceptions at the C ABI boundary (#67). Stop further
+    // replies for this Get so the closure drains without re-entering a
+    // throwing sink.
     c->stop.store(true, std::memory_order_relaxed);
   }
   z_drop(z_move(slice));
@@ -405,6 +414,10 @@ class ZenohTransport : public Transport {
   Queryable DeclareQueryable(std::string_view keyexpr_str,
                              const std::function<void(TransportQuery&)>& callback) override {
     Queryable q;
+    // An empty callback is a programming error; return an empty handle with
+    // defined, safe behavior rather than registering a closure that would
+    // throw std::bad_function_call on every query (#67).
+    if (!callback) return q;
     q.impl_ = std::make_unique<Queryable::Impl>();
     if (!session_valid_) {
       q.impl_.reset();
@@ -443,7 +456,11 @@ class ZenohTransport : public Transport {
           tq.keyexpr = std::string(z_string_data(z_view_string_loan(&qks)),
                                    z_string_len(z_view_string_loan(&qks)));
 
-          state->callback(tq);
+          try {
+            if (state->callback) state->callback(tq);
+          } catch (...) {
+            // Contain user callback exceptions at the C ABI boundary (#67).
+          }
           std::lock_guard<std::mutex> lock(state->mutex);
           callback_state->active = false;
         },
