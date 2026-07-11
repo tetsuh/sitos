@@ -22,12 +22,13 @@ on:
         required: false
 
 # Least-privilege token: this workflow only reads the repo to build and test.
-permissions:
-  contents: read
+# Declared per job (S8264) rather than at workflow level.
 
 jobs:
   resolve-versions:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     outputs:
       minimum: '1.9.0'
       latest: ${{ steps.latest.outputs.version }}
@@ -48,6 +49,8 @@ jobs:
   test:
     needs: resolve-versions
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
