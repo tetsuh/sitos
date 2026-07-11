@@ -99,10 +99,7 @@ class ParamValue {
       if (auto* p = std::get_if<bool>(&value_)) return static_cast<T>(*p);
       if (auto* p = std::get_if<std::int64_t>(&value_)) return static_cast<T>(*p);
       if (auto* p = std::get_if<double>(&value_)) {
-        if (!std::isfinite(*p)) return std::nullopt;
-        if (*p < static_cast<double>(std::numeric_limits<T>::lowest()) ||
-            *p > static_cast<double>(std::numeric_limits<T>::max()))
-          return std::nullopt;
+        if (IsOutsideIntegralRange<T>(*p)) return std::nullopt;
         return static_cast<T>(*p);
       }
       return std::nullopt;
@@ -162,6 +159,24 @@ class ParamValue {
                                           std::span<const std::byte> body);
 
  private:
+  /// Returns true when a double value cannot be stored in integral type T.
+  /// Rejects NaN/inf and values outside T's representable range.  Uses
+  /// correctly-rounded bounds so that int64_t max (which is not exactly
+  /// representable in double) is safely excluded.
+  template <typename T>
+  static bool IsOutsideIntegralRange(double v) {
+    if (!std::isfinite(v)) return true;
+    if (v < static_cast<double>(std::numeric_limits<T>::lowest())) return true;
+    if constexpr (sizeof(T) >= sizeof(std::int64_t)) {
+      // int64_t max is not exactly representable in double;
+      // static_cast<double>(max) rounds up, so ≥ is correct.
+      return v >= static_cast<double>(std::numeric_limits<T>::max());
+    } else {
+      // Smaller types' max is exactly representable; > keeps the max itself.
+      return v > static_cast<double>(std::numeric_limits<T>::max());
+    }
+  }
+
   /// Returns true when a double value is outside the range representable by
   /// a narrower floating-point type D.  Always false when D is as wide as
   /// double (no narrowing needed).

@@ -285,6 +285,12 @@ TEST(ParamValue, NumericCastsRejectUnrepresentableValues) {
   sitos::ParamValue beyond_neg_i64{-1e20};
   EXPECT_FALSE(beyond_neg_i64.As<int64_t>().has_value());
 
+  // double → integral: value exactly at 2^63 (outside int64_t range).
+  // int64_t max is 2^63-1, which is not exactly representable in double;
+  // static_cast<double>(int64_max) rounds up to 2^63.
+  sitos::ParamValue two63{9.223372036854775808e18};  // exact 2^63
+  EXPECT_FALSE(two63.As<int64_t>().has_value());
+
   // Normal finite double → int still works.
   sitos::ParamValue fine{3.14};
   auto fi = fine.As<int>();
