@@ -7,6 +7,30 @@ on:
     branches: [main]
 
 jobs:
+  transport-isolation:
+    # Acceptance criterion #2 for issue #3: the raw zenoh-c API must stay
+    # confined to src/transport/. Fail if any source file outside that
+    # directory includes a zenoh header.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Verify zenoh headers are confined to src/transport/
+        # Acceptance criterion #2 for issue #3: library code (include/ and
+        # src/) must not depend on raw zenoh headers except in src/transport/.
+        # Tests may use raw zenoh directly for build-integration smoke checks.
+        run: |
+          set -e
+          matches=$(grep -rnE '^[[:space:]]*#include.*zenoh' \
+                    --include='*.cpp' --include='*.hpp' --include='*.h' --include='*.cc' \
+                    include src | grep -v '^src/transport/' || true)
+          if [ -n "$matches" ]; then
+            echo "::error::Raw zenoh includes found in library code outside src/transport/:"
+            echo "$matches"
+            exit 1
+          fi
+          echo "OK: no zenoh includes in library code outside src/transport/"
+
   build-linux:
     runs-on: ubuntu-24.04
     steps:
