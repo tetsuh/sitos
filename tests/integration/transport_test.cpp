@@ -12,9 +12,15 @@
 #include <cstddef>
 #include <mutex>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace {
+
+TEST(TransportApiTest, TransportQueryCannotOutliveCallback) {
+  static_assert(!std::is_move_constructible_v<sitos::TransportQuery>);
+  static_assert(!std::is_move_assignable_v<sitos::TransportQuery>);
+}
 
 class TransportTest : public ::testing::Test {
  protected:

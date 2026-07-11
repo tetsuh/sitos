@@ -12,12 +12,13 @@
 #pragma warning(pop)
 #endif
 
-#include "sitos/transport.hpp"
-
 #include <atomic>
 #include <cstddef>
 #include <memory>
+#include <mutex>
 #include <string>
+
+#include "sitos/transport.hpp"
 
 namespace sitos {
 
@@ -71,9 +72,7 @@ std::error_code MakeError(z_result_t rc) {
   return {static_cast<int>(rc), ZenohCategory()};
 }
 
-std::error_code MakeError(TransportErrc ec) {
-  return {static_cast<int>(ec), ZenohCategory()};
-}
+std::error_code MakeError(TransportErrc ec) { return {static_cast<int>(ec), ZenohCategory()}; }
 
 // RAII wrapper for any z_owned_*_t. Calls z_drop(z_move(obj)) on destruction
 // and on close of the owning scope, removing the manual z_drop chains that
@@ -88,7 +87,7 @@ class ZenohOwned {
   ZenohOwned(const ZenohOwned&) = delete;
   ZenohOwned& operator=(const ZenohOwned&) = delete;
 
-  ZenohOwned(ZenohOwned&& other) noexcept : obj_(other.obj_) {
+  ZenohOwned(ZenohOwned&& other) noexcept : obj_(other.obj_), moved_(other.moved_) {
     other.moved_ = true;
   }
   ZenohOwned& operator=(ZenohOwned&& other) noexcept {
@@ -106,8 +105,11 @@ class ZenohOwned {
   // Lender: returns a pointer suitable for z_move(obj_out) output parameters.
   T* get() { return &obj_; }
 
-  // Lender: returns a moved handle for APIs that take z_moved_*_t*.
-  auto moved() { return z_move(obj_); }
+  // Transfers ownership to an API that takes z_moved_*_t*.
+  auto moved() {
+    moved_ = true;
+    return z_move(obj_);
+  }
 
   // Loan for APIs that take z_loaned_*_t*.
   auto loan() { return z_loan(obj_); }
@@ -151,8 +153,8 @@ Result<ZenohOwned<z_owned_encoding_t>> MakeEncoding(const Encoding& enc) {
 // Build a z_owned_bytes_t from a byte payload.
 Result<ZenohOwned<z_owned_bytes_t>> MakeBytes(std::span<const std::byte> payload) {
   ZenohOwned<z_owned_bytes_t> p;
-  z_result_t rc = z_bytes_copy_from_buf(
-      p.get(), reinterpret_cast<const uint8_t*>(payload.data()), payload.size());
+  z_result_t rc = z_bytes_copy_from_buf(p.get(), reinterpret_cast<const uint8_t*>(payload.data()),
+                                        payload.size());
   if (rc != Z_OK) {
     return Result<ZenohOwned<z_owned_bytes_t>>::Err(MakeError(rc));
   }
@@ -161,7 +163,9 @@ Result<ZenohOwned<z_owned_bytes_t>> MakeBytes(std::span<const std::byte> payload
 }
 
 struct GetReplyCtx {
-  const Transport::QueryResultSink* sink;
+  explicit GetReplyCtx(const Transport::QueryResultSink& result_sink) : sink(result_sink) {}
+
+  Transport::QueryResultSink sink;
   std::atomic<bool> stop{false};
 };
 
@@ -176,8 +180,7 @@ void OnGetReply(z_loaned_reply_t* reply, void* context) {
   z_owned_slice_t slice;
   z_bytes_to_slice(payload, &slice);
 
-  const auto* data =
-      reinterpret_cast<const std::byte*>(z_slice_data(z_slice_loan(&slice)));
+  const auto* data = reinterpret_cast<const std::byte*>(z_slice_data(z_slice_loan(&slice)));
   auto len = z_slice_len(z_slice_loan(&slice));
 
   z_view_string_t ks;
@@ -191,7 +194,7 @@ void OnGetReply(z_loaned_reply_t* reply, void* context) {
   Encoding enc;
   enc.id = "sitos.v1";
 
-  if (!(*c->sink)(key_str, std::span<const std::byte>(data, len), enc)) {
+  if (!c->sink(key_str, std::span<const std::byte>(data, len), enc)) {
     c->stop.store(true, std::memory_order_relaxed);
   }
   z_drop(z_move(slice));
@@ -203,19 +206,33 @@ void OnGetReply(z_loaned_reply_t* reply, void* context) {
 // TransportQuery
 // ---------------------------------------------------------------------------
 
-struct TransportQuery::Impl {
+namespace {
+
+struct QueryableState {
+  z_owned_queryable_t queryable;
+  std::function<void(TransportQuery&)> callback;
+  std::mutex mutex;
+  bool alive = true;
+};
+
+struct QueryCallbackState {
   const z_loaned_query_t* query = nullptr;
-  std::shared_ptr<bool> query_alive_;
+  std::shared_ptr<QueryableState> queryable;
+  bool active = true;
+};
+
+}  // namespace
+
+struct TransportQuery::Impl {
+  std::shared_ptr<QueryCallbackState> callback_state;
 };
 
 TransportQuery::TransportQuery() = default;
 TransportQuery::~TransportQuery() = default;
-TransportQuery::TransportQuery(TransportQuery&&) noexcept = default;
-TransportQuery& TransportQuery::operator=(TransportQuery&&) noexcept = default;
 
 Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::byte> payload,
-                           Encoding encoding) {
-  if (!impl_ || !impl_->query || !*impl_->query_alive_) {
+                                   Encoding encoding) {
+  if (!impl_ || !impl_->callback_state) {
     return Result<void>::Err(MakeError(TransportErrc::kErrNoQuery));
   }
 
@@ -228,12 +245,22 @@ Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::by
   auto p = MakeBytes(payload);
   if (!p.IsOk()) return Result<void>::Err(p.Error());
 
+  auto callback_state = impl_->callback_state;
+  auto queryable = callback_state->queryable;
+  if (!queryable) return Result<void>::Err(MakeError(TransportErrc::kErrNoQuery));
+
+  // Hold the lock through z_query_reply() so Queryable::~Queryable() cannot
+  // drop the underlying queryable while zenoh uses the loaned query.
+  std::lock_guard<std::mutex> lock(queryable->mutex);
+  if (!callback_state->active || !queryable->alive || !callback_state->query) {
+    return Result<void>::Err(MakeError(TransportErrc::kErrNoQuery));
+  }
+
   z_query_reply_options_t opts;
   z_query_reply_options_default(&opts);
   opts.encoding = enc.Value().moved();
 
-  z_result_t rc =
-      z_query_reply(impl_->query, ke.Value().loan(), p.Value().moved(), &opts);
+  z_result_t rc = z_query_reply(callback_state->query, ke.Value().loan(), p.Value().moved(), &opts);
 
   if (rc != Z_OK) return Result<void>::Err(MakeError(rc));
   return Result<void>::Ok();
@@ -259,19 +286,18 @@ Subscription& Subscription::operator=(Subscription&&) noexcept = default;
 // ---------------------------------------------------------------------------
 
 struct Queryable::Impl {
-  z_owned_queryable_t queryable;
-  std::function<void(TransportQuery&)> callback;
-  // Shared with in-flight TransportQuery callbacks to detect
-  // use-after-destruction. Set to false in ~Queryable() before dropping
-  // the queryable, so any late Reply() call becomes a no-op.
-  std::shared_ptr<bool> query_alive_{std::make_shared<bool>(true)};
+  std::shared_ptr<QueryableState> state{std::make_shared<QueryableState>()};
 };
 
 Queryable::Queryable() = default;
 Queryable::~Queryable() {
   if (impl_) {
-    *impl_->query_alive_ = false;
-    z_drop(z_move(impl_->queryable));
+    auto state = impl_->state;
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->alive = false;
+    }
+    z_drop(z_move(state->queryable));
   }
 }
 Queryable::Queryable(Queryable&&) noexcept = default;
@@ -285,7 +311,7 @@ namespace {
 
 bool OpenZenohSession(z_owned_session_t* session) {
   z_owned_config_t config;
-  z_config_default(&config);
+  if (z_config_default(&config) != Z_OK) return false;
   return z_open(session, z_move(config), nullptr) == Z_OK;
 }
 
@@ -293,8 +319,7 @@ bool OpenZenohSession(z_owned_session_t* session) {
 
 class ZenohTransport : public Transport {
  public:
-  ZenohTransport()
-      : session_valid_(OpenZenohSession(&session_)) {}
+  ZenohTransport() : session_valid_(OpenZenohSession(&session_)) {}
 
   bool IsSessionValid() const { return session_valid_; }
 
@@ -305,8 +330,8 @@ class ZenohTransport : public Transport {
     z_drop(z_move(session_));
   }
 
-  Result<void> Put(std::string_view key, std::span<const std::byte> payload,
-                   Encoding encoding, PutOptions /*options*/) override {
+  Result<void> Put(std::string_view key, std::span<const std::byte> payload, Encoding encoding,
+                   PutOptions /*options*/) override {
     if (!session_valid_) return Result<void>::Err(MakeError(TransportErrc::kErrDisconnected));
 
     auto enc = MakeEncoding(encoding);
@@ -322,8 +347,7 @@ class ZenohTransport : public Transport {
     z_put_options_default(&opts);
     opts.encoding = enc.Value().moved();
 
-    z_result_t rc =
-        z_put(z_session_loan(&session_), ke.Value().loan(), p.Value().moved(), &opts);
+    z_result_t rc = z_put(z_session_loan(&session_), ke.Value().loan(), p.Value().moved(), &opts);
 
     if (rc != Z_OK) return Result<void>::Err(MakeError(rc));
     return Result<void>::Ok();
@@ -338,8 +362,7 @@ class ZenohTransport : public Transport {
     z_delete_options_t opts;
     z_delete_options_default(&opts);
 
-    z_result_t rc =
-        z_delete(z_session_loan(&session_), ke.Value().loan(), &opts);
+    z_result_t rc = z_delete(z_session_loan(&session_), ke.Value().loan(), &opts);
 
     if (rc != Z_OK) return Result<void>::Err(MakeError(rc));
     return Result<void>::Ok();
@@ -353,18 +376,18 @@ class ZenohTransport : public Transport {
     auto ke = MakeKeyexpr(keyexpr);
     if (!ke.IsOk()) return Result<void>::Err(ke.Error());
 
-    GetReplyCtx reply_ctx{&sink, false};
+    auto* reply_ctx = new GetReplyCtx(sink);
 
     z_owned_closure_reply_t closure;
-    z_closure_reply(&closure, OnGetReply, nullptr, &reply_ctx);
+    z_closure_reply(
+        &closure, OnGetReply, +[](void* context) { delete static_cast<GetReplyCtx*>(context); },
+        reply_ctx);
 
     z_get_options_t opts;
     z_get_options_default(&opts);
     opts.timeout_ms = static_cast<uint64_t>(timeout.count());
 
-    z_result_t rc =
-        z_get(z_session_loan(&session_), ke.Value().loan(), "",
-              z_move(closure), &opts);
+    z_result_t rc = z_get(z_session_loan(&session_), ke.Value().loan(), "", z_move(closure), &opts);
 
     if (rc != Z_OK) return Result<void>::Err(MakeError(rc));
     return Result<void>::Ok();
@@ -379,9 +402,8 @@ class ZenohTransport : public Transport {
     return {};
   }
 
-  Queryable DeclareQueryable(
-      std::string_view keyexpr_str,
-      const std::function<void(TransportQuery&)>& callback) override {
+  Queryable DeclareQueryable(std::string_view keyexpr_str,
+                             const std::function<void(TransportQuery&)>& callback) override {
     Queryable q;
     q.impl_ = std::make_unique<Queryable::Impl>();
     if (!session_valid_) {
@@ -389,7 +411,7 @@ class ZenohTransport : public Transport {
       return q;
     }
 
-    q.impl_->callback = callback;
+    q.impl_->state->callback = callback;
 
     auto ke = MakeKeyexpr(keyexpr_str);
     if (!ke.IsOk()) {
@@ -397,32 +419,42 @@ class ZenohTransport : public Transport {
       return q;
     }
 
+    auto* context = new std::shared_ptr<QueryableState>(q.impl_->state);
     z_owned_closure_query_t closure;
     z_closure_query(
         &closure,
         +[](z_loaned_query_t* query, void* context) {
-          auto* impl = static_cast<Queryable::Impl*>(context);
+          auto state = *static_cast<std::shared_ptr<QueryableState>*>(context);
+          auto callback_state = std::make_shared<QueryCallbackState>();
+          callback_state->query = query;
+          callback_state->queryable = state;
+
+          {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            if (!state->alive) return;
+          }
+
           TransportQuery tq;
           tq.impl_ = std::make_unique<TransportQuery::Impl>();
-          tq.impl_->query = query;
-          tq.impl_->query_alive_ = impl->query_alive_;
+          tq.impl_->callback_state = callback_state;
 
           z_view_string_t qks;
           z_keyexpr_as_view_string(z_query_keyexpr(query), &qks);
           tq.keyexpr = std::string(z_string_data(z_view_string_loan(&qks)),
                                    z_string_len(z_view_string_loan(&qks)));
 
-          (impl->callback)(tq);
+          state->callback(tq);
+          std::lock_guard<std::mutex> lock(state->mutex);
+          callback_state->active = false;
         },
-        nullptr,  // impl is owned by Queryable::Impl, no cleanup
-        q.impl_.get());
+        +[](void* context) { delete static_cast<std::shared_ptr<QueryableState>*>(context); },
+        context);
 
     z_queryable_options_t q_opts;
     z_queryable_options_default(&q_opts);
 
-    z_result_t decl_rc = z_declare_queryable(
-        z_session_loan(&session_), &q.impl_->queryable,
-        ke.Value().loan(), z_move(closure), &q_opts);
+    z_result_t decl_rc = z_declare_queryable(z_session_loan(&session_), &q.impl_->state->queryable,
+                                             ke.Value().loan(), z_move(closure), &q_opts);
 
     if (decl_rc != Z_OK) {
       q.impl_.reset();
@@ -431,7 +463,7 @@ class ZenohTransport : public Transport {
   }
 
  private:
-  z_owned_session_t session_;
+  z_owned_session_t session_{};
   bool session_valid_ = false;
 };
 

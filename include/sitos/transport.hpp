@@ -40,15 +40,18 @@ class Result {
   bool IsOk() const { return !error_.has_value(); }
   explicit operator bool() const { return IsOk(); }
 
+  /// Requires IsOk().
   const T& Value() const {
     assert(IsOk());
     return *value_;
   }
+  /// Requires IsOk().
   T& Value() {
     assert(IsOk());
     return *value_;
   }
 
+  /// Requires !IsOk().
   const std::error_code& Error() const {
     assert(!IsOk());
     return *error_;
@@ -77,6 +80,7 @@ class Result<void> {
   bool IsOk() const { return !error_.has_value(); }
   explicit operator bool() const { return IsOk(); }
 
+  /// Requires !IsOk().
   const std::error_code& Error() const {
     assert(!IsOk());
     return *error_;
@@ -109,20 +113,22 @@ struct TransportSample {
   enum class Kind { Put, Delete };
 
   std::string key;
+  /// Non-owning payload valid only for the callback that receives this sample.
   std::span<const std::byte> payload;
   Encoding encoding;
   std::optional<std::string> ack_token;
   Kind kind;
 };
 
-/// A query received from the transport layer. The callback fills in replies.
+/// A query received from the transport layer. It is valid only for the
+/// duration of the queryable callback and must not be retained.
 struct TransportQuery {
   std::string keyexpr;
 
   TransportQuery();
   ~TransportQuery();
-  TransportQuery(TransportQuery&&) noexcept;
-  TransportQuery& operator=(TransportQuery&&) noexcept;
+  TransportQuery(TransportQuery&&) = delete;
+  TransportQuery& operator=(TransportQuery&&) = delete;
   TransportQuery(const TransportQuery&) = delete;
   TransportQuery& operator=(const TransportQuery&) = delete;
 
