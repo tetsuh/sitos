@@ -7,9 +7,11 @@
 #ifndef SITOS_PARAM_VALUE_HPP
 #define SITOS_PARAM_VALUE_HPP
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -46,7 +48,18 @@ class ParamValue {
     } else if constexpr (std::is_integral_v<D>) {
       value_ = static_cast<std::int64_t>(v);
     } else if constexpr (std::is_floating_point_v<D>) {
-      value_ = static_cast<double>(v);
+      if constexpr (std::is_same_v<D, long double>) {
+        if (std::isfinite(v) &&
+            (v > static_cast<long double>(std::numeric_limits<double>::max()) ||
+             v < static_cast<long double>(std::numeric_limits<double>::lowest()))) {
+          value_ = (v > 0.0L) ? std::numeric_limits<double>::infinity()
+                              : -std::numeric_limits<double>::infinity();
+        } else {
+          value_ = static_cast<double>(v);
+        }
+      } else {
+        value_ = static_cast<double>(v);
+      }
     } else if constexpr (std::is_convertible_v<D, std::string_view>) {
       value_ = std::string(std::forward<T>(v));
     } else if constexpr (std::is_same_v<D, std::vector<std::byte>>) {
@@ -68,7 +81,7 @@ class ParamValue {
 
   /// Typed extraction. Arithmetic casts are allowed among Bool/S64/Dp; string
   /// and bytes require an exact type match. Returns std::nullopt on
-  /// impossible conversions.
+  /// impossible or unrepresentable conversions.
   template <typename T>
   std::optional<T> As() const {
     using D = std::decay_t<T>;
@@ -80,12 +93,26 @@ class ParamValue {
     } else if constexpr (std::is_integral_v<D>) {
       if (auto* p = std::get_if<bool>(&value_)) return static_cast<T>(*p);
       if (auto* p = std::get_if<std::int64_t>(&value_)) return static_cast<T>(*p);
-      if (auto* p = std::get_if<double>(&value_)) return static_cast<T>(*p);
+      if (auto* p = std::get_if<double>(&value_)) {
+        if (!std::isfinite(*p)) return std::nullopt;
+        if (*p < static_cast<double>(std::numeric_limits<T>::lowest()) ||
+            *p > static_cast<double>(std::numeric_limits<T>::max()))
+          return std::nullopt;
+        return static_cast<T>(*p);
+      }
       return std::nullopt;
     } else if constexpr (std::is_floating_point_v<D>) {
       if (auto* p = std::get_if<bool>(&value_)) return static_cast<T>(*p);
       if (auto* p = std::get_if<std::int64_t>(&value_)) return static_cast<T>(*p);
-      if (auto* p = std::get_if<double>(&value_)) return static_cast<T>(*p);
+      if (auto* p = std::get_if<double>(&value_)) {
+        if (!std::isfinite(*p)) return static_cast<T>(*p);  // NaN, inf are fine for float
+        if constexpr (sizeof(D) < sizeof(double)) {
+          if (*p > static_cast<double>(std::numeric_limits<D>::max()) ||
+              *p < static_cast<double>(std::numeric_limits<D>::lowest()))
+            return std::nullopt;
+        }
+        return static_cast<T>(*p);
+      }
       return std::nullopt;
     } else if constexpr (std::is_same_v<D, std::string>) {
       if (auto* p = std::get_if<std::string>(&value_)) return *p;

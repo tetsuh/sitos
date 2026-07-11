@@ -264,6 +264,91 @@ TEST(ParamValue, AsSpanIsZeroCopyAndAligned) {
   EXPECT_EQ(es->size(), 0u);
 }
 
+// Numeric casts return nullopt for non-finite or unrepresentable values.
+TEST(ParamValue, NumericCastsRejectUnrepresentableValues) {
+  // double → integral: NaN and infinity are rejected.
+  sitos::ParamValue nan_dp{std::numeric_limits<double>::quiet_NaN()};
+  EXPECT_FALSE(nan_dp.As<int64_t>().has_value());
+  EXPECT_FALSE(nan_dp.As<int>().has_value());
+  EXPECT_FALSE(nan_dp.As<uint64_t>().has_value());
+
+  sitos::ParamValue inf_dp{std::numeric_limits<double>::infinity()};
+  EXPECT_FALSE(inf_dp.As<int64_t>().has_value());
+
+  sitos::ParamValue neg_inf_dp{-std::numeric_limits<double>::infinity()};
+  EXPECT_FALSE(neg_inf_dp.As<int64_t>().has_value());
+
+  // double → integral: value clearly outside int64_t range.
+  sitos::ParamValue beyond_i64{1e20};
+  EXPECT_FALSE(beyond_i64.As<int64_t>().has_value());
+
+  sitos::ParamValue beyond_neg_i64{-1e20};
+  EXPECT_FALSE(beyond_neg_i64.As<int64_t>().has_value());
+
+  // Normal finite double → int still works.
+  sitos::ParamValue fine{3.14};
+  auto fi = fine.As<int>();
+  ASSERT_TRUE(fi.has_value());
+  EXPECT_EQ(*fi, 3);
+
+  // Bool → int is always safe.
+  sitos::ParamValue bt{true};
+  EXPECT_TRUE(bt.As<int>().has_value());
+
+  // double → float: DBL_MAX is rejected (outside float range).
+  sitos::ParamValue dbl_max{std::numeric_limits<double>::max()};
+  EXPECT_FALSE(dbl_max.As<float>().has_value());
+
+  sitos::ParamValue dbl_lowest{std::numeric_limits<double>::lowest()};
+  EXPECT_FALSE(dbl_lowest.As<float>().has_value());
+
+  // Normal double within float range still works.
+  sitos::ParamValue normal{3.14};
+  auto nf = normal.As<float>();
+  ASSERT_TRUE(nf.has_value());
+  EXPECT_FLOAT_EQ(*nf, 3.14f);
+
+  // double NaN and infinity are representable as float, so those are allowed.
+  auto inf_f = inf_dp.As<float>();
+  ASSERT_TRUE(inf_f.has_value());
+  EXPECT_TRUE(std::isinf(*inf_f));
+
+  auto nan_f = nan_dp.As<float>();
+  ASSERT_TRUE(nan_f.has_value());
+  EXPECT_TRUE(std::isnan(*nan_f));
+}
+
+// long double → double saturation on platforms where long double has wider range.
+TEST(ParamValue, LongDoubleConstructSaturatesAtDoubleBoundary) {
+  if constexpr (std::numeric_limits<long double>::max() >
+                std::numeric_limits<double>::max()) {
+    // Platform with extended long double (e.g., GCC/Linux).  Finite values
+    // beyond double range saturate to ±inf.
+    sitos::ParamValue huge{std::numeric_limits<long double>::max()};
+    EXPECT_EQ(huge.type(), sitos::ValueType::Dp);
+    auto d = huge.As<double>();
+    ASSERT_TRUE(d.has_value());
+    EXPECT_TRUE(std::isinf(*d) && *d > 0.0);
+
+    sitos::ParamValue neg_huge{-std::numeric_limits<long double>::max()};
+    auto nd = neg_huge.As<double>();
+    ASSERT_TRUE(nd.has_value());
+    EXPECT_TRUE(std::isinf(*nd) && *nd < 0.0);
+
+    // Normal long double within double range works.
+    sitos::ParamValue normal{1.5L};
+    auto n = normal.As<double>();
+    ASSERT_TRUE(n.has_value());
+    EXPECT_DOUBLE_EQ(*n, 1.5);
+  } else {
+    // MSVC: long double == double, no saturation needed.
+    sitos::ParamValue normal{1.5L};
+    auto d = normal.As<double>();
+    ASSERT_TRUE(d.has_value());
+    EXPECT_DOUBLE_EQ(*d, 1.5);
+  }
+}
+
 // Invalid payloads are rejected without UB (verified under ASan/UBSan in CI).
 TEST(ParamValue, RejectsInvalidPayloads) {
   auto expect_invalid = [](const std::vector<std::byte>& payload) {
