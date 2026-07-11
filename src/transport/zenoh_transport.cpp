@@ -46,12 +46,12 @@ class ZenohErrorCategory : public std::error_category {
   const char* name() const noexcept override { return "sitos.zenoh"; }
 
   std::string message(int ev) const override {
-    switch (ev) {
-      case static_cast<int>(TransportErrc::kErrDisconnected):
+    switch (static_cast<TransportErrc>(ev)) {
+      case TransportErrc::kErrDisconnected:
         return "zenoh session is not available";
-      case static_cast<int>(TransportErrc::kErrInvalidArg):
+      case TransportErrc::kErrInvalidArg:
         return "invalid argument";
-      case static_cast<int>(TransportErrc::kErrNoQuery):
+      case TransportErrc::kErrNoQuery:
         return "query is no longer valid (queryable destroyed)";
       default:
         if (ev == Z_OK) return "ok";
