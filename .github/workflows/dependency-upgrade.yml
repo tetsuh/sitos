@@ -21,6 +21,10 @@ on:
         description: 'zenoh-c version to test as "latest stable" (default: resolve from GitHub releases)'
         required: false
 
+# Least-privilege token: this workflow only reads the repo to build and test.
+permissions:
+  contents: read
+
 jobs:
   resolve-versions:
     runs-on: ubuntu-24.04
