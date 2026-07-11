@@ -12,8 +12,12 @@ jobs:
     # confined to src/transport/. Fail if any source file outside that
     # directory includes a zenoh header.
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Verify zenoh headers are confined to src/transport/
         # Acceptance criterion #2 for issue #3: library code (include/ and
