@@ -7,10 +7,12 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -110,6 +112,139 @@ TEST_F(TransportTest, QueryableRoundTrip) {
   }
 
   EXPECT_EQ(received_payload, kExpectedPayload);
+}
+
+// A throwing user callback must not let a C++ exception cross the C ABI
+// boundary of the zenoh-c queryable closure. The process must survive and
+// the session must remain usable afterward.
+TEST_F(TransportTest, QueryableCallbackExceptionIsContained) {
+  const std::string kQueryKey = "sitos/test/query/throws";
+  sitos::Encoding enc;
+  enc.id = std::string(sitos::Encoding::kSitosV1);
+  std::mutex callback_mutex;
+  std::condition_variable callback_cv;
+  bool callback_entered = false;
+  std::atomic<bool> sink_called{false};
+
+  auto q = transport_->DeclareQueryable(kQueryKey, [&](sitos::TransportQuery& /*tq*/) {
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex);
+      callback_entered = true;
+    }
+    callback_cv.notify_one();
+    throw std::runtime_error("boom");
+  });
+
+  // The queryable will be invoked but throws before replying. Wait until it
+  // starts before checking that no reply reached the sink.
+  auto result = transport_->Get(
+      kQueryKey,
+      [&](std::string_view, std::span<const std::byte>, const sitos::Encoding&) {
+        sink_called.store(true);
+        return true;
+      },
+      std::chrono::milliseconds(1000));
+
+  EXPECT_TRUE(result.IsOk());
+  {
+    std::unique_lock<std::mutex> lock(callback_mutex);
+    EXPECT_TRUE(callback_cv.wait_for(lock, std::chrono::seconds(3),
+                                     [&] { return callback_entered; }));
+  }
+  EXPECT_FALSE(sink_called.load())
+      << "The queryable threw before replying, so no reply is expected";
+
+  // Prove the session is still healthy by round-tripping a working queryable.
+  const std::string kOkKey = "sitos/test/query/ok_after_throw";
+  const std::vector<std::byte> kPayload = {std::byte{0x01}};
+  std::mutex reply_mutex;
+  std::condition_variable reply_cv;
+  bool reply_received = false;
+  auto q2 = transport_->DeclareQueryable(
+      kOkKey, [&](sitos::TransportQuery& tq) { tq.Reply(kOkKey, kPayload, enc); });
+
+  auto healthy_get = transport_->Get(
+      kOkKey,
+      [&](std::string_view, std::span<const std::byte> payload, const sitos::Encoding&) {
+        {
+          std::lock_guard<std::mutex> lock(reply_mutex);
+          std::vector<std::byte> copy(payload.begin(), payload.end());
+          if (copy == kPayload) reply_received = true;
+        }
+        reply_cv.notify_one();
+        return false;
+      },
+      std::chrono::milliseconds(2000));
+  EXPECT_TRUE(healthy_get.IsOk());
+  std::unique_lock<std::mutex> lock(reply_mutex);
+  EXPECT_TRUE(reply_cv.wait_for(lock, std::chrono::seconds(3),
+                                [&] { return reply_received; }))
+      << "Session should remain usable after a contained callback exception";
+}
+
+// A throwing Get result sink must not let a C++ exception cross the C ABI
+// boundary of the zenoh-c reply closure.
+TEST_F(TransportTest, GetSinkExceptionIsContained) {
+  const std::string kQueryKey = "sitos/test/sink/throws";
+  sitos::Encoding enc;
+  enc.id = std::string(sitos::Encoding::kSitosV1);
+  const std::vector<std::byte> kPayload = {std::byte{0x42}};
+  std::mutex sink_mutex;
+  std::condition_variable sink_cv;
+  bool sink_entered = false;
+
+  auto q = transport_->DeclareQueryable(
+      kQueryKey, [&](sitos::TransportQuery& tq) { tq.Reply(kQueryKey, kPayload, enc); });
+
+  auto result = transport_->Get(
+      kQueryKey,
+      [&](std::string_view, std::span<const std::byte>, const sitos::Encoding&)
+          -> bool {
+        {
+          std::lock_guard<std::mutex> lock(sink_mutex);
+          sink_entered = true;
+        }
+        sink_cv.notify_one();
+        throw std::runtime_error("sink boom");
+      },
+      std::chrono::milliseconds(2000));
+
+  EXPECT_TRUE(result.IsOk());
+  {
+    std::unique_lock<std::mutex> lock(sink_mutex);
+    EXPECT_TRUE(sink_cv.wait_for(lock, std::chrono::seconds(3),
+                                 [&] { return sink_entered; }))
+        << "The throwing sink must be invoked";
+  }
+
+  // Prove the session remains usable after the sink exception is contained.
+  std::mutex reply_mutex;
+  std::condition_variable reply_cv;
+  bool reply_received = false;
+  auto healthy_get = transport_->Get(
+      kQueryKey,
+      [&](std::string_view, std::span<const std::byte> payload, const sitos::Encoding&) {
+        {
+          std::lock_guard<std::mutex> lock(reply_mutex);
+          reply_received = std::vector<std::byte>(payload.begin(), payload.end()) == kPayload;
+        }
+        reply_cv.notify_one();
+        return false;
+      },
+      std::chrono::milliseconds(2000));
+
+  EXPECT_TRUE(healthy_get.IsOk());
+  std::unique_lock<std::mutex> lock(reply_mutex);
+  EXPECT_TRUE(reply_cv.wait_for(lock, std::chrono::seconds(3),
+                                [&] { return reply_received; }))
+      << "Session should remain usable after a contained sink exception";
+}
+
+// An empty queryable callback must have defined, safe behavior: no crash on
+// declaration or destruction, and the session remains usable.
+TEST_F(TransportTest, EmptyQueryableCallbackIsSafe) {
+  auto q = transport_->DeclareQueryable("sitos/test/empty_cb", {});
+  // Destruction of the (empty) handle must not crash; it goes out of scope.
 }
 
 }  // namespace
