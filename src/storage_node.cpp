@@ -1,7 +1,7 @@
 // Copyright 2026 sitos contributors
 // SPDX-License-Identifier: Apache-2.0
 //
-// StorageNode base queryable routing.
+// StorageNode query and subscriber routing for the base storage scope.
 
 #include "sitos/storage_node.hpp"
 
@@ -132,7 +132,8 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
     std::vector<std::byte> wrapped;
     if (sample.encoding.id != Encoding::kSitosV1) {
       EmitLog(state->log_sink, LogLevel::kWarning, kNodeComponent, kUnknownSubscriberEncoding);
-      wrapped = ParamValue(std::vector<std::byte>(sample.payload.begin(), sample.payload.end())).Encode();
+      auto bytes = std::vector<std::byte>(sample.payload.begin(), sample.payload.end());
+      wrapped = ParamValue(std::move(bytes)).Encode();
       value = wrapped;
     }
     if (!state->engine->Put(parsed->relative_key, value)) {

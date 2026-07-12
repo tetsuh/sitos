@@ -51,11 +51,20 @@ struct ReplyState {
   int count = 0;
 };
 
+struct CapturedLogRecord {
+  sitos::LogLevel level;
+  std::string component;
+  std::string message;
+};
+
 class CaptureSink final : public sitos::LogSink {
  public:
   void Write(const sitos::LogRecord& record) override {
     std::lock_guard lock(mutex);
-    records.push_back(record);
+    records.push_back(
+        {.level = record.level,
+         .component = std::string(record.component),
+         .message = std::string(record.message)});
   }
 
   bool HasWarning(std::string_view message) const {
@@ -71,7 +80,7 @@ class CaptureSink final : public sitos::LogSink {
 
  private:
   mutable std::mutex mutex;
-  std::vector<sitos::LogRecord> records;
+  std::vector<CapturedLogRecord> records;
 };
 
 class StorageNodeSubscriberIntegrationTest : public ::testing::Test {
@@ -149,6 +158,41 @@ TEST_F(StorageNodeSubscriberIntegrationTest, PutGetAndDeleteRoundTrip) {
   std::unique_lock lock(after_delete->mutex);
   EXPECT_FALSE(after_delete->condition.wait_for(lock, 700ms,
                                                 [&] { return after_delete->count != 0; }));
+}
+
+TEST_F(StorageNodeSubscriberIntegrationTest, UnknownEncodingIsStoredAsPayloadV1Bytes) {
+  const std::vector<std::byte> raw = {std::byte{0x10}, std::byte{0x00}, std::byte{0xFF}};
+  const std::vector<std::byte> expected = {std::byte{0x04}, std::byte{0x10},
+                                           std::byte{0x00}, std::byte{0xFF}};
+  ASSERT_TRUE(transport_
+                  ->Put("sitos/subscriber_test/base/opaque", raw,
+                        sitos::Encoding{"application/octet-stream"}, {})
+                  .IsOk());
+  ASSERT_TRUE(WaitFor([&] { return HasValue(engine_, "opaque", expected); }));
+  EXPECT_TRUE(sink_->HasWarning("unknown subscriber encoding; wrapped as bytes"));
+
+  auto reply = std::make_shared<ReplyState>();
+  ASSERT_TRUE(transport_
+                  ->Get("sitos/subscriber_test/base/opaque",
+                        [reply](std::string_view key, std::span<const std::byte> payload,
+                                sitos::Encoding encoding) {
+                          std::lock_guard lock(reply->mutex);
+                          reply->key = std::string(key);
+                          reply->payload.assign(payload.begin(), payload.end());
+                          reply->encoding = std::move(encoding.id);
+                          ++reply->count;
+                          reply->condition.notify_all();
+                          return false;
+                        },
+                        2000ms)
+                  .IsOk());
+  {
+    std::unique_lock lock(reply->mutex);
+    ASSERT_TRUE(reply->condition.wait_for(lock, 3s, [&] { return reply->count == 1; }));
+  }
+  EXPECT_EQ(reply->key, "sitos/subscriber_test/base/opaque");
+  EXPECT_EQ(reply->payload, expected);
+  EXPECT_EQ(reply->encoding, sitos::Encoding::kSitosV1);
 }
 
 TEST_F(StorageNodeSubscriberIntegrationTest, SnapPutIsIgnoredAfterSamePublisherBarrier) {

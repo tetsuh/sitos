@@ -1,7 +1,7 @@
 // Copyright 2026 sitos contributors
 // SPDX-License-Identifier: Apache-2.0
 //
-// StorageNode queryable routing for the base storage scope.
+// StorageNode query and subscriber routing for the base storage scope.
 
 #ifndef SITOS_STORAGE_NODE_HPP
 #define SITOS_STORAGE_NODE_HPP

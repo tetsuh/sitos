@@ -24,21 +24,30 @@ class LifetimeSink final : public LogSink {
   void Write(const LogRecord&) override {}
 };
 
+struct CapturedLogRecord {
+  LogLevel level;
+  std::string component;
+  std::string message;
+};
+
 class CaptureSink final : public LogSink {
  public:
   void Write(const LogRecord& record) override {
     std::lock_guard<std::mutex> lock(mutex);
-    records.push_back(record);
+    records.push_back(
+        {.level = record.level,
+         .component = std::string(record.component),
+         .message = std::string(record.message)});
   }
 
-  std::vector<LogRecord> Records() const {
+  std::vector<CapturedLogRecord> Records() const {
     std::lock_guard<std::mutex> lock(mutex);
     return records;
   }
 
  private:
   mutable std::mutex mutex;
-  std::vector<LogRecord> records;
+  std::vector<CapturedLogRecord> records;
 };
 
 class FailingEngine final : public StorageEngine {
@@ -96,8 +105,9 @@ class FakeTransport final : public Transport {
     std::vector<ReplyRecord> replies;
     auto query = TransportQuery::ForTesting(
         [&](std::string_view key, std::span<const std::byte> payload, Encoding encoding) {
-          replies.push_back({std::string(key), std::vector<std::byte>(payload.begin(), payload.end()),
-                             std::move(encoding)});
+          replies.push_back(
+              {std::string(key), std::vector<std::byte>(payload.begin(), payload.end()),
+               std::move(encoding)});
           if (fail_after_first && replies.size() == 1) {
             return Result<void>::Err(std::make_error_code(std::errc::io_error));
           }
@@ -277,119 +287,6 @@ TEST(StorageNodeQueryTest, StopDisablesExistingCallback) {
   EXPECT_FALSE(node.IsStarted());
 }
 
-TEST(StorageNodeQueryTest, DeclaresSubscriberAndRoutesBasePut) {
-  auto engine = std::make_shared<InMemoryEngine>();
-  FakeTransport transport;
-  StorageNode node;
-  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
-  EXPECT_EQ(transport.subscriber_keyexpr, "sitos/**");
-
-  const std::vector<std::byte> payload = {std::byte{0x01}, std::byte{0xFE}};
-  transport.InvokeSubscriber("sitos/base/foo/bar", TransportSample::Kind::Put, payload,
-                             Encoding{std::string(Encoding::kSitosV1)});
-  std::vector<std::byte> stored;
-  ASSERT_TRUE(engine->Get("foo/bar", [&](std::string_view, Bytes value) {
-    stored.assign(value.begin(), value.end());
-    return true;
-  }));
-  EXPECT_EQ(stored, payload);
-}
-
-TEST(StorageNodeQueryTest, UnknownEncodingWrapsPayloadAsBytes) {
-  auto engine = std::make_shared<InMemoryEngine>();
-  FakeTransport transport;
-  StorageNode node;
-  auto sink = std::make_shared<CaptureSink>();
-  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = sink}).IsOk());
-
-  const std::vector<std::byte> payload = {std::byte{0x01}, std::byte{0x02}, std::byte{0xFF}};
-  transport.InvokeSubscriber("sitos/base/raw", TransportSample::Kind::Put, payload,
-                             Encoding{"application/octet-stream"});
-  std::vector<std::byte> stored;
-  ASSERT_TRUE(engine->Get("raw", [&](std::string_view, Bytes value) {
-    stored.assign(value.begin(), value.end());
-    return true;
-  }));
-  EXPECT_EQ(stored, (std::vector<std::byte>{std::byte{0x04}, std::byte{0x01}, std::byte{0x02},
-                                             std::byte{0xFF}}));
-  auto records = sink->Records();
-  ASSERT_EQ(records.size(), 1u);
-  EXPECT_EQ(records[0].level, LogLevel::kWarning);
-  EXPECT_EQ(records[0].component, "node");
-  EXPECT_EQ(records[0].message, "unknown subscriber encoding; wrapped as bytes");
-  auto replies = transport.Invoke("sitos/base/raw");
-  ASSERT_EQ(replies.size(), 1u);
-  EXPECT_EQ(replies[0].payload, stored);
-  EXPECT_EQ(replies[0].encoding.id, Encoding::kSitosV1);
-}
-
-TEST(StorageNodeQueryTest, RoutesBaseDelete) {
-  auto engine = std::make_shared<InMemoryEngine>();
-  ASSERT_TRUE(engine->Put("foo", std::vector<std::byte>{std::byte{0x01}}));
-  FakeTransport transport;
-  StorageNode node;
-  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
-  transport.InvokeSubscriber("sitos/base/foo", TransportSample::Kind::Delete,
-                             {std::byte{0xFF}}, Encoding{"unknown"});
-  EXPECT_FALSE(engine->Get("foo", [](std::string_view, Bytes) { return true; }));
-}
-
-TEST(StorageNodeQueryTest, IgnoresUnsupportedSubscriberPathsWithWarnings) {
-  auto engine = std::make_shared<InMemoryEngine>();
-  FakeTransport transport;
-  StorageNode node;
-  auto sink = std::make_shared<CaptureSink>();
-  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = sink}).IsOk());
-
-  const std::vector<std::byte> payload = {std::byte{0x07}};
-  for (const auto* key : {"sitos/snap/s1/value", "sitos/session/s1/value",
-                          "sitos/meta/session/s1", "sitos/base/$batch", "sitos/base/bad*"}) {
-    transport.InvokeSubscriber(key, TransportSample::Kind::Put, payload,
-                               Encoding{"application/octet-stream"});
-  }
-  EXPECT_FALSE(engine->Get("value", [](std::string_view, Bytes) { return true; }));
-  auto records = sink->Records();
-  ASSERT_EQ(records.size(), 5u);
-  for (const auto& record : records) {
-    EXPECT_EQ(record.level, LogLevel::kWarning);
-    EXPECT_EQ(record.component, "node");
-    EXPECT_EQ(record.message, "unsupported subscriber key");
-  }
-}
-
-TEST(StorageNodeQueryTest, EngineFailureEmitsError) {
-  auto engine = std::make_shared<FailingEngine>();
-  FakeTransport transport;
-  StorageNode node;
-  auto sink = std::make_shared<CaptureSink>();
-  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = sink}).IsOk());
-  transport.InvokeSubscriber("sitos/base/value", TransportSample::Kind::Put,
-                             {std::byte{0x01}}, Encoding{std::string(Encoding::kSitosV1)});
-  transport.InvokeSubscriber("sitos/base/value", TransportSample::Kind::Delete, {}, {});
-  auto records = sink->Records();
-  ASSERT_EQ(records.size(), 2u);
-  EXPECT_EQ(records[0].level, LogLevel::kError);
-  EXPECT_EQ(records[0].message, "subscriber PUT failed");
-  EXPECT_EQ(records[1].level, LogLevel::kError);
-  EXPECT_EQ(records[1].message, "subscriber DELETE failed");
-}
-
-TEST(StorageNodeQueryTest, SubscriberCallbackBecomesInertAfterStop) {
-  auto engine = std::make_shared<InMemoryEngine>();
-  FakeTransport transport;
-  StorageNode node;
-  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
-  auto callback = transport.subscriber_callback;
-  node.Stop();
-  ASSERT_TRUE(callback);
-  std::vector<std::byte> payload = {std::byte{0x01}};
-  TransportSample sample{"sitos/base/foo", payload,
-                         Encoding{std::string(Encoding::kSitosV1)}, std::nullopt,
-                         TransportSample::Kind::Put};
-  callback(sample);
-  EXPECT_FALSE(engine->Get("foo", [](std::string_view, Bytes) { return true; }));
-}
-
 TEST(StorageNodeQueryTest, StopAndRestartReplacesDeclaration) {
   auto engine = std::make_shared<InMemoryEngine>();
   ASSERT_TRUE(engine->Put("foo", std::vector<std::byte>{std::byte{0x01}}));
@@ -435,7 +332,7 @@ TEST(StorageNodeSubscriberTest, WrapsUnknownEncodingAsBytesPayloadV1) {
   transport.InvokeSubscriber("sitos/base/opaque", TransportSample::Kind::Put, raw,
                              Encoding{"application/octet-stream"});
   const std::vector<std::byte> expected = {std::byte{0x04}, std::byte{0x01}, std::byte{0x02},
-                                             std::byte{0xFF}};
+                                           std::byte{0xFF}};
   ASSERT_TRUE(engine->Get("opaque", [&](std::string_view, Bytes value) {
     EXPECT_EQ(std::vector<std::byte>(value.begin(), value.end()), expected);
     return true;
@@ -444,8 +341,16 @@ TEST(StorageNodeSubscriberTest, WrapsUnknownEncodingAsBytesPayloadV1) {
   ASSERT_EQ(replies.size(), 1u);
   EXPECT_EQ(replies[0].payload, expected);
   EXPECT_EQ(replies[0].encoding.id, Encoding::kSitosV1);
+
+  transport.InvokeSubscriber("sitos/base/empty", TransportSample::Kind::Put, {}, {});
+  ASSERT_TRUE(engine->Get("empty", [&](std::string_view, Bytes value) {
+    EXPECT_EQ(std::vector<std::byte>(value.begin(), value.end()),
+              (std::vector<std::byte>{std::byte{0x04}}));
+    return true;
+  }));
+
   const auto records = sink->Records();
-  ASSERT_EQ(records.size(), 1u);
+  ASSERT_EQ(records.size(), 2u);
   EXPECT_EQ(records[0].level, LogLevel::kWarning);
   EXPECT_EQ(records[0].component, "node");
   EXPECT_EQ(records[0].message, "unknown subscriber encoding; wrapped as bytes");
@@ -468,6 +373,7 @@ TEST(StorageNodeSubscriberTest, IgnoresUnsupportedPathsAndWarns) {
   transport.InvokeSubscriber("sitos/meta/session/session-1", put, {std::byte{0x01}}, {});
   transport.InvokeSubscriber("sitos/base/$batch", put, {std::byte{0x01}}, {});
   transport.InvokeSubscriber("sitos/base/", put, {std::byte{0x01}}, {});
+  transport.InvokeSubscriber("sitos/base/bad*", put, {std::byte{0x01}}, {});
 
   EXPECT_FALSE(engine->Get("ignored", [](std::string_view, Bytes) { return true; }));
   ASSERT_TRUE(engine->Get("existing", [](std::string_view, Bytes value) {
@@ -476,7 +382,7 @@ TEST(StorageNodeSubscriberTest, IgnoresUnsupportedPathsAndWarns) {
     return true;
   }));
   const auto records = sink->Records();
-  ASSERT_EQ(records.size(), 6u);
+  ASSERT_EQ(records.size(), 7u);
   for (const auto& record : records) {
     EXPECT_EQ(record.level, LogLevel::kWarning);
     EXPECT_EQ(record.component, "node");
@@ -496,7 +402,7 @@ TEST(StorageNodeSubscriberTest, RetainedCallbackIsInertAfterStop) {
   EXPECT_FALSE(engine->Get("after-stop", [](std::string_view, Bytes) { return true; }));
 }
 
-TEST(StorageNodeSubscriberTest, LogsEngineWriteFailure) {
+TEST(StorageNodeSubscriberTest, LogsEngineWriteFailures) {
   auto engine = std::make_shared<FailingEngine>();
   FakeTransport transport;
   auto sink = std::make_shared<CaptureSink>();
@@ -505,11 +411,15 @@ TEST(StorageNodeSubscriberTest, LogsEngineWriteFailure) {
 
   transport.InvokeSubscriber("sitos/base/failure", TransportSample::Kind::Put,
                              {std::byte{0x01}}, Encoding{std::string(Encoding::kSitosV1)});
+  transport.InvokeSubscriber("sitos/base/failure", TransportSample::Kind::Delete, {}, {});
   const auto records = sink->Records();
-  ASSERT_EQ(records.size(), 1u);
+  ASSERT_EQ(records.size(), 2u);
   EXPECT_EQ(records[0].level, LogLevel::kError);
   EXPECT_EQ(records[0].component, "node");
   EXPECT_EQ(records[0].message, "subscriber PUT failed");
+  EXPECT_EQ(records[1].level, LogLevel::kError);
+  EXPECT_EQ(records[1].component, "node");
+  EXPECT_EQ(records[1].message, "subscriber DELETE failed");
 }
 
 }  // namespace
