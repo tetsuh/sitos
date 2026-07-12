@@ -286,9 +286,6 @@ inline void SnapshotIsIsolatedFromBasePut(sitos::StorageEngine& engine) {
   EXPECT_FALSE(found);
 }
 
-// Verifies that engines treat values as opaque byte sequences.  Values with
-// embedded null bytes and arbitrary binary patterns must survive a Put/Get
-// round-trip unchanged (no truncation, encoding conversion, or modification).
 inline void SinkCanReenterReadOperations(sitos::testing::EngineFactory factory) {
   auto engine = factory();
   ASSERT_TRUE(engine->Put("reentrant", BytesFromString("value")));
@@ -317,7 +314,7 @@ inline void SinkCanReenterReadOperations(sitos::testing::EngineFactory factory) 
         });
       });
 
-  EXPECT_TRUE(completed);
+  ASSERT_TRUE(completed);
   EXPECT_TRUE(state->outer_get);
   EXPECT_TRUE(state->nested_get);
   EXPECT_TRUE(state->nested_list);
@@ -345,7 +342,7 @@ inline void SinkCanWriteDuringGet(sitos::testing::EngineFactory factory) {
         });
       });
 
-  EXPECT_TRUE(completed);
+  ASSERT_TRUE(completed);
   EXPECT_TRUE(state->put);
   EXPECT_TRUE(state->deleted);
   EXPECT_EQ(state->value_seen, "before");
@@ -377,7 +374,7 @@ inline void SinkCanWriteDuringList(sitos::testing::EngineFactory factory) {
         });
       });
 
-  EXPECT_TRUE(completed);
+  ASSERT_TRUE(completed);
   EXPECT_TRUE(state->put);
   EXPECT_TRUE(state->deleted);
   ASSERT_EQ(state->entries.size(), 2u);
@@ -385,6 +382,9 @@ inline void SinkCanWriteDuringList(sitos::testing::EngineFactory factory) {
   EXPECT_EQ(state->entries[1], std::make_pair(std::string("stable/2"), std::string("two")));
 }
 
+// Verifies that engines treat values as opaque byte sequences.  Values with
+// embedded null bytes and arbitrary binary patterns must survive a Put/Get
+// round-trip unchanged (no truncation, encoding conversion, or modification).
 inline void HandlesOpaqueBytes(sitos::StorageEngine& engine) {
   // Bytes that include embedded nulls (positions 0, 3, last).
   const std::vector<std::byte> with_nulls = {
