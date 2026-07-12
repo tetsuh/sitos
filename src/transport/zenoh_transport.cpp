@@ -234,10 +234,14 @@ struct TransportQuery::Impl {
 };
 
 TransportQuery::TransportQuery() = default;
+TransportQuery::TransportQuery(ReplyHandler handler)
+    : test_reply_handler_(std::move(handler)) {}
 TransportQuery::~TransportQuery() = default;
 
 Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::byte> payload,
                                    Encoding encoding) {
+  if (test_reply_handler_) return test_reply_handler_(key, payload, encoding);
+
   if (!impl_ || !impl_->callback_state) {
     return Result<void>::Err(MakeError(TransportErrc::kErrNoQuery));
   }

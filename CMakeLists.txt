@@ -40,6 +40,7 @@ add_library(sitos STATIC
   src/key.cpp
   src/storage_engine.cpp
   src/in_memory_engine.cpp
+  src/storage_node.cpp
 )
 add_library(sitos::sitos ALIAS sitos)
 target_include_directories(sitos PUBLIC
@@ -52,6 +53,8 @@ sitos_enable_warnings(sitos)
 if(SITOS_WITH_ZENOH)
   target_sources(sitos PRIVATE src/transport/zenoh_transport.cpp)
   target_link_libraries(sitos PRIVATE zenohc::zenohc)
+else()
+  target_sources(sitos PRIVATE src/transport_stub.cpp)
 endif()
 
 if(SITOS_BUILD_TESTS)

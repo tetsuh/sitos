@@ -43,6 +43,13 @@ target_link_libraries(sitos_in_memory_engine_test
 sitos_enable_warnings(sitos_in_memory_engine_test)
 gtest_discover_tests(sitos_in_memory_engine_test)
 
+add_executable(sitos_storage_node_test
+  unit/storage_node_test.cpp)
+target_link_libraries(sitos_storage_node_test
+  PRIVATE GTest::gtest_main sitos::sitos)
+sitos_enable_warnings(sitos_storage_node_test)
+gtest_discover_tests(sitos_storage_node_test)
+
 # --- Zenoh smoke test (integration) ---
 if(SITOS_WITH_ZENOH)
   add_executable(sitos_zenoh_smoke_test
@@ -61,4 +68,12 @@ if(SITOS_WITH_ZENOH)
   sitos_enable_warnings(sitos_transport_test)
   sitos_copy_zenohc(sitos_transport_test)
   gtest_discover_tests(sitos_transport_test)
+
+  add_executable(sitos_storage_node_query_test
+    integration/storage_node_query_test.cpp)
+  target_link_libraries(sitos_storage_node_query_test
+    PRIVATE GTest::gtest_main sitos::sitos)
+  sitos_enable_warnings(sitos_storage_node_query_test)
+  sitos_copy_zenohc(sitos_storage_node_query_test)
+  gtest_discover_tests(sitos_storage_node_query_test)
 endif()

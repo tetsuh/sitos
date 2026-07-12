@@ -125,20 +125,32 @@ struct TransportSample {
 struct TransportQuery {
   std::string keyexpr;
 
+  using ReplyHandler =
+      std::function<Result<void>(std::string_view, std::span<const std::byte>, Encoding)>;
+
   TransportQuery();
   ~TransportQuery();
+
+  /// Creates a query with an in-process reply handler for deterministic tests.
+  static TransportQuery ForTesting(ReplyHandler handler) {
+    return TransportQuery(std::move(handler));
+  }
+
   TransportQuery(TransportQuery&&) = delete;
   TransportQuery& operator=(TransportQuery&&) = delete;
   TransportQuery(const TransportQuery&) = delete;
   TransportQuery& operator=(const TransportQuery&) = delete;
 
   Result<void> Reply(std::string_view key, std::span<const std::byte> payload,
-             Encoding encoding);
+                     Encoding encoding);
 
  private:
+  explicit TransportQuery(ReplyHandler handler);
+
   friend class ZenohTransport;
   struct Impl;
   std::unique_ptr<Impl> impl_;
+  ReplyHandler test_reply_handler_;
 };
 
 /// An active subscription handle. The subscription is cancelled when this
