@@ -18,6 +18,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstring>
@@ -328,16 +329,18 @@ inline void SinkCanWriteDuringGet(sitos::testing::EngineFactory factory) {
   struct State {
     bool put = false;
     bool deleted = false;
+    std::string key_seen;
     std::string value_seen;
   };
   auto state = std::make_shared<State>();
 
   const bool completed = RunWithTimeout(
       std::move(engine), [state](sitos::StorageEngine& engine_ref) {
-        engine_ref.Get("write", [&](std::string_view, sitos::Bytes value) {
-          state->value_seen.assign(reinterpret_cast<const char*>(value.data()), value.size());
+        engine_ref.Get("write", [&](std::string_view key, sitos::Bytes value) {
           state->put = engine_ref.Put("write", BytesFromString("after"));
           state->deleted = engine_ref.Delete("write");
+          state->key_seen.assign(key);
+          state->value_seen.assign(reinterpret_cast<const char*>(value.data()), value.size());
           return true;
         });
       });
@@ -345,6 +348,7 @@ inline void SinkCanWriteDuringGet(sitos::testing::EngineFactory factory) {
   ASSERT_TRUE(completed);
   EXPECT_TRUE(state->put);
   EXPECT_TRUE(state->deleted);
+  EXPECT_EQ(state->key_seen, "write");
   EXPECT_EQ(state->value_seen, "before");
 }
 
@@ -354,6 +358,7 @@ inline void SinkCanWriteDuringList(sitos::testing::EngineFactory factory) {
   ASSERT_TRUE(engine->Put("stable/2", BytesFromString("two")));
 
   struct State {
+    bool mutation_applied = false;
     bool put = false;
     bool deleted = false;
     std::vector<std::pair<std::string, std::string>> entries;
@@ -363,21 +368,27 @@ inline void SinkCanWriteDuringList(sitos::testing::EngineFactory factory) {
   const bool completed = RunWithTimeout(
       std::move(engine), [state](sitos::StorageEngine& engine_ref) {
         engine_ref.List("stable/", [&](std::string_view key, sitos::Bytes value) {
+          const std::string current_key(key);
           state->entries.emplace_back(
-              std::string(key),
+              current_key,
               std::string(reinterpret_cast<const char*>(value.data()), value.size()));
-          if (key == "stable/1") {
-            state->put = engine_ref.Put("stable/1", BytesFromString("updated"));
-            state->deleted = engine_ref.Delete("stable/2");
+          if (!state->mutation_applied) {
+            const std::string key_to_delete =
+                current_key == "stable/1" ? "stable/2" : "stable/1";
+            state->mutation_applied = true;
+            state->put = engine_ref.Put(current_key, BytesFromString("updated"));
+            state->deleted = engine_ref.Delete(key_to_delete);
           }
           return true;
         });
       });
 
   ASSERT_TRUE(completed);
+  EXPECT_TRUE(state->mutation_applied);
   EXPECT_TRUE(state->put);
   EXPECT_TRUE(state->deleted);
   ASSERT_EQ(state->entries.size(), 2u);
+  std::sort(state->entries.begin(), state->entries.end());
   EXPECT_EQ(state->entries[0], std::make_pair(std::string("stable/1"), std::string("one")));
   EXPECT_EQ(state->entries[1], std::make_pair(std::string("stable/2"), std::string("two")));
 }

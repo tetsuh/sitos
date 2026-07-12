@@ -32,6 +32,10 @@ TEST(InMemoryEngineStressTest, ConcurrentPutGet) {
   std::atomic<bool> start{false};
   std::atomic<int> errors{0};
 
+  for (int id = 0; id < kNumWriters; ++id) {
+    ASSERT_TRUE(engine.Put("list/" + std::to_string(id), {}));
+  }
+
   auto writer = [&](int id) {
     while (!start.load()) { /* spin */ }
     for (int i = 0; i < kOpsPerThread; ++i) {
@@ -39,6 +43,7 @@ TEST(InMemoryEngineStressTest, ConcurrentPutGet) {
       std::vector<std::byte> value{std::byte{static_cast<unsigned char>(id)},
                                    std::byte{static_cast<unsigned char>(i & 0xFF)}};
       if (!engine.Put(key, value)) ++errors;
+      if (!engine.Put("list/" + std::to_string(id), value)) ++errors;
     }
   };
 
@@ -47,9 +52,9 @@ TEST(InMemoryEngineStressTest, ConcurrentPutGet) {
     for (int i = 0; i < kOpsPerThread; ++i) {
       engine.Get("no_such_key_" + std::to_string(i),
                  [](std::string_view /*k*/, sitos::Bytes /*v*/) { return true; });
-      // Use a non-matching prefix to exercise concurrent List calls without
-      // repeatedly copying the entire growing map for this stress test.
-      engine.List("no_such_prefix/",
+      // This matching prefix has a fixed small cardinality, so readers exercise
+      // concurrent entry copying without repeatedly copying the growing map.
+      engine.List("list/",
                   [](std::string_view /*k*/, sitos::Bytes /*v*/) { return true; });
     }
   };
@@ -70,7 +75,7 @@ TEST(InMemoryEngineStressTest, ConcurrentPutGet) {
     ++count;
     return true;
   });
-  EXPECT_EQ(count, static_cast<std::size_t>(kNumWriters * kOpsPerThread));
+  EXPECT_EQ(count, static_cast<std::size_t>(kNumWriters * kOpsPerThread + kNumWriters));
 }
 
 TEST(InMemoryEngineStressTest, SnapshotReadDuringWrite) {

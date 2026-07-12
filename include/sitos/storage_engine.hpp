@@ -50,9 +50,10 @@ class StorageReader {
 ///
 /// Thread safety (N07): implementations must guarantee that concurrent
 /// calls to Get/List are safe, and that a write (Put/Delete) does not
-/// corrupt concurrent reads. Get/List must copy the entries needed for
-/// callbacks while holding internal locks, then invoke sinks after unlocking;
-/// this makes sink callbacks reentrant with respect to the engine.
+/// corrupt concurrent reads. Get/List must invoke sinks without retaining an
+/// internal engine lock that prevents reentrancy. Callback views must remain
+/// valid for the callback duration, and List must enumerate a consistent read
+/// set.
 class StorageEngine : public StorageReader {
  public:
   /// Store a value for the given key.  Returns true on success.
