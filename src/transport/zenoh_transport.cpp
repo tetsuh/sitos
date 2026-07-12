@@ -16,7 +16,9 @@
 #include <cstddef>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <string_view>
 
 #include "sitos/transport.hpp"
 
@@ -146,14 +148,26 @@ bool IsSitosSchema(std::string_view id) {
   return id == Encoding::kSitosV1 || id == Encoding::kSitosV1Batch;
 }
 
+std::optional<std::string_view> SitosSchemaFromEncoding(std::string_view id) {
+  constexpr std::string_view kCanonicalBytesPrefix = "zenoh/bytes;";
+  constexpr std::string_view kLegacyBytesPrefix = "zenoh.bytes;";
+  if (id.starts_with(kCanonicalBytesPrefix)) {
+    id.remove_prefix(kCanonicalBytesPrefix.size());
+  } else if (id.starts_with(kLegacyBytesPrefix)) {
+    id.remove_prefix(kLegacyBytesPrefix.size());
+  }
+  if (IsSitosSchema(id)) return id;
+  return std::nullopt;
+}
+
 // Build a z_owned_encoding_t from a transport-independent Encoding id.
 Result<ZenohOwned<z_owned_encoding_t>> MakeEncoding(const Encoding& enc) {
   ZenohOwned<z_owned_encoding_t> z_enc;
-  if (IsSitosSchema(enc.id)) {
+  if (auto schema = SitosSchemaFromEncoding(enc.id); schema.has_value()) {
     z_encoding_clone(z_enc.get(), z_encoding_zenoh_bytes());
     z_enc.mark_valid();
-    z_result_t rc = z_encoding_set_schema_from_substr(z_enc.loan_mut(), enc.id.data(),
-                                                       enc.id.size());
+    z_result_t rc = z_encoding_set_schema_from_substr(z_enc.loan_mut(), schema->data(),
+                                                       schema->size());
     if (rc != Z_OK) {
       return Result<ZenohOwned<z_owned_encoding_t>>::Err(MakeError(rc));
     }
@@ -169,16 +183,9 @@ Result<ZenohOwned<z_owned_encoding_t>> MakeEncoding(const Encoding& enc) {
 }
 
 Encoding NormalizeEncoding(std::string wire_id) {
-  constexpr std::string_view kCanonicalBytesPrefix = "zenoh/bytes;";
-  constexpr std::string_view kLegacyBytesPrefix = "zenoh.bytes;";
-  std::string_view schema;
-  if (wire_id.starts_with(kCanonicalBytesPrefix)) {
-    schema = std::string_view(wire_id).substr(kCanonicalBytesPrefix.size());
-  } else if (wire_id.starts_with(kLegacyBytesPrefix)) {
-    schema = std::string_view(wire_id).substr(kLegacyBytesPrefix.size());
+  if (auto schema = SitosSchemaFromEncoding(wire_id); schema.has_value()) {
+    return Encoding{std::string(*schema)};
   }
-
-  if (IsSitosSchema(schema)) return Encoding{std::string(schema)};
   return Encoding{std::move(wire_id)};
 }
 
