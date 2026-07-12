@@ -91,11 +91,13 @@ class Result<void> {
   std::optional<std::error_code> error_;
 };
 
-/// Encoding identifiers used on the wire.
+/// Transport-independent schema identifiers for encoded payloads.
+///
+/// Transport adapters map these identifiers to their native wire Encoding.
 struct Encoding {
-  /// The well-known encoding for single-value sits payloads.
+  /// The well-known encoding for single-value sitos payloads.
   static constexpr std::string_view kSitosV1 = "sitos.v1";
-  /// The well-known encoding for batch sits payloads.
+  /// The well-known encoding for batch sitos payloads.
   static constexpr std::string_view kSitosV1Batch = "sitos.v1.batch";
 
   std::string id;

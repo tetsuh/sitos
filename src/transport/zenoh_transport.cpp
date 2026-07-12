@@ -114,6 +114,9 @@ class ZenohOwned {
   // Loan for APIs that take z_loaned_*_t*.
   auto loan() { return z_loan(obj_); }
 
+  // Mutable loan for APIs that update an initialized owned value.
+  auto loan_mut() { return z_loan_mut(obj_); }
+
   explicit operator bool() const { return !moved_; }
 
   // Called by helpers after a successful z_*_from_* populates obj_.
@@ -139,15 +142,52 @@ Result<ZenohOwned<z_owned_keyexpr_t>> MakeKeyexpr(std::string_view key) {
   return Result<ZenohOwned<z_owned_keyexpr_t>>::Ok(std::move(ke));
 }
 
-// Build a z_owned_encoding_t from an Encoding id string.
+bool IsSitosSchema(std::string_view id) {
+  return id == Encoding::kSitosV1 || id == Encoding::kSitosV1Batch;
+}
+
+// Build a z_owned_encoding_t from a transport-independent Encoding id.
 Result<ZenohOwned<z_owned_encoding_t>> MakeEncoding(const Encoding& enc) {
   ZenohOwned<z_owned_encoding_t> z_enc;
-  z_result_t rc = z_encoding_from_str(z_enc.get(), enc.id.c_str());
+  if (IsSitosSchema(enc.id)) {
+    z_encoding_clone(z_enc.get(), z_encoding_zenoh_bytes());
+    z_enc.mark_valid();
+    z_result_t rc = z_encoding_set_schema_from_substr(z_enc.loan_mut(), enc.id.data(),
+                                                       enc.id.size());
+    if (rc != Z_OK) {
+      return Result<ZenohOwned<z_owned_encoding_t>>::Err(MakeError(rc));
+    }
+    return Result<ZenohOwned<z_owned_encoding_t>>::Ok(std::move(z_enc));
+  }
+
+  z_result_t rc = z_encoding_from_substr(z_enc.get(), enc.id.data(), enc.id.size());
   if (rc != Z_OK) {
     return Result<ZenohOwned<z_owned_encoding_t>>::Err(MakeError(rc));
   }
   z_enc.mark_valid();
   return Result<ZenohOwned<z_owned_encoding_t>>::Ok(std::move(z_enc));
+}
+
+Encoding NormalizeEncoding(std::string wire_id) {
+  constexpr std::string_view kCanonicalBytesPrefix = "zenoh/bytes;";
+  constexpr std::string_view kLegacyBytesPrefix = "zenoh.bytes;";
+  std::string_view schema;
+  if (wire_id.starts_with(kCanonicalBytesPrefix)) {
+    schema = std::string_view(wire_id).substr(kCanonicalBytesPrefix.size());
+  } else if (wire_id.starts_with(kLegacyBytesPrefix)) {
+    schema = std::string_view(wire_id).substr(kLegacyBytesPrefix.size());
+  }
+
+  if (IsSitosSchema(schema)) return Encoding{std::string(schema)};
+  return Encoding{std::move(wire_id)};
+}
+
+Encoding ReadEncoding(const z_loaned_sample_t* sample) {
+  ZenohOwned<z_owned_string_t> wire;
+  z_encoding_to_string(z_sample_encoding(sample), wire.get());
+  wire.mark_valid();
+  return NormalizeEncoding(
+      std::string(z_string_data(wire.loan()), z_string_len(wire.loan())));
 }
 
 // Build a z_owned_bytes_t from a byte payload.
@@ -190,11 +230,7 @@ void OnGetReply(z_loaned_reply_t* reply, void* context) {
     std::string key_str(z_string_data(z_view_string_loan(&ks)),
                         z_string_len(z_view_string_loan(&ks)));
 
-    // TODO(#3): Extract encoding from z_sample_encoding(sample).
-    // zenoh-c 1.9.0 does not expose encoding-to-string conversion;
-    // "sitos.v1" is the only encoding used in v0.1.
-    Encoding enc;
-    enc.id = "sitos.v1";
+    Encoding enc = ReadEncoding(sample);
 
     if (c->sink && !c->sink(key_str, std::span<const std::byte>(data, len), enc)) {
       c->stop.store(true, std::memory_order_relaxed);

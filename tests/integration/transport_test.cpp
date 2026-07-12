@@ -114,6 +114,68 @@ TEST_F(TransportTest, QueryableRoundTrip) {
   EXPECT_EQ(received_payload, kExpectedPayload);
 }
 
+TEST_F(TransportTest, QueryReplyPreservesActualEncoding) {
+  const std::string kQueryKey = "sitos/test/query/encoding";
+  const std::vector<std::byte> kPayload = {std::byte{0x42}};
+  const sitos::Encoding kEncoding{"application/json"};
+  std::mutex mutex;
+  std::condition_variable condition;
+  std::string received_encoding;
+
+  auto queryable = transport_->DeclareQueryable(kQueryKey, [&](sitos::TransportQuery& query) {
+    EXPECT_TRUE(query.Reply(kQueryKey, kPayload, kEncoding).IsOk());
+  });
+
+  auto result = transport_->Get(
+      kQueryKey,
+      [&](std::string_view, std::span<const std::byte>, const sitos::Encoding& encoding) {
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          received_encoding = encoding.id;
+        }
+        condition.notify_one();
+        return false;
+      },
+      std::chrono::milliseconds(2000));
+
+  ASSERT_TRUE(result.IsOk());
+  std::unique_lock<std::mutex> lock(mutex);
+  ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(3),
+                                 [&] { return !received_encoding.empty(); }));
+  EXPECT_EQ(received_encoding, kEncoding.id);
+}
+
+TEST_F(TransportTest, QueryReplyNormalizesLegacySitosEncoding) {
+  const std::string kQueryKey = "sitos/test/query/legacy_encoding";
+  const std::vector<std::byte> kPayload = {std::byte{0x42}};
+  const sitos::Encoding kLegacyEncoding{"zenoh.bytes;sitos.v1"};
+  std::mutex mutex;
+  std::condition_variable condition;
+  std::string received_encoding;
+
+  auto queryable = transport_->DeclareQueryable(kQueryKey, [&](sitos::TransportQuery& query) {
+    EXPECT_TRUE(query.Reply(kQueryKey, kPayload, kLegacyEncoding).IsOk());
+  });
+
+  auto result = transport_->Get(
+      kQueryKey,
+      [&](std::string_view, std::span<const std::byte>, const sitos::Encoding& encoding) {
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          received_encoding = encoding.id;
+        }
+        condition.notify_one();
+        return false;
+      },
+      std::chrono::milliseconds(2000));
+
+  ASSERT_TRUE(result.IsOk());
+  std::unique_lock<std::mutex> lock(mutex);
+  ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(3),
+                                 [&] { return !received_encoding.empty(); }));
+  EXPECT_EQ(received_encoding, sitos::Encoding::kSitosV1);
+}
+
 // A throwing user callback must not let a C++ exception cross the C ABI
 // boundary of the zenoh-c queryable closure. The process must survive and
 // the session must remain usable afterward.
