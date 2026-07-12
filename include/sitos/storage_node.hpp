@@ -13,6 +13,7 @@
 #include <string_view>
 #include <system_error>
 
+#include "sitos/logging.hpp"
 #include "sitos/storage_engine.hpp"
 #include "sitos/transport.hpp"
 
@@ -35,6 +36,8 @@ std::optional<StorageQuery> ParseStorageQuery(std::string_view prefix,
 
 struct StorageNodeConfig {
   std::string prefix = "sitos";
+  /// Diagnostic destination; nullptr explicitly disables logging.
+  std::shared_ptr<LogSink> log_sink = DefaultLogSink();
 };
 
 /// Serves base-scope Get/List queries through a Transport queryable.
@@ -65,11 +68,15 @@ class StorageNode {
 
  private:
   struct State {
-    State(std::shared_ptr<StorageEngine> storage, std::string key_prefix)
-        : engine(std::move(storage)), prefix(std::move(key_prefix)) {}
+    State(std::shared_ptr<StorageEngine> storage, std::string key_prefix,
+          std::shared_ptr<LogSink> diagnostics)
+        : engine(std::move(storage)),
+          prefix(std::move(key_prefix)),
+          log_sink(std::move(diagnostics)) {}
 
     std::shared_ptr<StorageEngine> engine;
     std::string prefix;
+    std::shared_ptr<LogSink> log_sink;
     std::atomic<bool> active{true};
   };
 

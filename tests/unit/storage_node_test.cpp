@@ -9,12 +9,19 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "sitos/in_memory_engine.hpp"
+#include "sitos/logging.hpp"
 
 namespace sitos {
 namespace {
+
+class LifetimeSink final : public LogSink {
+ public:
+  void Write(const LogRecord&) override {}
+};
 
 class FakeTransport final : public Transport {
  public:
@@ -110,6 +117,49 @@ TEST(StorageNodeQueryTest, UsesDefaultPrefix) {
 
   ASSERT_TRUE(node.Start(engine, {}).IsOk());
   EXPECT_EQ(transport.declared_keyexpr, "sitos/**");
+}
+
+TEST(StorageNodeQueryTest, UsesDefaultLogSink) {
+  StorageNodeConfig config;
+  ASSERT_NE(config.log_sink, nullptr);
+  EXPECT_EQ(config.log_sink, DefaultLogSink());
+
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node(transport);
+
+  ASSERT_TRUE(node.Start(engine, std::move(config)).IsOk());
+  EXPECT_TRUE(node.IsStarted());
+  node.Stop();
+}
+
+TEST(StorageNodeQueryTest, RetainsInjectedLogSinkWhileStarted) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node(transport);
+  auto sink = std::make_shared<LifetimeSink>();
+  const std::weak_ptr<LifetimeSink> weak_sink = sink;
+
+  ASSERT_TRUE(node.Start(engine, {.prefix = "sitos", .log_sink = sink}).IsOk());
+  sink.reset();
+  EXPECT_FALSE(weak_sink.expired());
+
+  node.Stop();
+  EXPECT_FALSE(weak_sink.expired());
+
+  // The test transport models undeclaration by releasing its callback.
+  transport.query_callback = {};
+  EXPECT_TRUE(weak_sink.expired());
+}
+
+TEST(StorageNodeQueryTest, StartsWithLoggingDisabled) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node(transport);
+
+  ASSERT_TRUE(node.Start(engine, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
+  EXPECT_TRUE(node.IsStarted());
+  node.Stop();
 }
 
 TEST(StorageNodeQueryTest, RejectsInvalidStartArguments) {

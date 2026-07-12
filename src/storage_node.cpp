@@ -82,7 +82,8 @@ Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Transport
     return Result<void>::Err(InvalidArgument());
   }
 
-  auto state = std::make_shared<State>(std::move(engine), std::move(config.prefix));
+  auto state = std::make_shared<State>(std::move(engine), std::move(config.prefix),
+                                       std::move(config.log_sink));
   const std::string queryable_key = state->prefix + "/**";
   queryable_ = transport.DeclareQueryable(
       queryable_key, [state](TransportQuery& query) { OnQuery(state, query); });

@@ -4,6 +4,19 @@
 
 sitos **owns its wire specification and thinly isolates zenoh as a transport dependency**.
 
+### 1.1 Backend-isolated logging
+
+The core logging API has no mandatory third-party backend dependency. Applications may provide
+plog, quill, or another backend through a `LogSink` adapter; backend-specific types, macros,
+and initialization never enter sitos component APIs. `LogRecord` string views are callback-scoped,
+so asynchronous adapters must copy the component and message before `Write()` returns.
+
+`LogSink::Write()` may be called concurrently, so sink implementations must synchronize access
+to their mutable state. `EmitLog()` is the non-throwing exception-containment boundary, while
+backend lifecycle, configuration, filtering, formatting, and ownership remain with the
+application or optional adapter. An explicitly null sink disables emission; omitted `StorageNodeConfig` sinks use the
+immutable built-in stderr sink.
+
 * The compatibility units for sitos are the `sitos.v1` payload, key space, and batch/ack protocols,
   not zenoh internal APIs
 * The scope affected by zenoh version upgrades is limited to `src/transport/zenoh_transport.cpp`
