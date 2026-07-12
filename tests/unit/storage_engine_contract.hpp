@@ -18,11 +18,16 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
+#include <exception>
 #include <functional>
+#include <future>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -61,6 +66,29 @@ inline std::vector<std::byte> BytesFromString(std::string_view s) {
   v.reserve(s.size());
   for (char c : s) v.push_back(static_cast<std::byte>(c));
   return v;
+}
+
+// Runs a potentially reentrant operation without allowing a regression to
+// hang the test process. If the operation times out, its heap-owned engine is
+// intentionally retained by the detached thread until process termination.
+inline bool RunWithTimeout(std::unique_ptr<sitos::StorageEngine> engine,
+                           std::function<void(sitos::StorageEngine&)> operation) {
+  auto* raw_engine = engine.release();
+  auto completed = std::make_shared<std::promise<void>>();
+  auto future = completed->get_future();
+  std::thread([raw_engine, operation = std::move(operation), completed]() mutable {
+    try {
+      operation(*raw_engine);
+      delete raw_engine;
+      completed->set_value();
+    } catch (...) {
+      delete raw_engine;
+      completed->set_exception(std::current_exception());
+    }
+  }).detach();
+  if (future.wait_for(std::chrono::seconds(1)) != std::future_status::ready) return false;
+  future.get();
+  return true;
 }
 
 inline void GetReturnsTrueForExistingKey(sitos::StorageEngine& engine) {
@@ -259,6 +287,112 @@ inline void SnapshotIsIsolatedFromBasePut(sitos::StorageEngine& engine) {
   EXPECT_FALSE(found);
 }
 
+inline void SinkCanReenterReadOperations(sitos::testing::EngineFactory factory) {
+  auto engine = factory();
+  ASSERT_TRUE(engine->Put("reentrant", BytesFromString("value")));
+
+  struct State {
+    bool outer_get = false;
+    bool nested_get = false;
+    bool nested_list = false;
+    bool nested_snapshot = false;
+  };
+  auto state = std::make_shared<State>();
+
+  const bool completed = RunWithTimeout(
+      std::move(engine), [state](sitos::StorageEngine& engine_ref) {
+        state->outer_get = engine_ref.Get("reentrant", [&](std::string_view, sitos::Bytes) {
+          state->nested_get = engine_ref.Get(
+              "reentrant", [](std::string_view, sitos::Bytes) { return true; });
+          state->nested_list = engine_ref.List(
+              "re", [](std::string_view, sitos::Bytes) { return true; });
+          auto snapshot = engine_ref.TakeSnapshot();
+          state->nested_snapshot = snapshot != nullptr &&
+                                   snapshot->Get("reentrant", [](std::string_view, sitos::Bytes) {
+                                     return true;
+                                   });
+          return true;
+        });
+      });
+
+  ASSERT_TRUE(completed);
+  EXPECT_TRUE(state->outer_get);
+  EXPECT_TRUE(state->nested_get);
+  EXPECT_TRUE(state->nested_list);
+  EXPECT_TRUE(state->nested_snapshot);
+}
+
+inline void SinkCanWriteDuringGet(sitos::testing::EngineFactory factory) {
+  auto engine = factory();
+  ASSERT_TRUE(engine->Put("write", BytesFromString("before")));
+
+  struct State {
+    bool put = false;
+    bool deleted = false;
+    std::string key_seen;
+    std::string value_seen;
+  };
+  auto state = std::make_shared<State>();
+
+  const bool completed = RunWithTimeout(
+      std::move(engine), [state](sitos::StorageEngine& engine_ref) {
+        engine_ref.Get("write", [&](std::string_view key, sitos::Bytes value) {
+          state->put = engine_ref.Put("write", BytesFromString("after"));
+          state->deleted = engine_ref.Delete("write");
+          state->key_seen.assign(key);
+          state->value_seen.assign(reinterpret_cast<const char*>(value.data()), value.size());
+          return true;
+        });
+      });
+
+  ASSERT_TRUE(completed);
+  EXPECT_TRUE(state->put);
+  EXPECT_TRUE(state->deleted);
+  EXPECT_EQ(state->key_seen, "write");
+  EXPECT_EQ(state->value_seen, "before");
+}
+
+inline void SinkCanWriteDuringList(sitos::testing::EngineFactory factory) {
+  auto engine = factory();
+  ASSERT_TRUE(engine->Put("stable/1", BytesFromString("one")));
+  ASSERT_TRUE(engine->Put("stable/2", BytesFromString("two")));
+
+  struct State {
+    bool mutation_applied = false;
+    bool put = false;
+    bool deleted = false;
+    std::vector<std::pair<std::string, std::string>> entries;
+  };
+  auto state = std::make_shared<State>();
+
+  const bool completed = RunWithTimeout(
+      std::move(engine), [state](sitos::StorageEngine& engine_ref) {
+        engine_ref.List("stable/", [&](std::string_view key, sitos::Bytes value) {
+          const std::string current_key(key);
+          state->entries.emplace_back(
+              current_key,
+              std::string(reinterpret_cast<const char*>(value.data()), value.size()));
+          if (!state->mutation_applied) {
+            const std::string key_to_delete =
+                current_key == "stable/1" ? "stable/2" : "stable/1";
+            state->mutation_applied = true;
+            state->put = engine_ref.Put(current_key, BytesFromString("updated"));
+            state->deleted = engine_ref.Delete(key_to_delete);
+          }
+          return true;
+        });
+      });
+
+  ASSERT_TRUE(completed);
+  EXPECT_TRUE(state->mutation_applied);
+  EXPECT_TRUE(state->put);
+  EXPECT_TRUE(state->deleted);
+  ASSERT_EQ(state->entries.size(), 2u);
+  std::sort(state->entries.begin(), state->entries.end());
+  EXPECT_EQ(state->entries[0], std::make_pair(std::string("stable/1"), std::string("one")));
+  EXPECT_EQ(state->entries[1], std::make_pair(std::string("stable/2"), std::string("two")));
+}
+
 // Verifies that engines treat values as opaque byte sequences.  Values with
 // embedded null bytes and arbitrary binary patterns must survive a Put/Get
 // round-trip unchanged (no truncation, encoding conversion, or modification).
@@ -358,6 +492,15 @@ inline void HandlesOpaqueBytes(sitos::StorageEngine& engine) {
   }                                                                                         \
   TEST_P(SuiteName, HandlesOpaqueBytes) {                                                    \
     sitos_contract::HandlesOpaqueBytes(engine());                                            \
+  }                                                                                         \
+  TEST_P(SuiteName, SinkCanReenterReadOperations) {                                          \
+    sitos_contract::SinkCanReenterReadOperations(GetParam());                                \
+  }                                                                                         \
+  TEST_P(SuiteName, SinkCanWriteDuringGet) {                                                 \
+    sitos_contract::SinkCanWriteDuringGet(GetParam());                                       \
+  }                                                                                         \
+  TEST_P(SuiteName, SinkCanWriteDuringList) {                                                \
+    sitos_contract::SinkCanWriteDuringList(GetParam());                                      \
   }                                                                                         \
                                                                                             \
   INSTANTIATE_TEST_SUITE_P(, SuiteName, ::testing::Values(FactoryExpr))

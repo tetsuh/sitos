@@ -114,6 +114,8 @@ Conventions:
 * Engines treat values as opaque byte sequences (they do not know the payload format)
 * Pointers passed to `Get`/`List` sinks are valid only during the sink call
 * Thread safety: the engine guarantees safe concurrent reads + safe concurrent read/write [N07].
+  Sinks run without an internal engine lock that prevents reentrant engine calls; their key and
+  value views remain valid for the sink call, and `List` enumerates a consistent read set.
   `InMemoryEngine` uses `std::shared_mutex`; RocksDB uses its native guarantees
 * The view returned by `TakeSnapshot()` is not affected by Put/Delete operations after the call
 

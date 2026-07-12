@@ -22,9 +22,11 @@ namespace sitos {
 /// valid only during the sink callback.
 using Bytes = std::span<const std::byte>;
 
-/// Callback type for Get and List.  Receives the key and a span over the
-/// value bytes.  Return false from the sink to abort iteration early
-/// (List will stop and return false).
+/// Callback type for Get and List. Receives the key and a span over the
+/// value bytes. Views remain valid only for the duration of the callback.
+/// Implementations must release internal engine locks before invoking the
+/// sink, so the sink may call methods on the same engine. Return false from
+/// the sink to abort iteration early (List will stop and return false).
 using EntrySink = std::function<bool(std::string_view key, Bytes value)>;
 
 /// Read-only view of the stored state.  Both the engine itself and
@@ -48,7 +50,10 @@ class StorageReader {
 ///
 /// Thread safety (N07): implementations must guarantee that concurrent
 /// calls to Get/List are safe, and that a write (Put/Delete) does not
-/// corrupt concurrent reads.
+/// corrupt concurrent reads. Get/List must invoke sinks without retaining an
+/// internal engine lock that prevents reentrancy. Callback views must remain
+/// valid for the callback duration, and List must enumerate a consistent read
+/// set.
 class StorageEngine : public StorageReader {
  public:
   /// Store a value for the given key.  Returns true on success.
