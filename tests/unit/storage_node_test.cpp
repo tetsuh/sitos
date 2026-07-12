@@ -9,6 +9,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "sitos/in_memory_engine.hpp"
@@ -119,11 +120,15 @@ TEST(StorageNodeQueryTest, UsesDefaultPrefix) {
 }
 
 TEST(StorageNodeQueryTest, UsesDefaultLogSink) {
+  StorageNodeConfig config;
+  ASSERT_NE(config.log_sink, nullptr);
+  EXPECT_EQ(config.log_sink, DefaultLogSink());
+
   auto engine = std::make_shared<InMemoryEngine>();
   FakeTransport transport;
   StorageNode node(transport);
 
-  ASSERT_TRUE(node.Start(engine, {}).IsOk());
+  ASSERT_TRUE(node.Start(engine, std::move(config)).IsOk());
   EXPECT_TRUE(node.IsStarted());
   node.Stop();
 }

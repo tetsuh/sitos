@@ -56,7 +56,7 @@ TEST(LoggingTest, EmitLogDeliversRecord) {
 
   EmitLog(sink, LogLevel::kWarning, "node", "diagnostic message");
 
-  EXPECT_EQ(sink->WriteCount(), 1);
+  ASSERT_EQ(sink->WriteCount(), 1);
   const CapturedRecord record = sink->Record();
   EXPECT_EQ(record.level, LogLevel::kWarning);
   EXPECT_EQ(record.component, "node");

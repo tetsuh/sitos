@@ -11,10 +11,10 @@ plog, quill, or another backend through a `LogSink` adapter; backend-specific ty
 and initialization never enter sitos component APIs. `LogRecord` string views are callback-scoped,
 so asynchronous adapters must copy the component and message before `Write()` returns.
 
-`LogSink::Write()` may be called concurrently and each sink owns its thread-safety policy.
-`EmitLog()` is the non-throwing exception-containment boundary, while backend lifecycle,
-configuration, filtering, formatting, and ownership remain with the application or optional
-adapter. An explicitly null sink disables emission; omitted `StorageNodeConfig` sinks use the
+`LogSink::Write()` may be called concurrently, so sink implementations must synchronize access
+to their mutable state. `EmitLog()` is the non-throwing exception-containment boundary, while
+backend lifecycle, configuration, filtering, formatting, and ownership remain with the
+application or optional adapter. An explicitly null sink disables emission; omitted `StorageNodeConfig` sinks use the
 immutable built-in stderr sink.
 
 * The compatibility units for sitos are the `sitos.v1` payload, key space, and batch/ack protocols,

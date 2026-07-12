@@ -18,8 +18,8 @@ enum class LogLevel { kDebug, kInfo, kWarning, kError };
 ///
 /// The component and message views are valid only during the synchronous
 /// LogSink::Write call. An asynchronous sink must copy both strings before
-/// Write returns. Write may be called concurrently; each sink owns its
-/// thread-safety policy.
+/// Write returns. Write may be called concurrently; sink implementations
+/// must synchronize access to their mutable state.
 struct LogRecord {
   LogLevel level;
   std::string_view component;
