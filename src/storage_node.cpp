@@ -1,13 +1,15 @@
 // Copyright 2026 sitos contributors
 // SPDX-License-Identifier: Apache-2.0
 //
-// StorageNode base queryable routing.
+// StorageNode query and subscriber routing for the base storage scope.
 
 #include "sitos/storage_node.hpp"
 
 #include <utility>
+#include <vector>
 
 #include "sitos/key.hpp"
+#include "sitos/param_value.hpp"
 
 namespace sitos {
 namespace {
@@ -39,6 +41,14 @@ std::string MakeReplyKey(std::string_view prefix, std::string_view relative_key)
 }
 
 Encoding SitosEncoding() { return Encoding{std::string(Encoding::kSitosV1)}; }
+
+constexpr std::string_view kNodeComponent = "node";
+constexpr std::string_view kUnsupportedSubscriberKey = "unsupported subscriber key";
+constexpr std::string_view kUnknownSubscriberEncoding =
+    "unknown subscriber encoding; wrapped as bytes";
+constexpr std::string_view kSubscriberPutFailed = "subscriber PUT failed";
+constexpr std::string_view kSubscriberDeleteFailed = "subscriber DELETE failed";
+constexpr std::string_view kSubscriberCallbackFailed = "subscriber callback exception";
 
 }  // namespace
 
@@ -87,6 +97,8 @@ Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Transport
   const std::string queryable_key = state->prefix + "/**";
   queryable_ = transport.DeclareQueryable(
       queryable_key, [state](TransportQuery& query) { OnQuery(state, query); });
+  subscriber_ = transport.DeclareSubscriber(
+      queryable_key, [state](const TransportSample& sample) { OnSample(state, sample); });
   transport_ = &transport;
   state_ = std::move(state);
   return Result<void>::Ok();
@@ -94,8 +106,42 @@ Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Transport
 
 void StorageNode::Stop() noexcept {
   if (state_ != nullptr) state_->active.store(false, std::memory_order_relaxed);
+  subscriber_ = Subscription{};
   queryable_ = Queryable{};
   state_.reset();
+}
+
+void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportSample& sample) {
+  try {
+    if (!state->active.load(std::memory_order_relaxed)) return;
+
+    const auto parsed = ParseKey(state->prefix, sample.key);
+    if (!parsed || parsed->kind != KeyKind::Base || parsed->is_batch) {
+      EmitLog(state->log_sink, LogLevel::kWarning, kNodeComponent, kUnsupportedSubscriberKey);
+      return;
+    }
+
+    if (sample.kind == TransportSample::Kind::Delete) {
+      if (!state->engine->Delete(parsed->relative_key)) {
+        EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, kSubscriberDeleteFailed);
+      }
+      return;
+    }
+
+    Bytes value = sample.payload;
+    std::vector<std::byte> wrapped;
+    if (sample.encoding.id != Encoding::kSitosV1) {
+      EmitLog(state->log_sink, LogLevel::kWarning, kNodeComponent, kUnknownSubscriberEncoding);
+      auto bytes = std::vector<std::byte>(sample.payload.begin(), sample.payload.end());
+      wrapped = ParamValue(std::move(bytes)).Encode();
+      value = wrapped;
+    }
+    if (!state->engine->Put(parsed->relative_key, value)) {
+      EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, kSubscriberPutFailed);
+    }
+  } catch (...) {
+    EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, kSubscriberCallbackFailed);
+  }
 }
 
 void StorageNode::OnQuery(const std::shared_ptr<State>& state, TransportQuery& query) {
