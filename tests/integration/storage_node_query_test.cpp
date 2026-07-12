@@ -23,6 +23,14 @@ namespace {
 
 class StorageNodeQueryIntegrationTest : public ::testing::Test {
  protected:
+  struct ReplyState {
+    std::mutex mutex;
+    std::condition_variable condition;
+    std::vector<std::string> keys;
+    std::vector<std::byte> payload;
+    std::string encoding;
+  };
+
   void SetUp() override {
     transport_ = sitos::MakeZenohTransport();
     ASSERT_TRUE(transport_);
@@ -45,56 +53,82 @@ TEST_F(StorageNodeQueryIntegrationTest, ExactGetRoundTrip) {
   const std::vector<std::byte> expected = {std::byte{0x00}, std::byte{0xA5}};
   ASSERT_TRUE(engine_->Put("foo/bar", expected));
 
-  std::vector<std::byte> received;
-  std::string received_key;
-  std::string received_encoding;
+  auto state = std::make_shared<ReplyState>();
   auto result = transport_->Get(
       "sitos/storage_node_test/base/foo/bar",
-      [&](std::string_view key, std::span<const std::byte> payload, const sitos::Encoding& encoding) {
-        received_key = std::string(key);
-        received.assign(payload.begin(), payload.end());
-        received_encoding = encoding.id;
+      [state](std::string_view key, std::span<const std::byte> payload,
+              const sitos::Encoding& encoding) {
+        {
+          std::lock_guard<std::mutex> lock(state->mutex);
+          state->keys.emplace_back(key);
+          state->payload.assign(payload.begin(), payload.end());
+          state->encoding = encoding.id;
+        }
+        state->condition.notify_all();
         return false;
       },
       std::chrono::milliseconds(2000));
 
   ASSERT_TRUE(result.IsOk());
-  EXPECT_EQ(received_key, "sitos/storage_node_test/base/foo/bar");
-  EXPECT_EQ(received, expected);
-  EXPECT_EQ(received_encoding, sitos::Encoding::kSitosV1);
+  {
+    std::unique_lock<std::mutex> lock(state->mutex);
+    ASSERT_TRUE(state->condition.wait_for(lock, std::chrono::seconds(3),
+                                          [&state] { return state->keys.size() == 1; }));
+  }
+  EXPECT_EQ(state->keys[0], "sitos/storage_node_test/base/foo/bar");
+  EXPECT_EQ(state->payload, expected);
+  EXPECT_EQ(state->encoding, sitos::Encoding::kSitosV1);
 }
 
 TEST_F(StorageNodeQueryIntegrationTest, ChunkBoundaryListRoundTrip) {
   ASSERT_TRUE(engine_->Put("foo/bar", std::vector<std::byte>{std::byte{0x01}}));
   ASSERT_TRUE(engine_->Put("foobar/baz", std::vector<std::byte>{std::byte{0x02}}));
 
-  std::vector<std::string> received_keys;
+  auto state = std::make_shared<ReplyState>();
   auto result = transport_->Get(
       "sitos/storage_node_test/base/foo/**",
-      [&](std::string_view key, std::span<const std::byte>, const sitos::Encoding& encoding) {
-        EXPECT_EQ(encoding.id, sitos::Encoding::kSitosV1);
-        received_keys.emplace_back(key);
+      [state](std::string_view key, std::span<const std::byte>,
+              const sitos::Encoding& encoding) {
+        {
+          std::lock_guard<std::mutex> lock(state->mutex);
+          state->keys.emplace_back(key);
+          state->encoding = encoding.id;
+        }
+        state->condition.notify_all();
         return true;
       },
       std::chrono::milliseconds(2000));
 
   ASSERT_TRUE(result.IsOk());
-  ASSERT_EQ(received_keys.size(), 1u);
-  EXPECT_EQ(received_keys[0], "sitos/storage_node_test/base/foo/bar");
+  {
+    std::unique_lock<std::mutex> lock(state->mutex);
+    ASSERT_TRUE(state->condition.wait_for(lock, std::chrono::seconds(3),
+                                          [&state] { return state->keys.size() == 1; }));
+  }
+  ASSERT_EQ(state->keys.size(), 1u);
+  EXPECT_EQ(state->keys[0], "sitos/storage_node_test/base/foo/bar");
+  EXPECT_EQ(state->encoding, sitos::Encoding::kSitosV1);
 }
 
 TEST_F(StorageNodeQueryIntegrationTest, UnknownKeyProducesNoReply) {
-  bool called = false;
+  auto state = std::make_shared<ReplyState>();
   auto result = transport_->Get(
       "sitos/storage_node_test/base/missing",
-      [&](std::string_view, std::span<const std::byte>, const sitos::Encoding&) {
-        called = true;
+      [state](std::string_view key, std::span<const std::byte>, const sitos::Encoding& encoding) {
+        {
+          std::lock_guard<std::mutex> lock(state->mutex);
+          state->keys.emplace_back(key);
+          state->encoding = encoding.id;
+        }
+        state->condition.notify_all();
         return true;
       },
       std::chrono::milliseconds(500));
 
   ASSERT_TRUE(result.IsOk());
-  EXPECT_FALSE(called);
+  std::unique_lock<std::mutex> lock(state->mutex);
+  EXPECT_FALSE(state->condition.wait_for(lock, std::chrono::milliseconds(700),
+                                         [&state] { return !state->keys.empty(); }));
 }
 
 }  // namespace
