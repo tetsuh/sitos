@@ -428,8 +428,7 @@ Subscription SubscriptionTestAccess::Make(std::string_view keyexpr,
   if (!ke.IsOk()) return subscription;
 
   auto impl = std::make_unique<Subscription::Impl>();
-  auto callback_context = std::make_unique<TestSubscriberContext>(TestSubscriberContext{
-      std::move(callback)});
+  auto callback_context = std::make_unique<TestSubscriberContext>(std::move(callback));
   z_owned_closure_sample_t closure;
   z_closure_sample(&closure, OnTestSubscriberSample, DropTestSubscriberContext,
                    callback_context.release());
