@@ -48,6 +48,9 @@ add_executable(sitos_storage_node_test
 target_link_libraries(sitos_storage_node_test
   PRIVATE GTest::gtest_main sitos::sitos)
 sitos_enable_warnings(sitos_storage_node_test)
+if(SITOS_WITH_ZENOH)
+  sitos_copy_zenohc(sitos_storage_node_test)
+endif()
 gtest_discover_tests(sitos_storage_node_test)
 
 # --- Zenoh smoke test (integration) ---
