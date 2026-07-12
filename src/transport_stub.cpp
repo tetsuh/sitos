@@ -5,6 +5,8 @@
 
 #include "sitos/transport.hpp"
 
+#include <utility>
+
 namespace sitos {
 
 struct TransportQuery::Impl {};
@@ -28,8 +30,12 @@ Subscription::Subscription(Subscription&&) noexcept = default;
 Subscription& Subscription::operator=(Subscription&&) noexcept = default;
 
 Queryable::Queryable() = default;
-Queryable::~Queryable() = default;
+Queryable::~Queryable() { Reset(); }
+void Queryable::Reset() noexcept { impl_.reset(); }
 Queryable::Queryable(Queryable&&) noexcept = default;
-Queryable& Queryable::operator=(Queryable&&) noexcept = default;
+Queryable& Queryable::operator=(Queryable&& other) noexcept {
+  if (this != &other) impl_ = std::move(other.impl_);
+  return *this;
+}
 
 }  // namespace sitos

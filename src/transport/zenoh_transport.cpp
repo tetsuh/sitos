@@ -300,18 +300,28 @@ struct Queryable::Impl {
 };
 
 Queryable::Queryable() = default;
-Queryable::~Queryable() {
-  if (impl_) {
-    auto state = impl_->state;
-    {
-      std::lock_guard<std::mutex> lock(state->mutex);
-      state->alive = false;
-    }
+Queryable::~Queryable() { Reset(); }
+
+void Queryable::Reset() noexcept {
+  if (!impl_) return;
+
+  auto state = impl_->state;
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->alive = false;
     z_drop(z_move(state->queryable));
   }
+  impl_.reset();
 }
+
 Queryable::Queryable(Queryable&&) noexcept = default;
-Queryable& Queryable::operator=(Queryable&&) noexcept = default;
+Queryable& Queryable::operator=(Queryable&& other) noexcept {
+  if (this != &other) {
+    Reset();
+    impl_ = std::move(other.impl_);
+  }
+  return *this;
+}
 
 // ---------------------------------------------------------------------------
 // ZenohTransport

@@ -186,6 +186,8 @@ class Queryable {
  private:
   friend class ZenohTransport;
   struct Impl;
+  void Reset() noexcept;
+
   std::unique_ptr<Impl> impl_;
 };
 
