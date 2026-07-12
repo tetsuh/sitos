@@ -345,8 +345,65 @@ Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::by
 // Subscription
 // ---------------------------------------------------------------------------
 
+namespace {
+
+struct SubscriberState {
+  explicit SubscriberState(std::function<void(const TransportSample&)> handler)
+      : callback(std::move(handler)) {}
+
+  std::function<void(const TransportSample&)> callback;
+  std::atomic<bool> active{true};
+};
+
+void OnSubscriberSample(z_loaned_sample_t* sample, void* context) noexcept {
+  try {
+    auto state = *static_cast<std::shared_ptr<SubscriberState>*>(context);
+    if (!state || !state->active.load(std::memory_order_acquire)) return;
+
+    const auto kind = z_sample_kind(sample);
+    if (kind != Z_SAMPLE_KIND_PUT && kind != Z_SAMPLE_KIND_DELETE) return;
+
+    z_view_string_t key_view;
+    z_keyexpr_as_view_string(z_sample_keyexpr(sample), &key_view);
+    std::string key(z_string_data(z_view_string_loan(&key_view)),
+                    z_string_len(z_view_string_loan(&key_view)));
+
+    if (kind == Z_SAMPLE_KIND_PUT) {
+      const z_loaned_bytes_t* payload = z_sample_payload(sample);
+      ZenohOwned<z_owned_slice_t> slice;
+      if (z_bytes_to_slice(payload, slice.get()) != Z_OK) return;
+      slice.mark_valid();
+      const auto* data = reinterpret_cast<const std::byte*>(z_slice_data(slice.loan()));
+      const auto length = z_slice_len(slice.loan());
+      TransportSample transport_sample{
+          std::move(key), std::span<const std::byte>(data, length), ReadEncoding(sample),
+          std::nullopt, TransportSample::Kind::Put};
+      if (state->active.load(std::memory_order_acquire) && state->callback) {
+        state->callback(transport_sample);
+      }
+      return;
+    }
+
+    // DELETE payloads and encodings are deliberately not inspected.
+    TransportSample transport_sample{std::move(key), {}, {}, std::nullopt,
+                                     TransportSample::Kind::Delete};
+    if (state->active.load(std::memory_order_acquire) && state->callback) {
+      state->callback(transport_sample);
+    }
+  } catch (...) {
+    // Contain all C++ exceptions at the zenoh-c callback boundary.
+  }
+}
+
+void DropSubscriberContext(void* context) noexcept {
+  delete static_cast<std::shared_ptr<SubscriberState>*>(context);
+}
+
+}  // namespace
+
 struct Subscription::Impl {
-  z_owned_subscriber_t subscriber;
+  z_owned_subscriber_t subscriber{};
+  std::shared_ptr<SubscriberState> callback_state;
 };
 
 namespace {
@@ -408,6 +465,9 @@ Subscription& Subscription::operator=(Subscription&& other) noexcept {
 
 void Subscription::Reset() noexcept {
   if (!impl_) return;
+  if (impl_->callback_state) {
+    impl_->callback_state->active.store(false, std::memory_order_release);
+  }
   z_drop(z_move(impl_->subscriber));
   impl_.reset();
 }
@@ -625,12 +685,31 @@ class ZenohTransport : public Transport {
   }
 
   Subscription DeclareSubscriber(
-      std::string_view /*keyexpr*/,
-      std::function<void(const TransportSample&)> /*callback*/) override {
-    // TODO(#3): implement subscriber — currently a stub that silently discards
-    // both keyexpr and callback. The caller receives an empty Subscription
-    // (impl_ == nullptr) that never delivers samples.
-    return {};
+      std::string_view keyexpr_str,
+      std::function<void(const TransportSample&)> callback) override {
+    Subscription subscription;
+    if (!session_valid_ || !callback) return subscription;
+
+    auto ke = MakeKeyexpr(keyexpr_str);
+    if (!ke.IsOk()) return subscription;
+
+    subscription.impl_ = std::make_unique<Subscription::Impl>();
+    subscription.impl_->callback_state =
+        std::make_shared<SubscriberState>(std::move(callback));
+    auto* context = new std::shared_ptr<SubscriberState>(subscription.impl_->callback_state);
+
+    z_owned_closure_sample_t closure;
+    z_closure_sample(&closure, OnSubscriberSample, DropSubscriberContext, context);
+
+    z_subscriber_options_t options;
+    z_subscriber_options_default(&options);
+    const z_result_t decl_rc = z_declare_subscriber(
+        z_session_loan(&session_), &subscription.impl_->subscriber, ke.Value().loan(),
+        z_move(closure), &options);
+    if (decl_rc != Z_OK) {
+      subscription.Reset();
+    }
+    return subscription;
   }
 
   Queryable DeclareQueryable(std::string_view keyexpr_str,

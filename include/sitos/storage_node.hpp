@@ -40,7 +40,7 @@ struct StorageNodeConfig {
   std::shared_ptr<LogSink> log_sink = DefaultLogSink();
 };
 
-/// Serves base-scope Get/List queries through a Transport queryable.
+/// Serves base-scope Get/List queries and base writes through Transport declarations.
 class StorageNode {
  public:
   using Config = StorageNodeConfig;
@@ -61,7 +61,7 @@ class StorageNode {
   Result<void> Start(std::shared_ptr<StorageEngine> engine, Transport& transport,
                      Config config);
 
-  /// Undeclares the queryable. Safe to call repeatedly.
+  /// Undeclares the queryable and subscriber. Safe to call repeatedly.
   void Stop() noexcept;
 
   bool IsStarted() const noexcept { return state_ != nullptr; }
@@ -76,15 +76,17 @@ class StorageNode {
 
     std::shared_ptr<StorageEngine> engine;
     std::string prefix;
-    std::shared_ptr<LogSink> log_sink;
+    const std::shared_ptr<LogSink> log_sink;
     std::atomic<bool> active{true};
   };
 
   static void OnQuery(const std::shared_ptr<State>& state, TransportQuery& query);
+  static void OnSample(const std::shared_ptr<State>& state, const TransportSample& sample);
 
   Transport* transport_ = nullptr;
   std::shared_ptr<State> state_;
   Queryable queryable_;
+  Subscription subscriber_;
 };
 
 }  // namespace sitos
