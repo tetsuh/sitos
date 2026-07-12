@@ -53,8 +53,8 @@ std::optional<StorageQuery> ParseStorageQuery(std::string_view prefix,
 
   if (relative == "**") return StorageQuery{true, {}};
 
-  constexpr std::string_view kSelectorSuffix = "/**";
-  if (relative.ends_with(kSelectorSuffix)) {
+  if (constexpr std::string_view kSelectorSuffix = "/**";
+      relative.ends_with(kSelectorSuffix)) {
     std::string_view selector = relative.substr(0, relative.size() - kSelectorSuffix.size());
     if (!IsValidPrefix(selector)) return std::nullopt;
     std::string list_prefix(selector);
@@ -104,7 +104,7 @@ void StorageNode::OnQuery(const std::shared_ptr<State>& state, TransportQuery& q
   if (!parsed) return;
 
   const Encoding encoding = SitosEncoding();
-  auto reply = [&](std::string_view key, Bytes value) {
+  auto reply = [state, &query, encoding](std::string_view key, Bytes value) {
     const std::string full_key = MakeReplyKey(state->prefix, key);
     return query.Reply(full_key, value, encoding).IsOk();
   };

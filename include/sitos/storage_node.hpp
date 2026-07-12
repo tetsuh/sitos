@@ -20,7 +20,7 @@ namespace sitos {
 
 /// The supported query shape for the StorageNode base scope.
 struct StorageQuery {
-  /// True for a terminal `/**` List selector, false for an exact key.
+  /// True for a terminal star-star selector, false for an exact key.
   bool is_list = false;
   /// Exact relative key, or the relative List prefix including its trailing `/`.
   std::string relative_key;
@@ -34,7 +34,7 @@ std::optional<StorageQuery> ParseStorageQuery(std::string_view prefix,
                                                std::string_view keyexpr);
 
 struct StorageNodeConfig {
-  std::string prefix;
+  std::string prefix = "sitos";
 };
 
 /// Serves base-scope Get/List queries through a Transport queryable.

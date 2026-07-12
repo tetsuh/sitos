@@ -103,6 +103,29 @@ TEST(StorageNodeQueryTest, PreservesPrefixChunkBoundary) {
   EXPECT_FALSE(ParseStorageQuery("sitos", "sitos/base/foo/**extra").has_value());
 }
 
+TEST(StorageNodeQueryTest, UsesDefaultPrefix) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node(transport);
+
+  ASSERT_TRUE(node.Start(engine, {}).IsOk());
+  EXPECT_EQ(transport.declared_keyexpr, "sitos/**");
+}
+
+TEST(StorageNodeQueryTest, RejectsInvalidStartArguments) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+
+  StorageNode no_transport;
+  EXPECT_FALSE(no_transport.Start(engine, {}).IsOk());
+
+  StorageNode node(transport);
+  EXPECT_FALSE(node.Start(nullptr, {}).IsOk());
+  EXPECT_FALSE(node.Start(engine, {.prefix = ""}).IsOk());
+  ASSERT_TRUE(node.Start(engine, {}).IsOk());
+  EXPECT_FALSE(node.Start(engine, {}).IsOk());
+}
+
 TEST(StorageNodeQueryTest, RoutesExactGetAndPreservesPayload) {
   auto engine = std::make_shared<InMemoryEngine>();
   const std::vector<std::byte> payload = {std::byte{0x00}, std::byte{0xFF}};
@@ -163,6 +186,20 @@ TEST(StorageNodeQueryTest, StopDisablesExistingCallback) {
 
   EXPECT_TRUE(transport.Invoke("sitos/base/foo").empty());
   EXPECT_FALSE(node.IsStarted());
+}
+
+TEST(StorageNodeQueryTest, StopAndRestartReplacesDeclaration) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  ASSERT_TRUE(engine->Put("foo", std::vector<std::byte>{std::byte{0x01}}));
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+  node.Stop();
+
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+  auto replies = transport.Invoke("sitos/base/foo");
+  ASSERT_EQ(replies.size(), 1u);
+  EXPECT_EQ(replies[0].key, "sitos/base/foo");
 }
 
 }  // namespace
