@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -348,12 +349,116 @@ struct Subscription::Impl {
   z_owned_subscriber_t subscriber;
 };
 
-Subscription::Subscription() = default;
-Subscription::~Subscription() {
-  if (impl_) z_drop(z_move(impl_->subscriber));
+namespace {
+
+struct TestSubscriberContext {
+  std::function<void()> callback;
+};
+
+void OnTestSubscriberSample(z_loaned_sample_t* /*sample*/, void* context) noexcept {
+  try {
+    auto* state = static_cast<TestSubscriberContext*>(context);
+    if (state->callback) state->callback();
+  } catch (...) {
+    // Keep test-only callbacks contained at the zenoh-c ABI boundary.
+  }
 }
+
+void DropTestSubscriberContext(void* context) noexcept {
+  delete static_cast<TestSubscriberContext*>(context);
+}
+
+struct TestSubscriberSession {
+  z_owned_session_t session{};
+  bool valid = false;
+
+  TestSubscriberSession() {
+    z_owned_config_t config;
+    if (z_config_default(&config) != Z_OK) return;
+    valid = z_open(&session, z_move(config), nullptr) == Z_OK;
+  }
+
+  ~TestSubscriberSession() {
+    if (valid) z_close(z_session_loan_mut(&session), nullptr);
+    z_drop(z_move(session));
+  }
+};
+
+TestSubscriberSession& GetTestSubscriberSession() {
+  static TestSubscriberSession session;
+  return session;
+}
+
+}  // namespace
+
+Subscription::Subscription() = default;
+Subscription::~Subscription() { Reset(); }
 Subscription::Subscription(Subscription&&) noexcept = default;
-Subscription& Subscription::operator=(Subscription&&) noexcept = default;
+Subscription& Subscription::operator=(Subscription&& other) noexcept {
+  if (this != &other) {
+    Reset();
+    impl_ = std::move(other.impl_);
+  }
+  return *this;
+}
+
+void Subscription::Reset() noexcept {
+  if (!impl_) return;
+  z_drop(z_move(impl_->subscriber));
+  impl_.reset();
+}
+
+namespace transport_test_access {
+
+bool SubscriptionTestAccess::IsAvailable() { return GetTestSubscriberSession().valid; }
+
+Subscription SubscriptionTestAccess::Make(std::string_view keyexpr,
+                                          std::function<void()> callback) {
+  Subscription subscription;
+  auto& test_session = GetTestSubscriberSession();
+  if (!test_session.valid) return subscription;
+
+  auto ke = MakeKeyexpr(keyexpr);
+  if (!ke.IsOk()) return subscription;
+
+  auto* callback_context = new TestSubscriberContext{std::move(callback)};
+  z_owned_closure_sample_t closure;
+  z_closure_sample(&closure, OnTestSubscriberSample, DropTestSubscriberContext,
+                   callback_context);
+
+  z_owned_subscriber_t subscriber{};
+  z_subscriber_options_t options;
+  z_subscriber_options_default(&options);
+  if (z_declare_subscriber(z_session_loan(&test_session.session), &subscriber,
+                           ke.Value().loan(), z_move(closure), &options) != Z_OK) {
+    return subscription;
+  }
+
+  subscription.impl_ = std::make_unique<Subscription::Impl>();
+  z_subscriber_take(&subscription.impl_->subscriber, z_move(subscriber));
+  return subscription;
+}
+
+bool SubscriptionTestAccess::Publish(std::string_view keyexpr) {
+  auto& test_session = GetTestSubscriberSession();
+  if (!test_session.valid) return false;
+
+  auto ke = MakeKeyexpr(keyexpr);
+  if (!ke.IsOk()) return false;
+  const std::byte payload = std::byte{0x01};
+  auto bytes = MakeBytes(std::span(&payload, 1));
+  if (!bytes.IsOk()) return false;
+  auto encoding = MakeEncoding(Encoding{std::string(Encoding::kSitosV1)});
+  if (!encoding.IsOk()) return false;
+
+  z_put_options_t options;
+  z_put_options_default(&options);
+  options.encoding = encoding.Value().moved();
+  return z_put(z_session_loan(&test_session.session), ke.Value().loan(), bytes.Value().moved(),
+               &options) == Z_OK;
+}
+
+}  // namespace transport_test_access
 
 // ---------------------------------------------------------------------------
 // Queryable

@@ -26,6 +26,103 @@ TEST(TransportApiTest, TransportQueryCannotOutliveCallback) {
   static_assert(!std::is_move_assignable_v<sitos::TransportQuery>);
 }
 
+struct CallbackCounter {
+  std::mutex mutex;
+  std::condition_variable condition;
+  int count = 0;
+};
+
+void CountCallback(CallbackCounter* state) {
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    ++state->count;
+  }
+  state->condition.notify_all();
+}
+
+bool WaitForCount(CallbackCounter* state, int expected) {
+  std::unique_lock<std::mutex> lock(state->mutex);
+  return state->condition.wait_for(lock, std::chrono::seconds(3),
+                                   [&] { return state->count >= expected; });
+}
+
+int ReadCount(CallbackCounter* state) {
+  std::lock_guard<std::mutex> lock(state->mutex);
+  return state->count;
+}
+
+bool WaitForNoNewCallback(CallbackCounter* state, int baseline) {
+  std::unique_lock<std::mutex> lock(state->mutex);
+  return !state->condition.wait_for(lock, std::chrono::milliseconds(300),
+                                    [&] { return state->count > baseline; });
+}
+
+TEST(SubscriptionTest, MoveAssignmentReleasesOldSubscriber) {
+  using sitos::transport_test_access::SubscriptionTestAccess;
+  ASSERT_TRUE(SubscriptionTestAccess::IsAvailable());
+
+  CallbackCounter callbacks;
+  auto subscription = SubscriptionTestAccess::Make(
+      "sitos/test/subscription/move-empty", [&] { CountCallback(&callbacks); });
+  ASSERT_TRUE(SubscriptionTestAccess::Publish("sitos/test/subscription/move-empty"));
+  ASSERT_TRUE(WaitForCount(&callbacks, 1));
+
+  sitos::Subscription empty;
+  subscription = std::move(empty);
+  const int baseline = ReadCount(&callbacks);
+  ASSERT_TRUE(SubscriptionTestAccess::Publish("sitos/test/subscription/move-empty"));
+  EXPECT_TRUE(WaitForNoNewCallback(&callbacks, baseline));
+}
+
+TEST(SubscriptionTest, MoveAssignmentTransfersSubscriber) {
+  using sitos::transport_test_access::SubscriptionTestAccess;
+  ASSERT_TRUE(SubscriptionTestAccess::IsAvailable());
+
+  CallbackCounter old_callbacks;
+  CallbackCounter new_callbacks;
+  auto target = SubscriptionTestAccess::Make(
+      "sitos/test/subscription/move-live-old", [&] { CountCallback(&old_callbacks); });
+  auto source = SubscriptionTestAccess::Make(
+      "sitos/test/subscription/move-live-new", [&] { CountCallback(&new_callbacks); });
+  ASSERT_TRUE(SubscriptionTestAccess::Publish("sitos/test/subscription/move-live-old"));
+  ASSERT_TRUE(WaitForCount(&old_callbacks, 1));
+  ASSERT_TRUE(SubscriptionTestAccess::Publish("sitos/test/subscription/move-live-new"));
+  ASSERT_TRUE(WaitForCount(&new_callbacks, 1));
+
+  target = std::move(source);
+  const int old_baseline = ReadCount(&old_callbacks);
+  const int new_baseline = ReadCount(&new_callbacks);
+  ASSERT_TRUE(SubscriptionTestAccess::Publish("sitos/test/subscription/move-live-old"));
+  ASSERT_TRUE(SubscriptionTestAccess::Publish("sitos/test/subscription/move-live-new"));
+  ASSERT_TRUE(WaitForCount(&new_callbacks, new_baseline + 1));
+  EXPECT_TRUE(WaitForNoNewCallback(&old_callbacks, old_baseline));
+}
+
+TEST(SubscriptionTest, SelfMovePreservesSubscriber) {
+  using sitos::transport_test_access::SubscriptionTestAccess;
+  ASSERT_TRUE(SubscriptionTestAccess::IsAvailable());
+
+  CallbackCounter callbacks;
+  auto subscription = SubscriptionTestAccess::Make(
+      "sitos/test/subscription/self-move", [&] { CountCallback(&callbacks); });
+  ASSERT_TRUE(SubscriptionTestAccess::Publish("sitos/test/subscription/self-move"));
+  ASSERT_TRUE(WaitForCount(&callbacks, 1));
+
+  subscription = std::move(subscription);
+  const int baseline = ReadCount(&callbacks);
+  ASSERT_TRUE(SubscriptionTestAccess::Publish("sitos/test/subscription/self-move"));
+  EXPECT_TRUE(WaitForCount(&callbacks, baseline + 1));
+}
+
+TEST(SubscriptionTest, EmptyMovesAreSafe) {
+  sitos::Subscription empty;
+  empty = std::move(empty);
+  sitos::Subscription moved_from = std::move(empty);
+  moved_from = std::move(empty);
+  sitos::Subscription assigned;
+  assigned = std::move(moved_from);
+}
+
 TEST(ZenohEncodingTest, EmitsCanonicalSitosWireEncodings) {
   using sitos::transport_test_access::BuildWireEncoding;
 
