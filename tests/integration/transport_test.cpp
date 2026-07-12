@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include "src/transport/zenoh_transport_test_access.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -22,6 +24,26 @@ namespace {
 TEST(TransportApiTest, TransportQueryCannotOutliveCallback) {
   static_assert(!std::is_move_constructible_v<sitos::TransportQuery>);
   static_assert(!std::is_move_assignable_v<sitos::TransportQuery>);
+}
+
+TEST(ZenohEncodingTest, EmitsCanonicalSitosWireEncodings) {
+  using sitos::transport_test_access::BuildWireEncoding;
+
+  EXPECT_EQ(BuildWireEncoding({std::string(sitos::Encoding::kSitosV1)}),
+            "zenoh/bytes;sitos.v1");
+  EXPECT_EQ(BuildWireEncoding({"zenoh.bytes;sitos.v1"}), "zenoh/bytes;sitos.v1");
+  EXPECT_EQ(BuildWireEncoding({"zenoh/bytes;sitos.v1"}), "zenoh/bytes;sitos.v1");
+  EXPECT_EQ(BuildWireEncoding({std::string(sitos::Encoding::kSitosV1Batch)}),
+            "zenoh/bytes;sitos.v1.batch");
+}
+
+TEST(ZenohEncodingTest, NormalizesCompatibleSitosWireEncodings) {
+  using sitos::transport_test_access::NormalizeWireEncoding;
+
+  EXPECT_EQ(NormalizeWireEncoding("zenoh/bytes;sitos.v1").id, sitos::Encoding::kSitosV1);
+  EXPECT_EQ(NormalizeWireEncoding("zenoh.bytes;sitos.v1").id, sitos::Encoding::kSitosV1);
+  EXPECT_EQ(NormalizeWireEncoding("sitos.v1").id, sitos::Encoding::kSitosV1);
+  EXPECT_EQ(NormalizeWireEncoding("application/json").id, "application/json");
 }
 
 class TransportTest : public ::testing::Test {

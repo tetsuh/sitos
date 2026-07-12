@@ -22,6 +22,8 @@
 
 #include "sitos/transport.hpp"
 
+#include "zenoh_transport_test_access.hpp"
+
 namespace sitos {
 
 // ---------------------------------------------------------------------------
@@ -250,6 +252,25 @@ void OnGetReply(z_loaned_reply_t* reply, void* context) {
 }
 
 }  // namespace
+
+namespace transport_test_access {
+
+std::optional<std::string> BuildWireEncoding(const Encoding& encoding) {
+  auto result = MakeEncoding(encoding);
+  if (!result.IsOk()) return std::nullopt;
+
+  auto owned_encoding = std::move(result.Value());
+  ZenohOwned<z_owned_string_t> wire;
+  z_encoding_to_string(owned_encoding.loan(), wire.get());
+  wire.mark_valid();
+  return std::string(z_string_data(wire.loan()), z_string_len(wire.loan()));
+}
+
+Encoding NormalizeWireEncoding(std::string wire_encoding) {
+  return NormalizeEncoding(std::move(wire_encoding));
+}
+
+}  // namespace transport_test_access
 
 // ---------------------------------------------------------------------------
 // TransportQuery
