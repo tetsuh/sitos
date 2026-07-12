@@ -140,6 +140,10 @@ TEST(StorageNodeQueryTest, RetainsInjectedLogSinkWhileStarted) {
   EXPECT_FALSE(weak_sink.expired());
 
   node.Stop();
+  EXPECT_FALSE(weak_sink.expired());
+
+  // The test transport models undeclaration by releasing its callback.
+  transport.query_callback = {};
   EXPECT_TRUE(weak_sink.expired());
 }
 
