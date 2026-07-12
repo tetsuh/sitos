@@ -20,6 +20,10 @@
 
 namespace sitos {
 
+namespace transport_test_access {
+class SubscriptionTestAccess;
+}
+
 /// A simple result type that holds either a value or an error code.
 /// Modeled after a minimal subset of std::expected (C++23).
 template <typename T>
@@ -169,7 +173,9 @@ class Subscription {
 
  private:
   friend class ZenohTransport;
+  friend class transport_test_access::SubscriptionTestAccess;
   struct Impl;
+  void Reset() noexcept;
   std::unique_ptr<Impl> impl_;
 };
 
