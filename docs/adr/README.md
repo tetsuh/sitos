@@ -20,3 +20,4 @@ See [docs/10_adr_process.md](../10_adr_process.md) for the process.
 | [0013](0013-default-to-zenoh-scouting-with-explicit-endpoint-override.md) | Default to zenoh scouting with explicit endpoint override |
 | [0014](0014-session-scoped-buffers.md) | Add a session-scoped, disk-backed buffers key space |
 | [0015](0015-optional-http-gateway-component.md) | Ship an optional HTTP gateway component on cpp-httplib |
+| [0016](0016-use-canonical-zenoh-bytes-encodings.md) | Use canonical zenoh bytes encodings |

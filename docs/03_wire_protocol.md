@@ -101,11 +101,16 @@ when re-encoding.
 Set the following zenoh `Encoding` on put/reply [C02]:
 
 ```
-zenoh.bytes;sitos.v1          (single value)
-zenoh.bytes;sitos.v1.batch   (batch, §5)
+zenoh/bytes;sitos.v1          (single value)
+zenoh/bytes;sitos.v1.batch    (batch, §5)
 ```
 
-(`Encoding` = type `zenoh.bytes` + schema suffix)
+(`Encoding` = type `zenoh/bytes` + schema suffix) [ADR-0016]
+
+Senders emit the canonical slash spelling above. Receivers also accept the
+legacy `zenoh.bytes;<schema>` spelling and schema-only identifiers for
+compatibility, but normalize recognized sitos schemas to `sitos.v1` or
+`sitos.v1.batch` in the transport-independent API.
 
 Receiver interpretation rules:
 
