@@ -365,7 +365,7 @@ void OnTestSubscriberSample(z_loaned_sample_t* /*sample*/, void* context) noexce
 }
 
 void DropTestSubscriberContext(void* context) noexcept {
-  delete static_cast<TestSubscriberContext*>(context);
+  std::unique_ptr<TestSubscriberContext> state(static_cast<TestSubscriberContext*>(context));
 }
 
 struct TestSubscriberSession {
@@ -378,10 +378,14 @@ struct TestSubscriberSession {
     valid = z_open(&session, z_move(config), nullptr) == Z_OK;
   }
 
-  ~TestSubscriberSession() {
-    if (valid) z_close(z_session_loan_mut(&session), nullptr);
+  void Shutdown() noexcept {
+    if (!valid) return;
+    z_close(z_session_loan_mut(&session), nullptr);
     z_drop(z_move(session));
+    valid = false;
   }
+
+  ~TestSubscriberSession() { Shutdown(); }
 };
 
 TestSubscriberSession& GetTestSubscriberSession() {
@@ -412,6 +416,8 @@ namespace transport_test_access {
 
 bool SubscriptionTestAccess::IsAvailable() { return GetTestSubscriberSession().valid; }
 
+void SubscriptionTestAccess::Shutdown() { GetTestSubscriberSession().Shutdown(); }
+
 Subscription SubscriptionTestAccess::Make(std::string_view keyexpr,
                                           std::function<void()> callback) {
   Subscription subscription;
@@ -421,21 +427,23 @@ Subscription SubscriptionTestAccess::Make(std::string_view keyexpr,
   auto ke = MakeKeyexpr(keyexpr);
   if (!ke.IsOk()) return subscription;
 
-  auto* callback_context = new TestSubscriberContext{std::move(callback)};
+  auto impl = std::make_unique<Subscription::Impl>();
+  auto callback_context = std::make_unique<TestSubscriberContext>(TestSubscriberContext{
+      std::move(callback)});
   z_owned_closure_sample_t closure;
   z_closure_sample(&closure, OnTestSubscriberSample, DropTestSubscriberContext,
-                   callback_context);
+                   callback_context.release());
 
-  z_owned_subscriber_t subscriber{};
   z_subscriber_options_t options;
   z_subscriber_options_default(&options);
-  if (z_declare_subscriber(z_session_loan(&test_session.session), &subscriber,
+  if (z_declare_subscriber(z_session_loan(&test_session.session), &impl->subscriber,
                            ke.Value().loan(), z_move(closure), &options) != Z_OK) {
+    subscription.impl_ = std::move(impl);
+    subscription.Reset();
     return subscription;
   }
 
-  subscription.impl_ = std::make_unique<Subscription::Impl>();
-  z_subscriber_take(&subscription.impl_->subscriber, z_move(subscriber));
+  subscription.impl_ = std::move(impl);
   return subscription;
 }
 

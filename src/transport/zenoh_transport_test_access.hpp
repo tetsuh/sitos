@@ -25,6 +25,7 @@ Encoding NormalizeWireEncoding(std::string wire_encoding);
 class SubscriptionTestAccess {
  public:
   static bool IsAvailable();
+  static void Shutdown();
   static Subscription Make(std::string_view keyexpr, std::function<void()> callback);
   static bool Publish(std::string_view keyexpr);
 };
