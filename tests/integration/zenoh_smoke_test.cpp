@@ -13,6 +13,8 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
 namespace {
 
 TEST(ZenohSmokeTest, OpenAndCloseSession) {
@@ -25,6 +27,20 @@ TEST(ZenohSmokeTest, OpenAndCloseSession) {
   ASSERT_EQ(z_close(z_session_loan_mut(&session), nullptr), Z_OK);
 
   z_drop(z_move(session));
+}
+
+TEST(ZenohSmokeTest, BytesEncodingUsesCanonicalSitosSchema) {
+  z_owned_encoding_t encoding;
+  z_encoding_clone(&encoding, z_encoding_zenoh_bytes());
+  ASSERT_EQ(z_encoding_set_schema_from_str(z_loan_mut(encoding), "sitos.v1"), Z_OK);
+
+  z_owned_string_t text;
+  z_encoding_to_string(z_loan(encoding), &text);
+  EXPECT_EQ(std::string(z_string_data(z_loan(text)), z_string_len(z_loan(text))),
+            "zenoh/bytes;sitos.v1");
+
+  z_drop(z_move(text));
+  z_drop(z_move(encoding));
 }
 
 }  // namespace

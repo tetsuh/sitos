@@ -91,11 +91,13 @@ class Result<void> {
   std::optional<std::error_code> error_;
 };
 
-/// Encoding identifiers used on the wire.
+/// Transport-independent schema identifiers for encoded payloads.
+///
+/// Transport adapters map these identifiers to their native wire Encoding.
 struct Encoding {
-  /// The well-known encoding for single-value sits payloads.
+  /// The well-known encoding for single-value sitos payloads.
   static constexpr std::string_view kSitosV1 = "sitos.v1";
-  /// The well-known encoding for batch sits payloads.
+  /// The well-known encoding for batch sitos payloads.
   static constexpr std::string_view kSitosV1Batch = "sitos.v1.batch";
 
   std::string id;
@@ -125,20 +127,32 @@ struct TransportSample {
 struct TransportQuery {
   std::string keyexpr;
 
+  using ReplyHandler =
+      std::function<Result<void>(std::string_view, std::span<const std::byte>, Encoding)>;
+
   TransportQuery();
   ~TransportQuery();
+
+  /// Creates a query with an in-process reply handler for deterministic tests.
+  static TransportQuery ForTesting(ReplyHandler handler) {
+    return TransportQuery(std::move(handler));
+  }
+
   TransportQuery(TransportQuery&&) = delete;
   TransportQuery& operator=(TransportQuery&&) = delete;
   TransportQuery(const TransportQuery&) = delete;
   TransportQuery& operator=(const TransportQuery&) = delete;
 
   Result<void> Reply(std::string_view key, std::span<const std::byte> payload,
-             Encoding encoding);
+                     Encoding encoding);
 
  private:
+  explicit TransportQuery(ReplyHandler handler);
+
   friend class ZenohTransport;
   struct Impl;
   std::unique_ptr<Impl> impl_;
+  ReplyHandler test_reply_handler_;
 };
 
 /// An active subscription handle. The subscription is cancelled when this
@@ -174,6 +188,8 @@ class Queryable {
  private:
   friend class ZenohTransport;
   struct Impl;
+  void Reset() noexcept;
+
   std::unique_ptr<Impl> impl_;
 };
 
