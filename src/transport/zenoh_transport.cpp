@@ -445,7 +445,7 @@ bool SubscriptionTestAccess::Publish(std::string_view keyexpr) {
 
   auto ke = MakeKeyexpr(keyexpr);
   if (!ke.IsOk()) return false;
-  const std::byte payload = std::byte{0x01};
+  const auto payload = std::byte{0x01};
   auto bytes = MakeBytes(std::span(&payload, 1));
   if (!bytes.IsOk()) return false;
   auto encoding = MakeEncoding(Encoding{std::string(Encoding::kSitosV1)});
