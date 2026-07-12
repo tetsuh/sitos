@@ -57,6 +57,11 @@ bool WaitForNoNewCallback(CallbackCounter* state, int baseline) {
                                     [&] { return state->count > baseline; });
 }
 
+void SelfMove(sitos::Subscription& subscription) {
+  auto* alias = &subscription;
+  subscription = std::move(*alias);
+}
+
 TEST(SubscriptionTest, MoveAssignmentReleasesOldSubscriber) {
   using sitos::transport_test_access::SubscriptionTestAccess;
   ASSERT_TRUE(SubscriptionTestAccess::IsAvailable());
@@ -108,7 +113,7 @@ TEST(SubscriptionTest, SelfMovePreservesSubscriber) {
   ASSERT_TRUE(SubscriptionTestAccess::Publish("sitos/test/subscription/self-move"));
   ASSERT_TRUE(WaitForCount(&callbacks, 1));
 
-  subscription = std::move(subscription);
+  SelfMove(subscription);
   const int baseline = ReadCount(&callbacks);
   ASSERT_TRUE(SubscriptionTestAccess::Publish("sitos/test/subscription/self-move"));
   EXPECT_TRUE(WaitForCount(&callbacks, baseline + 1));
@@ -116,7 +121,7 @@ TEST(SubscriptionTest, SelfMovePreservesSubscriber) {
 
 TEST(SubscriptionTest, EmptyMovesAreSafe) {
   sitos::Subscription empty;
-  empty = std::move(empty);
+  SelfMove(empty);
   sitos::Subscription moved_from = std::move(empty);
   moved_from = std::move(empty);
   sitos::Subscription assigned;
