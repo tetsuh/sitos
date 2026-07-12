@@ -14,14 +14,15 @@ namespace sitos {
 namespace {
 
 std::string_view LevelName(LogLevel level) {
+  using enum LogLevel;
   switch (level) {
-    case LogLevel::kDebug:
+    case kDebug:
       return "debug";
-    case LogLevel::kInfo:
+    case kInfo:
       return "info";
-    case LogLevel::kWarning:
+    case kWarning:
       return "warning";
-    case LogLevel::kError:
+    case kError:
       return "error";
   }
   return "unknown";
@@ -53,6 +54,7 @@ void EmitLog(const std::shared_ptr<LogSink>& sink, LogLevel level, std::string_v
     sink->Write(LogRecord{level, component, message});
   } catch (...) {
     // Diagnostics must never escape into component or transport callback code.
+    return;
   }
 }
 
