@@ -81,39 +81,80 @@ std::optional<StorageQuery> ParseStorageQuery(std::string_view prefix,
 StorageNode::~StorageNode() { Stop(); }
 
 Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Config config) {
-  if (transport_ == nullptr) return Result<void>::Err(InvalidArgument());
-  return Start(std::move(engine), *transport_, std::move(config));
+  Transport* transport = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    transport = transport_;
+  }
+  if (transport == nullptr) return Result<void>::Err(InvalidArgument());
+  return Start(std::move(engine), *transport, std::move(config));
 }
 
 Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Transport& transport,
                                 Config config) {
-  if (state_ != nullptr) return Result<void>::Err(OperationInProgress());
+  // Serialize declaration and commit, but never hold lifecycle_mutex_ while
+  // calling transport code: a fake transport may invoke a staging callback.
+  std::unique_lock<std::mutex> operation_lock(operation_mutex_);
+  {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    if (state_ != nullptr) return Result<void>::Err(OperationInProgress());
+  }
   if (!engine || !IsValidPrefix(config.prefix)) {
     return Result<void>::Err(InvalidArgument());
   }
 
   auto state = std::make_shared<State>(std::move(engine), std::move(config.prefix),
                                        std::move(config.log_sink));
-  const std::string queryable_key = state->prefix + "/**";
-  queryable_ = transport.DeclareQueryable(
-      queryable_key, [state](TransportQuery& query) { OnQuery(state, query); });
-  subscriber_ = transport.DeclareSubscriber(
-      queryable_key, [state](const TransportSample& sample) { OnSample(state, sample); });
-  transport_ = &transport;
-  state_ = std::move(state);
+  const std::string declaration_key = state->prefix + "/**";
+  auto queryable_result = transport.DeclareQueryable(
+      declaration_key, [state](TransportQuery& query) { OnQuery(state, query); });
+  if (!queryable_result.IsOk()) return Result<void>::Err(queryable_result.Error());
+  Queryable queryable = std::move(queryable_result).Value();
+
+  auto subscriber_result = transport.DeclareSubscriber(
+      declaration_key, [state](const TransportSample& sample) { OnSample(state, sample); });
+  if (!subscriber_result.IsOk()) return Result<void>::Err(subscriber_result.Error());
+  Subscription subscriber = std::move(subscriber_result).Value();
+
+  {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    // Sole activation/linearization point for Start.
+    transport_ = &transport;
+    queryable_ = std::move(queryable);
+    subscriber_ = std::move(subscriber);
+    state_ = state;
+    state->Activate();
+  }
   return Result<void>::Ok();
 }
 
 void StorageNode::Stop() noexcept {
-  if (state_ != nullptr) state_->active.store(false, std::memory_order_relaxed);
-  subscriber_ = Subscription{};
-  queryable_ = Queryable{};
-  state_.reset();
+  std::unique_lock<std::mutex> operation_lock(operation_mutex_);
+  std::shared_ptr<State> state;
+  Queryable queryable;
+  Subscription subscriber;
+  {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    if (!state_) return;
+    state = std::move(state_);
+    queryable = std::move(queryable_);
+    subscriber = std::move(subscriber_);
+  }
+
+  state->DeactivateAndWait();
+  subscriber = Subscription{};
+  queryable = Queryable{};
+}
+
+bool StorageNode::IsStarted() const noexcept {
+  std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+  return state_ != nullptr;
 }
 
 void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportSample& sample) {
+  auto lease = state->Enter();
+  if (!lease) return;
   try {
-    if (!state->active.load(std::memory_order_relaxed)) return;
 
     const auto parsed = ParseKey(state->prefix, sample.key);
     if (!parsed || parsed->kind != KeyKind::Base || parsed->is_batch) {
@@ -145,23 +186,28 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
 }
 
 void StorageNode::OnQuery(const std::shared_ptr<State>& state, TransportQuery& query) {
-  if (!state->active.load(std::memory_order_relaxed)) return;
+  auto lease = state->Enter();
+  if (!lease) return;
 
-  auto parsed = ParseStorageQuery(state->prefix, query.keyexpr);
-  if (!parsed) return;
+  try {
+    auto parsed = ParseStorageQuery(state->prefix, query.keyexpr);
+    if (!parsed) return;
 
-  const Encoding encoding = SitosEncoding();
-  auto reply = [state, &query, encoding](std::string_view key, Bytes value) {
-    const std::string full_key = MakeReplyKey(state->prefix, key);
-    return query.Reply(full_key, value, encoding).IsOk();
-  };
+    const Encoding encoding = SitosEncoding();
+    auto reply = [state, &query, encoding](std::string_view key, Bytes value) {
+      const std::string full_key = MakeReplyKey(state->prefix, key);
+      return query.Reply(full_key, value, encoding).IsOk();
+    };
 
-  if (!parsed->is_list) {
-    state->engine->Get(parsed->relative_key, reply);
-    return;
+    if (!parsed->is_list) {
+      state->engine->Get(parsed->relative_key, reply);
+      return;
+    }
+
+    state->engine->List(parsed->relative_key, reply);
+  } catch (...) {
+    EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, "query callback exception");
   }
-
-  state->engine->List(parsed->relative_key, reply);
 }
 
 }  // namespace sitos

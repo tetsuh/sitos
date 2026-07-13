@@ -5,11 +5,18 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <atomic>
+#include <barrier>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -18,6 +25,11 @@
 
 namespace sitos {
 namespace {
+
+static_assert(!std::is_copy_constructible_v<StorageNode>);
+static_assert(!std::is_copy_assignable_v<StorageNode>);
+static_assert(!std::is_move_constructible_v<StorageNode>);
+static_assert(!std::is_move_assignable_v<StorageNode>);
 
 class LifetimeSink final : public LogSink {
  public:
@@ -58,6 +70,52 @@ class FailingEngine final : public StorageEngine {
   bool List(std::string_view, const EntrySink&) const override { return false; }
 };
 
+class BlockingEngine final : public StorageEngine {
+ public:
+  bool Put(std::string_view, Bytes) override {
+    std::unique_lock<std::mutex> lock(mutex_);
+    put_entered_ = true;
+    cv_.notify_all();
+    cv_.wait(lock, [this] { return release_; });
+    return true;
+  }
+
+  bool Delete(std::string_view) override { return false; }
+
+  bool Get(std::string_view, const EntrySink&) const override {
+    std::unique_lock<std::mutex> lock(mutex_);
+    get_entered_ = true;
+    cv_.notify_all();
+    cv_.wait(lock, [this] { return release_; });
+    return true;
+  }
+
+  bool List(std::string_view, const EntrySink&) const override { return false; }
+
+  void WaitForPut() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    ASSERT_TRUE(cv_.wait_for(lock, std::chrono::seconds(2), [this] { return put_entered_; }));
+  }
+
+  void WaitForGet() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    ASSERT_TRUE(cv_.wait_for(lock, std::chrono::seconds(2), [this] { return get_entered_; }));
+  }
+
+  void Release() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    release_ = true;
+    cv_.notify_all();
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  mutable std::condition_variable cv_;
+  mutable bool get_entered_ = false;
+  bool put_entered_ = false;
+  bool release_ = false;
+};
+
 class FakeTransport final : public Transport {
  public:
   struct ReplyRecord {
@@ -79,12 +137,19 @@ class FakeTransport final : public Transport {
     return Result<void>::Err(std::make_error_code(std::errc::operation_not_supported));
   }
 
-  Subscription DeclareSubscriber(
+  Result<Subscription> DeclareSubscriber(
       std::string_view keyexpr,
       std::function<void(const TransportSample&)> callback) override {
     subscriber_keyexpr = std::string(keyexpr);
     subscriber_callback = std::move(callback);
-    return {};
+    if (fail_subscriber) {
+      subscriber_callback = {};
+      return Result<Subscription>::Err(std::make_error_code(std::errc::io_error));
+    }
+    ++subscriber_declarations;
+    return Result<Subscription>::Ok(
+        transport_test_access::DeclarationHandleTestAccess::MakeSubscription(
+            [this] { ++subscriber_resets; }));
   }
 
   void InvokeSubscriber(std::string key, TransportSample::Kind kind,
@@ -94,11 +159,27 @@ class FakeTransport final : public Transport {
     subscriber_callback(sample);
   }
 
-  Queryable DeclareQueryable(std::string_view keyexpr,
-                             const std::function<void(TransportQuery&)>& callback) override {
+  Result<Queryable> DeclareQueryable(
+      std::string_view keyexpr,
+      std::function<void(TransportQuery&)> callback) override {
     declared_keyexpr = std::string(keyexpr);
-    query_callback = callback;
-    return {};
+    query_callback = std::move(callback);
+    if (fail_queryable) {
+      query_callback = {};
+      return Result<Queryable>::Err(std::make_error_code(std::errc::io_error));
+    }
+    ++queryable_declarations;
+    if (invoke_queryable_during_declare && query_callback) {
+      auto query = TransportQuery::ForTesting(
+          [](std::string_view, std::span<const std::byte>, Encoding) {
+            return Result<void>::Ok();
+          });
+      query.keyexpr = std::string(keyexpr) + "/base/staged";
+      query_callback(query);
+    }
+    return Result<Queryable>::Ok(
+        transport_test_access::DeclarationHandleTestAccess::MakeQueryable(
+            [this] { ++queryable_resets; }));
   }
 
   std::vector<ReplyRecord> Invoke(std::string keyexpr, bool fail_after_first = false) {
@@ -122,7 +203,163 @@ class FakeTransport final : public Transport {
   std::function<void(TransportQuery&)> query_callback;
   std::string subscriber_keyexpr;
   std::function<void(const TransportSample&)> subscriber_callback;
+  bool fail_queryable = false;
+  bool fail_subscriber = false;
+  bool invoke_queryable_during_declare = false;
+  int queryable_declarations = 0;
+  int subscriber_declarations = 0;
+  int queryable_resets = 0;
+  int subscriber_resets = 0;
 };
+
+TEST(StorageNodeLifecycleTest, RollsBackPartialDeclarationAndAllowsRetry) {
+  FakeTransport transport;
+  transport.fail_subscriber = true;
+  StorageNode node(transport);
+
+  auto result = node.Start(std::make_shared<InMemoryEngine>(), {});
+  ASSERT_FALSE(result.IsOk());
+  EXPECT_EQ(result.Error(), std::make_error_code(std::errc::io_error));
+  EXPECT_FALSE(node.IsStarted());
+  EXPECT_EQ(transport.queryable_resets, 1);
+  EXPECT_EQ(transport.subscriber_declarations, 0);
+
+  transport.fail_subscriber = false;
+  ASSERT_TRUE(node.Start(std::make_shared<InMemoryEngine>(), {}).IsOk());
+  EXPECT_TRUE(node.IsStarted());
+  node.Stop();
+  EXPECT_EQ(transport.queryable_resets, 2);
+  EXPECT_EQ(transport.subscriber_resets, 1);
+}
+
+TEST(StorageNodeLifecycleTest, QueryableFailureDoesNotDeclareSubscriberAndCanRetry) {
+  FakeTransport transport;
+  transport.fail_queryable = true;
+  StorageNode node(transport);
+
+  auto result = node.Start(std::make_shared<InMemoryEngine>(), {});
+  ASSERT_FALSE(result.IsOk());
+  EXPECT_EQ(result.Error(), std::make_error_code(std::errc::io_error));
+  EXPECT_EQ(transport.subscriber_declarations, 0);
+  EXPECT_FALSE(node.IsStarted());
+
+  transport.fail_queryable = false;
+  ASSERT_TRUE(node.Start(std::make_shared<InMemoryEngine>(), {}).IsOk());
+  node.Stop();
+}
+
+TEST(StorageNodeLifecycleTest, StagingCallbacksCannotTouchEngine) {
+  FakeTransport transport;
+  transport.invoke_queryable_during_declare = true;
+  transport.fail_subscriber = true;
+  auto engine = std::make_shared<InMemoryEngine>();
+  StorageNode node(transport);
+
+  EXPECT_FALSE(node.Start(engine, {}).IsOk());
+  EXPECT_FALSE(engine->Get("staged", [](std::string_view, Bytes) { return true; }));
+  EXPECT_FALSE(node.IsStarted());
+}
+
+TEST(StorageNodeLifecycleTest, StopWaitsForSubscriberCallback) {
+  FakeTransport transport;
+  auto engine = std::make_shared<BlockingEngine>();
+  StorageNode node(transport);
+  ASSERT_TRUE(node.Start(engine, {}).IsOk());
+
+  std::thread callback([&] {
+    transport.InvokeSubscriber("sitos/base/key", TransportSample::Kind::Put,
+                               {std::byte{0x01}}, Encoding{std::string(Encoding::kSitosV1)});
+  });
+  engine->WaitForPut();
+
+  std::atomic<bool> stopped{false};
+  std::promise<void> stopper_called;
+  auto stopper_ready = stopper_called.get_future();
+  std::thread stopper([&] {
+    stopper_called.set_value();
+    node.Stop();
+    stopped.store(true, std::memory_order_release);
+  });
+  stopper_ready.wait();
+  EXPECT_FALSE(stopped.load(std::memory_order_acquire));
+  engine->Release();
+  callback.join();
+  stopper.join();
+  EXPECT_TRUE(stopped);
+  EXPECT_FALSE(node.IsStarted());
+}
+
+TEST(StorageNodeLifecycleTest, StopWaitsForQueryableCallback) {
+  FakeTransport transport;
+  auto engine = std::make_shared<BlockingEngine>();
+  StorageNode node(transport);
+  ASSERT_TRUE(node.Start(engine, {}).IsOk());
+
+  std::thread callback([&] { transport.Invoke("sitos/base/key"); });
+  engine->WaitForGet();
+
+  std::atomic<bool> stopped{false};
+  std::promise<void> stopper_called;
+  auto stopper_ready = stopper_called.get_future();
+  std::thread stopper([&] {
+    stopper_called.set_value();
+    node.Stop();
+    stopped.store(true, std::memory_order_release);
+  });
+  stopper_ready.wait();
+  EXPECT_FALSE(stopped.load(std::memory_order_acquire));
+  engine->Release();
+  callback.join();
+  stopper.join();
+  EXPECT_TRUE(stopped);
+  EXPECT_FALSE(node.IsStarted());
+}
+
+TEST(StorageNodeLifecycleTest, ConcurrentStartsHaveOneWinner) {
+  FakeTransport transport;
+  StorageNode node(transport);
+  std::barrier ready(3);
+  std::array<std::optional<Result<void>>, 2> results;
+  std::thread first([&] {
+    ready.arrive_and_wait();
+    results[0] = node.Start(std::make_shared<InMemoryEngine>(), {});
+  });
+  std::thread second([&] {
+    ready.arrive_and_wait();
+    results[1] = node.Start(std::make_shared<InMemoryEngine>(), {});
+  });
+  ready.arrive_and_wait();
+  first.join();
+  second.join();
+
+  ASSERT_TRUE(results[0].has_value());
+  ASSERT_TRUE(results[1].has_value());
+  EXPECT_NE(results[0]->IsOk(), results[1]->IsOk());
+  EXPECT_EQ(transport.queryable_declarations, 1);
+  EXPECT_EQ(transport.subscriber_declarations, 1);
+  node.Stop();
+}
+
+TEST(StorageNodeLifecycleTest, ConcurrentStopIsIdempotent) {
+  FakeTransport transport;
+  StorageNode node(transport);
+  ASSERT_TRUE(node.Start(std::make_shared<InMemoryEngine>(), {}).IsOk());
+  std::barrier ready(3);
+  std::thread first([&] {
+    ready.arrive_and_wait();
+    node.Stop();
+  });
+  std::thread second([&] {
+    ready.arrive_and_wait();
+    node.Stop();
+  });
+  ready.arrive_and_wait();
+  first.join();
+  second.join();
+  EXPECT_FALSE(node.IsStarted());
+  EXPECT_EQ(transport.queryable_resets, 1);
+  EXPECT_EQ(transport.subscriber_resets, 1);
+}
 
 TEST(StorageNodeQueryTest, ParsesExactBaseKey) {
   auto parsed = ParseStorageQuery("sitos", "sitos/base/foo/bar");
@@ -390,15 +627,20 @@ TEST(StorageNodeSubscriberTest, IgnoresUnsupportedPathsAndWarns) {
   }
 }
 
-TEST(StorageNodeSubscriberTest, RetainedCallbackIsInertAfterStop) {
+TEST(StorageNodeSubscriberTest, RetainedCallbacksAreInertAfterStop) {
   auto engine = std::make_shared<InMemoryEngine>();
   FakeTransport transport;
   StorageNode node;
   ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+  EXPECT_EQ(transport.queryable_declarations, 1);
+  EXPECT_EQ(transport.subscriber_declarations, 1);
   node.Stop();
+  EXPECT_EQ(transport.queryable_resets, 1);
+  EXPECT_EQ(transport.subscriber_resets, 1);
 
   transport.InvokeSubscriber("sitos/base/after-stop", TransportSample::Kind::Put,
                              {std::byte{0x01}}, Encoding{std::string(Encoding::kSitosV1)});
+  EXPECT_TRUE(transport.Invoke("sitos/base/after-stop").empty());
   EXPECT_FALSE(engine->Get("after-stop", [](std::string_view, Bytes) { return true; }));
 }
 

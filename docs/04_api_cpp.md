@@ -164,11 +164,10 @@ public:
 ```cpp
 class StorageNode {
 public:
-    static Result<StorageNode> Start(std::shared_ptr<StorageEngine> engine,
-                                     const Config& config);
-    static Result<StorageNode> Start(std::shared_ptr<StorageEngine> engine,
-                                     std::shared_ptr<Transport> transport,
-                                     const Config& config);
+    explicit StorageNode(Transport& transport);
+    Result<void> Start(std::shared_ptr<StorageEngine> engine, const Config& config);
+    Result<void> Start(std::shared_ptr<StorageEngine> engine, Transport& transport,
+                       const Config& config);
 
     /// In-process direct access to engine (no zenoh round trip).
     /// For fast reads in the host process (controller/orchestrator).
@@ -179,8 +178,16 @@ public:
     Result<void> CloseSession(std::string_view sid);    // [F10]
     std::vector<std::string> ActiveSessions() const;
 
-    void Stop();   // undeclares queryable/subscriber. Also called by the destructor
+    void Stop();   // quiesces callbacks, then undeclares queryable/subscriber
+
+    StorageNode(const StorageNode&) = delete;
+    StorageNode& operator=(const StorageNode&) = delete;
+    StorageNode(StorageNode&&) = delete;
+    StorageNode& operator=(StorageNode&&) = delete;
 };
+
+// Start stages both Transport declarations and activates the node only after
+// both succeed. Stop is idempotent and waits for callbacks already in flight.
 ```
 
 ## 4. ParamCache — Subscriber-Side Hot Path

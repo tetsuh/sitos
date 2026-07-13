@@ -6,8 +6,10 @@
 #ifndef SITOS_STORAGE_NODE_HPP
 #define SITOS_STORAGE_NODE_HPP
 
-#include <atomic>
+#include <condition_variable>
+#include <cstddef>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -61,10 +63,14 @@ class StorageNode {
   Result<void> Start(std::shared_ptr<StorageEngine> engine, Transport& transport,
                      Config config);
 
-  /// Undeclares the queryable and subscriber. Safe to call repeatedly.
+  /// Undeclares the queryable and subscriber. Safe to call repeatedly and concurrently.
+  /// Callbacks already in flight are completed before this returns. Calling lifecycle methods
+  /// or destroying this object from one of its callbacks is not supported.
   void Stop() noexcept;
 
-  bool IsStarted() const noexcept { return state_ != nullptr; }
+  /// Thread-safe lifecycle observation. The caller-owned Transport must outlive this node and
+  /// all concurrent calls. StorageNode is intentionally non-copyable and non-movable.
+  bool IsStarted() const noexcept;
 
  private:
   struct State {
@@ -77,12 +83,68 @@ class StorageNode {
     std::shared_ptr<StorageEngine> engine;
     std::string prefix;
     const std::shared_ptr<LogSink> log_sink;
-    std::atomic<bool> active{true};
+
+    class CallbackLease {
+     public:
+      explicit CallbackLease(State* state) : state_(state) {}
+      ~CallbackLease() {
+        if (state_ != nullptr) state_->Leave();
+      }
+      CallbackLease(const CallbackLease&) = delete;
+      CallbackLease& operator=(const CallbackLease&) = delete;
+      CallbackLease(CallbackLease&& other) noexcept : state_(other.state_) {
+        other.state_ = nullptr;
+      }
+      CallbackLease& operator=(CallbackLease&& other) noexcept {
+        if (this != &other) {
+          if (state_ != nullptr) state_->Leave();
+          state_ = other.state_;
+          other.state_ = nullptr;
+        }
+        return *this;
+      }
+
+     private:
+      State* state_;
+    };
+
+    std::optional<CallbackLease> Enter() noexcept {
+      std::lock_guard<std::mutex> lock(gate_mutex);
+      if (!accepting) return std::nullopt;
+      ++in_flight;
+      return CallbackLease(this);
+    }
+
+    void Activate() noexcept {
+      std::lock_guard<std::mutex> lock(gate_mutex);
+      accepting = true;
+    }
+
+    void DeactivateAndWait() noexcept {
+      std::unique_lock<std::mutex> lock(gate_mutex);
+      accepting = false;
+      gate_cv.wait(lock, [this] { return in_flight == 0; });
+    }
+
+    void Leave() noexcept {
+      std::lock_guard<std::mutex> lock(gate_mutex);
+      if (in_flight == 0) return;
+      --in_flight;
+      if (in_flight == 0) gate_cv.notify_all();
+    }
+
+    std::mutex gate_mutex;
+    std::condition_variable gate_cv;
+    std::size_t in_flight = 0;
+    bool accepting = false;
   };
 
   static void OnQuery(const std::shared_ptr<State>& state, TransportQuery& query);
   static void OnSample(const std::shared_ptr<State>& state, const TransportSample& sample);
 
+  mutable std::mutex lifecycle_mutex_;
+  // Serializes declaration/undeclaration transactions. Callbacks never hold this lock.
+  mutable std::mutex operation_mutex_;
   Transport* transport_ = nullptr;
   std::shared_ptr<State> state_;
   Queryable queryable_;

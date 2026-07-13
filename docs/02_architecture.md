@@ -171,7 +171,7 @@ it goes through the `Transport` abstraction ([09_dependency_policy.md](09_depend
 ```cpp
 StorageNode::Start(engine, transport, config):
   node.engine_ = engine
-  node.queryable_ = transport->DeclareQueryable(config.prefix + "/**",
+  queryable_result = transport->DeclareQueryable(config.prefix + "/**",
     [node](TransportQuery& q) {
       ParsedKey k = ParseKey(q.keyexpr)
       switch (k.kind):
@@ -188,8 +188,10 @@ StorageNode::Start(engine, transport, config):
         case MetaSession:
           if node.sessions.contains(k.sid): q.Reply(k.keyexpr, SessionJson(k.sid), kSitosV1)
     })
+  if queryable_result.is_error: return queryable_result.error
+  queryable = move(queryable_result.value)
 
-  node.subscriber_ = transport->DeclareSubscriber(config.prefix + "/**",
+  subscriber_result = transport->DeclareSubscriber(config.prefix + "/**",
     [node](const TransportSample& s) {
       ParsedKey k = ParseKey(s.key)
       if s.kind == TransportSample::Kind::Delete:
@@ -208,6 +210,10 @@ StorageNode::Start(engine, transport, config):
 
       if s.ack_token: node.ack_cache.insert(*s.ack_token)
     })
+  if subscriber_result.is_error: reset(queryable); return subscriber_result.error
+  // Commit both handles and activate the State at one linearization point.
+  node.queryable_ = move(queryable)
+  node.subscriber_ = move(subscriber_result.value)
 ```
 
 `ReplyFromReader` uses `Get` for single-key queries and `List` for `**` queries.
