@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <ctime>
+#include <format>
 #include <optional>
 #include <shared_mutex>
 #include <string>
@@ -73,17 +74,15 @@ Encoding SitosEncoding() { return Encoding{std::string(Encoding::kSitosV1)}; }
 
 // Formats the current time as an ISO-8601 UTC timestamp, e.g. 2026-07-14T01:23:45Z.
 std::string NowIso8601() {
-  const auto now = std::chrono::system_clock::now();
-  const std::time_t seconds = std::chrono::system_clock::to_time_t(now);
+  const std::time_t seconds = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
   std::tm tm{};
 #if defined(_WIN32)
   gmtime_s(&tm, &seconds);
 #else
   gmtime_r(&seconds, &tm);
 #endif
-  char buffer[32];
-  std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &tm);
-  return std::string(buffer);
+  return std::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", tm.tm_year + 1900, tm.tm_mon + 1,
+                     tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
 
 // Parses a scope-relative selector (the part after base/, session/<sid>/, or
@@ -261,7 +260,7 @@ Result<void> StorageNode::CreateSession(std::string_view sid) {
   SessionMeta meta{NowIso8601()};
 
   const std::string key(sid);
-  std::unique_lock<std::shared_mutex> lock(state->session_mutex);
+  std::unique_lock lock(state->session_mutex);
   if (state->sessions.contains(key)) return Result<void>::Err(SessionAlreadyExists());
   state->snapshots.emplace(key, std::move(snapshot));
   state->overlays.emplace(key, std::move(overlay));
@@ -278,7 +277,7 @@ Result<void> StorageNode::CloseSession(std::string_view sid) {
   if (!state) return Result<void>::Err(InvalidArgument());
 
   const std::string key(sid);
-  std::unique_lock<std::shared_mutex> lock(state->session_mutex);
+  std::unique_lock lock(state->session_mutex);
   auto it = state->sessions.find(key);
   if (it == state->sessions.end()) return Result<void>::Err(NoSuchSession());
   state->sessions.erase(it);
@@ -295,7 +294,7 @@ std::vector<std::string> StorageNode::ActiveSessions() const {
   }
   if (!state) return {};
 
-  std::shared_lock<std::shared_mutex> lock(state->session_mutex);
+  std::shared_lock lock(state->session_mutex);
   std::vector<std::string> result;
   result.reserve(state->sessions.size());
   for (const auto& [id, meta] : state->sessions) {
@@ -323,7 +322,7 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
       case KeyKind::Session: {
         std::shared_ptr<StorageEngine> overlay;
         {
-          std::shared_lock<std::shared_mutex> lock(state->session_mutex);
+          std::shared_lock lock(state->session_mutex);
           auto it = state->overlays.find(parsed->sid);
           if (it != state->overlays.end()) overlay = it->second;
         }
@@ -358,57 +357,59 @@ void StorageNode::OnQuery(const std::shared_ptr<State>& state, TransportQuery& q
     const auto [head, tail] = *split;
 
     if (head == "base") {
-      auto selector = ParseRelativeSelector(tail);
-      if (!selector) return;
-      ReplyFromReader(*state->engine, *selector, state->prefix, "base", query);
-      return;
-    }
-
-    if (head == "snap" || head == "session") {
-      auto sid_split = SplitFirst(tail);
-      if (!sid_split) return;
-      const auto [sid, relative] = *sid_split;
-      if (!IsValidSessionId(sid)) return;
-      auto selector = ParseRelativeSelector(relative);
-      if (!selector) return;
-
-      std::shared_ptr<const StorageReader> reader;
-      {
-        std::shared_lock<std::shared_mutex> lock(state->session_mutex);
-        if (head == "snap") {
-          auto it = state->snapshots.find(std::string(sid));
-          if (it != state->snapshots.end()) reader = it->second;
-        } else {
-          auto it = state->overlays.find(std::string(sid));
-          if (it != state->overlays.end()) reader = it->second;
-        }
+      if (auto selector = ParseRelativeSelector(tail)) {
+        ReplyFromReader(*state->engine, *selector, state->prefix, "base", query);
       }
-      if (!reader) return;  // Unknown sid: 0 replies.
-
-      const std::string scope_path = std::string(head) + "/" + std::string(sid);
-      ReplyFromReader(*reader, *selector, state->prefix, scope_path, query);
-      return;
-    }
-
-    if (head == "meta") {
-      auto parsed = ParseKey(state->prefix, query.keyexpr);
-      // MetaAck (#14) is out of scope; only meta/session is answered here.
-      if (!parsed || parsed->kind != KeyKind::MetaSession) return;
-
-      std::string json;
-      {
-        std::shared_lock<std::shared_mutex> lock(state->session_mutex);
-        auto it = state->sessions.find(parsed->sid);
-        if (it == state->sessions.end()) return;  // Unknown sid: 0 replies.
-        json = "{\"state\":\"active\",\"created_at\":\"" + it->second.created_at + "\"}";
-      }
-      const auto payload = ParamValue(json).Encode();
-      query.Reply(query.keyexpr, payload, SitosEncoding());
-      return;
+    } else if (head == "snap" || head == "session") {
+      ReplyScopedQuery(state, head, tail, query);
+    } else if (head == "meta") {
+      ReplyMetaQuery(state, query);
     }
   } catch (...) {
     EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, kQueryCallbackFailed);
   }
+}
+
+void StorageNode::ReplyScopedQuery(const std::shared_ptr<State>& state, std::string_view scope,
+                                   std::string_view tail, TransportQuery& query) {
+  auto sid_split = SplitFirst(tail);
+  if (!sid_split) return;
+  const auto [sid, relative] = *sid_split;
+  if (!IsValidSessionId(sid)) return;
+  auto selector = ParseRelativeSelector(relative);
+  if (!selector) return;
+
+  std::shared_ptr<const StorageReader> reader;
+  {
+    std::shared_lock lock(state->session_mutex);
+    if (scope == "snap") {
+      auto it = state->snapshots.find(std::string(sid));
+      if (it != state->snapshots.end()) reader = it->second;
+    } else {
+      auto it = state->overlays.find(std::string(sid));
+      if (it != state->overlays.end()) reader = it->second;
+    }
+  }
+  if (!reader) return;  // Unknown sid: 0 replies.
+
+  const std::string scope_path = std::string(scope) + "/" + std::string(sid);
+  ReplyFromReader(*reader, *selector, state->prefix, scope_path, query);
+}
+
+void StorageNode::ReplyMetaQuery(const std::shared_ptr<State>& state, TransportQuery& query) {
+  auto parsed = ParseKey(state->prefix, query.keyexpr);
+  // MetaAck (#14) is out of scope; only meta/session is answered here.
+  if (!parsed || parsed->kind != KeyKind::MetaSession) return;
+
+  std::string json;
+  {
+    std::shared_lock lock(state->session_mutex);
+    auto it = state->sessions.find(parsed->sid);
+    if (it == state->sessions.end()) return;  // Unknown sid: 0 replies.
+    json = std::format(R"({{"state":"active","created_at":"{}"}})", it->second.created_at);
+  }
+  const auto payload = ParamValue(json).Encode();
+  query.Reply(query.keyexpr, payload, SitosEncoding());
 }
 
 }  // namespace sitos

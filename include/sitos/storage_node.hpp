@@ -162,7 +162,7 @@ class StorageNode {
     // Session tables. Guarded by session_mutex, independent of the callback
     // gate: callbacks take gate then session_mutex; CreateSession/CloseSession
     // take only session_mutex, so the ordering never cycles.
-    mutable std::shared_mutex session_mutex;
+    std::shared_mutex session_mutex;
     SnapshotTable snapshots;
     OverlayTable overlays;
     SessionTable sessions;
@@ -170,6 +170,12 @@ class StorageNode {
 
   static void OnQuery(const std::shared_ptr<State>& state, TransportQuery& query);
   static void OnSample(const std::shared_ptr<State>& state, const TransportSample& sample);
+  // Answers a get in the session or snap scope from the matching overlay or
+  // snapshot; replies nothing for an unknown sid.
+  static void ReplyScopedQuery(const std::shared_ptr<State>& state, std::string_view scope,
+                               std::string_view tail, TransportQuery& query);
+  // Answers a get on meta/session/<sid> with the session metadata JSON.
+  static void ReplyMetaQuery(const std::shared_ptr<State>& state, TransportQuery& query);
 
   mutable std::mutex lifecycle_mutex_;
   // Serializes declaration/undeclaration transactions. Callbacks never hold this lock.
