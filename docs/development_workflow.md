@@ -12,8 +12,8 @@ Because implementation is assumed to be performed by AI coding agents,
 ```
 main ─────●───────●───────●──────●──► (always releasable)
            \     /  \     /
-            issue/3-param-value
-                     issue/6-in-memory-engine
+            feat/3-param-value
+                     feat/6-in-memory-engine
 ```
 
 * **main is always green** (required CI paths). Direct pushes are prohibited;
