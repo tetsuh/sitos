@@ -453,6 +453,8 @@ TestSubscriberSession& GetTestSubscriberSession() {
 }  // namespace
 
 Subscription::Subscription() = default;
+Subscription::Subscription(std::function<void()> reset_handler)
+    : reset_handler_(std::move(reset_handler)) {}
 Subscription::~Subscription() { Reset(); }
 Subscription::Subscription(Subscription&&) noexcept = default;
 Subscription& Subscription::operator=(Subscription&& other) noexcept {
@@ -464,12 +466,20 @@ Subscription& Subscription::operator=(Subscription&& other) noexcept {
 }
 
 void Subscription::Reset() noexcept {
-  if (!impl_) return;
-  if (impl_->callback_state) {
-    impl_->callback_state->active.store(false, std::memory_order_release);
+  if (impl_) {
+    if (impl_->callback_state) {
+      impl_->callback_state->active.store(false, std::memory_order_release);
+    }
+    z_drop(z_move(impl_->subscriber));
+    impl_.reset();
   }
-  z_drop(z_move(impl_->subscriber));
-  impl_.reset();
+  if (reset_handler_) {
+    try {
+      reset_handler_();
+    } catch (...) {
+    }
+    reset_handler_ = {};
+  }
 }
 
 namespace transport_test_access {
@@ -536,18 +546,27 @@ struct Queryable::Impl {
 };
 
 Queryable::Queryable() = default;
+Queryable::Queryable(std::function<void()> reset_handler)
+    : reset_handler_(std::move(reset_handler)) {}
 Queryable::~Queryable() { Reset(); }
 
 void Queryable::Reset() noexcept {
-  if (!impl_) return;
-
-  auto state = impl_->state;
-  {
-    std::lock_guard<std::mutex> lock(state->mutex);
-    state->alive = false;
-    z_drop(z_move(state->queryable));
+  if (impl_) {
+    auto state = impl_->state;
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->alive = false;
+      z_drop(z_move(state->queryable));
+    }
+    impl_.reset();
   }
-  impl_.reset();
+  if (reset_handler_) {
+    try {
+      reset_handler_();
+    } catch (...) {
+    }
+    reset_handler_ = {};
+  }
 }
 
 Queryable::Queryable(Queryable&&) noexcept = default;
@@ -555,9 +574,22 @@ Queryable& Queryable::operator=(Queryable&& other) noexcept {
   if (this != &other) {
     Reset();
     impl_ = std::move(other.impl_);
+    reset_handler_ = std::move(other.reset_handler_);
   }
   return *this;
 }
+
+namespace transport_test_access {
+
+Subscription DeclarationHandleTestAccess::MakeSubscription(std::function<void()> on_reset) {
+  return Subscription(std::move(on_reset));
+}
+
+Queryable DeclarationHandleTestAccess::MakeQueryable(std::function<void()> on_reset) {
+  return Queryable(std::move(on_reset));
+}
+
+}  // namespace transport_test_access
 
 // ---------------------------------------------------------------------------
 // ZenohTransport
@@ -684,14 +716,17 @@ class ZenohTransport : public Transport {
     return Result<void>::Ok();
   }
 
-  Subscription DeclareSubscriber(
+  Result<Subscription> DeclareSubscriber(
       std::string_view keyexpr_str,
       std::function<void(const TransportSample&)> callback) override {
-    Subscription subscription;
-    if (!session_valid_ || !callback) return subscription;
+    if (!session_valid_) {
+      return Result<Subscription>::Err(MakeError(TransportErrc::kErrDisconnected));
+    }
+    if (!callback) return Result<Subscription>::Err(MakeError(TransportErrc::kErrInvalidArg));
 
     auto ke = MakeKeyexpr(keyexpr_str);
-    if (!ke.IsOk()) return subscription;
+    if (!ke.IsOk()) return Result<Subscription>::Err(ke.Error());
+    Subscription subscription;
 
     subscription.impl_ = std::make_unique<Subscription::Impl>();
     subscription.impl_->callback_state =
@@ -708,29 +743,29 @@ class ZenohTransport : public Transport {
         z_move(closure), &options);
     if (decl_rc != Z_OK) {
       subscription.Reset();
+      return Result<Subscription>::Err(MakeError(decl_rc));
     }
-    return subscription;
+    return Result<Subscription>::Ok(std::move(subscription));
   }
 
-  Queryable DeclareQueryable(std::string_view keyexpr_str,
-                             const std::function<void(TransportQuery&)>& callback) override {
-    Queryable q;
-    // An empty callback is a programming error; return an empty handle with
-    // defined, safe behavior rather than registering a closure that would
-    // throw std::bad_function_call on every query (#67).
-    if (!callback) return q;
-    q.impl_ = std::make_unique<Queryable::Impl>();
+  Result<Queryable> DeclareQueryable(
+      std::string_view keyexpr_str,
+      std::function<void(TransportQuery&)> callback) override {
+    // An empty callback is a programming error; return an error rather than
+    // registering a closure that would throw std::bad_function_call (#67).
+    if (!callback) return Result<Queryable>::Err(MakeError(TransportErrc::kErrInvalidArg));
     if (!session_valid_) {
-      q.impl_.reset();
-      return q;
+      return Result<Queryable>::Err(MakeError(TransportErrc::kErrDisconnected));
     }
+    Queryable q;
+    q.impl_ = std::make_unique<Queryable::Impl>();
 
     q.impl_->state->callback = callback;
 
     auto ke = MakeKeyexpr(keyexpr_str);
     if (!ke.IsOk()) {
       q.impl_.reset();
-      return q;
+      return Result<Queryable>::Err(ke.Error());
     }
 
     auto* context = new std::shared_ptr<QueryableState>(q.impl_->state);
@@ -747,9 +782,10 @@ class ZenohTransport : public Transport {
                                              ke.Value().loan(), z_move(closure), &q_opts);
 
     if (decl_rc != Z_OK) {
-      q.impl_.reset();
+      q.Reset();
+      return Result<Queryable>::Err(MakeError(decl_rc));
     }
-    return q;
+    return Result<Queryable>::Ok(std::move(q));
   }
 
  private:

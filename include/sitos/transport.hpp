@@ -16,12 +16,15 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace sitos {
 
 namespace transport_test_access {
+class StorageNodeTestAccess;
 class SubscriptionTestAccess;
+class DeclarationHandleTestAccess;
 }
 
 /// A simple result type that holds either a value or an error code.
@@ -45,14 +48,18 @@ class Result {
   explicit operator bool() const { return IsOk(); }
 
   /// Requires IsOk().
-  const T& Value() const {
+  const T& Value() const & {
     assert(IsOk());
     return *value_;
   }
   /// Requires IsOk().
-  T& Value() {
+  T& Value() & {
     assert(IsOk());
     return *value_;
+  }
+  T&& Value() && {
+    assert(IsOk());
+    return std::move(*value_);
   }
 
   /// Requires !IsOk().
@@ -173,10 +180,14 @@ class Subscription {
 
  private:
   friend class ZenohTransport;
+  friend class transport_test_access::StorageNodeTestAccess;
   friend class transport_test_access::SubscriptionTestAccess;
+  friend class transport_test_access::DeclarationHandleTestAccess;
+  explicit Subscription(std::function<void()> reset_handler);
   struct Impl;
   void Reset() noexcept;
   std::unique_ptr<Impl> impl_;
+  std::function<void()> reset_handler_;
 };
 
 /// An active queryable handle. The queryable is undeclared when this object
@@ -193,10 +204,14 @@ class Queryable {
 
  private:
   friend class ZenohTransport;
+  friend class transport_test_access::StorageNodeTestAccess;
+  friend class transport_test_access::DeclarationHandleTestAccess;
+  explicit Queryable(std::function<void()> reset_handler);
   struct Impl;
   void Reset() noexcept;
 
   std::unique_ptr<Impl> impl_;
+  std::function<void()> reset_handler_;
 };
 
 /// Transport is the abstract interface that hides the underlying pub/sub
@@ -223,15 +238,24 @@ class Transport {
                            std::chrono::milliseconds timeout) = 0;
 
   /// Declare a subscriber that receives put/delete samples under keyexpr.
-  virtual Subscription DeclareSubscriber(
+  virtual Result<Subscription> DeclareSubscriber(
       std::string_view keyexpr,
       std::function<void(const TransportSample&)> callback) = 0;
 
   /// Declare a queryable that answers queries under keyexpr.
-  virtual Queryable DeclareQueryable(
+  virtual Result<Queryable> DeclareQueryable(
       std::string_view keyexpr,
-      const std::function<void(TransportQuery&)>& callback) = 0;
+      std::function<void(TransportQuery&)> callback) = 0;
 };
+
+namespace transport_test_access {
+/// Internal seam for transport-independent fake declaration lifetimes.
+class DeclarationHandleTestAccess {
+ public:
+  static Subscription MakeSubscription(std::function<void()> on_reset);
+  static Queryable MakeQueryable(std::function<void()> on_reset);
+};
+}
 
 }  // namespace sitos
 
