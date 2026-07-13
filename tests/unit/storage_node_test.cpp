@@ -993,6 +993,74 @@ TEST(StorageNodeSessionTest, SessionsClearedAfterStop) {
   EXPECT_TRUE(node.ActiveSessions().empty());
 }
 
+namespace {
+
+// Blocks inside TakeSnapshot until released, so a CreateSession holding the
+// callback-gate lease can be observed mid-flight.
+class BlockingSnapshotEngine final : public InMemoryEngine {
+ public:
+  std::shared_ptr<const StorageReader> TakeSnapshot() const override {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      entered_ = true;
+    }
+    cv_.notify_all();
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_.wait(lock, [this] { return release_; });
+    return InMemoryEngine::TakeSnapshot();
+  }
+
+  void WaitEntered() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    ASSERT_TRUE(cv_.wait_for(lock, std::chrono::seconds(2), [this] { return entered_; }));
+  }
+
+  void Release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      release_ = true;
+    }
+    cv_.notify_all();
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  mutable std::condition_variable cv_;
+  mutable bool entered_ = false;
+  bool release_ = false;
+};
+
+}  // namespace
+
+// Stop() must wait for an in-flight session operation: the lease keeps the node
+// enrolled so teardown does not race a running CreateSession.
+TEST(StorageNodeSessionTest, StopWaitsForInFlightCreateSession) {
+  auto engine = std::make_shared<BlockingSnapshotEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+
+  std::thread creator([&] { (void)node.CreateSession("s1"); });
+  engine->WaitEntered();  // CreateSession is now inside TakeSnapshot holding the lease.
+
+  std::atomic<bool> stopped{false};
+  std::promise<void> stopper_called;
+  auto stopper_ready = stopper_called.get_future();
+  std::thread stopper([&] {
+    stopper_called.set_value();
+    node.Stop();
+    stopped.store(true, std::memory_order_release);
+  });
+  stopper_ready.wait();
+  EXPECT_FALSE(stopped.load(std::memory_order_acquire));  // Stop blocked on the lease.
+
+  engine->Release();
+  creator.join();
+  stopper.join();
+  EXPECT_TRUE(stopped);
+  EXPECT_FALSE(node.IsStarted());
+}
+
 // AC3: no accumulation or leaks across repeated create/close cycles. This runs
 // under the sanitizer CI job (ASan/TSan) via the StorageNodeSessionTest filter.
 TEST(StorageNodeSessionTest, CreateCloseLoopReleasesResources) {

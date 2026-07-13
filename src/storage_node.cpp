@@ -252,6 +252,10 @@ Result<void> StorageNode::CreateSession(std::string_view sid) {
     state = state_;
   }
   if (!state) return Result<void>::Err(InvalidArgument());
+  // Enroll in the callback gate so a concurrent Stop() cannot tear the node down
+  // mid-operation; a node already quiescing rejects the request.
+  auto lease = state->Enter();
+  if (!lease) return Result<void>::Err(InvalidArgument());
 
   // Take the snapshot before locking the session table: TakeSnapshot() may be
   // O(n) and the engine is independently thread-safe.
@@ -275,6 +279,8 @@ Result<void> StorageNode::CloseSession(std::string_view sid) {
     state = state_;
   }
   if (!state) return Result<void>::Err(InvalidArgument());
+  auto lease = state->Enter();
+  if (!lease) return Result<void>::Err(InvalidArgument());
 
   const std::string key(sid);
   std::unique_lock lock(state->session_mutex);
@@ -293,6 +299,8 @@ std::vector<std::string> StorageNode::ActiveSessions() const {
     state = state_;
   }
   if (!state) return {};
+  auto lease = state->Enter();
+  if (!lease) return {};
 
   std::shared_lock lock(state->session_mutex);
   std::vector<std::string> result;
