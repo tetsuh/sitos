@@ -12,11 +12,14 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 #include "sitos/logging.hpp"
+#include "sitos/session.hpp"
 #include "sitos/storage_engine.hpp"
 #include "sitos/transport.hpp"
 
@@ -63,6 +66,22 @@ class StorageNode {
   /// Starts the node using an externally owned transport.
   Result<void> Start(std::shared_ptr<StorageEngine> engine, Transport& transport,
                      Config config);
+
+  /// Opens a session: takes an engine snapshot for snap/<sid>/** reads and
+  /// creates an empty overlay for session/<sid>/** reads and writes. Fails with
+  /// invalid_argument for a malformed sid or a stopped node, and file_exists if
+  /// the session already exists. [F10]
+  Result<void> CreateSession(std::string_view sid);
+
+  /// Closes a session: releases its snapshot and overlay and removes its
+  /// metadata, so subsequent snap/session/meta gets reply nothing. Fails with
+  /// invalid_argument for a stopped node and no_such_file_or_directory for an
+  /// unknown sid. [F10]
+  Result<void> CloseSession(std::string_view sid);
+
+  /// Returns the ids of all active sessions in unspecified order. Empty when the
+  /// node is stopped.
+  std::vector<std::string> ActiveSessions() const;
 
   /// Undeclares the queryable and subscriber. Safe to call repeatedly and concurrently.
   /// Callbacks already in flight are completed before this returns. Calling lifecycle methods
@@ -139,6 +158,14 @@ class StorageNode {
     std::condition_variable gate_cv;
     std::size_t in_flight = 0;
     bool accepting = false;
+
+    // Session tables. Guarded by session_mutex, independent of the callback
+    // gate: callbacks take gate then session_mutex; CreateSession/CloseSession
+    // take only session_mutex, so the ordering never cycles.
+    mutable std::shared_mutex session_mutex;
+    SnapshotTable snapshots;
+    OverlayTable overlays;
+    SessionTable sessions;
   };
 
   static void OnQuery(const std::shared_ptr<State>& state, TransportQuery& query);
