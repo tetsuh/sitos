@@ -22,6 +22,7 @@
 
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/logging.hpp"
+#include "transport/declaration_handle_test_access.hpp"
 
 namespace sitos {
 namespace {

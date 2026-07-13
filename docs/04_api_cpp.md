@@ -164,6 +164,7 @@ public:
 ```cpp
 class StorageNode {
 public:
+    StorageNode() = default;
     explicit StorageNode(Transport& transport);
     Result<void> Start(std::shared_ptr<StorageEngine> engine, Config config);
     Result<void> Start(std::shared_ptr<StorageEngine> engine, Transport& transport,

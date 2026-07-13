@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "sitos/transport.hpp"
+#include "declaration_handle_test_access.hpp"
 
 namespace sitos {
 

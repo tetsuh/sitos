@@ -6,6 +6,7 @@
 #ifndef SITOS_STORAGE_NODE_HPP
 #define SITOS_STORAGE_NODE_HPP
 
+#include <cassert>
 #include <condition_variable>
 #include <cstddef>
 #include <memory>
@@ -109,25 +110,26 @@ class StorageNode {
     };
 
     std::optional<CallbackLease> Enter() noexcept {
-      std::lock_guard<std::mutex> lock(gate_mutex);
+      std::scoped_lock lock(gate_mutex);
       if (!accepting) return std::nullopt;
       ++in_flight;
       return CallbackLease(this);
     }
 
     void Activate() noexcept {
-      std::lock_guard<std::mutex> lock(gate_mutex);
+      std::scoped_lock lock(gate_mutex);
       accepting = true;
     }
 
     void DeactivateAndWait() noexcept {
-      std::unique_lock<std::mutex> lock(gate_mutex);
+      std::unique_lock lock(gate_mutex);
       accepting = false;
       gate_cv.wait(lock, [this] { return in_flight == 0; });
     }
 
     void Leave() noexcept {
-      std::lock_guard<std::mutex> lock(gate_mutex);
+      std::scoped_lock lock(gate_mutex);
+      assert(in_flight > 0);
       if (in_flight == 0) return;
       --in_flight;
       if (in_flight == 0) gate_cv.notify_all();

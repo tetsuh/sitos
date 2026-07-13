@@ -83,7 +83,7 @@ StorageNode::~StorageNode() { Stop(); }
 Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Config config) {
   Transport* transport = nullptr;
   {
-    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    std::scoped_lock lock(lifecycle_mutex_);
     transport = transport_;
   }
   if (transport == nullptr) return Result<void>::Err(InvalidArgument());
@@ -94,9 +94,9 @@ Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Transport
                                 Config config) {
   // Serialize declaration and commit, but never hold lifecycle_mutex_ while
   // calling transport code: a fake transport may invoke a staging callback.
-  std::unique_lock<std::mutex> operation_lock(operation_mutex_);
+  std::unique_lock operation_lock(operation_mutex_);
   {
-    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    std::scoped_lock lock(lifecycle_mutex_);
     if (state_ != nullptr) return Result<void>::Err(OperationInProgress());
   }
   if (!engine || !IsValidPrefix(config.prefix)) {
@@ -117,7 +117,7 @@ Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Transport
   Subscription subscriber = std::move(subscriber_result).Value();
 
   {
-    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    std::scoped_lock lock(lifecycle_mutex_);
     // Sole activation/linearization point for Start.
     transport_ = &transport;
     queryable_ = std::move(queryable);
@@ -129,12 +129,12 @@ Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Transport
 }
 
 void StorageNode::Stop() noexcept {
-  std::unique_lock<std::mutex> operation_lock(operation_mutex_);
+  std::unique_lock operation_lock(operation_mutex_);
   std::shared_ptr<State> state;
   Queryable queryable;
   Subscription subscriber;
   {
-    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    std::scoped_lock lock(lifecycle_mutex_);
     if (!state_) return;
     state = std::move(state_);
     queryable = std::move(queryable_);
@@ -147,7 +147,7 @@ void StorageNode::Stop() noexcept {
 }
 
 bool StorageNode::IsStarted() const noexcept {
-  std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+  std::scoped_lock lock(lifecycle_mutex_);
   return state_ != nullptr;
 }
 

@@ -54,6 +54,7 @@ add_executable(sitos_storage_node_test
   unit/storage_node_test.cpp)
 target_link_libraries(sitos_storage_node_test
   PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_storage_node_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 sitos_enable_warnings(sitos_storage_node_test)
 if(SITOS_WITH_ZENOH)
   sitos_copy_zenohc(sitos_storage_node_test)

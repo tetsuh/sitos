@@ -22,7 +22,6 @@
 namespace sitos {
 
 namespace transport_test_access {
-class StorageNodeTestAccess;
 class SubscriptionTestAccess;
 class DeclarationHandleTestAccess;
 }
@@ -180,7 +179,6 @@ class Subscription {
 
  private:
   friend class ZenohTransport;
-  friend class transport_test_access::StorageNodeTestAccess;
   friend class transport_test_access::SubscriptionTestAccess;
   friend class transport_test_access::DeclarationHandleTestAccess;
   explicit Subscription(std::function<void()> reset_handler);
@@ -204,7 +202,6 @@ class Queryable {
 
  private:
   friend class ZenohTransport;
-  friend class transport_test_access::StorageNodeTestAccess;
   friend class transport_test_access::DeclarationHandleTestAccess;
   explicit Queryable(std::function<void()> reset_handler);
   struct Impl;
@@ -248,20 +245,10 @@ class Transport {
       std::function<void(TransportQuery&)> callback) = 0;
 };
 
-namespace transport_test_access {
-/// Internal seam for transport-independent fake declaration lifetimes.
-class DeclarationHandleTestAccess {
- public:
-  static Subscription MakeSubscription(std::function<void()> on_reset);
-  static Queryable MakeQueryable(std::function<void()> on_reset);
-};
-}
-
 }  // namespace sitos
 
 /// Factory function for the default zenoh-based transport.
-/// Defined in src/transport/zenoh_transport.cpp; returns nullptr if the
-/// zenoh session cannot be opened.
+/// Returns nullptr when zenoh support is disabled or the zenoh session cannot be opened.
 namespace sitos {
 std::unique_ptr<Transport> MakeZenohTransport();
 }  // namespace sitos
