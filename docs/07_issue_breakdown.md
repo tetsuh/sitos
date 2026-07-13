@@ -439,8 +439,8 @@ so it is not a v0.2 blocker. Include it by v1.0.
 Lane A (core):      #1 → #4 → #6 → #7 → #8
 Lane B (zenoh):     #2 → #3 → #9 → #10 → #11 → #12 → #18 → #19/#20
                                             ├→ #13 → #15/#16
+                                            ├→ #14 → #17 (also needs #15)
                                             └→ #56 (also needs #8 from Lane A)
-                                                #14 → #17
 Lane C (Python):    #22 (any time after #4) → #23/#24/#25 → #26 → #27/#28
 Lane D (quality):   #29/#30, #31/#32, #33, #34/#35 (as dependencies complete)
 Lane E (optional):  #57 HTTP gateway (after #56, #16, #19; see M6)
