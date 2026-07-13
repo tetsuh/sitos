@@ -214,6 +214,8 @@ StorageNode::Start(engine, transport, config):
   // Commit both handles and activate the State at one linearization point.
   node.queryable_ = move(queryable)
   node.subscriber_ = move(subscriber_result.value)
+  node.state_ = state
+  state.Activate()
 ```
 
 `ReplyFromReader` uses `Get` for single-key queries and `List` for `**` queries.

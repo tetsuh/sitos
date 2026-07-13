@@ -28,12 +28,16 @@ Subscription::Subscription() = default;
 Subscription::Subscription(std::function<void()> reset_handler)
     : reset_handler_(std::move(reset_handler)) {}
 Subscription::~Subscription() { Reset(); }
-Subscription::Subscription(Subscription&&) noexcept = default;
+Subscription::Subscription(Subscription&& other) noexcept
+    : impl_(std::move(other.impl_)), reset_handler_(std::move(other.reset_handler_)) {
+  other.reset_handler_ = nullptr;
+}
 Subscription& Subscription::operator=(Subscription&& other) noexcept {
   if (this != &other) {
     Reset();
     impl_ = std::move(other.impl_);
     reset_handler_ = std::move(other.reset_handler_);
+    other.reset_handler_ = nullptr;
   }
   return *this;
 }
@@ -44,6 +48,7 @@ void Subscription::Reset() noexcept {
     try {
       reset_handler_();
     } catch (...) {
+      // Reset is noexcept; reset handlers are best-effort cleanup hooks.
     }
     reset_handler_ = {};
   }
@@ -59,16 +64,21 @@ void Queryable::Reset() noexcept {
     try {
       reset_handler_();
     } catch (...) {
+      // Reset is noexcept; reset handlers are best-effort cleanup hooks.
     }
     reset_handler_ = {};
   }
 }
-Queryable::Queryable(Queryable&&) noexcept = default;
+Queryable::Queryable(Queryable&& other) noexcept
+    : impl_(std::move(other.impl_)), reset_handler_(std::move(other.reset_handler_)) {
+  other.reset_handler_ = nullptr;
+}
 Queryable& Queryable::operator=(Queryable&& other) noexcept {
   if (this != &other) {
     Reset();
     impl_ = std::move(other.impl_);
     reset_handler_ = std::move(other.reset_handler_);
+    other.reset_handler_ = nullptr;
   }
   return *this;
 }

@@ -212,6 +212,32 @@ class FakeTransport final : public Transport {
   int subscriber_resets = 0;
 };
 
+TEST(DeclarationHandleTest, MoveAssignmentTransfersResetHandlerExactlyOnce) {
+  int subscription_resets = 0;
+  {
+    Subscription destination;
+    {
+      auto source = transport_test_access::DeclarationHandleTestAccess::MakeSubscription(
+          [&] { ++subscription_resets; });
+      destination = std::move(source);
+    }
+    EXPECT_EQ(subscription_resets, 0);
+  }
+  EXPECT_EQ(subscription_resets, 1);
+
+  int queryable_resets = 0;
+  {
+    Queryable destination;
+    {
+      auto source = transport_test_access::DeclarationHandleTestAccess::MakeQueryable(
+          [&] { ++queryable_resets; });
+      destination = std::move(source);
+    }
+    EXPECT_EQ(queryable_resets, 0);
+  }
+  EXPECT_EQ(queryable_resets, 1);
+}
+
 TEST(StorageNodeLifecycleTest, RollsBackPartialDeclarationAndAllowsRetry) {
   FakeTransport transport;
   transport.fail_subscriber = true;
@@ -338,6 +364,24 @@ TEST(StorageNodeLifecycleTest, ConcurrentStartsHaveOneWinner) {
   EXPECT_EQ(transport.queryable_declarations, 1);
   EXPECT_EQ(transport.subscriber_declarations, 1);
   node.Stop();
+}
+
+TEST(StorageNodeLifecycleTest, DestructionAfterStopDoesNotResetDeclarationsAgain) {
+  FakeTransport transport;
+  auto engine = std::make_shared<InMemoryEngine>();
+  {
+    StorageNode node(transport);
+    ASSERT_TRUE(node.Start(engine, {}).IsOk());
+    node.Stop();
+    EXPECT_EQ(transport.queryable_resets, 1);
+    EXPECT_EQ(transport.subscriber_resets, 1);
+  }
+
+  EXPECT_EQ(transport.queryable_resets, 1);
+  EXPECT_EQ(transport.subscriber_resets, 1);
+  transport.InvokeSubscriber("sitos/base/after-destruction", TransportSample::Kind::Put,
+                             {std::byte{0x01}}, Encoding{std::string(Encoding::kSitosV1)});
+  EXPECT_FALSE(engine->Get("after-destruction", [](std::string_view, Bytes) { return true; }));
 }
 
 TEST(StorageNodeLifecycleTest, ConcurrentStopIsIdempotent) {

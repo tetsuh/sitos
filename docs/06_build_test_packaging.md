@@ -96,7 +96,7 @@ major behaviors.
 | `PutAckTimesOutWhenNodeUnavailable` | N10 | ack timeout/status mapping |
 | `PythonCallbackDoesNotDeadlockWithGet` | P04 | get inside callback does not deadlock |
 
-## 5.1 Lifecycle sanitizer runs
+## 4.2 Lifecycle sanitizer runs
 
 Issue #11 lifecycle tests have reproducible sanitizer configurations. TSan runs the
 zenoh-independent fake-Transport stress path; ASan/UBSan runs the same path separately:

@@ -165,9 +165,9 @@ public:
 class StorageNode {
 public:
     explicit StorageNode(Transport& transport);
-    Result<void> Start(std::shared_ptr<StorageEngine> engine, const Config& config);
+    Result<void> Start(std::shared_ptr<StorageEngine> engine, Config config);
     Result<void> Start(std::shared_ptr<StorageEngine> engine, Transport& transport,
-                       const Config& config);
+                       Config config);
 
     /// In-process direct access to engine (no zenoh round trip).
     /// For fast reads in the host process (controller/orchestrator).
@@ -178,7 +178,7 @@ public:
     Result<void> CloseSession(std::string_view sid);    // [F10]
     std::vector<std::string> ActiveSessions() const;
 
-    void Stop();   // quiesces callbacks, then undeclares queryable/subscriber
+    void Stop() noexcept;   // quiesces callbacks, then undeclares queryable/subscriber
 
     StorageNode(const StorageNode&) = delete;
     StorageNode& operator=(const StorageNode&) = delete;
