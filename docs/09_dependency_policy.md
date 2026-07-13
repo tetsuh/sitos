@@ -78,11 +78,11 @@ public:
                              const QueryResultSink& sink,
                              std::chrono::milliseconds timeout) = 0;
 
-    virtual Subscription DeclareSubscriber(
+    virtual Result<Subscription> DeclareSubscriber(
         std::string_view keyexpr,
         std::function<void(const TransportSample&)> callback) = 0;
 
-    virtual Queryable DeclareQueryable(
+    virtual Result<Queryable> DeclareQueryable(
         std::string_view keyexpr,
         std::function<void(TransportQuery&)> callback) = 0;
 };

@@ -293,6 +293,7 @@ TEST_F(TransportTest, QueryableRoundTrip) {
         EXPECT_TRUE(reply_result.IsOk())
             << "Queryable reply failed: " << reply_result.Error().message();
       });
+  ASSERT_TRUE(q.IsOk()) << q.Error().message();
 
   std::mutex mtx;
   std::condition_variable cv;
@@ -336,6 +337,7 @@ TEST_F(TransportTest, QueryReplyPreservesActualEncoding) {
   auto queryable = transport_->DeclareQueryable(kQueryKey, [&](sitos::TransportQuery& query) {
     EXPECT_TRUE(query.Reply(kQueryKey, kPayload, kEncoding).IsOk());
   });
+  ASSERT_TRUE(queryable.IsOk()) << queryable.Error().message();
 
   auto result = transport_->Get(
       kQueryKey,
@@ -367,6 +369,7 @@ TEST_F(TransportTest, QueryReplyNormalizesLegacySitosEncoding) {
   auto queryable = transport_->DeclareQueryable(kQueryKey, [&](sitos::TransportQuery& query) {
     EXPECT_TRUE(query.Reply(kQueryKey, kPayload, kLegacyEncoding).IsOk());
   });
+  ASSERT_TRUE(queryable.IsOk()) << queryable.Error().message();
 
   auto result = transport_->Get(
       kQueryKey,
@@ -407,6 +410,7 @@ TEST_F(TransportTest, QueryableCallbackExceptionIsContained) {
     callback_cv.notify_one();
     throw std::runtime_error("boom");
   });
+  ASSERT_TRUE(q.IsOk()) << q.Error().message();
 
   // The queryable will be invoked but throws before replying. Wait until it
   // starts before checking that no reply reached the sink.
@@ -435,6 +439,7 @@ TEST_F(TransportTest, QueryableCallbackExceptionIsContained) {
   bool reply_received = false;
   auto q2 = transport_->DeclareQueryable(
       kOkKey, [&](sitos::TransportQuery& tq) { tq.Reply(kOkKey, kPayload, enc); });
+  ASSERT_TRUE(q2.IsOk()) << q2.Error().message();
 
   auto healthy_get = transport_->Get(
       kOkKey,
@@ -468,6 +473,7 @@ TEST_F(TransportTest, GetSinkExceptionIsContained) {
 
   auto q = transport_->DeclareQueryable(
       kQueryKey, [&](sitos::TransportQuery& tq) { tq.Reply(kQueryKey, kPayload, enc); });
+  ASSERT_TRUE(q.IsOk()) << q.Error().message();
 
   auto result = transport_->Get(
       kQueryKey,
@@ -517,6 +523,7 @@ TEST_F(TransportTest, GetSinkExceptionIsContained) {
 // declaration or destruction, and the session remains usable.
 TEST_F(TransportTest, EmptyQueryableCallbackIsSafe) {
   auto q = transport_->DeclareQueryable("sitos/test/empty_cb", {});
+  EXPECT_FALSE(q.IsOk());
   // Destruction of the (empty) handle must not crash; it goes out of scope.
 }
 

@@ -57,6 +57,41 @@ jobs:
       - name: Fixture validator (Python/struct independent check)
         run: python tests/fixtures/validate_fixtures.py
 
+  lifecycle-sanitizers:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: tsan
+            option: SITOS_ENABLE_TSAN=ON
+          - name: asan-ubsan
+            option: SITOS_ENABLE_ASAN_UBSAN=ON
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build/sanitizer-${{ matrix.name }} -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug -DSITOS_BUILD_TESTS=ON
+          -DSITOS_WITH_ZENOH=OFF -D${{ matrix.option }}
+
+      - name: Build
+        run: cmake --build build/sanitizer-${{ matrix.name }} --parallel 2
+
+      - name: Run lifecycle tests
+        env:
+          TSAN_OPTIONS: halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1
+        run: >-
+          ctest --test-dir build/sanitizer-${{ matrix.name }}
+          --output-on-failure -R StorageNodeLifecycleTest
+
   build-windows:
     runs-on: windows-latest
     steps:

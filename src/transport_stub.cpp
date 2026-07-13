@@ -5,6 +5,8 @@
 
 #include "sitos/transport.hpp"
 
+#include "transport/declaration_handle_lifecycle.hpp"
+
 #include <utility>
 
 namespace sitos {
@@ -12,6 +14,13 @@ namespace sitos {
 struct TransportQuery::Impl {};
 struct Subscription::Impl {};
 struct Queryable::Impl {};
+
+}  // namespace sitos
+
+// Shared special members require complete Subscription::Impl and Queryable::Impl definitions.
+#include "transport/declaration_handle_lifecycle_impl.hpp"
+
+namespace sitos {
 
 TransportQuery::TransportQuery() = default;
 TransportQuery::TransportQuery(ReplyHandler handler)
@@ -24,18 +33,16 @@ Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::by
   return Result<void>::Err(std::make_error_code(std::errc::operation_not_supported));
 }
 
-Subscription::Subscription() = default;
-Subscription::~Subscription() = default;
-Subscription::Subscription(Subscription&&) noexcept = default;
-Subscription& Subscription::operator=(Subscription&&) noexcept = default;
-
-Queryable::Queryable() = default;
-Queryable::~Queryable() { Reset(); }
-void Queryable::Reset() noexcept { impl_.reset(); }
-Queryable::Queryable(Queryable&&) noexcept = default;
-Queryable& Queryable::operator=(Queryable&& other) noexcept {
-  if (this != &other) impl_ = std::move(other.impl_);
-  return *this;
+void Subscription::Reset() noexcept {
+  impl_.reset();
+  transport_internal::InvokeResetHandler(reset_handler_);
 }
+
+void Queryable::Reset() noexcept {
+  impl_.reset();
+  transport_internal::InvokeResetHandler(reset_handler_);
+}
+
+std::unique_ptr<Transport> MakeZenohTransport() { return nullptr; }
 
 }  // namespace sitos

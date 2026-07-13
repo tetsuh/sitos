@@ -12,6 +12,25 @@ option(SITOS_WITH_ROCKSDB "Build with RocksDB storage engine support" OFF)
 option(SITOS_BUILD_PYTHON "Build Python bindings" OFF)
 option(SITOS_BUILD_TESTS "Build tests" ON)
 option(SITOS_BUILD_EXAMPLES "Build examples" OFF)
+option(SITOS_ENABLE_TSAN "Enable ThreadSanitizer for supported compilers" OFF)
+option(SITOS_ENABLE_ASAN_UBSAN "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+
+if(SITOS_ENABLE_TSAN AND SITOS_ENABLE_ASAN_UBSAN)
+  message(FATAL_ERROR "SITOS_ENABLE_TSAN and SITOS_ENABLE_ASAN_UBSAN are mutually exclusive")
+endif()
+if(SITOS_ENABLE_TSAN OR SITOS_ENABLE_ASAN_UBSAN)
+  if(MSVC)
+    message(FATAL_ERROR "Sanitizers are currently supported only with GCC/Clang")
+  endif()
+  add_compile_options(-fno-omit-frame-pointer)
+  if(SITOS_ENABLE_TSAN)
+    add_compile_options(-fsanitize=thread)
+    add_link_options(-fsanitize=thread)
+  else()
+    add_compile_options(-fsanitize=address,undefined)
+    add_link_options(-fsanitize=address,undefined)
+  endif()
+endif()
 
 # --- zenoh-c build integration ---
 # Only required when building tests or examples that use the transport layer.
@@ -42,6 +61,7 @@ add_library(sitos STATIC
   src/in_memory_engine.cpp
   src/logging.cpp
   src/storage_node.cpp
+  src/transport/declaration_handle_lifecycle.cpp
 )
 add_library(sitos::sitos ALIAS sitos)
 target_include_directories(sitos PUBLIC

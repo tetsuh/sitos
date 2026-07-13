@@ -6,6 +6,7 @@
 sitos/
   CMakeLists.txt              # Top level. Options: SITOS_WITH_ROCKSDB,
                               #   SITOS_BUILD_PYTHON, SITOS_BUILD_TESTS, SITOS_BUILD_EXAMPLES,
+                              #   SITOS_ENABLE_TSAN, SITOS_ENABLE_ASAN_UBSAN,
                               #   SITOS_BUILD_GATEWAY (optional HTTP gateway, ADR-0015)
   cmake/                      # zenoh-c integration (FetchContent/Corrosion/find_package)
   include/sitos/              # Public headers (API from 04_api_cpp.md)
@@ -94,6 +95,28 @@ major behaviors.
 | `RawZenohClientCanSendBatch` | C03/F09 | Batch interoperability using only zenoh-python |
 | `PutAckTimesOutWhenNodeUnavailable` | N10 | ack timeout/status mapping |
 | `PythonCallbackDoesNotDeadlockWithGet` | P04 | get inside callback does not deadlock |
+
+## 4.2 Lifecycle sanitizer runs
+
+Issue #11 lifecycle tests have reproducible sanitizer configurations. TSan runs the
+zenoh-independent fake-Transport stress path; ASan/UBSan runs the same path separately:
+
+```sh
+cmake -S . -B build/tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=OFF -DSITOS_ENABLE_TSAN=ON
+cmake --build build/tsan
+ctest --test-dir build/tsan --output-on-failure -R StorageNodeLifecycleTest
+
+cmake -S . -B build/asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=OFF -DSITOS_ENABLE_ASAN_UBSAN=ON
+cmake --build build/asan
+ctest --test-dir build/asan --output-on-failure -R StorageNodeLifecycleTest
+```
+
+For a platform where the zenoh-c standalone runtime supports sanitizer instrumentation,
+repeat the ASan/UBSan configuration with `-DSITOS_WITH_ZENOH=ON` and run the lifecycle
+integration targets. The CI sanitizer job uses zenoh OFF to keep TSan independent of
+zenoh runtime internals.
 
 ## 5. CI (GitHub Actions)
 
