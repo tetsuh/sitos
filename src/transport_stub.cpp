@@ -17,6 +17,7 @@ struct Queryable::Impl {};
 
 }  // namespace sitos
 
+// Shared special members require complete Subscription::Impl and Queryable::Impl definitions.
 #include "transport/declaration_handle_lifecycle_impl.hpp"
 
 namespace sitos {

@@ -213,6 +213,32 @@ class FakeTransport final : public Transport {
   int subscriber_resets = 0;
 };
 
+TEST(DeclarationHandleTest, MoveConstructionTransfersResetHandlerExactlyOnce) {
+  int subscription_resets = 0;
+  {
+    auto source = transport_test_access::DeclarationHandleTestAccess::MakeSubscription(
+        [&] { ++subscription_resets; });
+    {
+      Subscription destination(std::move(source));
+      EXPECT_EQ(subscription_resets, 0);
+    }
+    EXPECT_EQ(subscription_resets, 1);
+  }
+  EXPECT_EQ(subscription_resets, 1);
+
+  int queryable_resets = 0;
+  {
+    auto source = transport_test_access::DeclarationHandleTestAccess::MakeQueryable(
+        [&] { ++queryable_resets; });
+    {
+      Queryable destination(std::move(source));
+      EXPECT_EQ(queryable_resets, 0);
+    }
+    EXPECT_EQ(queryable_resets, 1);
+  }
+  EXPECT_EQ(queryable_resets, 1);
+}
+
 TEST(DeclarationHandleTest, MoveAssignmentTransfersResetHandlerExactlyOnce) {
   int subscription_resets = 0;
   {

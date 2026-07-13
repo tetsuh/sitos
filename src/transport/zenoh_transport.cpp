@@ -529,6 +529,7 @@ struct Queryable::Impl {
 
 }  // namespace sitos
 
+// Shared special members require complete Subscription::Impl and Queryable::Impl definitions.
 #include "declaration_handle_lifecycle_impl.hpp"
 
 namespace sitos {
@@ -719,7 +720,7 @@ class ZenohTransport : public Transport {
 
     auto ke = MakeKeyexpr(keyexpr_str);
     if (!ke.IsOk()) {
-      q.impl_.reset();
+      q.Reset();
       return Result<Queryable>::Err(ke.Error());
     }
 
