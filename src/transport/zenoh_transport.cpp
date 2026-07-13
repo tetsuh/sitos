@@ -23,6 +23,7 @@
 
 #include "sitos/transport.hpp"
 
+#include "declaration_handle_lifecycle.hpp"
 #include "zenoh_transport_test_access.hpp"
 
 namespace sitos {
@@ -452,24 +453,6 @@ TestSubscriberSession& GetTestSubscriberSession() {
 
 }  // namespace
 
-Subscription::Subscription() = default;
-Subscription::Subscription(std::function<void()> reset_handler)
-    : reset_handler_(std::move(reset_handler)) {}
-Subscription::~Subscription() { Reset(); }
-Subscription::Subscription(Subscription&& other) noexcept
-    : impl_(std::move(other.impl_)), reset_handler_(std::move(other.reset_handler_)) {
-  other.reset_handler_ = nullptr;
-}
-Subscription& Subscription::operator=(Subscription&& other) noexcept {
-  if (this != &other) {
-    Reset();
-    impl_ = std::move(other.impl_);
-    reset_handler_ = std::move(other.reset_handler_);
-    other.reset_handler_ = nullptr;
-  }
-  return *this;
-}
-
 void Subscription::Reset() noexcept {
   if (impl_) {
     if (impl_->callback_state) {
@@ -478,14 +461,7 @@ void Subscription::Reset() noexcept {
     z_drop(z_move(impl_->subscriber));
     impl_.reset();
   }
-  if (reset_handler_) {
-    try {
-      reset_handler_();
-    } catch (...) {
-      // Reset is noexcept; reset handlers are best-effort cleanup hooks.
-    }
-    reset_handler_ = {};
-  }
+  transport_internal::InvokeResetHandler(reset_handler_);
 }
 
 namespace transport_test_access {
@@ -551,10 +527,11 @@ struct Queryable::Impl {
   std::shared_ptr<QueryableState> state{std::make_shared<QueryableState>()};
 };
 
-Queryable::Queryable() = default;
-Queryable::Queryable(std::function<void()> reset_handler)
-    : reset_handler_(std::move(reset_handler)) {}
-Queryable::~Queryable() { Reset(); }
+}  // namespace sitos
+
+#include "declaration_handle_lifecycle_impl.hpp"
+
+namespace sitos {
 
 void Queryable::Reset() noexcept {
   if (impl_) {
@@ -566,41 +543,8 @@ void Queryable::Reset() noexcept {
     }
     impl_.reset();
   }
-  if (reset_handler_) {
-    try {
-      reset_handler_();
-    } catch (...) {
-      // Reset is noexcept; reset handlers are best-effort cleanup hooks.
-    }
-    reset_handler_ = {};
-  }
+  transport_internal::InvokeResetHandler(reset_handler_);
 }
-
-Queryable::Queryable(Queryable&& other) noexcept
-    : impl_(std::move(other.impl_)), reset_handler_(std::move(other.reset_handler_)) {
-  other.reset_handler_ = nullptr;
-}
-Queryable& Queryable::operator=(Queryable&& other) noexcept {
-  if (this != &other) {
-    Reset();
-    impl_ = std::move(other.impl_);
-    reset_handler_ = std::move(other.reset_handler_);
-    other.reset_handler_ = nullptr;
-  }
-  return *this;
-}
-
-namespace transport_test_access {
-
-Subscription DeclarationHandleTestAccess::MakeSubscription(std::function<void()> on_reset) {
-  return Subscription(std::move(on_reset));
-}
-
-Queryable DeclarationHandleTestAccess::MakeQueryable(std::function<void()> on_reset) {
-  return Queryable(std::move(on_reset));
-}
-
-}  // namespace transport_test_access
 
 // ---------------------------------------------------------------------------
 // ZenohTransport

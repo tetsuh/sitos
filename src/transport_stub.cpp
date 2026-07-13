@@ -5,6 +5,8 @@
 
 #include "sitos/transport.hpp"
 
+#include "transport/declaration_handle_lifecycle.hpp"
+
 #include <utility>
 
 namespace sitos {
@@ -12,6 +14,12 @@ namespace sitos {
 struct TransportQuery::Impl {};
 struct Subscription::Impl {};
 struct Queryable::Impl {};
+
+}  // namespace sitos
+
+#include "transport/declaration_handle_lifecycle_impl.hpp"
+
+namespace sitos {
 
 TransportQuery::TransportQuery() = default;
 TransportQuery::TransportQuery(ReplyHandler handler)
@@ -24,76 +32,15 @@ Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::by
   return Result<void>::Err(std::make_error_code(std::errc::operation_not_supported));
 }
 
-Subscription::Subscription() = default;
-Subscription::Subscription(std::function<void()> reset_handler)
-    : reset_handler_(std::move(reset_handler)) {}
-Subscription::~Subscription() { Reset(); }
-Subscription::Subscription(Subscription&& other) noexcept
-    : impl_(std::move(other.impl_)), reset_handler_(std::move(other.reset_handler_)) {
-  other.reset_handler_ = nullptr;
-}
-Subscription& Subscription::operator=(Subscription&& other) noexcept {
-  if (this != &other) {
-    Reset();
-    impl_ = std::move(other.impl_);
-    reset_handler_ = std::move(other.reset_handler_);
-    other.reset_handler_ = nullptr;
-  }
-  return *this;
-}
-
 void Subscription::Reset() noexcept {
   impl_.reset();
-  if (reset_handler_) {
-    try {
-      reset_handler_();
-    } catch (...) {
-      // Reset is noexcept; reset handlers are best-effort cleanup hooks.
-    }
-    reset_handler_ = {};
-  }
+  transport_internal::InvokeResetHandler(reset_handler_);
 }
 
-Queryable::Queryable() = default;
-Queryable::Queryable(std::function<void()> reset_handler)
-    : reset_handler_(std::move(reset_handler)) {}
-Queryable::~Queryable() { Reset(); }
 void Queryable::Reset() noexcept {
   impl_.reset();
-  if (reset_handler_) {
-    try {
-      reset_handler_();
-    } catch (...) {
-      // Reset is noexcept; reset handlers are best-effort cleanup hooks.
-    }
-    reset_handler_ = {};
-  }
+  transport_internal::InvokeResetHandler(reset_handler_);
 }
-Queryable::Queryable(Queryable&& other) noexcept
-    : impl_(std::move(other.impl_)), reset_handler_(std::move(other.reset_handler_)) {
-  other.reset_handler_ = nullptr;
-}
-Queryable& Queryable::operator=(Queryable&& other) noexcept {
-  if (this != &other) {
-    Reset();
-    impl_ = std::move(other.impl_);
-    reset_handler_ = std::move(other.reset_handler_);
-    other.reset_handler_ = nullptr;
-  }
-  return *this;
-}
-
-namespace transport_test_access {
-
-Subscription DeclarationHandleTestAccess::MakeSubscription(std::function<void()> on_reset) {
-  return Subscription(std::move(on_reset));
-}
-
-Queryable DeclarationHandleTestAccess::MakeQueryable(std::function<void()> on_reset) {
-  return Queryable(std::move(on_reset));
-}
-
-}  // namespace transport_test_access
 
 std::unique_ptr<Transport> MakeZenohTransport() { return nullptr; }
 
