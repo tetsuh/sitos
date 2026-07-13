@@ -17,9 +17,9 @@ Milestone = release boundary).
 |---|---|---|
 | **v0.1** | The zenoh-independent core works. Payload fixtures and InMemoryEngine contract tests are green | #1, #4, #5, #6, #7 |
 | **v0.2** | StorageNode/ParamStore/ParamCache work in C++ through same-process zenoh sessions | #2, #3, #9–#13, #15, #18, #19, #21 |
-| **v0.3** | Basic Python APIs work (InMemory, ParamStore, ParamCache, NumPy read) | #22, #23, #24, #25, #27 |
+| **v0.3** | Basic Python APIs work (InMemory, ParamStore, ParamCache, NumPy read) | #16, #22, #23, #24, #25, #27 |
 | **v0.4** | RocksDB, single-value interop, bench, examples, and session-scoped buffers are in place | #8, #29, #31, #32, #33, #56 |
-| **v1.0** | Public OSS quality. docs/release/wheels/ack/batch interop/GIL/custom engine and the optional HTTP gateway completed | #14, #16, #17, #20, #26, #28, #30, #34, #35, #57 |
+| **v1.0** | Public OSS quality. docs/release/wheels/ack/batch interop/GIL/custom engine and the optional HTTP gateway completed | #14, #17, #20, #26, #28, #30, #34, #35, #57 |
 
 `ack`-related work (#14, #17) is useful, but implementation is heavy relative to initial value,
 so it is not a v0.2 blocker. Include it by v1.0.
@@ -204,7 +204,7 @@ so it is not a v0.2 blocker. Include it by v1.0.
 * Depends on: #11, #13
 
 ### #16 ParamStore: Subscribe
-* Milestone: v1.0
+* Milestone: v0.3
 * References: [04] §2, [01] F13
 * Implementation targets: `include/sitos/param_store.hpp`, `src/param_store.cpp`,
   `tests/integration/param_store_subscribe_test.cpp`
@@ -438,10 +438,12 @@ so it is not a v0.2 blocker. Include it by v1.0.
 ```
 Lane A (core):      #1 → #4 → #6 → #7 → #8
 Lane B (zenoh):     #2 → #3 → #9 → #10 → #11 → #12 → #18 → #19/#20
-                                            └→ #13 → #15/#16
-                                                #14 → #17
+                                            ├→ #13 → #15/#16
+                                            ├→ #14 → #17 (also needs #15)
+                                            └→ #56 (also needs #8 from Lane A)
 Lane C (Python):    #22 (any time after #4) → #23/#24/#25 → #26 → #27/#28
 Lane D (quality):   #29/#30, #31/#32, #33, #34/#35 (as dependencies complete)
+Lane E (optional):  #57 HTTP gateway (after #56, #16, #19; see M6)
 ```
 
 Each Issue is assumed to correspond to one PR. The PR must describe the corresponding requirement IDs
