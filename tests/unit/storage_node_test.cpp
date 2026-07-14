@@ -677,8 +677,8 @@ TEST(StorageNodeSubscriberTest, IgnoresUnsupportedPathsAndWarns) {
 
   const auto put = TransportSample::Kind::Put;
   const auto del = TransportSample::Kind::Delete;
-  // snap/** is read-only; session/<sid> with no active session is unknown; the
-  // remaining paths (meta write, batch, invalid base keys) are unsupported.
+  // snap/** is read-only; session/<sid> with no active session is unknown; an
+  // incorrectly encoded batch and remaining invalid paths are rejected.
   transport.InvokeSubscriber("sitos/snap/session-1/ignored", put, {std::byte{0x01}},
                              Encoding{"unknown"});
   transport.InvokeSubscriber("sitos/snap/session-1/ignored", del, {std::byte{0x01}}, {});
@@ -696,7 +696,7 @@ TEST(StorageNodeSubscriberTest, IgnoresUnsupportedPathsAndWarns) {
   }));
   const std::vector<std::string> expected_messages = {
       "read-only snapshot key", "read-only snapshot key",  "unknown session",
-      "unsupported subscriber key", "unsupported subscriber key",
+      "unsupported subscriber key", "invalid batch operation or encoding",
       "unsupported subscriber key", "unsupported subscriber key"};
   const auto records = sink->Records();
   ASSERT_EQ(records.size(), expected_messages.size());
@@ -967,6 +967,8 @@ TEST(StorageNodeBatchTest, RejectsWrongOperationAndEncodingButPreservesOrdinaryF
                              Encoding{std::string(Encoding::kSitosV1Batch)});
   transport.InvokeSubscriber("sitos/base/@batch", TransportSample::Kind::Put, batch,
                              Encoding{std::string(Encoding::kSitosV1Batch)});
+  transport.InvokeSubscriber("sitos/base/~batch", TransportSample::Kind::Put, batch,
+                             Encoding{std::string(Encoding::kSitosV1Batch)});
   transport.InvokeSubscriber("sitos/base/ordinary", TransportSample::Kind::Put, batch,
                              Encoding{std::string(Encoding::kSitosV1Batch)});
 
@@ -980,7 +982,7 @@ TEST(StorageNodeBatchTest, RejectsWrongOperationAndEncodingButPreservesOrdinaryF
   ASSERT_EQ(ordinary.size(), 1u);
   ASSERT_FALSE(ordinary[0].payload.empty());
   EXPECT_EQ(ordinary[0].payload[0], std::byte{0x04});
-  EXPECT_EQ(sink->Records().size(), 7u);
+  EXPECT_EQ(sink->Records().size(), 8u);
 }
 
 TEST(StorageNodeBatchTest, ContinuesAfterEngineFailureInEncodedOrder) {
@@ -1003,7 +1005,7 @@ TEST(StorageNodeBatchTest, ContinuesAfterEngineFailureInEncodedOrder) {
   EXPECT_EQ(records[0].level, LogLevel::kError);
 }
 
-TEST(StorageNodeBatchTest, SerializesBatchAndOrdinaryWritesAndStopWaits) {
+TEST(StorageNodeBatchTest, SerializesBatchAndOrdinaryWrites) {
   auto engine = std::make_shared<FirstPutBlockingEngine>();
   FakeTransport transport;
   StorageNode node;
@@ -1016,22 +1018,47 @@ TEST(StorageNodeBatchTest, SerializesBatchAndOrdinaryWritesAndStopWaits) {
                                Encoding{std::string(Encoding::kSitosV1Batch)});
   });
   engine->WaitForFirstPut();
+  std::promise<void> ordinary_started;
+  auto ordinary_ready = ordinary_started.get_future();
   std::thread ordinary_callback([&] {
+    ordinary_started.set_value();
     PutBase(transport, "ordinary", {std::byte{0x04}, std::byte{0x01}});
   });
+  ordinary_ready.wait();
+  EXPECT_TRUE(engine->Puts().empty());
 
-  std::atomic<bool> stopped{false};
-  std::thread stopper([&] {
-    node.Stop();
-    stopped.store(true, std::memory_order_release);
-  });
-  EXPECT_FALSE(stopped.load(std::memory_order_acquire));
   engine->Release();
   batch_callback.join();
   ordinary_callback.join();
-  stopper.join();
-
   EXPECT_EQ(engine->Puts(), (std::vector<std::string>{"first", "second", "ordinary"}));
+}
+
+TEST(StorageNodeBatchTest, StopWaitsForInFlightBatch) {
+  auto engine = std::make_shared<FirstPutBlockingEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+  const auto batch = MakeBatch({{"first", ParamValue(std::int64_t{1})}});
+
+  std::thread batch_callback([&] {
+    transport.InvokeSubscriber("sitos/base/:batch", TransportSample::Kind::Put, batch,
+                               Encoding{std::string(Encoding::kSitosV1Batch)});
+  });
+  engine->WaitForFirstPut();
+  std::atomic<bool> stopped{false};
+  std::promise<void> stopper_called;
+  auto stopper_ready = stopper_called.get_future();
+  std::thread stopper([&] {
+    stopper_called.set_value();
+    node.Stop();
+    stopped.store(true, std::memory_order_release);
+  });
+  stopper_ready.wait();
+  EXPECT_FALSE(stopped.load(std::memory_order_acquire));
+
+  engine->Release();
+  batch_callback.join();
+  stopper.join();
   EXPECT_TRUE(stopped.load(std::memory_order_acquire));
 }
 
