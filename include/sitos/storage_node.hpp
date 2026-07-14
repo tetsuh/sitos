@@ -159,9 +159,9 @@ class StorageNode {
     std::size_t in_flight = 0;
     bool accepting = false;
 
-    // Session tables. Guarded by session_mutex, independent of the callback
-    // gate: callbacks take gate then session_mutex; CreateSession/CloseSession
-    // take only session_mutex, so the ordering never cycles.
+    // Session tables. Guarded by session_mutex. Callbacks and session
+    // operations alike enter the callback gate before locking session_mutex,
+    // so the gate -> session_mutex ordering is uniform and never cycles.
     std::shared_mutex session_mutex;
     SnapshotTable snapshots;
     OverlayTable overlays;
