@@ -113,7 +113,7 @@ void ReplyFromReader(const StorageReader& reader, const StorageQuery& selector,
                      std::string_view prefix, std::string_view scope_path,
                      TransportQuery& query) {
   const Encoding encoding = SitosEncoding();
-  auto reply = [&](std::string_view key, Bytes value) {
+  auto reply = [prefix, scope_path, &query, encoding](std::string_view key, Bytes value) {
     const std::string full_key = MakeReplyKey(prefix, scope_path, key);
     return query.Reply(full_key, value, encoding).IsOk();
   };
