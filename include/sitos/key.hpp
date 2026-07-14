@@ -26,9 +26,9 @@ struct Scope {
 /// Key kind, used by the incoming-key parser for StorageNode routing.
 /// See docs/03_wire_protocol.md §1.1.
 enum class KeyKind {
-  Base,         ///< <prefix>/base/<key> (or <prefix>/base/$batch)
-  Session,      ///< <prefix>/session/<sid>/<key> (or $batch)
-  Snapshot,     ///< <prefix>/snap/<sid>/<key> (read-only; no $batch)
+  Base,         ///< <prefix>/base/<key> (or <prefix>/base/:batch)
+  Session,      ///< <prefix>/session/<sid>/<key> (or :batch)
+  Snapshot,     ///< <prefix>/snap/<sid>/<key> (read-only; no :batch)
   MetaSession,  ///< <prefix>/meta/session/<sid>
   MetaAck,      ///< <prefix>/meta/ack/<uuid>
 };
@@ -42,16 +42,16 @@ struct ParsedKey {
   /// Ack UUID for MetaAck. Empty for all other kinds.
   std::string uuid;
   /// Relative user key for Base / Session / Snapshot. Empty for Meta paths and
-  /// for $batch paths (where is_batch is true instead).
+  /// for :batch paths (where is_batch is true instead).
   std::string relative_key;
-  /// True for the special <prefix>/base/$batch and <prefix>/session/<sid>/$batch
+  /// True for the special <prefix>/base/:batch and <prefix>/session/<sid>/:batch
   /// paths. Only Base and Session may be batch.
   bool is_batch = false;
 };
 
 /// Validates a user key according to wire protocol §1.2. Rejects empty
-/// chunks, leading/trailing '/', and zenoh-reserved characters (*$?#@ and
-/// whitespace).
+/// chunks, leading/trailing '/', whitespace, and every character outside
+/// [0-9A-Za-z_.-], including the ':' batch-control marker.
 bool IsValidKey(std::string_view key);
 
 /// Validates a session id according to wire protocol §1.1 ([0-9a-zA-Z_-]+,
@@ -74,8 +74,8 @@ std::optional<Scope> ParseScope(std::string_view scope);
 std::optional<std::string> BuildKey(std::string_view prefix, std::string_view scope,
                                     std::string_view user_key);
 
-/// Builds a $batch key for the given scope: <prefix>/base/$batch or
-/// <prefix>/session/<sid>/$batch. Batch is not defined for snap; returns
+/// Builds a :batch key for the given scope: <prefix>/base/:batch or
+/// <prefix>/session/<sid>/:batch. Batch is not defined for snap; returns
 /// std::nullopt for a snap scope.
 std::optional<std::string> BuildBatchKey(std::string_view prefix, std::string_view scope);
 

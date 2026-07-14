@@ -49,7 +49,7 @@ bool IsValidChunkSequence(std::string_view value) {
 }
 
 // The special batch segment, always the last chunk of a batch key.
-constexpr std::string_view kBatchSegment = "$batch";
+constexpr std::string_view kBatchSegment = ":batch";
 
 bool IsValidIdChar(char c) {
   return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-';
@@ -217,7 +217,7 @@ std::optional<ParsedKey> ParseKey(std::string_view prefix, std::string_view full
   }
   std::string_view rest = *rest_opt;
 
-  // base/<key...> and base/$batch
+  // base/<key...> and base/:batch
   if (rest == "base") {
     // <prefix>/base with no user key is not a valid value key.
     return std::nullopt;
@@ -234,7 +234,7 @@ std::optional<ParsedKey> ParseKey(std::string_view prefix, std::string_view full
       return ParsedKey{KeyKind::Base, "", "", std::string(tail), false};
     }
     if (head == "session") {
-      // session/<sid>/<key...> or session/<sid>/$batch
+      // session/<sid>/<key...> or session/<sid>/:batch
       auto sid_split = SplitFirst(tail);
       if (!sid_split) {
         return std::nullopt;  // session/ with no sid/key
@@ -252,7 +252,7 @@ std::optional<ParsedKey> ParseKey(std::string_view prefix, std::string_view full
       return ParsedKey{KeyKind::Session, std::string(sid), "", std::string(value), false};
     }
     if (head == "snap") {
-      // snap/<sid>/<key...> — read-only, no $batch.
+      // snap/<sid>/<key...> — read-only, no :batch.
       auto sid_split = SplitFirst(tail);
       if (!sid_split) {
         return std::nullopt;
@@ -262,7 +262,7 @@ std::optional<ParsedKey> ParseKey(std::string_view prefix, std::string_view full
         return std::nullopt;
       }
       if (!IsValidKey(value)) {
-        return std::nullopt;  // rejects snap/<sid>/$batch too ($ fails IsValidKey)
+        return std::nullopt;  // rejects snap/<sid>/:batch as a read-only batch path
       }
       return ParsedKey{KeyKind::Snapshot, std::string(sid), "", std::string(value), false};
     }

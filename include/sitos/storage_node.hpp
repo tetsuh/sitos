@@ -159,9 +159,15 @@ class StorageNode {
     std::size_t in_flight = 0;
     bool accepting = false;
 
+    // Subscriber callbacks enter the callback gate, then take
+    // subscriber_mutex before optionally looking up a session under
+    // session_mutex. This prevents ordinary writes from interleaving a batch;
+    // session locks are released before engine writes.
+    std::mutex subscriber_mutex;
+
     // Session tables. Guarded by session_mutex. Callbacks and session
     // operations alike enter the callback gate before locking session_mutex,
-    // so the gate -> session_mutex ordering is uniform and never cycles.
+    // so the gate -> subscriber_mutex -> session_mutex ordering never cycles.
     std::shared_mutex session_mutex;
     SnapshotTable snapshots;
     OverlayTable overlays;
