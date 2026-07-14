@@ -52,7 +52,7 @@ selected per session by a `BufferPersistence` mode (`kDurable` = push + store,
 
 ## Design notes (normative for the implementation)
 
-* Key space: `<prefix>/buffers/<sid>/<key>`. No `$batch`, no `snap` counterpart.
+* Key space: `<prefix>/buffers/<sid>/<key>`. No `:batch`, no `snap` counterpart.
 * `KeyKind::Buffer` added to `key.hpp`; `BuildBufferKey(sid, key)` and a
   `ParseKey` branch; `<sid>` and `<key>` reuse the existing grammar (§1.2).
 * Storage: a disk StorageEngine instance is created per session for `kDurable`.
