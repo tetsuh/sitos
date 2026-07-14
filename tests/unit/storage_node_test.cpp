@@ -22,6 +22,7 @@
 
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/logging.hpp"
+#include "sitos/param_value.hpp"
 #include "transport/declaration_handle_test_access.hpp"
 
 namespace sitos {
@@ -674,6 +675,8 @@ TEST(StorageNodeSubscriberTest, IgnoresUnsupportedPathsAndWarns) {
 
   const auto put = TransportSample::Kind::Put;
   const auto del = TransportSample::Kind::Delete;
+  // snap/** is read-only; session/<sid> with no active session is unknown; the
+  // remaining paths (meta write, batch, invalid base keys) are unsupported.
   transport.InvokeSubscriber("sitos/snap/session-1/ignored", put, {std::byte{0x01}},
                              Encoding{"unknown"});
   transport.InvokeSubscriber("sitos/snap/session-1/ignored", del, {std::byte{0x01}}, {});
@@ -689,12 +692,16 @@ TEST(StorageNodeSubscriberTest, IgnoresUnsupportedPathsAndWarns) {
               (std::vector<std::byte>{std::byte{0x07}}));
     return true;
   }));
+  const std::vector<std::string> expected_messages = {
+      "read-only snapshot key", "read-only snapshot key",  "unknown session",
+      "unsupported subscriber key", "unsupported subscriber key",
+      "unsupported subscriber key", "unsupported subscriber key"};
   const auto records = sink->Records();
-  ASSERT_EQ(records.size(), 7u);
-  for (const auto& record : records) {
-    EXPECT_EQ(record.level, LogLevel::kWarning);
-    EXPECT_EQ(record.component, "node");
-    EXPECT_EQ(record.message, "unsupported subscriber key");
+  ASSERT_EQ(records.size(), expected_messages.size());
+  for (std::size_t i = 0; i < records.size(); ++i) {
+    EXPECT_EQ(records[i].level, LogLevel::kWarning);
+    EXPECT_EQ(records[i].component, "node");
+    EXPECT_EQ(records[i].message, expected_messages[i]) << "record index " << i;
   }
 }
 
@@ -733,6 +740,343 @@ TEST(StorageNodeSubscriberTest, LogsEngineWriteFailures) {
   EXPECT_EQ(records[1].level, LogLevel::kError);
   EXPECT_EQ(records[1].component, "node");
   EXPECT_EQ(records[1].message, "subscriber DELETE failed");
+}
+
+// --- Session management (#12) -----------------------------------------------
+
+namespace {
+
+const Encoding kV1{std::string(Encoding::kSitosV1)};
+
+// Puts a base value through the subscriber path, exactly as a remote client would.
+void PutBase(FakeTransport& transport, std::string_view key, std::vector<std::byte> value) {
+  transport.InvokeSubscriber(std::string("sitos/base/") + std::string(key),
+                             TransportSample::Kind::Put, std::move(value), kV1);
+}
+
+void PutSession(FakeTransport& transport, std::string_view sid, std::string_view key,
+                std::vector<std::byte> value) {
+  transport.InvokeSubscriber(
+      std::string("sitos/session/") + std::string(sid) + "/" + std::string(key),
+      TransportSample::Kind::Put, std::move(value), kV1);
+}
+
+}  // namespace
+
+TEST(StorageNodeSessionTest, SnapshotIsIsolatedFromBasePut) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+
+  const std::vector<std::byte> before = {std::byte{0x01}};
+  const std::vector<std::byte> after = {std::byte{0x02}};
+  PutBase(transport, "k", before);
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  PutBase(transport, "k", after);
+
+  auto snap = transport.Invoke("sitos/snap/s1/k");
+  ASSERT_EQ(snap.size(), 1u);
+  EXPECT_EQ(snap[0].key, "sitos/snap/s1/k");
+  EXPECT_EQ(snap[0].payload, before);
+
+  auto base = transport.Invoke("sitos/base/k");
+  ASSERT_EQ(base.size(), 1u);
+  EXPECT_EQ(base[0].payload, after);
+}
+
+TEST(StorageNodeSessionTest, SnapshotListReflectsSnapshotOnly) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+
+  PutBase(transport, "a/x", {std::byte{0x01}});
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  PutBase(transport, "a/y", {std::byte{0x02}});  // after snapshot
+
+  auto replies = transport.Invoke("sitos/snap/s1/a/**");
+  ASSERT_EQ(replies.size(), 1u);
+  EXPECT_EQ(replies[0].key, "sitos/snap/s1/a/x");
+}
+
+TEST(StorageNodeSessionTest, OverlayRoutesSessionPutAndGet) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+
+  const std::vector<std::byte> value = {std::byte{0xAB}};
+  PutSession(transport, "s1", "p", value);
+
+  auto session = transport.Invoke("sitos/session/s1/p");
+  ASSERT_EQ(session.size(), 1u);
+  EXPECT_EQ(session[0].key, "sitos/session/s1/p");
+  EXPECT_EQ(session[0].payload, value);
+
+  // Overlay writes are isolated from base and from the snapshot.
+  EXPECT_TRUE(transport.Invoke("sitos/base/p").empty());
+  EXPECT_TRUE(transport.Invoke("sitos/snap/s1/p").empty());
+}
+
+TEST(StorageNodeSessionTest, OverlayDeleteRemovesValue) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+
+  PutSession(transport, "s1", "p", {std::byte{0x01}});
+  ASSERT_EQ(transport.Invoke("sitos/session/s1/p").size(), 1u);
+  transport.InvokeSubscriber("sitos/session/s1/p", TransportSample::Kind::Delete, {}, {});
+  EXPECT_TRUE(transport.Invoke("sitos/session/s1/p").empty());
+}
+
+TEST(StorageNodeSessionTest, OverlayListAtChunkBoundary) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+
+  PutSession(transport, "s1", "a/x", {std::byte{0x01}});
+  PutSession(transport, "s1", "a/y", {std::byte{0x02}});
+  PutSession(transport, "s1", "b/z", {std::byte{0x03}});
+
+  auto replies = transport.Invoke("sitos/session/s1/a/**");
+  ASSERT_EQ(replies.size(), 2u);
+  EXPECT_EQ(replies[0].key, "sitos/session/s1/a/x");
+  EXPECT_EQ(replies[1].key, "sitos/session/s1/a/y");
+}
+
+TEST(StorageNodeSessionTest, SnapshotWritesAreIgnoredReadOnly) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  auto sink = std::make_shared<CaptureSink>();
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = sink}).IsOk());
+  PutBase(transport, "k", {std::byte{0x01}});
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+
+  transport.InvokeSubscriber("sitos/snap/s1/k", TransportSample::Kind::Put, {std::byte{0x09}},
+                             kV1);
+  transport.InvokeSubscriber("sitos/snap/s1/k", TransportSample::Kind::Delete, {}, {});
+
+  // The snapshot still returns its original value.
+  auto snap = transport.Invoke("sitos/snap/s1/k");
+  ASSERT_EQ(snap.size(), 1u);
+  EXPECT_EQ(snap[0].payload, (std::vector<std::byte>{std::byte{0x01}}));
+
+  const auto records = sink->Records();
+  ASSERT_EQ(records.size(), 2u);
+  for (const auto& record : records) {
+    EXPECT_EQ(record.level, LogLevel::kWarning);
+    EXPECT_EQ(record.message, "read-only snapshot key");
+  }
+}
+
+TEST(StorageNodeSessionTest, UnknownSessionQueriesReplyZero) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+
+  EXPECT_TRUE(transport.Invoke("sitos/snap/nope/k").empty());
+  EXPECT_TRUE(transport.Invoke("sitos/session/nope/k").empty());
+  EXPECT_TRUE(transport.Invoke("sitos/snap/nope/**").empty());
+  EXPECT_TRUE(transport.Invoke("sitos/session/nope/**").empty());
+}
+
+TEST(StorageNodeSessionTest, WriteToUnknownSessionWarnsAndIgnores) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  auto sink = std::make_shared<CaptureSink>();
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = sink}).IsOk());
+
+  PutSession(transport, "nope", "k", {std::byte{0x01}});
+  EXPECT_TRUE(transport.Invoke("sitos/session/nope/k").empty());
+  const auto records = sink->Records();
+  ASSERT_EQ(records.size(), 1u);
+  EXPECT_EQ(records[0].level, LogLevel::kWarning);
+  EXPECT_EQ(records[0].message, "unknown session");
+}
+
+TEST(StorageNodeSessionTest, MetaSessionReflectsLifecycle) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+
+  EXPECT_TRUE(transport.Invoke("sitos/meta/session/s1").empty());
+
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  auto meta = transport.Invoke("sitos/meta/session/s1");
+  ASSERT_EQ(meta.size(), 1u);
+  EXPECT_EQ(meta[0].key, "sitos/meta/session/s1");
+  EXPECT_EQ(meta[0].encoding.id, Encoding::kSitosV1);
+  auto decoded = ParamValue::Decode(meta[0].payload);
+  ASSERT_TRUE(decoded.has_value());
+  auto json = decoded->As<std::string>();
+  ASSERT_TRUE(json.has_value());
+  EXPECT_NE(json->find("\"state\":\"active\""), std::string::npos) << *json;
+  EXPECT_NE(json->find("\"created_at\""), std::string::npos) << *json;
+
+  ASSERT_TRUE(node.CloseSession("s1").IsOk());
+  EXPECT_TRUE(transport.Invoke("sitos/meta/session/s1").empty());
+}
+
+TEST(StorageNodeSessionTest, CloseSessionReleasesSnapshotAndOverlay) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+
+  PutBase(transport, "k", {std::byte{0x01}});
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  PutSession(transport, "s1", "p", {std::byte{0x02}});
+  ASSERT_EQ(transport.Invoke("sitos/session/s1/p").size(), 1u);
+  ASSERT_EQ(transport.Invoke("sitos/snap/s1/k").size(), 1u);
+
+  ASSERT_TRUE(node.CloseSession("s1").IsOk());
+  EXPECT_TRUE(transport.Invoke("sitos/snap/s1/k").empty());
+  EXPECT_TRUE(transport.Invoke("sitos/session/s1/p").empty());
+  EXPECT_TRUE(node.ActiveSessions().empty());
+}
+
+TEST(StorageNodeSessionTest, ValidatesSidAndRejectsDuplicate) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+
+  EXPECT_EQ(node.CreateSession("").Error(), std::make_error_code(std::errc::invalid_argument));
+  EXPECT_EQ(node.CreateSession("bad/sid").Error(),
+            std::make_error_code(std::errc::invalid_argument));
+
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  EXPECT_EQ(node.CreateSession("s1").Error(), std::make_error_code(std::errc::file_exists));
+
+  auto active = node.ActiveSessions();
+  ASSERT_EQ(active.size(), 1u);
+  EXPECT_EQ(active[0], "s1");
+}
+
+TEST(StorageNodeSessionTest, CloseUnknownSessionFails) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+  EXPECT_EQ(node.CloseSession("nope").Error(),
+            std::make_error_code(std::errc::no_such_file_or_directory));
+}
+
+TEST(StorageNodeSessionTest, SessionOpsRequireStartedNode) {
+  FakeTransport transport;
+  StorageNode node(transport);
+
+  EXPECT_EQ(node.CreateSession("s1").Error(),
+            std::make_error_code(std::errc::invalid_argument));
+  EXPECT_EQ(node.CloseSession("s1").Error(),
+            std::make_error_code(std::errc::invalid_argument));
+  EXPECT_TRUE(node.ActiveSessions().empty());
+}
+
+TEST(StorageNodeSessionTest, SessionsClearedAfterStop) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  node.Stop();
+  EXPECT_TRUE(node.ActiveSessions().empty());
+}
+
+namespace {
+
+// Blocks inside TakeSnapshot until released, so a CreateSession holding the
+// callback-gate lease can be observed mid-flight.
+class BlockingSnapshotEngine final : public InMemoryEngine {
+ public:
+  std::shared_ptr<const StorageReader> TakeSnapshot() const override {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      entered_ = true;
+    }
+    cv_.notify_all();
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_.wait(lock, [this] { return release_; });
+    return InMemoryEngine::TakeSnapshot();
+  }
+
+  void WaitEntered() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    ASSERT_TRUE(cv_.wait_for(lock, std::chrono::seconds(2), [this] { return entered_; }));
+  }
+
+  void Release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      release_ = true;
+    }
+    cv_.notify_all();
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  mutable std::condition_variable cv_;
+  mutable bool entered_ = false;
+  bool release_ = false;
+};
+
+}  // namespace
+
+// Stop() must wait for an in-flight session operation: the lease keeps the node
+// enrolled so teardown does not race a running CreateSession.
+TEST(StorageNodeSessionTest, StopWaitsForInFlightCreateSession) {
+  auto engine = std::make_shared<BlockingSnapshotEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+
+  std::thread creator([&] { (void)node.CreateSession("s1"); });
+  engine->WaitEntered();  // CreateSession is now inside TakeSnapshot holding the lease.
+
+  std::atomic<bool> stopped{false};
+  std::promise<void> stopper_called;
+  auto stopper_ready = stopper_called.get_future();
+  std::thread stopper([&] {
+    stopper_called.set_value();
+    node.Stop();
+    stopped.store(true, std::memory_order_release);
+  });
+  stopper_ready.wait();
+  EXPECT_FALSE(stopped.load(std::memory_order_acquire));  // Stop blocked on the lease.
+
+  engine->Release();
+  creator.join();
+  stopper.join();
+  EXPECT_TRUE(stopped);
+  EXPECT_FALSE(node.IsStarted());
+}
+
+// AC3: no accumulation or leaks across repeated create/close cycles. This runs
+// under the sanitizer CI job (ASan/TSan) via the StorageNodeSessionTest filter.
+TEST(StorageNodeSessionTest, CreateCloseLoopReleasesResources) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+
+  for (int i = 0; i < 100; ++i) {
+    ASSERT_TRUE(node.CreateSession("s1").IsOk());
+    PutSession(transport, "s1", "p", {std::byte{0x01}});
+    ASSERT_EQ(transport.Invoke("sitos/session/s1/p").size(), 1u);
+    ASSERT_TRUE(node.CloseSession("s1").IsOk());
+    EXPECT_TRUE(transport.Invoke("sitos/session/s1/p").empty());
+  }
+  EXPECT_TRUE(node.ActiveSessions().empty());
 }
 
 }  // namespace

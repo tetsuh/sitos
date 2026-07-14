@@ -209,7 +209,7 @@ TEST_F(StorageNodeSubscriberIntegrationTest, SnapPutIsIgnoredAfterSamePublisherB
                         sitos::Encoding{std::string(sitos::Encoding::kSitosV1)}, {})
                   .IsOk());
   ASSERT_TRUE(WaitFor([&] { return HasValue(engine_, "barrier", barrier); }));
-  EXPECT_TRUE(sink_->HasWarning("unsupported subscriber key"));
+  EXPECT_TRUE(sink_->HasWarning("read-only snapshot key"));
 
   EXPECT_FALSE(engine_->Get("session1/ignored", [](std::string_view, sitos::Bytes) {
     return true;

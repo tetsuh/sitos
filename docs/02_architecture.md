@@ -135,7 +135,7 @@ Conventions:
    - `buffers/<sid>/**` → per-session buffer engine (`kDurable`); no store (`kEphemeral`) [ADR-0014]
 3. Session lifecycle (via SessionController):
    - `CreateSession(sid)`: obtain `engine->TakeSnapshot()` and register it in
-     `snapshots_[sid]`. Create an empty `overlays_[sid]`. For buffers, create a
+     `snapshots[sid]`. Create an empty `overlays[sid]`. For buffers, create a
      per-session disk buffer engine when the session is `kDurable` [ADR-0014]
    - `CloseSession(sid)`: delete both tables (release shared_ptr) [F10], and purge
      the per-session buffer engine [ADR-0014]
@@ -143,15 +143,27 @@ Conventions:
 ### 4.2 Data Structures
 
 ```cpp
-class StorageNode {
-    std::shared_ptr<StorageEngine> engine_;
+// Lives inside StorageNode's callback-shared State (see §4.4 / ADR-0017): the
+// queryable and subscriber callbacks capture shared_ptr<State>, so the session
+// tables must reside there to be reachable from them.
+struct State /* excerpt */ {
+    std::shared_ptr<StorageEngine> engine;
     // sid → snapshot view
-    std::unordered_map<std::string, std::shared_ptr<const StorageReader>> snapshots_;
-    // sid → overlay (key → payload byte sequence)
-    std::unordered_map<std::string, OverlayMap> overlays_;
-    std::shared_mutex mutex_;  // protects table structure (each overlay locks itself internally)
+    std::unordered_map<std::string, std::shared_ptr<const StorageReader>> snapshots;
+    // sid → overlay engine (an InMemoryEngine; locks itself internally)
+    std::unordered_map<std::string, std::shared_ptr<StorageEngine>> overlays;
+    // sid → metadata backing meta/session/<sid> replies
+    std::unordered_map<std::string, SessionMeta> sessions;
+    std::shared_mutex session_mutex;  // protects the three tables above
 };
 ```
+
+Lock ordering: callbacks hold the ADR-0017 callback-gate lease and then take
+`session_mutex`; `CreateSession`/`CloseSession`/`ActiveSessions` enroll in the
+same gate (so `Stop()` waits for them) and then take only `session_mutex` — the
+ordering never cycles. Readers copy the `shared_ptr` out of a table and release
+`session_mutex` before replying, so `CloseSession` never invalidates an
+in-flight reply.
 
 ### 4.3 Consistency Model
 

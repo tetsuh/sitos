@@ -104,4 +104,12 @@ if(SITOS_WITH_ZENOH)
   sitos_enable_warnings(sitos_storage_node_lifecycle_test)
   sitos_copy_zenohc(sitos_storage_node_lifecycle_test)
   gtest_discover_tests(sitos_storage_node_lifecycle_test)
+
+  add_executable(sitos_storage_node_session_test
+    integration/storage_node_session_test.cpp)
+  target_link_libraries(sitos_storage_node_session_test
+    PRIVATE GTest::gtest_main sitos::sitos)
+  sitos_enable_warnings(sitos_storage_node_session_test)
+  sitos_copy_zenohc(sitos_storage_node_session_test)
+  gtest_discover_tests(sitos_storage_node_session_test)
 endif()
