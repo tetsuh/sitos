@@ -864,6 +864,23 @@ TEST(StorageNodeBatchTest, BaseBatchAppliesEntriesInOrderAndUsesPayloadV1) {
   EXPECT_EQ(b_value->As<std::string>(), "two");
 }
 
+TEST(StorageNodeBatchTest, EmptyBatchIsValidNoOp) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  auto sink = std::make_shared<CaptureSink>();
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = sink}).IsOk());
+
+  PutBase(transport, "existing", {std::byte{0x04}, std::byte{0x01}});
+  transport.InvokeSubscriber("sitos/base/:batch", TransportSample::Kind::Put, MakeBatch({}),
+                             Encoding{std::string(Encoding::kSitosV1Batch)});
+
+  const auto existing = transport.Invoke("sitos/base/existing");
+  ASSERT_EQ(existing.size(), 1u);
+  EXPECT_EQ(existing[0].payload, (std::vector<std::byte>{std::byte{0x04}, std::byte{0x01}}));
+  EXPECT_TRUE(sink->Records().empty());
+}
+
 TEST(StorageNodeBatchTest, SessionBatchOnlyUpdatesSelectedOverlay) {
   auto engine = std::make_shared<InMemoryEngine>();
   FakeTransport transport;
