@@ -176,10 +176,12 @@ so it is not a v0.2 blocker. Include it by v1.0.
 * References: [03] §5, [02] §6.1
 * Implementation targets: `include/sitos/batch.hpp`, `src/batch.cpp`, `src/storage_node.cpp`,
   `tests/integration/batch_test.cpp`
-* Scope: Receiving process for `$batch` keys (`base/$batch`, `session/<sid>/$batch`)
-  (atomic apply), and ParamCache receiving batch through the normal subscription range
-* Acceptance criteria: integration tests — all batch entries applied and ordered, received through normal subscription,
-  expansion into per-key notifications
+* Scope: StorageNode receives and applies `:batch` keys (`base/:batch`,
+  `session/<sid>/:batch`) after full validation, with node-local subscriber ordering;
+  prove the original batch sample is received through the normal subscription range.
+  ParamCache expansion into per-key notifications is deferred to Issue #16.
+* Acceptance criteria: integration tests — all batch entries applied and ordered,
+  received as one original sample through the normal subscription range
 * Depends on: #11, #12
 
 ### #14 ack protocol
@@ -230,7 +232,7 @@ so it is not a v0.2 blocker. Include it by v1.0.
 * Scope: independent `<prefix>/buffers/<sid>/<key>` scope; single put = full-payload push to
   live subscribers + store to a per-session disk engine (`kDurable`) / push-only (`kEphemeral`);
   get from the per-session engine; querying-subscriber late-join; purge on `CloseSession`.
-  No `$batch`, no snapshot
+  No `:batch`, no snapshot
 * Acceptance criteria: key round-trip; push==get byte equality; late-join no-loss;
   `kEphemeral` no-store/no-get; `CloseSession` purge → not-found; ParamCache scope isolation
   (`session/**` never receives `buffers/**`); raw-zenoh interop
@@ -366,7 +368,7 @@ so it is not a v0.2 blocker. Include it by v1.0.
 * Milestone: v1.0
 * References: [03] §5–6, [01] C03, [06] §4
 * Implementation targets: `tests/interop/test_raw_zenoh_batch_ack.py`
-* Scope: Verify `$batch` and ack using only zenoh-python + struct
+* Scope: Verify `:batch` and ack using only zenoh-python + struct
 * Acceptance criteria: batch/ack test written only from the wire specification is green
 * Depends on: #13, #14
 

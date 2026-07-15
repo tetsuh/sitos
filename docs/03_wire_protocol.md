@@ -14,15 +14,15 @@ A standard zenoh client can interoperate with sitos simply by following this spe
 <prefix>/buffers/<sid>/<key>
 <prefix>/meta/session/<sid>
 <prefix>/meta/ack/<uuid>
-<prefix>/base/$batch
-<prefix>/session/<sid>/$batch
+<prefix>/base/:batch                 # batch delivery [ADR-0018]
+<prefix>/session/<sid>/:batch        # batch delivery [ADR-0018]
 ```
 
 * `<prefix>`: Default is `sitos`. Configurable. One or more zenoh chunks
 * `<sid>`: session ID. `[0-9a-zA-Z_-]+` (UUID recommended). One chunk
 * `<key>`: User key. One or more chunks (hierarchical keys allowed)
 * `buffers/<sid>/<key>`: session-scoped large binary values. `<sid>` and `<key>` follow the
-  same grammar as other scopes. No `$batch` and no `snap` counterpart. The persistence mode
+  same grammar as other scopes. No `:batch` and no `snap` counterpart. The persistence mode
   (durable/ephemeral) is a host-side session option and is **not** encoded on the wire [ADR-0014]
 
 ### 1.2 User-key grammar
@@ -32,8 +32,9 @@ key    = chunk *( "/" chunk )
 chunk  = 1*( ALPHA / DIGIT / "_" / "-" / "." )
 ```
 
-* Prohibited: empty chunks, `*` `$` `?` `#` `@` whitespace (reserved characters in
-  zenoh key expressions), leading or trailing `/`
+* Prohibited: empty chunks, leading or trailing `/`, whitespace, and every character outside
+  the grammar above. In particular, `:batch` is a reserved control segment and cannot be a
+  user key
 * Case-sensitive
 * Recommended: represent hierarchy with `/` (example: `recon/fov`).
   Legacy `.`-separated keys (example: `recon.fov`) are legal as one chunk, but
@@ -127,7 +128,7 @@ Receiver interpretation rules:
 | Delete value | `delete` | Same as above (valid only for base; not allowed for snap) |
 | Read value | `get` | Same key as for writes, or `<prefix>/snap/<sid>/<key>` |
 | Prefix enumeration | `get` | `<prefix>/base/<chunk...>/**`, etc. |
-| Batch write | `put` (batch payload) | `<prefix>/base/$batch` / `<prefix>/session/<sid>/$batch` (§5) |
+| Batch write | `put` (batch payload) | `<prefix>/base/:batch` / `<prefix>/session/<sid>/:batch` (§5) |
 
 ## 4. Query semantics
 
@@ -154,9 +155,10 @@ zenoh wildcards operate on chunks (`*` = one chunk, `**` = zero or more chunks).
 
 ## 5. Batch format (`sitos.v1.batch`)
 
-Delivers multiple entries atomically in one zenoh put [F09].
-Put to key `<prefix>/base/$batch` or `<prefix>/session/<sid>/$batch`, and store all entries in
-the payload.
+Delivers multiple entries in one zenoh put [F09].
+Put to key `<prefix>/base/:batch` or `<prefix>/session/<sid>/:batch`, and store all entries in
+the payload. `:batch` is reserved because it is zenoh-valid while `$batch` is not; see
+[ADR-0018](adr/0018-use-zenoh-valid-batch-key-segment.md).
 
 ```
 offset  size  Contents
@@ -169,8 +171,11 @@ Repeated N times thereafter:
         vLen  Value body
 ```
 
-* After receiving a batch, StorageNode applies all entries to the engine / overlay before
-  processing the next message (guaranteeing order and atomicity within the batch)
+* StorageNode validates and materializes all entries before its first engine write. It then applies
+  them in encoded order before processing the next subscriber message. Invalid batches perform no
+  writes; an engine write failure is logged and does not roll back an earlier successful write.
+  This sequencing does not provide reader atomicity: a concurrent get or list may observe a
+  partially applied batch.
 * Subscribers (ParamCache) also subscribe to the batch key and apply the same format
   (because it is included in the normal subscription ranges `session/<sid>/**` and `base/**`,
   it can be received through the same path as ordinary delta subscriptions)
@@ -184,7 +189,7 @@ Repeated N times thereafter:
 
 `batch_base_two_entries`:
 
-* put key: `sitos/base/$batch`
+* put key: `sitos/base/:batch`
 * entries:
   1. key=`recon/fov`, value=`DP 240.0`
   2. key=`recon/kernel`, value=`STR "sharp"`

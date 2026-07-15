@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "sitos/batch.hpp"
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/key.hpp"
 #include "sitos/param_value.hpp"
@@ -131,17 +132,34 @@ constexpr std::string_view kUnknownSubscriberEncoding =
 constexpr std::string_view kSubscriberPutFailed = "subscriber PUT failed";
 constexpr std::string_view kSubscriberDeleteFailed = "subscriber DELETE failed";
 constexpr std::string_view kSubscriberCallbackFailed = "subscriber callback exception";
+constexpr std::string_view kMalformedBatchPayload = "malformed batch payload";
+constexpr std::string_view kInvalidBatchEntry = "invalid batch entry key";
+constexpr std::string_view kInvalidBatchOperation = "invalid batch operation or encoding";
 constexpr std::string_view kReadOnlySnapshotKey = "read-only snapshot key";
 constexpr std::string_view kUnknownSession = "unknown session";
 constexpr std::string_view kQueryCallbackFailed = "query callback exception";
 
+struct SubscriberDiagnostic {
+  LogLevel level;
+  std::string_view message;
+};
+
+using SubscriberDiagnostics = std::vector<SubscriberDiagnostic>;
+
+bool IsBatchPut(const TransportSample& sample) {
+  return sample.kind == TransportSample::Kind::Put &&
+         sample.encoding.id == Encoding::kSitosV1Batch;
+}
+
 // Applies a put/delete sample to a target engine (base engine or session
-// overlay), mirroring the wire-encoding rules for base writes.
-void ApplyWrite(const std::shared_ptr<LogSink>& log_sink, StorageEngine& target,
+// overlay), mirroring the wire-encoding rules for base writes. Diagnostics are
+// retained until the subscriber sequencer is released, so an injected sink is
+// never called while node application state is locked.
+void ApplyWrite(SubscriberDiagnostics& diagnostics, StorageEngine& target,
                 std::string_view relative_key, const TransportSample& sample) {
   if (sample.kind == TransportSample::Kind::Delete) {
     if (!target.Delete(relative_key)) {
-      EmitLog(log_sink, LogLevel::kError, kNodeComponent, kSubscriberDeleteFailed);
+      diagnostics.push_back({LogLevel::kError, kSubscriberDeleteFailed});
     }
     return;
   }
@@ -149,13 +167,53 @@ void ApplyWrite(const std::shared_ptr<LogSink>& log_sink, StorageEngine& target,
   Bytes value = sample.payload;
   std::vector<std::byte> wrapped;
   if (sample.encoding.id != Encoding::kSitosV1) {
-    EmitLog(log_sink, LogLevel::kWarning, kNodeComponent, kUnknownSubscriberEncoding);
+    diagnostics.push_back({LogLevel::kWarning, kUnknownSubscriberEncoding});
     auto bytes = std::vector<std::byte>(sample.payload.begin(), sample.payload.end());
     wrapped = ParamValue(std::move(bytes)).Encode();
     value = wrapped;
   }
   if (!target.Put(relative_key, value)) {
-    EmitLog(log_sink, LogLevel::kError, kNodeComponent, kSubscriberPutFailed);
+    diagnostics.push_back({LogLevel::kError, kSubscriberPutFailed});
+  }
+}
+
+struct EncodedBatchEntry {
+  std::string key;
+  std::vector<std::byte> value;
+};
+
+// Validates and materializes every batch entry before the first engine write.
+// StorageEngine has no transactional API: failed writes are logged and later
+// validated entries are still attempted in their encoded order.
+void ApplyBatch(SubscriberDiagnostics& diagnostics, StorageEngine& target,
+                std::span<const std::byte> payload) {
+  auto decoded = DecodeBatch(payload);
+  if (!decoded) {
+    diagnostics.push_back({LogLevel::kWarning, kMalformedBatchPayload});
+    return;
+  }
+
+  std::vector<EncodedBatchEntry> entries;
+  entries.reserve(decoded->size());
+  for (const auto& entry : *decoded) {
+    if (!IsValidKey(entry.key)) {
+      diagnostics.push_back({LogLevel::kWarning, kInvalidBatchEntry});
+      return;
+    }
+    entries.push_back({entry.key, entry.value.Encode()});
+  }
+
+  for (const auto& entry : entries) {
+    if (!target.Put(entry.key, entry.value)) {
+      diagnostics.push_back({LogLevel::kError, kSubscriberPutFailed});
+    }
+  }
+}
+
+void EmitDiagnostics(const std::shared_ptr<LogSink>& log_sink,
+                     const SubscriberDiagnostics& diagnostics) {
+  for (const auto& diagnostic : diagnostics) {
+    EmitLog(log_sink, diagnostic.level, kNodeComponent, diagnostic.message);
   }
 }
 
@@ -316,38 +374,63 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
   auto lease = state->Enter();
   if (!lease) return;
   try {
-    const auto parsed = ParseKey(state->prefix, sample.key);
-    // Batch application is out of scope (#13); invalid keys are unsupported.
-    if (!parsed || parsed->is_batch) {
-      EmitLog(state->log_sink, LogLevel::kWarning, kNodeComponent, kUnsupportedSubscriberKey);
-      return;
-    }
-
-    switch (parsed->kind) {
-      case KeyKind::Base:
-        ApplyWrite(state->log_sink, *state->engine, parsed->relative_key, sample);
-        return;
-      case KeyKind::Session: {
-        std::shared_ptr<StorageEngine> overlay;
-        {
-          std::shared_lock lock(state->session_mutex);
-          auto it = state->overlays.find(parsed->sid);
-          if (it != state->overlays.end()) overlay = it->second;
+    SubscriberDiagnostics diagnostics;
+    {
+      // The gate lease is acquired first. Serializing the entire subscriber
+      // path prevents an ordinary write from becoming visible between batch
+      // entries. Diagnostics are emitted only after releasing this lock.
+      std::scoped_lock application_lock(state->subscriber_mutex);
+      const auto parsed = ParseKey(state->prefix, sample.key);
+      if (!parsed) {
+        diagnostics.push_back({LogLevel::kWarning, kUnsupportedSubscriberKey});
+      } else if (parsed->is_batch) {
+        // ParseKey only marks Base and Session paths as batch paths.
+        if (!IsBatchPut(sample)) {
+          diagnostics.push_back({LogLevel::kWarning, kInvalidBatchOperation});
+        } else if (parsed->kind == KeyKind::Base) {
+          ApplyBatch(diagnostics, *state->engine, sample.payload);
+        } else {
+          std::shared_ptr<StorageEngine> overlay;
+          {
+            std::shared_lock lock(state->session_mutex);
+            auto it = state->overlays.find(parsed->sid);
+            if (it != state->overlays.end()) overlay = it->second;
+          }
+          if (!overlay) {
+            diagnostics.push_back({LogLevel::kWarning, kUnknownSession});
+          } else {
+            ApplyBatch(diagnostics, *overlay, sample.payload);
+          }
         }
-        if (!overlay) {
-          EmitLog(state->log_sink, LogLevel::kWarning, kNodeComponent, kUnknownSession);
-          return;
+      } else {
+        switch (parsed->kind) {
+          case KeyKind::Base:
+            ApplyWrite(diagnostics, *state->engine, parsed->relative_key, sample);
+            break;
+          case KeyKind::Session: {
+            std::shared_ptr<StorageEngine> overlay;
+            {
+              std::shared_lock lock(state->session_mutex);
+              auto it = state->overlays.find(parsed->sid);
+              if (it != state->overlays.end()) overlay = it->second;
+            }
+            if (!overlay) {
+              diagnostics.push_back({LogLevel::kWarning, kUnknownSession});
+            } else {
+              ApplyWrite(diagnostics, *overlay, parsed->relative_key, sample);
+            }
+            break;
+          }
+          case KeyKind::Snapshot:
+            diagnostics.push_back({LogLevel::kWarning, kReadOnlySnapshotKey});
+            break;
+          default:  // MetaSession, MetaAck (#14): not writable via subscriber.
+            diagnostics.push_back({LogLevel::kWarning, kUnsupportedSubscriberKey});
+            break;
         }
-        ApplyWrite(state->log_sink, *overlay, parsed->relative_key, sample);
-        return;
       }
-      case KeyKind::Snapshot:
-        EmitLog(state->log_sink, LogLevel::kWarning, kNodeComponent, kReadOnlySnapshotKey);
-        return;
-      default:  // MetaSession, MetaAck (#14): not writable via subscriber.
-        EmitLog(state->log_sink, LogLevel::kWarning, kNodeComponent, kUnsupportedSubscriberKey);
-        return;
     }
+    EmitDiagnostics(state->log_sink, diagnostics);
   } catch (...) {
     EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, kSubscriberCallbackFailed);
   }

@@ -152,23 +152,33 @@ struct State /* excerpt */ {
     std::unordered_map<std::string, std::shared_ptr<const StorageReader>> snapshots;
     // sid → overlay engine (an InMemoryEngine; locks itself internally)
     std::unordered_map<std::string, std::shared_ptr<StorageEngine>> overlays;
+    // Serializes the complete subscriber application path, including batch
+    // entries, so ordinary writes cannot interleave a batch.
+    std::mutex subscriber_mutex;
     // sid → metadata backing meta/session/<sid> replies
     std::unordered_map<std::string, SessionMeta> sessions;
     std::shared_mutex session_mutex;  // protects the three tables above
 };
 ```
 
-Lock ordering: callbacks hold the ADR-0017 callback-gate lease and then take
-`session_mutex`; `CreateSession`/`CloseSession`/`ActiveSessions` enroll in the
-same gate (so `Stop()` waits for them) and then take only `session_mutex` — the
-ordering never cycles. Readers copy the `shared_ptr` out of a table and release
-`session_mutex` before replying, so `CloseSession` never invalidates an
-in-flight reply.
+Lock ordering: subscriber callbacks hold the ADR-0017 callback-gate lease,
+then take `subscriber_mutex`, and only then briefly take `session_mutex` to
+copy an overlay pointer. They release `session_mutex` before engine writes and
+log emission. This prevents ordinary writes from interleaving batch entries
+without holding a table lock around external code. `CreateSession`/
+`CloseSession`/`ActiveSessions` enroll in the same gate (so `Stop()` waits for
+them) and then take only `session_mutex`; the ordering never cycles. Readers
+copy the `shared_ptr` out of a table and release `session_mutex` before replying,
+so `CloseSession` never invalidates an in-flight reply.
 
 ### 4.3 Consistency Model
 
 * Write ordering: zenoh preserves the order of puts from the same publisher.
   It does not guarantee ordering across different publishers (last-write-wins)
+* Batch visibility: StorageNode validates all entries before the first write and
+  prevents subscriber messages from interleaving with batch entries. Queries do
+  not take `subscriber_mutex`, so a concurrent Get/List may observe a partially
+  applied batch
 * Relationship with puts around `CreateSession`: the snapshot contains
   “the contents already reflected in the engine at the moment StorageNode processes CreateSession”.
   The caller must confirm completion of all required base writes before starting a session

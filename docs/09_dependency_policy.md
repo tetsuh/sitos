@@ -148,7 +148,7 @@ If latest stable fails:
 The following must not change after zenoh updates:
 
 * Byte sequences of the `sitos.v1` payload fixtures
-* key paths (`base`, `session`, `snap`, `$batch`, `meta`)
+* key paths (`base`, `session`, `snap`, `:batch`, `meta`)
 * The loss-prevention sequence of `ParamCache::Attach`
 * Snapshot isolation semantics
 * Python API exception mapping

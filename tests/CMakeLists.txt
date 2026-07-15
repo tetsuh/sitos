@@ -112,4 +112,12 @@ if(SITOS_WITH_ZENOH)
   sitos_enable_warnings(sitos_storage_node_session_test)
   sitos_copy_zenohc(sitos_storage_node_session_test)
   gtest_discover_tests(sitos_storage_node_session_test)
+
+  add_executable(sitos_batch_test
+    integration/batch_test.cpp)
+  target_link_libraries(sitos_batch_test
+    PRIVATE GTest::gtest_main sitos::sitos)
+  sitos_enable_warnings(sitos_batch_test)
+  sitos_copy_zenohc(sitos_batch_test)
+  gtest_discover_tests(sitos_batch_test)
 endif()

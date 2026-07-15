@@ -157,24 +157,24 @@ TEST(KeyBuilderTest, RejectsInvalidComponents) {
   EXPECT_FALSE(BuildKey("sitos prefix", "base", "recon/fov"));
 }
 
-// --- $batch builders (docs/03 §1.1) ---
+// --- :batch builders (docs/03 §1.1) ---
 
 TEST(BatchKeyBuilderTest, BuildsBaseBatch) {
   auto key = BuildBatchKey("sitos", "base");
   ASSERT_TRUE(key.has_value());
-  EXPECT_EQ(*key, "sitos/base/$batch");
+  EXPECT_EQ(*key, "sitos/base/:batch");
 }
 
 TEST(BatchKeyBuilderTest, BuildsSessionBatch) {
   auto key = BuildBatchKey("sitos", "session/abc-123");
   ASSERT_TRUE(key.has_value());
-  EXPECT_EQ(*key, "sitos/session/abc-123/$batch");
+  EXPECT_EQ(*key, "sitos/session/abc-123/:batch");
 }
 
 TEST(BatchKeyBuilderTest, BuildsBatchWithCustomPrefix) {
   auto key = BuildBatchKey("my/app", "base");
   ASSERT_TRUE(key.has_value());
-  EXPECT_EQ(*key, "my/app/base/$batch");
+  EXPECT_EQ(*key, "my/app/base/:batch");
 }
 
 TEST(BatchKeyBuilderTest, RejectsSnapBatch) {
@@ -190,9 +190,9 @@ TEST(BatchKeyBuilderTest, RejectsInvalidBatchScope) {
 }
 
 TEST(BatchKeyBuilderTest, UserKeyCannotSmuggleBatch) {
-  // '$' is reserved, so BuildKey rejects "$batch" as a user key. Batch paths
-  // can only be produced through BuildBatchKey.
-  EXPECT_FALSE(BuildKey("sitos", "base", "$batch"));
+  // ':' is outside the user-key grammar, so batch paths can only be produced
+  // through BuildBatchKey.
+  EXPECT_FALSE(BuildKey("sitos", "base", ":batch"));
 }
 
 // --- meta builders (docs/03 §1.1) ---
@@ -231,7 +231,7 @@ TEST(ParseKeyTest, ParsesBaseKey) {
 }
 
 TEST(ParseKeyTest, ParsesBaseBatchKey) {
-  auto p = ParseKey("sitos", "sitos/base/$batch");
+  auto p = ParseKey("sitos", "sitos/base/:batch");
   ASSERT_TRUE(p.has_value());
   EXPECT_EQ(p->kind, KeyKind::Base);
   EXPECT_TRUE(p->relative_key.empty());
@@ -248,7 +248,7 @@ TEST(ParseKeyTest, ParsesSessionKey) {
 }
 
 TEST(ParseKeyTest, ParsesSessionBatchKey) {
-  auto p = ParseKey("sitos", "sitos/session/abc-123/$batch");
+  auto p = ParseKey("sitos", "sitos/session/abc-123/:batch");
   ASSERT_TRUE(p.has_value());
   EXPECT_EQ(p->kind, KeyKind::Session);
   EXPECT_EQ(p->sid, "abc-123");
@@ -305,9 +305,15 @@ TEST(ParseKeyTest, RejectsInvalidKinds) {
   EXPECT_FALSE(ParseKey("sitos", "sitos/meta/ack/bad/uuid"));
 }
 
-TEST(ParseKeyTest, RejectsSnapshotBatch) {
-  // snap has no $batch path; $ fails IsValidKey so the parse is rejected.
-  EXPECT_FALSE(ParseKey("sitos", "sitos/snap/abc-123/$batch"));
+TEST(ParseKeyTest, RejectsUnsupportedBatchForms) {
+  // snap has no :batch path, and retired wire candidates remain invalid.
+  EXPECT_FALSE(ParseKey("sitos", "sitos/snap/abc-123/:batch"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/base/$batch"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/base/@batch"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/base/~batch"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/session/abc-123/$batch"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/session/abc-123/@batch"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/session/abc-123/~batch"));
 }
 
 TEST(ParseKeyTest, RejectsInvalidRelativeKey) {

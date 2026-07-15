@@ -89,7 +89,7 @@ major behaviors.
 | `SnapshotIsIsolatedFromBasePut` | F05/N02 | A base put after CreateSession does not affect snap reads |
 | `SnapshotFallbackCopiesForInMemory` | N03 | InMemory snapshot works with the same semantics |
 | `AttachDoesNotMissConcurrentPut` | F06 | Does not miss a concurrent put during Attach |
-| `BatchIsReceivedBySessionSubscriber` | F09 | `$batch` is received by a `session/<sid>/**` subscription |
+| `BatchIsReceivedBySessionSubscriber` | F09 / ADR-0018 | `:batch` is received by a `session/<sid>/**` subscription |
 | `SpanHandleSurvivesOverwrite` | N01/P02 | old SpanHandle/ndarray remains valid after an update |
 | `RawZenohClientCanPutAndGet` | C03 | Single-value interoperability using only zenoh-python |
 | `RawZenohClientCanSendBatch` | C03/F09 | Batch interoperability using only zenoh-python |
@@ -98,19 +98,22 @@ major behaviors.
 
 ## 4.2 Lifecycle sanitizer runs
 
-Issue #11 lifecycle tests have reproducible sanitizer configurations. TSan runs the
-zenoh-independent fake-Transport stress path; ASan/UBSan runs the same path separately:
+Issue #11 lifecycle tests and Issue #13 batch sequencing tests have reproducible
+sanitizer configurations. TSan runs the zenoh-independent fake-Transport stress
+paths; ASan/UBSan runs the same paths separately:
 
 ```sh
 cmake -S . -B build/tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=OFF -DSITOS_ENABLE_TSAN=ON
 cmake --build build/tsan
-ctest --test-dir build/tsan --output-on-failure -R StorageNodeLifecycleTest
+ctest --test-dir build/tsan --output-on-failure \
+  -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest'
 
 cmake -S . -B build/asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=OFF -DSITOS_ENABLE_ASAN_UBSAN=ON
 cmake --build build/asan
-ctest --test-dir build/asan --output-on-failure -R StorageNodeLifecycleTest
+ctest --test-dir build/asan --output-on-failure \
+  -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest'
 ```
 
 For a platform where the zenoh-c standalone runtime supports sanitizer instrumentation,

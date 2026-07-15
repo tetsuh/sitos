@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <functional>
 #include <future>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -20,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "sitos/batch.hpp"
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/logging.hpp"
 #include "sitos/param_value.hpp"
@@ -675,14 +677,14 @@ TEST(StorageNodeSubscriberTest, IgnoresUnsupportedPathsAndWarns) {
 
   const auto put = TransportSample::Kind::Put;
   const auto del = TransportSample::Kind::Delete;
-  // snap/** is read-only; session/<sid> with no active session is unknown; the
-  // remaining paths (meta write, batch, invalid base keys) are unsupported.
+  // snap/** is read-only; session/<sid> with no active session is unknown; an
+  // incorrectly encoded batch and remaining invalid paths are rejected.
   transport.InvokeSubscriber("sitos/snap/session-1/ignored", put, {std::byte{0x01}},
                              Encoding{"unknown"});
   transport.InvokeSubscriber("sitos/snap/session-1/ignored", del, {std::byte{0x01}}, {});
   transport.InvokeSubscriber("sitos/session/session-1/ignored", put, {std::byte{0x01}}, {});
   transport.InvokeSubscriber("sitos/meta/session/session-1", put, {std::byte{0x01}}, {});
-  transport.InvokeSubscriber("sitos/base/$batch", put, {std::byte{0x01}}, {});
+  transport.InvokeSubscriber("sitos/base/:batch", put, {std::byte{0x01}}, {});
   transport.InvokeSubscriber("sitos/base/", put, {std::byte{0x01}}, {});
   transport.InvokeSubscriber("sitos/base/bad*", put, {std::byte{0x01}}, {});
 
@@ -694,7 +696,7 @@ TEST(StorageNodeSubscriberTest, IgnoresUnsupportedPathsAndWarns) {
   }));
   const std::vector<std::string> expected_messages = {
       "read-only snapshot key", "read-only snapshot key",  "unknown session",
-      "unsupported subscriber key", "unsupported subscriber key",
+      "unsupported subscriber key", "invalid batch operation or encoding",
       "unsupported subscriber key", "unsupported subscriber key"};
   const auto records = sink->Records();
   ASSERT_EQ(records.size(), expected_messages.size());
@@ -761,7 +763,304 @@ void PutSession(FakeTransport& transport, std::string_view sid, std::string_view
       TransportSample::Kind::Put, std::move(value), kV1);
 }
 
+std::vector<std::byte> MakeBatch(
+    std::initializer_list<std::pair<std::string, ParamValue>> entries) {
+  return EncodeBatch(std::span<const std::pair<std::string, ParamValue>>(entries.begin(),
+                                                                          entries.size()));
+}
+
+class FirstPutBlockingEngine final : public StorageEngine {
+ public:
+  bool Put(std::string_view key, Bytes value) override {
+    std::unique_lock lock(mutex_);
+    if (puts_.empty()) {
+      first_put_entered_ = true;
+      cv_.notify_all();
+      cv_.wait(lock, [this] { return release_; });
+    }
+    puts_.push_back(std::string(key));
+    values_[std::string(key)] = std::vector<std::byte>(value.begin(), value.end());
+    return true;
+  }
+
+  bool Delete(std::string_view) override { return false; }
+  bool Get(std::string_view key, const EntrySink& sink) const override {
+    std::lock_guard lock(mutex_);
+    auto it = values_.find(std::string(key));
+    if (it == values_.end()) return false;
+    sink(it->first, it->second);
+    return true;
+  }
+  bool List(std::string_view, const EntrySink&) const override { return false; }
+
+  void WaitForFirstPut() {
+    std::unique_lock lock(mutex_);
+    ASSERT_TRUE(cv_.wait_for(lock, std::chrono::seconds(2), [this] { return first_put_entered_; }));
+  }
+  void Release() {
+    std::lock_guard lock(mutex_);
+    release_ = true;
+    cv_.notify_all();
+  }
+  std::vector<std::string> Puts() const {
+    std::lock_guard lock(mutex_);
+    return puts_;
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  std::condition_variable cv_;
+  bool first_put_entered_ = false;
+  bool release_ = false;
+  std::vector<std::string> puts_;
+  std::map<std::string, std::vector<std::byte>, std::less<>> values_;
+};
+
+class FirstPutFailingEngine final : public StorageEngine {
+ public:
+  bool Put(std::string_view key, Bytes value) override {
+    puts.push_back(std::string(key));
+    if (puts.size() == 1) return false;
+    return backing.Put(key, value);
+  }
+  bool Delete(std::string_view) override { return false; }
+  bool Get(std::string_view key, const EntrySink& sink) const override {
+    return backing.Get(key, sink);
+  }
+  bool List(std::string_view prefix, const EntrySink& sink) const override {
+    return backing.List(prefix, sink);
+  }
+
+  std::vector<std::string> puts;
+
+ private:
+  InMemoryEngine backing;
+};
+
 }  // namespace
+
+TEST(StorageNodeBatchTest, BaseBatchAppliesEntriesInOrderAndUsesPayloadV1) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+
+  const auto batch = MakeBatch({{"a", ParamValue(std::int64_t{1})},
+                                {"b", ParamValue("two")},
+                                {"a", ParamValue(std::int64_t{3})}});
+  transport.InvokeSubscriber("sitos/base/:batch", TransportSample::Kind::Put, batch,
+                             Encoding{std::string(Encoding::kSitosV1Batch)});
+
+  const auto a = transport.Invoke("sitos/base/a");
+  ASSERT_EQ(a.size(), 1u);
+  EXPECT_EQ(a[0].encoding.id, Encoding::kSitosV1);
+  auto a_value = ParamValue::Decode(a[0].payload);
+  ASSERT_TRUE(a_value.has_value());
+  EXPECT_EQ(a_value->As<std::int64_t>(), 3);
+  const auto b = transport.Invoke("sitos/base/b");
+  ASSERT_EQ(b.size(), 1u);
+  auto b_value = ParamValue::Decode(b[0].payload);
+  ASSERT_TRUE(b_value.has_value());
+  EXPECT_EQ(b_value->As<std::string>(), "two");
+}
+
+TEST(StorageNodeBatchTest, EmptyBatchIsValidNoOp) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  auto sink = std::make_shared<CaptureSink>();
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = sink}).IsOk());
+
+  PutBase(transport, "existing", {std::byte{0x04}, std::byte{0x01}});
+  transport.InvokeSubscriber("sitos/base/:batch", TransportSample::Kind::Put, MakeBatch({}),
+                             Encoding{std::string(Encoding::kSitosV1Batch)});
+
+  const auto existing = transport.Invoke("sitos/base/existing");
+  ASSERT_EQ(existing.size(), 1u);
+  EXPECT_EQ(existing[0].payload, (std::vector<std::byte>{std::byte{0x04}, std::byte{0x01}}));
+  EXPECT_TRUE(sink->Records().empty());
+}
+
+TEST(StorageNodeBatchTest, SessionBatchOnlyUpdatesSelectedOverlay) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+  ASSERT_TRUE(node.CreateSession("one").IsOk());
+  ASSERT_TRUE(node.CreateSession("two").IsOk());
+
+  const auto batch = MakeBatch({{"setting", ParamValue("value")}});
+  transport.InvokeSubscriber("sitos/session/one/:batch", TransportSample::Kind::Put, batch,
+                             Encoding{std::string(Encoding::kSitosV1Batch)});
+
+  ASSERT_EQ(transport.Invoke("sitos/session/one/setting").size(), 1u);
+  EXPECT_TRUE(transport.Invoke("sitos/session/two/setting").empty());
+  EXPECT_TRUE(transport.Invoke("sitos/base/setting").empty());
+}
+
+TEST(StorageNodeBatchTest, RejectsInvalidBatchBeforeAnyMutationAndWarns) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  auto sink = std::make_shared<CaptureSink>();
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = sink}).IsOk());
+
+  auto truncated = MakeBatch({{"first", ParamValue(std::int64_t{1})},
+                              {"truncated", ParamValue(std::int64_t{2})}});
+  truncated.pop_back();
+  transport.InvokeSubscriber("sitos/base/:batch", TransportSample::Kind::Put, truncated,
+                             Encoding{std::string(Encoding::kSitosV1Batch)});
+  const auto invalid_key = MakeBatch({{"good", ParamValue(std::int64_t{1})},
+                                      {"bad*", ParamValue(std::int64_t{2})}});
+  transport.InvokeSubscriber("sitos/base/:batch", TransportSample::Kind::Put, invalid_key,
+                             Encoding{std::string(Encoding::kSitosV1Batch)});
+
+  EXPECT_TRUE(transport.Invoke("sitos/base/first").empty());
+  EXPECT_TRUE(transport.Invoke("sitos/base/good").empty());
+  const auto records = sink->Records();
+  ASSERT_EQ(records.size(), 2u);
+  EXPECT_EQ(records[0].level, LogLevel::kWarning);
+  EXPECT_EQ(records[1].level, LogLevel::kWarning);
+}
+
+TEST(StorageNodeBatchTest, RejectsTrailingBytesAndUnknownTagWithoutMutation) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  auto sink = std::make_shared<CaptureSink>();
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = sink}).IsOk());
+
+  auto trailing = MakeBatch({{"trailing", ParamValue(std::int64_t{1})}});
+  trailing.push_back(std::byte{0x00});
+  transport.InvokeSubscriber("sitos/base/:batch", TransportSample::Kind::Put, trailing,
+                             Encoding{std::string(Encoding::kSitosV1Batch)});
+
+  // One entry: count, key length, key, invalid tag, and zero value length.
+  const std::vector<std::byte> unknown_tag = {
+      std::byte{0x01}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
+      std::byte{0x01}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
+      std::byte{'x'},  std::byte{0xFF}, std::byte{0x00}, std::byte{0x00},
+      std::byte{0x00}, std::byte{0x00}};
+  transport.InvokeSubscriber("sitos/base/:batch", TransportSample::Kind::Put, unknown_tag,
+                             Encoding{std::string(Encoding::kSitosV1Batch)});
+
+  EXPECT_TRUE(transport.Invoke("sitos/base/trailing").empty());
+  EXPECT_TRUE(transport.Invoke("sitos/base/x").empty());
+  const auto records = sink->Records();
+  ASSERT_EQ(records.size(), 2u);
+  EXPECT_EQ(records[0].message, "malformed batch payload");
+  EXPECT_EQ(records[1].message, "malformed batch payload");
+}
+
+TEST(StorageNodeBatchTest, RejectsWrongOperationAndEncodingButPreservesOrdinaryFallback) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  auto sink = std::make_shared<CaptureSink>();
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = sink}).IsOk());
+  const auto batch = MakeBatch({{"entry", ParamValue(std::int64_t{1})}});
+
+  transport.InvokeSubscriber("sitos/base/:batch", TransportSample::Kind::Put, batch, kV1);
+  transport.InvokeSubscriber("sitos/base/:batch", TransportSample::Kind::Delete, {},
+                             Encoding{std::string(Encoding::kSitosV1Batch)});
+  transport.InvokeSubscriber("sitos/base/$batch", TransportSample::Kind::Put, batch,
+                             Encoding{std::string(Encoding::kSitosV1Batch)});
+  transport.InvokeSubscriber("sitos/base/@batch", TransportSample::Kind::Put, batch,
+                             Encoding{std::string(Encoding::kSitosV1Batch)});
+  transport.InvokeSubscriber("sitos/base/~batch", TransportSample::Kind::Put, batch,
+                             Encoding{std::string(Encoding::kSitosV1Batch)});
+  transport.InvokeSubscriber("sitos/base/ordinary", TransportSample::Kind::Put, batch,
+                             Encoding{std::string(Encoding::kSitosV1Batch)});
+
+  EXPECT_TRUE(transport.Invoke("sitos/base/entry").empty());
+  transport.InvokeSubscriber("sitos/session/nope/:batch", TransportSample::Kind::Put, batch,
+                             Encoding{std::string(Encoding::kSitosV1Batch)});
+  transport.InvokeSubscriber("sitos/snap/nope/:batch", TransportSample::Kind::Put, batch,
+                             Encoding{std::string(Encoding::kSitosV1Batch)});
+  EXPECT_TRUE(transport.Invoke("sitos/session/nope/entry").empty());
+  const auto ordinary = transport.Invoke("sitos/base/ordinary");
+  ASSERT_EQ(ordinary.size(), 1u);
+  ASSERT_FALSE(ordinary[0].payload.empty());
+  EXPECT_EQ(ordinary[0].payload[0], std::byte{0x04});
+  EXPECT_EQ(sink->Records().size(), 8u);
+}
+
+TEST(StorageNodeBatchTest, ContinuesAfterEngineFailureInEncodedOrder) {
+  auto engine = std::make_shared<FirstPutFailingEngine>();
+  FakeTransport transport;
+  auto sink = std::make_shared<CaptureSink>();
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = sink}).IsOk());
+  const auto batch = MakeBatch({{"first", ParamValue(std::int64_t{1})},
+                                {"later", ParamValue(std::int64_t{2})}});
+
+  transport.InvokeSubscriber("sitos/base/:batch", TransportSample::Kind::Put, batch,
+                             Encoding{std::string(Encoding::kSitosV1Batch)});
+
+  EXPECT_EQ(engine->puts, (std::vector<std::string>{"first", "later"}));
+  EXPECT_TRUE(transport.Invoke("sitos/base/first").empty());
+  ASSERT_EQ(transport.Invoke("sitos/base/later").size(), 1u);
+  const auto records = sink->Records();
+  ASSERT_EQ(records.size(), 1u);
+  EXPECT_EQ(records[0].level, LogLevel::kError);
+}
+
+TEST(StorageNodeBatchTest, SerializesBatchAndOrdinaryWrites) {
+  auto engine = std::make_shared<FirstPutBlockingEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+  const auto batch = MakeBatch({{"first", ParamValue(std::int64_t{1})},
+                                {"second", ParamValue(std::int64_t{2})}});
+
+  std::thread batch_callback([&] {
+    transport.InvokeSubscriber("sitos/base/:batch", TransportSample::Kind::Put, batch,
+                               Encoding{std::string(Encoding::kSitosV1Batch)});
+  });
+  engine->WaitForFirstPut();
+  std::promise<void> ordinary_started;
+  auto ordinary_ready = ordinary_started.get_future();
+  std::thread ordinary_callback([&] {
+    ordinary_started.set_value();
+    PutBase(transport, "ordinary", {std::byte{0x04}, std::byte{0x01}});
+  });
+  ordinary_ready.wait();
+  EXPECT_TRUE(engine->Puts().empty());
+
+  engine->Release();
+  batch_callback.join();
+  ordinary_callback.join();
+  EXPECT_EQ(engine->Puts(), (std::vector<std::string>{"first", "second", "ordinary"}));
+}
+
+TEST(StorageNodeBatchTest, StopWaitsForInFlightBatch) {
+  auto engine = std::make_shared<FirstPutBlockingEngine>();
+  FakeTransport transport;
+  StorageNode node;
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+  const auto batch = MakeBatch({{"first", ParamValue(std::int64_t{1})}});
+
+  std::thread batch_callback([&] {
+    transport.InvokeSubscriber("sitos/base/:batch", TransportSample::Kind::Put, batch,
+                               Encoding{std::string(Encoding::kSitosV1Batch)});
+  });
+  engine->WaitForFirstPut();
+  std::atomic<bool> stopped{false};
+  std::promise<void> stopper_called;
+  auto stopper_ready = stopper_called.get_future();
+  std::thread stopper([&] {
+    stopper_called.set_value();
+    node.Stop();
+    stopped.store(true, std::memory_order_release);
+  });
+  stopper_ready.wait();
+  EXPECT_FALSE(stopped.load(std::memory_order_acquire));
+
+  engine->Release();
+  batch_callback.join();
+  stopper.join();
+  EXPECT_TRUE(stopped.load(std::memory_order_acquire));
+}
 
 TEST(StorageNodeSessionTest, SnapshotIsIsolatedFromBasePut) {
   auto engine = std::make_shared<InMemoryEngine>();
