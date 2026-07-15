@@ -553,10 +553,8 @@ void Queryable::Reset() noexcept {
 
 namespace {
 
-bool OpenZenohSession(z_owned_session_t* session) {
-  z_owned_config_t config;
-  if (z_config_default(&config) != Z_OK) return false;
-  return z_open(session, z_move(config), nullptr) == Z_OK;
+z_result_t OpenZenohSession(z_owned_session_t* session, z_moved_config_t* config) {
+  return z_open(session, config, nullptr);
 }
 
 }  // namespace
@@ -598,9 +596,11 @@ class ZenohTransport : public Transport {
   }
 
  public:
-  ZenohTransport() : session_valid_(OpenZenohSession(&session_)) {}
+  explicit ZenohTransport(z_moved_config_t* config)
+      : open_result_(OpenZenohSession(&session_, config)), session_valid_(open_result_ == Z_OK) {}
 
   bool IsSessionValid() const { return session_valid_; }
+  z_result_t OpenResult() const { return open_result_; }
 
   ~ZenohTransport() override {
     if (session_valid_) {
@@ -746,13 +746,45 @@ class ZenohTransport : public Transport {
 
  private:
   z_owned_session_t session_{};
+  z_result_t open_result_ = -1;
   bool session_valid_ = false;
 };
 
 }  // namespace sitos
 
+sitos::Result<std::unique_ptr<sitos::Transport>> sitos::OpenZenohTransport(
+    std::optional<std::string_view> config_json) {
+  if (config_json.has_value() && config_json->empty()) {
+    return Result<std::unique_ptr<Transport>>::Err(Status::InvalidArgument,
+                                                   "zenoh configuration must not be empty");
+  }
+
+  ZenohOwned<z_owned_config_t> config;
+  z_result_t config_result = Z_OK;
+  if (config_json.has_value()) {
+    config_result =
+        zc_config_from_substr(config.get(), config_json->data(), config_json->size());
+  } else {
+    config_result = z_config_default(config.get());
+  }
+  if (config_result != Z_OK) {
+    return Result<std::unique_ptr<Transport>>::Err(Status::InvalidArgument,
+                                                   "invalid zenoh configuration",
+                                                   MakeError(config_result));
+  }
+
+  config.mark_valid();
+  auto transport = std::make_unique<sitos::ZenohTransport>(config.moved());
+  if (!transport->IsSessionValid()) {
+    return Result<std::unique_ptr<Transport>>::Err(Status::Error,
+                                                   "failed to open zenoh session",
+                                                   MakeError(transport->OpenResult()));
+  }
+  return Result<std::unique_ptr<Transport>>::Ok(std::move(transport));
+}
+
 std::unique_ptr<sitos::Transport> sitos::MakeZenohTransport() {
-  auto t = std::make_unique<sitos::ZenohTransport>();
-  if (!t->IsSessionValid()) return nullptr;
-  return t;
+  auto result = OpenZenohTransport();
+  if (!result.IsOk()) return nullptr;
+  return std::move(result).Value();
 }

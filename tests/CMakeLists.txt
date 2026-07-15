@@ -12,6 +12,11 @@ include(GoogleTest)
 
 set(SITOS_FIXTURE_DIR "${CMAKE_SOURCE_DIR}/tests/fixtures/payload_v1")
 
+add_executable(sitos_public_headers_compile_test consumer/public_headers_compile.cpp)
+target_link_libraries(sitos_public_headers_compile_test PRIVATE sitos::sitos)
+sitos_enable_warnings(sitos_public_headers_compile_test)
+add_test(NAME sitos_public_headers_compile_test COMMAND sitos_public_headers_compile_test)
+
 add_executable(sitos_bootstrap_test unit/bootstrap_test.cpp)
 target_link_libraries(sitos_bootstrap_test PRIVATE GTest::gtest_main sitos::sitos)
 sitos_enable_warnings(sitos_bootstrap_test)
@@ -23,6 +28,25 @@ target_compile_definitions(sitos_param_value_test PRIVATE
   SITOS_FIXTURE_DIR="${SITOS_FIXTURE_DIR}")
 sitos_enable_warnings(sitos_param_value_test)
 gtest_discover_tests(sitos_param_value_test)
+
+add_executable(sitos_result_test unit/result_test.cpp)
+target_link_libraries(sitos_result_test PRIVATE GTest::gtest_main sitos::sitos)
+sitos_enable_warnings(sitos_result_test)
+gtest_discover_tests(sitos_result_test)
+
+add_executable(sitos_client_config_test unit/client_config_test.cpp)
+target_link_libraries(sitos_client_config_test PRIVATE GTest::gtest_main sitos::sitos)
+sitos_enable_warnings(sitos_client_config_test)
+gtest_discover_tests(sitos_client_config_test)
+
+add_executable(sitos_client_transport_factory_test unit/client_transport_factory_test.cpp)
+target_link_libraries(sitos_client_transport_factory_test PRIVATE GTest::gtest_main sitos::sitos)
+if(SITOS_WITH_ZENOH)
+  target_compile_definitions(sitos_client_transport_factory_test PRIVATE SITOS_WITH_ZENOH=1)
+  sitos_copy_zenohc(sitos_client_transport_factory_test)
+endif()
+sitos_enable_warnings(sitos_client_transport_factory_test)
+gtest_discover_tests(sitos_client_transport_factory_test)
 
 add_executable(sitos_key_test unit/key_test.cpp)
 target_link_libraries(sitos_key_test PRIVATE GTest::gtest_main sitos::sitos)
