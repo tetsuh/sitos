@@ -1,15 +1,17 @@
 // Copyright 2026 sitos contributors
 // SPDX-License-Identifier: Apache-2.0
 
+#include "sitos/result.hpp"
+
+#include <gtest/gtest.h>
+
 #include <cassert>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <utility>
 
-#include <gtest/gtest.h>
-
-#include "sitos/result.hpp"
 #include "sitos/status.hpp"
 
 namespace sitos {
@@ -84,6 +86,47 @@ class CustomErrorCategory final : public std::error_category {
   std::string message(int) const override { return "custom"; }
 };
 
+class ThrowingMoveValue {
+ public:
+  explicit ThrowingMoveValue(int value) : value_(value) {}
+  ThrowingMoveValue(const ThrowingMoveValue&) = delete;
+  ThrowingMoveValue& operator=(const ThrowingMoveValue&) = delete;
+
+  ThrowingMoveValue(ThrowingMoveValue&& other) {
+    if (throw_on_move_) throw std::runtime_error("move failed");
+    value_ = other.value_;
+  }
+
+  ThrowingMoveValue& operator=(ThrowingMoveValue&& other) {
+    if (throw_on_move_) throw std::runtime_error("move failed");
+    value_ = other.value_;
+    return *this;
+  }
+
+  static void SetThrowOnMove(bool enabled) { throw_on_move_ = enabled; }
+
+ private:
+  static inline bool throw_on_move_ = false;
+  int value_;
+};
+
+TEST(ResultTest, AssignmentFailurePreservesAnObservableErrorState) {
+  auto target = Result<ThrowingMoveValue>::Err(Status::NotFound);
+  auto source = Result<ThrowingMoveValue>::Ok(ThrowingMoveValue{7});
+
+  ThrowingMoveValue::SetThrowOnMove(true);
+  EXPECT_THROW(target = std::move(source), std::runtime_error);
+  ThrowingMoveValue::SetThrowOnMove(false);
+
+  const std::error_code* error = nullptr;
+  EXPECT_NO_THROW(error = &target.Error());
+  ASSERT_NE(error, nullptr);
+  EXPECT_NE(error->value(), 0);
+  EXPECT_FALSE(target.IsOk());
+  EXPECT_EQ(target.StatusCode(), Status::Error);
+  EXPECT_TRUE(target.Message().empty());
+}
+
 TEST(ResultTest, UnknownLegacyErrorsRemainErrors) {
   const auto cause = std::make_error_code(std::errc::file_exists);
   auto result = Result<void>::Err(cause);
@@ -104,14 +147,18 @@ TEST(ResultTest, UnknownLegacyErrorsRemainErrors) {
 
 #ifndef NDEBUG
 TEST(ResultTest, WrongStateAccessesAssert) {
-  EXPECT_DEATH({
-    auto result = Result<int>::Err(Status::Error);
-    static_cast<void>(result.Value());
-  }, "");
-  EXPECT_DEATH({
-    auto result = Result<int>::Ok(1);
-    static_cast<void>(result.Error());
-  }, "");
+  EXPECT_DEATH(
+      {
+        auto result = Result<int>::Err(Status::Error);
+        static_cast<void>(result.Value());
+      },
+      "");
+  EXPECT_DEATH(
+      {
+        auto result = Result<int>::Ok(1);
+        static_cast<void>(result.Error());
+      },
+      "");
 }
 #endif
 
