@@ -23,6 +23,7 @@
 
 #include "sitos/transport.hpp"
 
+#include "config_failure.hpp"
 #include "declaration_handle_lifecycle.hpp"
 #include "zenoh_transport_test_access.hpp"
 
@@ -768,9 +769,11 @@ sitos::Result<std::unique_ptr<sitos::Transport>> sitos::OpenZenohTransport(
     config_result = z_config_default(config.get());
   }
   if (config_result != Z_OK) {
-    return Result<std::unique_ptr<Transport>>::Err(Status::InvalidArgument,
-                                                   "invalid zenoh configuration",
-                                                   MakeError(config_result));
+    const bool user_config_provided = config_json.has_value();
+    const auto status = transport_detail::ConfigFailureStatus(user_config_provided);
+    const char* message = user_config_provided ? "invalid zenoh configuration"
+                                               : "failed to create default zenoh configuration";
+    return Result<std::unique_ptr<Transport>>::Err(status, message, MakeError(config_result));
   }
 
   config.mark_valid();

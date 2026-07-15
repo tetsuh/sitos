@@ -43,6 +43,7 @@ add_executable(sitos_client_transport_factory_test unit/client_transport_factory
 target_link_libraries(sitos_client_transport_factory_test PRIVATE GTest::gtest_main sitos::sitos)
 if(SITOS_WITH_ZENOH)
   target_compile_definitions(sitos_client_transport_factory_test PRIVATE SITOS_WITH_ZENOH=1)
+  target_include_directories(sitos_client_transport_factory_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
   sitos_copy_zenohc(sitos_client_transport_factory_test)
 endif()
 sitos_enable_warnings(sitos_client_transport_factory_test)

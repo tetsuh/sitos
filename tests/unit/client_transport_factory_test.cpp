@@ -1,18 +1,27 @@
 // Copyright 2026 sitos contributors
 // SPDX-License-Identifier: Apache-2.0
 
+#include <gtest/gtest.h>
+
 #include <optional>
 #include <string_view>
 #include <system_error>
 
-#include <gtest/gtest.h>
-
 #include "sitos/transport.hpp"
+
+#if defined(SITOS_WITH_ZENOH)
+#include "transport/config_failure.hpp"
+#endif
 
 namespace sitos {
 namespace {
 
 #if defined(SITOS_WITH_ZENOH)
+TEST(ClientTransportFactoryTest, ClassifiesConfigurationCreationFailuresBySource) {
+  EXPECT_EQ(transport_detail::ConfigFailureStatus(false), Status::Error);
+  EXPECT_EQ(transport_detail::ConfigFailureStatus(true), Status::InvalidArgument);
+}
+
 TEST(ClientTransportFactoryTest, RejectsEmptyAndMalformedConfiguration) {
   const auto empty = OpenZenohTransport(std::string_view{});
   ASSERT_FALSE(empty.IsOk());
@@ -22,7 +31,6 @@ TEST(ClientTransportFactoryTest, RejectsEmptyAndMalformedConfiguration) {
   ASSERT_FALSE(malformed.IsOk());
   EXPECT_EQ(malformed.StatusCode(), Status::InvalidArgument);
 }
-
 
 TEST(ClientTransportFactoryTest, OpensDefaultAndCompleteJson5Configuration) {
   auto default_transport = OpenZenohTransport();
