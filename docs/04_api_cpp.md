@@ -32,23 +32,48 @@ public:
     static std::optional<ParamValue> Decode(std::span<const std::byte> payload);
 };
 
-/// Result with error information
+/// Result with an exclusive value or ErrorInfo state. See include/sitos/result.hpp.
 template<typename T>
-struct Result {
-    std::optional<T> value;
-    Status status;            // enum class Status { Ok, NotFound, TypeMismatch,
-                              //   Timeout, Disconnected, ReadOnly, InvalidKey, Error }
-    std::string message;      // Human-readable details
-    explicit operator bool() const { return status == Status::Ok; }
+class Result {
+public:
+    static Result Ok(T value);
+    static Result Err(std::error_code cause);
+    static Result Err(Status status, std::string message = {},
+                      std::error_code cause = {});
+    template<typename U> static Result ErrFrom(const Result<U>& source);
+    bool IsOk() const noexcept;
+    Status StatusCode() const noexcept;
+    std::string_view Message() const noexcept;
+    const T& Value() const &;  // Requires IsOk().
+    T& Value() &;              // Requires IsOk().
+    T&& Value() &&;            // Requires IsOk().
+    const std::error_code& Error() const;  // Requires !IsOk().
 };
 
-/// Specialization for void. Used by APIs that return only Status (`Result<void>`).
-template<>
-struct Result<void> {
+/// Result<void> has the same status/error observers without a value.
+template<> class Result<void>;
+
+/// Public error state containing stable classification, diagnostics, and native cause.
+struct ErrorInfo {
     Status status;
     std::string message;
-    explicit operator bool() const { return status == Status::Ok; }
+    std::error_code cause;
 };
+
+enum class Status {
+    Ok, NotFound, TypeMismatch, Timeout, Disconnected, ReadOnly, InvalidKey,
+    InvalidArgument, Error
+};
+const std::error_category& StatusErrorCategory() noexcept;
+std::error_code MakeErrorCode(Status status);
+
+/// Shared client configuration. Empty JSON is invalid; nullopt selects Zenoh defaults.
+struct ClientConfig {
+    std::string prefix = "sitos";
+    std::optional<std::string> zenoh_config_json;
+    std::chrono::milliseconds query_timeout{5000};
+};
+Result<void> ValidateClientConfig(const ClientConfig& config);
 
 struct Config {
     std::string prefix = "sitos";
@@ -95,6 +120,7 @@ zenoh session injection [X04] is performed by converting the session to
 | `Disconnected` | zenoh session disconnected, StorageNode stopped | `sitos.DisconnectedError` |
 | `ReadOnly` | put/delete through the library API to `snap/<sid>/**` | `sitos.ReadOnlyError` |
 | `InvalidKey` | Key/scope/session id violates the grammar | `ValueError` |
+| `InvalidArgument` | Invalid configuration or operation argument | `ValueError` |
 | `Error` | Other implementation-dependent error (RocksDB status, etc.) | `sitos.SitosError` |
 
 Python `get(..., default=...)` does not raise for `NotFound` only; it returns default.
