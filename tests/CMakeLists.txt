@@ -12,10 +12,21 @@ include(GoogleTest)
 
 set(SITOS_FIXTURE_DIR "${CMAKE_SOURCE_DIR}/tests/fixtures/payload_v1")
 
-add_executable(sitos_public_headers_compile_test consumer/public_headers_compile.cpp)
-target_link_libraries(sitos_public_headers_compile_test PRIVATE sitos::sitos)
-sitos_enable_warnings(sitos_public_headers_compile_test)
-add_test(NAME sitos_public_headers_compile_test COMMAND sitos_public_headers_compile_test)
+function(add_sitos_public_header_compile_test target source)
+  add_executable(${target} ${source})
+  target_link_libraries(${target} PRIVATE sitos::sitos)
+  sitos_enable_warnings(${target})
+  add_test(NAME ${target} COMMAND ${target})
+endfunction()
+
+add_sitos_public_header_compile_test(
+  sitos_public_headers_compile_test consumer/public_headers_compile.cpp)
+add_sitos_public_header_compile_test(
+  sitos_status_header_compile_test consumer/status_header_compile.cpp)
+add_sitos_public_header_compile_test(
+  sitos_result_header_compile_test consumer/result_header_compile.cpp)
+add_sitos_public_header_compile_test(
+  sitos_client_config_header_compile_test consumer/client_config_header_compile.cpp)
 
 add_executable(sitos_bootstrap_test unit/bootstrap_test.cpp)
 target_link_libraries(sitos_bootstrap_test PRIVATE GTest::gtest_main sitos::sitos)
