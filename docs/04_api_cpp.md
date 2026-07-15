@@ -53,6 +53,9 @@ public:
 /// Result<void> has the same status/error observers without a value.
 template<> class Result<void>;
 
+// Message() borrows the diagnostic string. Its view remains valid only while
+// the Result and its error state live, and assignment or move invalidates it.
+
 /// Public error state containing stable classification, diagnostics, and native cause.
 struct ErrorInfo {
     Status status;
@@ -60,9 +63,17 @@ struct ErrorInfo {
     std::error_code cause;
 };
 
+// Numeric values are stable because MakeErrorCode publishes them.
 enum class Status {
-    Ok, NotFound, TypeMismatch, Timeout, Disconnected, ReadOnly, InvalidKey,
-    InvalidArgument, Error
+    Ok = 0,
+    NotFound = 1,
+    TypeMismatch = 2,
+    Timeout = 3,
+    Disconnected = 4,
+    ReadOnly = 5,
+    InvalidKey = 6,
+    InvalidArgument = 7,
+    Error = 8
 };
 const std::error_category& StatusErrorCategory() noexcept;
 std::error_code MakeErrorCode(Status status);

@@ -6,9 +6,10 @@
 ## Context
 
 Higher-level synchronous clients need stable status classification, diagnostic
-messages, native error causes, and shared connection configuration. The
-existing `Result<T>` only carried an error code and is already used by the
-transport and storage APIs, so replacing it would break source compatibility.
+messages, native error causes, and shared connection configuration. The error
+state of the existing implemented `Result<T>` only carried a `std::error_code`
+and is already used by the transport and storage APIs, so replacing it would
+break source compatibility.
 
 ## Decision
 
