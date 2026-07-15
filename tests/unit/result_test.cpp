@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cassert>
 #include <memory>
 #include <stdexcept>
@@ -178,10 +179,22 @@ TEST(ResultTest, ZeroErrorCodeIsNormalized) {
 }
 #endif
 
-TEST(StatusTest, ErrorCodeUsesStableCategory) {
-  const auto error = MakeErrorCode(Status::Timeout);
-  EXPECT_NE(error.value(), 0);
-  EXPECT_EQ(&error.category(), &StatusErrorCategory());
+TEST(StatusTest, ErrorCodeUsesStableCategoryAndValues) {
+  constexpr std::array kValues{
+      std::pair{Status::Ok, 0},           std::pair{Status::NotFound, 1},
+      std::pair{Status::TypeMismatch, 2}, std::pair{Status::Timeout, 3},
+      std::pair{Status::Disconnected, 4}, std::pair{Status::ReadOnly, 5},
+      std::pair{Status::InvalidKey, 6},   std::pair{Status::InvalidArgument, 7},
+      std::pair{Status::Error, 8},
+  };
+
+  for (const auto& [status, value] : kValues) {
+    EXPECT_EQ(static_cast<int>(status), value);
+    if (status == Status::Ok) continue;
+    const auto error = MakeErrorCode(status);
+    EXPECT_EQ(error.value(), value);
+    EXPECT_EQ(&error.category(), &StatusErrorCategory());
+  }
 }
 
 }  // namespace
