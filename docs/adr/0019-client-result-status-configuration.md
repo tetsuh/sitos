@@ -1,6 +1,6 @@
 # ADR-0019: Additive client result and configuration foundation
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-16
 
 ## Context
