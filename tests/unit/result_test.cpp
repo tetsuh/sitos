@@ -78,6 +78,12 @@ TEST(ResultTest, MapsPortableLegacyErrors) {
             Status::Disconnected);
 }
 
+class CustomErrorCategory final : public std::error_category {
+ public:
+  const char* name() const noexcept override { return "custom"; }
+  std::string message(int) const override { return "custom"; }
+};
+
 TEST(ResultTest, UnknownLegacyErrorsRemainErrors) {
   const auto cause = std::make_error_code(std::errc::file_exists);
   auto result = Result<void>::Err(cause);
@@ -88,7 +94,26 @@ TEST(ResultTest, UnknownLegacyErrorsRemainErrors) {
   result = Result<void>::Err(no_such_file);
   EXPECT_EQ(result.StatusCode(), Status::Error);
   EXPECT_EQ(result.Error(), no_such_file);
+
+  static const CustomErrorCategory category;
+  const std::error_code custom(17, category);
+  result = Result<void>::Err(custom);
+  EXPECT_EQ(result.StatusCode(), Status::Error);
+  EXPECT_EQ(result.Error(), custom);
 }
+
+#ifndef NDEBUG
+TEST(ResultTest, WrongStateAccessesAssert) {
+  EXPECT_DEATH({
+    auto result = Result<int>::Err(Status::Error);
+    static_cast<void>(result.Value());
+  }, "");
+  EXPECT_DEATH({
+    auto result = Result<int>::Ok(1);
+    static_cast<void>(result.Error());
+  }, "");
+}
+#endif
 
 TEST(ResultTest, VoidSuccessHasNoError) {
   auto result = Result<void>::Ok();
