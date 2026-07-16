@@ -47,8 +47,7 @@ void GetCompletion::ProcessReply(const ReplyConverter& converter) noexcept {
   try {
     auto converted = converter();
     if (!converted.IsOk()) {
-      RecordFailure(
-          ErrorInfo{converted.StatusCode(), std::string(converted.Message()), converted.Error()});
+      RecordFailure(converted.StatusCode(), converted.Error(), FailureKind::kReplyConversion);
       return;
     }
 
@@ -83,8 +82,11 @@ void GetCompletion::RecordCallbackFailure() noexcept { RecordUnexpectedFailure()
 Result<void> GetCompletion::WaitForResult() {
   std::unique_lock<std::mutex> lock(state_mutex_);
   state_condition_.wait(lock, [this] { return dropped_ && in_flight_ == 0; });
-  if (failure_.has_value()) {
-    return Result<void>::Err(failure_->status, failure_->message, failure_->cause);
+  if (delivery_state_ == DeliveryState::kFailed) {
+    const char* message = failure_kind_ == FailureKind::kReplyConversion
+                              ? "failed to process zenoh get reply"
+                              : "get reply callback failed";
+    return Result<void>::Err(failure_status_, message, failure_cause_);
   }
   return Result<void>::Ok();
 }
@@ -98,17 +100,18 @@ void GetCompletion::ReleaseCallback() noexcept {
   state_condition_.notify_all();
 }
 
-void GetCompletion::RecordFailure(const ErrorInfo& error) noexcept {
+void GetCompletion::RecordFailure(Status status, std::error_code cause, FailureKind kind) noexcept {
   std::lock_guard<std::mutex> lock(state_mutex_);
   if (delivery_state_ == DeliveryState::kActive) {
     delivery_state_ = DeliveryState::kFailed;
-    failure_ = error;
+    failure_kind_ = kind;
+    failure_status_ = status;
+    failure_cause_ = cause ? cause : MakeErrorCode(status);
   }
 }
 
 void GetCompletion::RecordUnexpectedFailure() noexcept {
-  RecordFailure(
-      ErrorInfo{Status::Error, "get reply callback failed", MakeErrorCode(Status::Error)});
+  RecordFailure(Status::Error, MakeErrorCode(Status::Error), FailureKind::kCallbackException);
 }
 
 bool GetCompletion::IsActive() const {

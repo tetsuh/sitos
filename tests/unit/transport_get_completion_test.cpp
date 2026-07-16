@@ -9,6 +9,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -75,7 +76,7 @@ class CallbackEntered {
 
 Result<QueryReply> Reply(std::string key, std::span<const std::byte> payload) {
   return Result<QueryReply>::Ok(
-      QueryReply{std::move(key), payload, Encoding{std::string(Encoding::kSitosV1)}});
+      QueryReply{std::move(key), payload, Encoding{std::string(Encoding::kSitosV1)}, nullptr});
 }
 
 template <typename Converter>
@@ -199,22 +200,27 @@ TEST(TransportGetCompletionTest, DeduplicatesConcreteKeysAndRetainsDistinctKeys)
 TEST(TransportGetCompletionTest, PreservesFirstConversionFailure) {
   auto completion = std::make_shared<GetCompletion>(
       [](std::string_view, std::span<const std::byte>, const Encoding&) { return true; });
+  const auto first_cause = std::make_error_code(std::errc::io_error);
+  const auto second_cause = std::make_error_code(std::errc::invalid_argument);
 
   {
     auto lease = completion->AcquireCallbackLease();
-    completion->ProcessReply(
-        [] { return Result<QueryReply>::Err(Status::Error, "first conversion failure"); });
+    completion->ProcessReply([&] {
+      return Result<QueryReply>::Err(Status::Error, "first conversion failure", first_cause);
+    });
   }
   {
     auto lease = completion->AcquireCallbackLease();
-    completion->ProcessReply(
-        [] { return Result<QueryReply>::Err(Status::Error, "second conversion failure"); });
+    completion->ProcessReply([&] {
+      return Result<QueryReply>::Err(Status::Error, "second conversion failure", second_cause);
+    });
   }
   completion->MarkDropped();
 
   const auto result = completion->WaitForResult();
   ASSERT_FALSE(result.IsOk());
-  EXPECT_EQ(result.Message(), "first conversion failure");
+  EXPECT_EQ(result.Error(), first_cause);
+  EXPECT_EQ(result.Message(), "failed to process zenoh get reply");
 }
 
 TEST(TransportGetCompletionTest, RepeatedStateTeardownIsSafe) {

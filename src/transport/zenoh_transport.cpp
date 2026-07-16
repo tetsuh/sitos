@@ -769,6 +769,7 @@ class ZenohTransport : public Transport {
       // z_get consumes the moved closure. Marking completion here is idempotent
       // if zenoh already invoked the drop callback while reporting the failure.
       completion->MarkDropped();
+      static_cast<void>(completion->WaitForResult());
       return Result<void>::Err(MakeZenohError(result));
     }
     return completion->WaitForResult();

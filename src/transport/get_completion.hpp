@@ -11,7 +11,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <span>
 #include <string>
 #include <unordered_set>
@@ -72,9 +71,10 @@ class GetCompletion : public std::enable_shared_from_this<GetCompletion> {
 
  private:
   enum class DeliveryState { kActive, kStoppedBySink, kFailed };
+  enum class FailureKind { kNone, kReplyConversion, kCallbackException };
 
   void ReleaseCallback() noexcept;
-  void RecordFailure(const ErrorInfo& error) noexcept;
+  void RecordFailure(Status status, std::error_code cause, FailureKind kind) noexcept;
   void RecordUnexpectedFailure() noexcept;
   bool IsActive() const;
 
@@ -84,7 +84,9 @@ class GetCompletion : public std::enable_shared_from_this<GetCompletion> {
   bool dropped_ = false;
   std::size_t in_flight_ = 0;
   DeliveryState delivery_state_ = DeliveryState::kActive;
-  std::optional<ErrorInfo> failure_;
+  FailureKind failure_kind_ = FailureKind::kNone;
+  Status failure_status_ = Status::Error;
+  std::error_code failure_cause_;
   std::unordered_set<std::string> delivered_keys_;
   std::mutex delivery_mutex_;
 };
