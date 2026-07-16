@@ -6,11 +6,13 @@
 #ifndef SITOS_TRANSPORT_ZENOH_TRANSPORT_TEST_ACCESS_HPP
 #define SITOS_TRANSPORT_ZENOH_TRANSPORT_TEST_ACCESS_HPP
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 #include "sitos/transport.hpp"
 
@@ -21,6 +23,9 @@ std::optional<std::string> BuildWireEncoding(const Encoding& encoding);
 
 /// Applies the production receive-side normalization to a wire Encoding string.
 Encoding NormalizeWireEncoding(std::string wire_encoding);
+
+/// Returns the production diagnostic for a native zenoh-c result value.
+std::error_code MakeNativeError(std::int8_t code);
 
 /// Verifies allocation failure occurs before a constructor argument transfers ownership.
 bool AllocationFailurePrecedesOwnershipTransfer();
