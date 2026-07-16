@@ -21,6 +21,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 #include "sitos/transport.hpp"
 
@@ -45,11 +46,24 @@ enum class TransportErrc {
   kErrNoQuery = -3,       // queryable destroyed or query unavailable
 };
 
-// A custom error_category so std::error_code::message() produces meaningful
-// text instead of the platform-dependent generic_category() strings.
+static_assert(!std::is_convertible_v<TransportErrc, z_result_t>);
+static_assert(!std::is_convertible_v<z_result_t, TransportErrc>);
+
+// Separate categories keep adapter-generated diagnostics distinct from native
+// zenoh-c results even when their numeric values are identical.
 class ZenohErrorCategory : public std::error_category {
  public:
   const char* name() const noexcept override { return "sitos.zenoh"; }
+
+  std::string message(int ev) const override {
+    if (ev == Z_OK) return "ok";
+    return "zenoh error code " + std::to_string(ev);
+  }
+};
+
+class TransportErrorCategory : public std::error_category {
+ public:
+  const char* name() const noexcept override { return "sitos.transport"; }
 
   std::string message(int ev) const override {
     using enum TransportErrc;
@@ -61,8 +75,7 @@ class ZenohErrorCategory : public std::error_category {
       case kErrNoQuery:
         return "query is no longer valid (queryable destroyed)";
       default:
-        if (ev == Z_OK) return "ok";
-        return "zenoh error code " + std::to_string(ev);
+        return "transport error code " + std::to_string(ev);
     }
   }
 };
@@ -72,16 +85,23 @@ const std::error_category& ZenohCategory() {
   return kCategory;
 }
 
-std::error_code MakeError(z_result_t rc) {
+const std::error_category& TransportCategory() {
+  static const TransportErrorCategory kCategory;
+  return kCategory;
+}
+
+std::error_code MakeZenohError(z_result_t rc) {
   if (rc == Z_OK) return {};
   return {static_cast<int>(rc), ZenohCategory()};
 }
 
-std::error_code MakeError(TransportErrc ec) { return {static_cast<int>(ec), ZenohCategory()}; }
+std::error_code MakeTransportError(TransportErrc ec) {
+  return {static_cast<int>(ec), TransportCategory()};
+}
 
 template <typename T>
 Result<T> SemanticTransportError(Status status, TransportErrc code) {
-  const auto cause = MakeError(code);
+  const auto cause = MakeTransportError(code);
   return Result<T>::Err(status, cause.message(), cause);
 }
 
@@ -164,7 +184,7 @@ class AllocationFailureProbe {
 Result<ZenohOwned<z_owned_keyexpr_t>> MakeKeyexpr(std::string_view key) {
   ZenohOwned<z_owned_keyexpr_t> ke;
   z_result_t rc = z_keyexpr_from_str(ke.get(), std::string(key).c_str());
-  if (rc != Z_OK) return Result<ZenohOwned<z_owned_keyexpr_t>>::Err(MakeError(rc));
+  if (rc != Z_OK) return Result<ZenohOwned<z_owned_keyexpr_t>>::Err(MakeZenohError(rc));
   ke.mark_valid();  // ownership acquired
   return Result<ZenohOwned<z_owned_keyexpr_t>>::Ok(std::move(ke));
 }
@@ -194,14 +214,14 @@ Result<ZenohOwned<z_owned_encoding_t>> MakeEncoding(const Encoding& enc) {
     z_result_t rc = z_encoding_set_schema_from_substr(z_enc.loan_mut(), schema->data(),
                                                        schema->size());
     if (rc != Z_OK) {
-      return Result<ZenohOwned<z_owned_encoding_t>>::Err(MakeError(rc));
+      return Result<ZenohOwned<z_owned_encoding_t>>::Err(MakeZenohError(rc));
     }
     return Result<ZenohOwned<z_owned_encoding_t>>::Ok(std::move(z_enc));
   }
 
   z_result_t rc = z_encoding_from_substr(z_enc.get(), enc.id.data(), enc.id.size());
   if (rc != Z_OK) {
-    return Result<ZenohOwned<z_owned_encoding_t>>::Err(MakeError(rc));
+    return Result<ZenohOwned<z_owned_encoding_t>>::Err(MakeZenohError(rc));
   }
   z_enc.mark_valid();
   return Result<ZenohOwned<z_owned_encoding_t>>::Ok(std::move(z_enc));
@@ -228,7 +248,7 @@ Result<ZenohOwned<z_owned_bytes_t>> MakeBytes(std::span<const std::byte> payload
   z_result_t rc = z_bytes_copy_from_buf(p.get(), reinterpret_cast<const uint8_t*>(payload.data()),
                                         payload.size());
   if (rc != Z_OK) {
-    return Result<ZenohOwned<z_owned_bytes_t>>::Err(MakeError(rc));
+    return Result<ZenohOwned<z_owned_bytes_t>>::Err(MakeZenohError(rc));
   }
   p.mark_valid();
   return Result<ZenohOwned<z_owned_bytes_t>>::Ok(std::move(p));
@@ -291,6 +311,10 @@ std::optional<std::string> BuildWireEncoding(const Encoding& encoding) {
 
 Encoding NormalizeWireEncoding(std::string wire_encoding) {
   return NormalizeEncoding(std::move(wire_encoding));
+}
+
+std::error_code MakeNativeError(std::int8_t code) {
+  return MakeZenohError(static_cast<z_result_t>(code));
 }
 
 bool AllocationFailurePrecedesOwnershipTransfer() {
@@ -370,7 +394,7 @@ Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::by
 
   z_result_t rc = z_query_reply(callback_state->query, ke.Value().loan(), p.Value().moved(), &opts);
 
-  if (rc != Z_OK) return Result<void>::Err(MakeError(rc));
+  if (rc != Z_OK) return Result<void>::Err(MakeZenohError(rc));
   return Result<void>::Ok();
 }
 
@@ -669,7 +693,7 @@ class ZenohTransport : public Transport {
 
     z_result_t rc = z_put(z_session_loan(&session_), ke.Value().loan(), p.Value().moved(), &opts);
 
-    if (rc != Z_OK) return Result<void>::Err(MakeError(rc));
+    if (rc != Z_OK) return Result<void>::Err(MakeZenohError(rc));
     return Result<void>::Ok();
   }
 
@@ -686,7 +710,7 @@ class ZenohTransport : public Transport {
 
     z_result_t rc = z_delete(z_session_loan(&session_), ke.Value().loan(), &opts);
 
-    if (rc != Z_OK) return Result<void>::Err(MakeError(rc));
+    if (rc != Z_OK) return Result<void>::Err(MakeZenohError(rc));
     return Result<void>::Ok();
   }
 
@@ -715,7 +739,7 @@ class ZenohTransport : public Transport {
 
     z_result_t rc = z_get(z_session_loan(&session_), ke.Value().loan(), "", z_move(closure), &opts);
 
-    if (rc != Z_OK) return Result<void>::Err(MakeError(rc));
+    if (rc != Z_OK) return Result<void>::Err(MakeZenohError(rc));
     return Result<void>::Ok();
   }
 
@@ -750,7 +774,7 @@ class ZenohTransport : public Transport {
         z_move(closure), &options);
     if (decl_rc != Z_OK) {
       subscription.Reset();
-      return Result<Subscription>::Err(MakeError(decl_rc));
+      return Result<Subscription>::Err(MakeZenohError(decl_rc));
     }
     return Result<Subscription>::Ok(std::move(subscription));
   }
@@ -794,7 +818,7 @@ class ZenohTransport : public Transport {
 
     if (decl_rc != Z_OK) {
       q.Reset();
-      return Result<Queryable>::Err(MakeError(decl_rc));
+      return Result<Queryable>::Err(MakeZenohError(decl_rc));
     }
     return Result<Queryable>::Ok(std::move(q));
   }
@@ -835,16 +859,17 @@ sitos::Result<std::unique_ptr<sitos::Transport>> sitos::OpenZenohTransport(
     const auto status = transport_detail::ConfigFailureStatus(user_config_provided);
     const char* message = user_config_provided ? "invalid zenoh configuration"
                                                : "failed to create default zenoh configuration";
-    return Result<std::unique_ptr<Transport>>::Err(status, message, MakeError(config_result));
+    return Result<std::unique_ptr<Transport>>::Err(status, message,
+                                                   MakeZenohError(config_result));
   }
 
   config.mark_valid();
   auto transport = MakeUniqueWithDeferredTransfer<sitos::ZenohTransport>(
       [&config] { return config.moved(); });
   if (!transport->IsSessionValid()) {
-    return Result<std::unique_ptr<Transport>>::Err(Status::Error,
-                                                   "failed to open zenoh session",
-                                                   MakeError(transport->OpenResult()));
+    return Result<std::unique_ptr<Transport>>::Err(
+        Status::Error, "failed to open zenoh session",
+        MakeZenohError(transport->OpenResult()));
   }
   return Result<std::unique_ptr<Transport>>::Ok(std::move(transport));
 }
