@@ -168,20 +168,39 @@ TEST(TransportGetCompletionTest, FalseStillWaitsForTerminalDrop) {
 TEST(TransportGetCompletionTest, ExceptionSuppressesQueuedCallbacksAndReturnsError) {
   std::vector<std::byte> payload = {std::byte{0x01}};
   CallbackEntered second_entered;
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool first_sink_entered = false;
+  bool release_first_sink = false;
   int first_calls = 0;
   int second_converter_calls = 0;
   auto completion = std::make_shared<GetCompletion>(
       [&](std::string_view, std::span<const std::byte>, const Encoding&) -> bool {
-        ++first_calls;
+        {
+          std::unique_lock<std::mutex> lock(mutex);
+          ++first_calls;
+          first_sink_entered = true;
+          condition.notify_all();
+          condition.wait(lock, [&] { return release_first_sink; });
+        }
         throw std::runtime_error("sink failure");
       });
 
   auto first = StartReply(completion, nullptr, [&] { return Reply("sitos/test/first", payload); });
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    ASSERT_TRUE(condition.wait_for(lock, 3s, [&] { return first_sink_entered; }));
+  }
   auto second = StartReply(completion, &second_entered, [&] {
     ++second_converter_calls;
     return Reply("sitos/test/second", payload);
   });
   second_entered.Wait();
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    release_first_sink = true;
+  }
+  condition.notify_all();
 
   first.get();
   second.get();
@@ -222,7 +241,8 @@ TEST(TransportGetCompletionTest, PreservesFirstConversionFailure) {
   {
     auto lease = completion->AcquireCallbackLease(completion);
     completion->ProcessReply([&] {
-      return Result<QueryReply>::Err(Status::Error, "first conversion failure", first_cause);
+      return Result<QueryReply>::Err(Status::InvalidArgument, "first conversion failure",
+                                     first_cause);
     });
   }
   {
@@ -235,6 +255,7 @@ TEST(TransportGetCompletionTest, PreservesFirstConversionFailure) {
 
   const auto result = completion->WaitForResult();
   ASSERT_FALSE(result.IsOk());
+  EXPECT_EQ(result.StatusCode(), Status::Error);
   EXPECT_EQ(result.Error(), first_cause);
   EXPECT_EQ(result.Message(), "failed to process zenoh get reply");
 }

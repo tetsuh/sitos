@@ -461,16 +461,22 @@ TEST_F(TransportTest, GetWaitsForTerminalCompletion) {
     condition.notify_all();
   });
 
+  bool entered_before_release = false;
   {
     std::unique_lock<std::mutex> lock(mutex);
-    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(3), [&] { return query_entered; }));
+    entered_before_release =
+        condition.wait_for(lock, std::chrono::seconds(3), [&] { return query_entered; });
+    EXPECT_TRUE(entered_before_release);
     EXPECT_FALSE(get_returned);
     release_query = true;
   }
   condition.notify_all();
+  bool returned_after_release = false;
   {
     std::unique_lock<std::mutex> lock(mutex);
-    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(3), [&] { return get_returned; }));
+    returned_after_release =
+        condition.wait_for(lock, std::chrono::seconds(3), [&] { return get_returned; });
+    EXPECT_TRUE(returned_after_release);
   }
   get_thread.join();
 

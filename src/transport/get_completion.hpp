@@ -74,7 +74,7 @@ class GetCompletion : public std::enable_shared_from_this<GetCompletion> {
     try {
       auto converted = std::forward<Converter>(converter)();
       if (!converted.IsOk()) {
-        RecordFailure(converted.StatusCode(), converted.Error(), FailureKind::kReplyConversion);
+        RecordFailure(Status::Error, converted.Error(), FailureKind::kReplyConversion);
         return;
       }
 
