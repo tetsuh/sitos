@@ -8,12 +8,12 @@
 
 #include <condition_variable>
 #include <cstddef>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
 #include <string>
 #include <unordered_set>
+#include <utility>
 
 #include "sitos/transport.hpp"
 
@@ -29,9 +29,11 @@ struct QueryReply {
 
 /// Shared completion and delivery state for exactly one Transport::Get request.
 class GetCompletion : public std::enable_shared_from_this<GetCompletion> {
- public:
-  using ReplyConverter = std::function<Result<QueryReply>()>;
+ private:
+  enum class DeliveryState { kActive, kStoppedBySink, kFailed };
+  enum class FailureKind { kNone, kReplyConversion, kCallbackException };
 
+ public:
   class CallbackLease {
    public:
     CallbackLease(CallbackLease&& other) noexcept;
@@ -58,7 +60,35 @@ class GetCompletion : public std::enable_shared_from_this<GetCompletion> {
 
   /// Runs conversion and, if successful, delivery under the per-request gate.
   /// Conversion and sink failures become a terminal request error.
-  void ProcessReply(const ReplyConverter& converter) noexcept;
+  template <typename Converter>
+  void ProcessReply(Converter&& converter) noexcept {
+    std::unique_lock<std::mutex> delivery_lock(delivery_mutex_);
+    if (!IsActive()) return;
+
+    try {
+      auto converted = std::forward<Converter>(converter)();
+      if (!converted.IsOk()) {
+        RecordFailure(converted.StatusCode(), converted.Error(), FailureKind::kReplyConversion);
+        return;
+      }
+
+      QueryReply reply = std::move(converted).Value();
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (delivery_state_ != DeliveryState::kActive) return;
+        if (!delivered_keys_.insert(reply.key).second) return;
+      }
+
+      if (sink_ && !sink_(reply.key, reply.payload, reply.encoding)) {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (delivery_state_ == DeliveryState::kActive) {
+          delivery_state_ = DeliveryState::kStoppedBySink;
+        }
+      }
+    } catch (...) {
+      RecordUnexpectedFailure();
+    }
+  }
 
   /// Marks native reply-closure drop. It is idempotent for submission failures.
   void MarkDropped() noexcept;
@@ -70,9 +100,6 @@ class GetCompletion : public std::enable_shared_from_this<GetCompletion> {
   Result<void> WaitForResult();
 
  private:
-  enum class DeliveryState { kActive, kStoppedBySink, kFailed };
-  enum class FailureKind { kNone, kReplyConversion, kCallbackException };
-
   void ReleaseCallback() noexcept;
   void RecordFailure(Status status, std::error_code cause, FailureKind kind) noexcept;
   void RecordUnexpectedFailure() noexcept;

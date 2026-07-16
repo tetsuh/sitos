@@ -40,35 +40,6 @@ GetCompletion::CallbackLease GetCompletion::AcquireCallbackLease() {
   return CallbackLease(std::move(completion));
 }
 
-void GetCompletion::ProcessReply(const ReplyConverter& converter) noexcept {
-  std::unique_lock<std::mutex> delivery_lock(delivery_mutex_);
-  if (!IsActive()) return;
-
-  try {
-    auto converted = converter();
-    if (!converted.IsOk()) {
-      RecordFailure(converted.StatusCode(), converted.Error(), FailureKind::kReplyConversion);
-      return;
-    }
-
-    QueryReply reply = std::move(converted).Value();
-    {
-      std::lock_guard<std::mutex> lock(state_mutex_);
-      if (delivery_state_ != DeliveryState::kActive) return;
-      if (!delivered_keys_.insert(reply.key).second) return;
-    }
-
-    if (sink_ && !sink_(reply.key, reply.payload, reply.encoding)) {
-      std::lock_guard<std::mutex> lock(state_mutex_);
-      if (delivery_state_ == DeliveryState::kActive) {
-        delivery_state_ = DeliveryState::kStoppedBySink;
-      }
-    }
-  } catch (...) {
-    RecordUnexpectedFailure();
-  }
-}
-
 void GetCompletion::MarkDropped() noexcept {
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
