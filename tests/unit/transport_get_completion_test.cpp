@@ -84,7 +84,7 @@ std::future<void> StartReply(const std::shared_ptr<GetCompletion>& completion,
                              CallbackEntered* entered, Converter converter) {
   return std::async(std::launch::async,
                     [completion, entered, converter = std::move(converter)]() mutable {
-                      auto lease = completion->AcquireCallbackLease(&completion);
+                      auto lease = completion->AcquireCallbackLease(completion);
                       if (entered != nullptr) entered->Signal();
                       completion->ProcessReply(converter);
                     });
@@ -117,7 +117,7 @@ TEST(TransportGetCompletionTest, DropsLateCallbacksWithoutDelivery) {
       });
 
   completion->MarkDropped();
-  auto lease = completion->AcquireCallbackLease(&completion);
+  auto lease = completion->AcquireCallbackLease(completion);
 
   EXPECT_FALSE(lease.IsEnrolled());
   EXPECT_TRUE(completion->WaitForResult().IsOk());
@@ -154,7 +154,7 @@ TEST(TransportGetCompletionTest, FalseStillWaitsForTerminalDrop) {
       [](std::string_view, std::span<const std::byte>, const Encoding&) { return false; });
 
   {
-    auto lease = completion->AcquireCallbackLease(&completion);
+    auto lease = completion->AcquireCallbackLease(completion);
     completion->ProcessReply([&] { return Reply("sitos/test/one", payload); });
   }
   auto waiter =
@@ -204,7 +204,7 @@ TEST(TransportGetCompletionTest, DeduplicatesConcreteKeysAndRetainsDistinctKeys)
       });
 
   for (const std::string_view key : {"sitos/test/one", "sitos/test/one", "sitos/test/two"}) {
-    auto lease = completion->AcquireCallbackLease(&completion);
+    auto lease = completion->AcquireCallbackLease(completion);
     completion->ProcessReply([&] { return Reply(std::string(key), payload); });
   }
   completion->MarkDropped();
@@ -220,13 +220,13 @@ TEST(TransportGetCompletionTest, PreservesFirstConversionFailure) {
   const auto second_cause = std::make_error_code(std::errc::invalid_argument);
 
   {
-    auto lease = completion->AcquireCallbackLease(&completion);
+    auto lease = completion->AcquireCallbackLease(completion);
     completion->ProcessReply([&] {
       return Result<QueryReply>::Err(Status::Error, "first conversion failure", first_cause);
     });
   }
   {
-    auto lease = completion->AcquireCallbackLease(&completion);
+    auto lease = completion->AcquireCallbackLease(completion);
     completion->ProcessReply([&] {
       return Result<QueryReply>::Err(Status::Error, "second conversion failure", second_cause);
     });
@@ -245,7 +245,7 @@ TEST(TransportGetCompletionTest, RepeatedStateTeardownIsSafe) {
     auto completion = std::make_shared<GetCompletion>(
         [](std::string_view, std::span<const std::byte>, const Encoding&) { return true; });
     {
-      auto lease = completion->AcquireCallbackLease(&completion);
+      auto lease = completion->AcquireCallbackLease(completion);
       completion->ProcessReply([&] { return Reply("sitos/test/repeated", payload); });
     }
     completion->MarkDropped();

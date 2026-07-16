@@ -292,15 +292,27 @@ Result<transport_internal::QueryReply> ConvertGetReply(z_loaned_reply_t* reply) 
                                      ReadEncoding(sample), std::move(slice)});
 }
 
+struct GetReplyContext {
+  explicit GetReplyContext(std::shared_ptr<transport_internal::GetCompletion> completion)
+      : completion(std::move(completion)) {}
+
+  std::mutex mutex;
+  std::shared_ptr<transport_internal::GetCompletion> completion;
+};
+
 void OnGetReply(z_loaned_reply_t* reply, void* context) noexcept {
-  transport_internal::GetCompletion* completion = nullptr;
+  std::shared_ptr<transport_internal::GetCompletion> completion;
   try {
-    auto* completion_context =
-        static_cast<std::shared_ptr<transport_internal::GetCompletion>*>(context);
-    auto lease = (*completion_context)->AcquireCallbackLease(completion_context);
+    auto* reply_context = static_cast<GetReplyContext*>(context);
+    {
+      std::lock_guard<std::mutex> lock(reply_context->mutex);
+      completion = reply_context->completion;
+    }
+    if (!completion) return;
+
+    auto lease = completion->AcquireCallbackLease(completion);
     if (!lease.IsEnrolled()) return;
-    completion = &lease.Completion();
-    completion->ProcessReply([reply] { return ConvertGetReply(reply); });
+    lease.Completion().ProcessReply([reply] { return ConvertGetReply(reply); });
   } catch (...) {
     // Contain all C++ exceptions at the zenoh-c callback boundary (#67).
     if (completion) completion->RecordCallbackFailure();
@@ -308,9 +320,14 @@ void OnGetReply(z_loaned_reply_t* reply, void* context) noexcept {
 }
 
 void DropGetReplyContext(void* context) noexcept {
-  std::unique_ptr<std::shared_ptr<transport_internal::GetCompletion>> completion_context(
-      static_cast<std::shared_ptr<transport_internal::GetCompletion>*>(context));
-  auto completion = std::move(*completion_context);
+  // zenoh never invokes a closure after its drop callback. The context mutex
+  // synchronizes a reply callback that began before terminal closure drop.
+  std::unique_ptr<GetReplyContext> reply_context(static_cast<GetReplyContext*>(context));
+  std::shared_ptr<transport_internal::GetCompletion> completion;
+  {
+    std::lock_guard<std::mutex> lock(reply_context->mutex);
+    completion = std::move(reply_context->completion);
+  }
   if (completion) completion->MarkDropped();
 }
 
@@ -759,7 +776,7 @@ class ZenohTransport : public Transport {
     if (!ke.IsOk()) return Result<void>::ErrFrom(ke);
 
     auto completion = std::make_shared<transport_internal::GetCompletion>(sink);
-    auto* context = new std::shared_ptr<transport_internal::GetCompletion>(completion);
+    auto* context = new GetReplyContext(completion);
     z_owned_closure_reply_t closure;
     z_closure_reply(&closure, OnGetReply, DropGetReplyContext, context);
 

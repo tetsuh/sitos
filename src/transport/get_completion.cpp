@@ -37,12 +37,12 @@ void GetCompletion::CallbackLease::Release() noexcept {
 GetCompletion::GetCompletion(Transport::QueryResultSink sink) : sink_(std::move(sink)) {}
 
 GetCompletion::CallbackLease GetCompletion::AcquireCallbackLease(
-    const std::shared_ptr<GetCompletion>* completion_context) noexcept {
+    const std::shared_ptr<GetCompletion>& completion_owner) noexcept {
   std::shared_ptr<GetCompletion> completion;
   bool enrolled = false;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    completion = *completion_context;
+    completion = completion_owner;
     if (!dropped_) {
       ++in_flight_;
       enrolled = true;

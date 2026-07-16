@@ -60,10 +60,9 @@ class GetCompletion : public std::enable_shared_from_this<GetCompletion> {
   explicit GetCompletion(Transport::QueryResultSink sink);
 
   /// Enrolls the complete C callback before reply inspection or delivery waits.
-  /// The context owner is copied while the completion mutex is held so native
-  /// closure drop cannot race callback registration.
+  /// The caller supplies a local owner copied from the native closure context.
   CallbackLease AcquireCallbackLease(
-      const std::shared_ptr<GetCompletion>* completion_context) noexcept;
+      const std::shared_ptr<GetCompletion>& completion_owner) noexcept;
 
   /// Runs conversion and, if successful, delivery under the per-request gate.
   /// Conversion and sink failures become a terminal request error.
