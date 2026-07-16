@@ -24,3 +24,4 @@ See [docs/10_adr_process.md](../10_adr_process.md) for the process.
 | [0017](0017-atomic-storage-node-lifecycle.md) | Use atomic, quiescent StorageNode lifecycle transitions |
 | [0018](0018-use-zenoh-valid-batch-key-segment.md) | Use a zenoh-valid batch key segment |
 | [0019](0019-client-result-status-configuration.md) | Additive client result and configuration foundation |
+| [0020](0020-synchronously-complete-transport-get.md) | Synchronously complete Transport Get requests |
