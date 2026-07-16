@@ -11,6 +11,7 @@
 
 #if defined(SITOS_WITH_ZENOH)
 #include "transport/config_failure.hpp"
+#include "transport/zenoh_transport_test_access.hpp"
 #endif
 
 namespace sitos {
@@ -20,6 +21,10 @@ namespace {
 TEST(ClientTransportFactoryTest, ClassifiesConfigurationCreationFailuresBySource) {
   EXPECT_EQ(transport_detail::ConfigFailureStatus(false), Status::Error);
   EXPECT_EQ(transport_detail::ConfigFailureStatus(true), Status::InvalidArgument);
+}
+
+TEST(ClientTransportFactoryTest, AllocationFailurePrecedesConfigOwnershipTransfer) {
+  EXPECT_TRUE(transport_test_access::AllocationFailurePrecedesOwnershipTransfer());
 }
 
 TEST(ClientTransportFactoryTest, RejectsEmptyAndMalformedConfiguration) {

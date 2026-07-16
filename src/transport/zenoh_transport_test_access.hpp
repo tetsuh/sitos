@@ -21,6 +21,9 @@ std::optional<std::string> BuildWireEncoding(const Encoding& encoding);
 /// Applies the production receive-side normalization to a wire Encoding string.
 Encoding NormalizeWireEncoding(std::string wire_encoding);
 
+/// Verifies allocation failure occurs before a constructor argument transfers ownership.
+bool AllocationFailurePrecedesOwnershipTransfer();
+
 /// Internal access for Subscription ownership regression tests.
 class SubscriptionTestAccess {
  public:
