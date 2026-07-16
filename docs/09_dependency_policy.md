@@ -48,10 +48,10 @@ to `nullptr`. Configuration text is never retained or included in diagnostics.
 
 Client-facing status classification and `ClientConfig` validation are dependency-free and
 live in `status.hpp`, `result.hpp`, and `client_config.hpp`. The adapter explicitly classifies
-known disconnected and invalid-argument conditions while retaining their native Zenoh causes
-through `Result::Error()`. Type-changing internal propagation uses `Result::ErrFrom` to retain
-Status, message, and cause; native Zenoh failures without a reliable semantic classification
-remain `Status::Error`.
+known disconnected and invalid-argument conditions with synthesized adapter causes through
+`Result::Error()`. Native Zenoh failures retain their original causes. Type-changing internal
+propagation uses `Result::ErrFrom` to retain Status, message, and cause; native Zenoh failures
+without a reliable semantic classification remain `Status::Error`.
 
 Higher-level components see only the following abstract API.
 

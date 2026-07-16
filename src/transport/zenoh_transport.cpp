@@ -36,12 +36,9 @@ namespace sitos {
 
 namespace {
 
-// Error codes for conditions zenoh-c does not distinguish. These are
-// negative so they never collide with z_result_t values (>= 0).
-//
-// NOTE: full migration to the project "Status" enum (docs/04_api_cpp.md §1)
-// is tracked separately; these named sentinels are an interim improvement
-// over the bare MakeError(-1) magic number.
+// Adapter-defined error codes for conditions zenoh-c does not distinguish.
+// Semantic sentinel branches classify these codes explicitly into Status while
+// retaining them as the diagnostic cause, rather than using bare magic numbers.
 enum class TransportErrc {
   kErrDisconnected = -1,  // session not opened or already closed
   kErrInvalidArg = -2,    // invalid argument (e.g. negative timeout)

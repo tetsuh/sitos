@@ -295,8 +295,11 @@ class TransportTest : public ::testing::Test {
   std::unique_ptr<sitos::Transport> transport_;
 };
 
-TEST_F(TransportTest, InvalidArgumentsPreserveStatusMessageAndCause) {
-  const auto timeout_result = transport_->Get(
+TEST(ZenohTransportStatusTest, InvalidArgumentsPreserveStatusMessageAndCause) {
+  auto transport = sitos::MakeZenohTransport();
+  ASSERT_NE(transport, nullptr) << "Failed to open zenoh session";
+
+  const auto timeout_result = transport->Get(
       "sitos/test/status/invalid-timeout",
       [](std::string_view, std::span<const std::byte>, const sitos::Encoding&) { return true; },
       std::chrono::milliseconds(-1));
@@ -304,19 +307,22 @@ TEST_F(TransportTest, InvalidArgumentsPreserveStatusMessageAndCause) {
                            -2);
 
   const auto subscriber_result =
-      transport_->DeclareSubscriber("sitos/test/status/empty-subscriber", {});
+      transport->DeclareSubscriber("sitos/test/status/empty-subscriber", {});
   ExpectZenohSemanticError(subscriber_result, sitos::Status::InvalidArgument, "invalid argument",
                            -2);
 
   const auto queryable_result =
-      transport_->DeclareQueryable("sitos/test/status/empty-queryable", {});
+      transport->DeclareQueryable("sitos/test/status/empty-queryable", {});
   ExpectZenohSemanticError(queryable_result, sitos::Status::InvalidArgument, "invalid argument",
                            -2);
 }
 
-TEST_F(TransportTest, NativeKeyExpressionFailureRemainsError) {
+TEST(ZenohTransportStatusTest, NativeKeyExpressionFailureRemainsError) {
+  auto transport = sitos::MakeZenohTransport();
+  ASSERT_NE(transport, nullptr) << "Failed to open zenoh session";
+
   const std::vector<std::byte> payload = {std::byte{0x01}};
-  const auto result = transport_->Put("sitos//invalid", payload,
+  const auto result = transport->Put("sitos//invalid", payload,
                                       {std::string(sitos::Encoding::kSitosV1)}, {});
   ASSERT_FALSE(result.IsOk());
   EXPECT_EQ(result.StatusCode(), sitos::Status::Error);
