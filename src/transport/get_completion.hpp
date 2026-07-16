@@ -43,20 +43,27 @@ class GetCompletion : public std::enable_shared_from_this<GetCompletion> {
     CallbackLease(const CallbackLease&) = delete;
     CallbackLease& operator=(const CallbackLease&) = delete;
 
+    GetCompletion& Completion() const noexcept { return *completion_; }
+    bool IsEnrolled() const noexcept { return enrolled_; }
+
    private:
     friend class GetCompletion;
-    explicit CallbackLease(std::shared_ptr<GetCompletion> completion)
-        : completion_(std::move(completion)) {}
+    explicit CallbackLease(std::shared_ptr<GetCompletion> completion, bool enrolled)
+        : completion_(std::move(completion)), enrolled_(enrolled) {}
 
     void Release() noexcept;
 
     std::shared_ptr<GetCompletion> completion_;
+    bool enrolled_ = false;
   };
 
   explicit GetCompletion(Transport::QueryResultSink sink);
 
   /// Enrolls the complete C callback before reply inspection or delivery waits.
-  CallbackLease AcquireCallbackLease();
+  /// The context owner is copied while the completion mutex is held so native
+  /// closure drop cannot race callback registration.
+  CallbackLease AcquireCallbackLease(
+      const std::shared_ptr<GetCompletion>* completion_context) noexcept;
 
   /// Runs conversion and, if successful, delivery under the per-request gate.
   /// Conversion and sink failures become a terminal request error.

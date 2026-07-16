@@ -293,10 +293,13 @@ Result<transport_internal::QueryReply> ConvertGetReply(z_loaned_reply_t* reply) 
 }
 
 void OnGetReply(z_loaned_reply_t* reply, void* context) noexcept {
-  std::shared_ptr<transport_internal::GetCompletion> completion;
+  transport_internal::GetCompletion* completion = nullptr;
   try {
-    completion = *static_cast<std::shared_ptr<transport_internal::GetCompletion>*>(context);
-    auto lease = completion->AcquireCallbackLease();
+    auto* completion_context =
+        static_cast<std::shared_ptr<transport_internal::GetCompletion>*>(context);
+    auto lease = (*completion_context)->AcquireCallbackLease(completion_context);
+    if (!lease.IsEnrolled()) return;
+    completion = &lease.Completion();
     completion->ProcessReply([reply] { return ConvertGetReply(reply); });
   } catch (...) {
     // Contain all C++ exceptions at the zenoh-c callback boundary (#67).

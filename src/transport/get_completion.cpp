@@ -9,13 +9,17 @@
 namespace sitos::transport_internal {
 
 GetCompletion::CallbackLease::CallbackLease(CallbackLease&& other) noexcept
-    : completion_(std::move(other.completion_)) {}
+    : completion_(std::move(other.completion_)), enrolled_(other.enrolled_) {
+  other.enrolled_ = false;
+}
 
 GetCompletion::CallbackLease& GetCompletion::CallbackLease::operator=(
     CallbackLease&& other) noexcept {
   if (this != &other) {
     Release();
     completion_ = std::move(other.completion_);
+    enrolled_ = other.enrolled_;
+    other.enrolled_ = false;
   }
   return *this;
 }
@@ -23,21 +27,28 @@ GetCompletion::CallbackLease& GetCompletion::CallbackLease::operator=(
 GetCompletion::CallbackLease::~CallbackLease() { Release(); }
 
 void GetCompletion::CallbackLease::Release() noexcept {
-  if (completion_) {
+  if (completion_ && enrolled_) {
     completion_->ReleaseCallback();
-    completion_.reset();
   }
+  enrolled_ = false;
+  completion_.reset();
 }
 
 GetCompletion::GetCompletion(Transport::QueryResultSink sink) : sink_(std::move(sink)) {}
 
-GetCompletion::CallbackLease GetCompletion::AcquireCallbackLease() {
-  auto completion = shared_from_this();
+GetCompletion::CallbackLease GetCompletion::AcquireCallbackLease(
+    const std::shared_ptr<GetCompletion>* completion_context) noexcept {
+  std::shared_ptr<GetCompletion> completion;
+  bool enrolled = false;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    ++in_flight_;
+    completion = *completion_context;
+    if (!dropped_) {
+      ++in_flight_;
+      enrolled = true;
+    }
   }
-  return CallbackLease(std::move(completion));
+  return CallbackLease(std::move(completion), enrolled);
 }
 
 void GetCompletion::MarkDropped() noexcept {
