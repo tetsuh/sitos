@@ -238,6 +238,10 @@ TEST(ZenohEncodingTest, NormalizesCompatibleSitosWireEncodings) {
   EXPECT_EQ(NormalizeWireEncoding("application/json").id, "application/json");
 }
 
+TEST(ZenohTransportStatusTest, GetUsesLatestConsolidation) {
+  EXPECT_TRUE(sitos::transport_test_access::UsesLatestGetConsolidation());
+}
+
 TEST(ZenohTransportStatusTest, NativeCodesNeverUseAdapterDiagnostics) {
   constexpr std::array<std::int8_t, 3> kCollidingCodes = {-1, -2, -3};
   for (const auto code : kCollidingCodes) {
