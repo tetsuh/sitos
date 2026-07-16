@@ -330,6 +330,7 @@ External client        Controller(StorageNode)          Calc(ParamCache)
 | Component | Threads |
 |---|---|
 | zenoh callbacks (queryable/subscriber) | zenoh internal thread pool. sitos callbacks return quickly (engine I/O is allowed; blocking waits are prohibited) |
+| Transport Get sink | zenoh reply callback. Sinks are serialized per request, must return quickly, and must not recursively call blocking Get on the same Transport (ADR-0020) |
 | ParamCache delta application | zenoh subscriber thread. The writer lock is held only briefly for replacement |
 | ParamCache Get | Any application thread (shared lock) [N07] |
 | Python callbacks | Dedicated dispatch thread + queue (the GIL is not acquired on zenoh threads) [P04] |

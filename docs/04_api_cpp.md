@@ -115,8 +115,10 @@ Key arguments are `std::string_view` in all APIs. Invalid keys ([03] §1.2) prod
 `Status::InvalidKey`.
 
 The `Transport` abstraction (a zenoh adapter that provides put/get/queryable/subscriber) is
-defined in [09_dependency_policy.md](09_dependency_policy.md) §3.
-`ParamStore`/`ParamCache`/`StorageNode` do not expose raw zenoh-cpp types in the public API.
+defined in [09_dependency_policy.md](09_dependency_policy.md) §3. Its Get timeout must be
+strictly positive; successful Get returns after terminal reply completion with no subsequent
+sink callback (ADR-0020). `ParamStore`/`ParamCache`/`StorageNode` do not expose raw zenoh-cpp
+types in the public API.
 zenoh session injection [X04] is performed by converting the session to
 `std::shared_ptr<Transport>` with the `ZenohTransport::From(session)` factory before passing it in.
 
