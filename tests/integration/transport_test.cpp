@@ -9,10 +9,12 @@
 
 #include "src/transport/zenoh_transport_test_access.hpp"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -235,13 +237,23 @@ TEST(ZenohEncodingTest, NormalizesCompatibleSitosWireEncodings) {
   EXPECT_EQ(NormalizeWireEncoding("application/json").id, "application/json");
 }
 
+TEST(ZenohTransportStatusTest, NativeCodesNeverUseAdapterDiagnostics) {
+  constexpr std::array<std::int8_t, 3> kCollidingCodes = {-1, -2, -3};
+  for (const auto code : kCollidingCodes) {
+    const auto error = sitos::transport_test_access::MakeNativeError(code);
+    EXPECT_STREQ(error.category().name(), "sitos.zenoh");
+    EXPECT_EQ(error.value(), code);
+    EXPECT_EQ(error.message(), "zenoh error code " + std::to_string(code));
+  }
+}
+
 template <typename T>
 void ExpectZenohSemanticError(const sitos::Result<T>& result, sitos::Status status,
                               std::string_view message, int cause_value) {
   ASSERT_FALSE(result.IsOk());
   EXPECT_EQ(result.StatusCode(), status);
   EXPECT_EQ(result.Message(), message);
-  EXPECT_STREQ(result.Error().category().name(), "sitos.zenoh");
+  EXPECT_STREQ(result.Error().category().name(), "sitos.transport");
   EXPECT_EQ(result.Error().value(), cause_value);
   EXPECT_NE(result.Error().value(), 0);
 }
@@ -328,7 +340,8 @@ TEST(ZenohTransportStatusTest, NativeKeyExpressionFailureRemainsError) {
   EXPECT_EQ(result.StatusCode(), sitos::Status::Error);
   EXPECT_TRUE(result.Message().empty());
   EXPECT_STREQ(result.Error().category().name(), "sitos.zenoh");
-  EXPECT_NE(result.Error().value(), 0);
+  EXPECT_EQ(result.Error().value(), -1);
+  EXPECT_EQ(result.Error().message(), "zenoh error code -1");
 }
 
 TEST_F(TransportTest, PutAndDeleteReturnOk) {
