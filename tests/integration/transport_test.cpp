@@ -235,6 +235,54 @@ TEST(ZenohEncodingTest, NormalizesCompatibleSitosWireEncodings) {
   EXPECT_EQ(NormalizeWireEncoding("application/json").id, "application/json");
 }
 
+template <typename T>
+void ExpectZenohSemanticError(const sitos::Result<T>& result, sitos::Status status,
+                              std::string_view message, int cause_value) {
+  ASSERT_FALSE(result.IsOk());
+  EXPECT_EQ(result.StatusCode(), status);
+  EXPECT_EQ(result.Message(), message);
+  EXPECT_STREQ(result.Error().category().name(), "sitos.zenoh");
+  EXPECT_EQ(result.Error().value(), cause_value);
+  EXPECT_NE(result.Error().value(), 0);
+}
+
+TEST(ZenohTransportStatusTest, DisconnectedOperationsPreserveStatusMessageAndCause) {
+  auto transport = sitos::transport_test_access::MakeDisconnectedTransport();
+  ASSERT_NE(transport, nullptr);
+  const std::vector<std::byte> payload = {std::byte{0x01}};
+  const sitos::Encoding encoding{std::string(sitos::Encoding::kSitosV1)};
+
+  ExpectZenohSemanticError(
+      transport->Put("sitos/test/status/disconnected", payload, encoding, {}),
+      sitos::Status::Disconnected, "zenoh session is not available", -1);
+  ExpectZenohSemanticError(transport->Delete("sitos/test/status/disconnected", {}),
+                           sitos::Status::Disconnected, "zenoh session is not available", -1);
+  ExpectZenohSemanticError(
+      transport->Get(
+          "sitos/test/status/disconnected",
+          [](std::string_view, std::span<const std::byte>, const sitos::Encoding&) {
+            return true;
+          },
+          std::chrono::milliseconds(1)),
+      sitos::Status::Disconnected, "zenoh session is not available", -1);
+  ExpectZenohSemanticError(
+      transport->DeclareSubscriber("sitos/test/status/disconnected",
+                                   [](const sitos::TransportSample&) {}),
+      sitos::Status::Disconnected, "zenoh session is not available", -1);
+  ExpectZenohSemanticError(
+      transport->DeclareQueryable("sitos/test/status/disconnected",
+                                  [](sitos::TransportQuery&) {}),
+      sitos::Status::Disconnected, "zenoh session is not available", -1);
+}
+
+TEST(ZenohTransportStatusTest, DeadQueryPreservesStatusMessageAndCause) {
+  sitos::TransportQuery query;
+  ExpectZenohSemanticError(query.Reply("sitos/test/status/dead-query", {},
+                                       {std::string(sitos::Encoding::kSitosV1)}),
+                           sitos::Status::Error,
+                           "query is no longer valid (queryable destroyed)", -3);
+}
+
 class TransportTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -246,6 +294,42 @@ class TransportTest : public ::testing::Test {
 
   std::unique_ptr<sitos::Transport> transport_;
 };
+
+TEST(ZenohTransportStatusTest, InvalidArgumentsPreserveStatusMessageAndCause) {
+  auto transport = sitos::MakeZenohTransport();
+  ASSERT_NE(transport, nullptr) << "Failed to open zenoh session";
+
+  const auto timeout_result = transport->Get(
+      "sitos/test/status/invalid-timeout",
+      [](std::string_view, std::span<const std::byte>, const sitos::Encoding&) { return true; },
+      std::chrono::milliseconds(-1));
+  ExpectZenohSemanticError(timeout_result, sitos::Status::InvalidArgument, "invalid argument",
+                           -2);
+
+  const auto subscriber_result =
+      transport->DeclareSubscriber("sitos/test/status/empty-subscriber", {});
+  ExpectZenohSemanticError(subscriber_result, sitos::Status::InvalidArgument, "invalid argument",
+                           -2);
+
+  const auto queryable_result =
+      transport->DeclareQueryable("sitos/test/status/empty-queryable", {});
+  ExpectZenohSemanticError(queryable_result, sitos::Status::InvalidArgument, "invalid argument",
+                           -2);
+}
+
+TEST(ZenohTransportStatusTest, NativeKeyExpressionFailureRemainsError) {
+  auto transport = sitos::MakeZenohTransport();
+  ASSERT_NE(transport, nullptr) << "Failed to open zenoh session";
+
+  const std::vector<std::byte> payload = {std::byte{0x01}};
+  const auto result = transport->Put("sitos//invalid", payload,
+                                      {std::string(sitos::Encoding::kSitosV1)}, {});
+  ASSERT_FALSE(result.IsOk());
+  EXPECT_EQ(result.StatusCode(), sitos::Status::Error);
+  EXPECT_TRUE(result.Message().empty());
+  EXPECT_STREQ(result.Error().category().name(), "sitos.zenoh");
+  EXPECT_NE(result.Error().value(), 0);
+}
 
 TEST_F(TransportTest, PutAndDeleteReturnOk) {
   std::vector<std::byte> payload = {std::byte{0x01}, std::byte{0x02}};

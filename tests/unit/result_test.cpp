@@ -128,6 +128,14 @@ TEST(ResultTest, AssignmentFailurePreservesAnObservableErrorState) {
   EXPECT_TRUE(target.Message().empty());
 }
 
+TEST(ResultTest, LegacyStatusCategoryRemainsError) {
+  const auto cause = MakeErrorCode(Status::Disconnected);
+  const auto result = Result<void>::Err(cause);
+  EXPECT_EQ(result.StatusCode(), Status::Error);
+  EXPECT_TRUE(result.Message().empty());
+  EXPECT_EQ(result.Error(), cause);
+}
+
 TEST(ResultTest, UnknownLegacyErrorsRemainErrors) {
   const auto cause = std::make_error_code(std::errc::file_exists);
   auto result = Result<void>::Err(cause);

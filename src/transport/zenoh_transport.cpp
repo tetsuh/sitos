@@ -36,12 +36,9 @@ namespace sitos {
 
 namespace {
 
-// Error codes for conditions zenoh-c does not distinguish. These are
-// negative so they never collide with z_result_t values (>= 0).
-//
-// NOTE: full migration to the project "Status" enum (docs/04_api_cpp.md §1)
-// is tracked separately; these named sentinels are an interim improvement
-// over the bare MakeError(-1) magic number.
+// Adapter-defined error codes for conditions zenoh-c does not distinguish.
+// Semantic sentinel branches classify these codes explicitly into Status while
+// retaining them as the diagnostic cause, rather than using bare magic numbers.
 enum class TransportErrc {
   kErrDisconnected = -1,  // session not opened or already closed
   kErrInvalidArg = -2,    // invalid argument (e.g. negative timeout)
@@ -81,6 +78,12 @@ std::error_code MakeError(z_result_t rc) {
 }
 
 std::error_code MakeError(TransportErrc ec) { return {static_cast<int>(ec), ZenohCategory()}; }
+
+template <typename T>
+Result<T> SemanticTransportError(Status status, TransportErrc code) {
+  const auto cause = MakeError(code);
+  return Result<T>::Err(status, cause.message(), cause);
+}
 
 // RAII wrapper for any z_owned_*_t. Calls z_drop(z_move(obj)) on destruction
 // and on close of the owning scope, removing the manual z_drop chains that
@@ -338,27 +341,27 @@ Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::by
   if (test_reply_handler_) return test_reply_handler_(key, payload, encoding);
 
   if (!impl_ || !impl_->callback_state) {
-    return Result<void>::Err(MakeError(TransportErrc::kErrNoQuery));
+    return SemanticTransportError<void>(Status::Error, TransportErrc::kErrNoQuery);
   }
 
   auto enc = MakeEncoding(encoding);
-  if (!enc.IsOk()) return Result<void>::Err(enc.Error());
+  if (!enc.IsOk()) return Result<void>::ErrFrom(enc);
 
   auto ke = MakeKeyexpr(key);
-  if (!ke.IsOk()) return Result<void>::Err(ke.Error());
+  if (!ke.IsOk()) return Result<void>::ErrFrom(ke);
 
   auto p = MakeBytes(payload);
-  if (!p.IsOk()) return Result<void>::Err(p.Error());
+  if (!p.IsOk()) return Result<void>::ErrFrom(p);
 
   auto callback_state = impl_->callback_state;
   auto queryable = callback_state->queryable;
-  if (!queryable) return Result<void>::Err(MakeError(TransportErrc::kErrNoQuery));
+  if (!queryable) return SemanticTransportError<void>(Status::Error, TransportErrc::kErrNoQuery);
 
   // Hold the lock through z_query_reply() so Queryable::~Queryable() cannot
   // drop the underlying queryable while zenoh uses the loaned query.
   std::lock_guard<std::mutex> lock(queryable->mutex);
   if (!callback_state->active.load() || !queryable->alive || !callback_state->query) {
-    return Result<void>::Err(MakeError(TransportErrc::kErrNoQuery));
+    return SemanticTransportError<void>(Status::Error, TransportErrc::kErrNoQuery);
   }
 
   z_query_reply_options_t opts;
@@ -582,6 +585,8 @@ void Queryable::Reset() noexcept {
 
 namespace {
 
+struct DisconnectedTransportTag {};
+
 z_result_t OpenZenohSession(z_owned_session_t* session, z_moved_config_t* config) {
   return z_open(session, config, nullptr);
 }
@@ -625,6 +630,8 @@ class ZenohTransport : public Transport {
   }
 
  public:
+  explicit ZenohTransport(DisconnectedTransportTag) {}
+
   template <typename ConfigTransfer>
   explicit ZenohTransport(ConfigTransfer&& config_transfer)
       : open_result_(OpenZenohSession(
@@ -643,16 +650,18 @@ class ZenohTransport : public Transport {
 
   Result<void> Put(std::string_view key, std::span<const std::byte> payload, Encoding encoding,
                    PutOptions /*options*/) override {
-    if (!session_valid_) return Result<void>::Err(MakeError(TransportErrc::kErrDisconnected));
+    if (!session_valid_) {
+      return SemanticTransportError<void>(Status::Disconnected, TransportErrc::kErrDisconnected);
+    }
 
     auto enc = MakeEncoding(encoding);
-    if (!enc.IsOk()) return Result<void>::Err(enc.Error());
+    if (!enc.IsOk()) return Result<void>::ErrFrom(enc);
 
     auto ke = MakeKeyexpr(key);
-    if (!ke.IsOk()) return Result<void>::Err(ke.Error());
+    if (!ke.IsOk()) return Result<void>::ErrFrom(ke);
 
     auto p = MakeBytes(payload);
-    if (!p.IsOk()) return Result<void>::Err(p.Error());
+    if (!p.IsOk()) return Result<void>::ErrFrom(p);
 
     z_put_options_t opts;
     z_put_options_default(&opts);
@@ -665,10 +674,12 @@ class ZenohTransport : public Transport {
   }
 
   Result<void> Delete(std::string_view key, PutOptions /*options*/) override {
-    if (!session_valid_) return Result<void>::Err(MakeError(TransportErrc::kErrDisconnected));
+    if (!session_valid_) {
+      return SemanticTransportError<void>(Status::Disconnected, TransportErrc::kErrDisconnected);
+    }
 
     auto ke = MakeKeyexpr(key);
-    if (!ke.IsOk()) return Result<void>::Err(ke.Error());
+    if (!ke.IsOk()) return Result<void>::ErrFrom(ke);
 
     z_delete_options_t opts;
     z_delete_options_default(&opts);
@@ -681,11 +692,15 @@ class ZenohTransport : public Transport {
 
   Result<void> Get(std::string_view keyexpr, const QueryResultSink& sink,
                    std::chrono::milliseconds timeout) override {
-    if (!session_valid_) return Result<void>::Err(MakeError(TransportErrc::kErrDisconnected));
-    if (timeout.count() < 0) return Result<void>::Err(MakeError(TransportErrc::kErrInvalidArg));
+    if (!session_valid_) {
+      return SemanticTransportError<void>(Status::Disconnected, TransportErrc::kErrDisconnected);
+    }
+    if (timeout.count() < 0) {
+      return SemanticTransportError<void>(Status::InvalidArgument, TransportErrc::kErrInvalidArg);
+    }
 
     auto ke = MakeKeyexpr(keyexpr);
-    if (!ke.IsOk()) return Result<void>::Err(ke.Error());
+    if (!ke.IsOk()) return Result<void>::ErrFrom(ke);
 
     auto* reply_ctx = new GetReplyCtx(sink);
 
@@ -708,12 +723,16 @@ class ZenohTransport : public Transport {
       std::string_view keyexpr_str,
       std::function<void(const TransportSample&)> callback) override {
     if (!session_valid_) {
-      return Result<Subscription>::Err(MakeError(TransportErrc::kErrDisconnected));
+      return SemanticTransportError<Subscription>(Status::Disconnected,
+                                                  TransportErrc::kErrDisconnected);
     }
-    if (!callback) return Result<Subscription>::Err(MakeError(TransportErrc::kErrInvalidArg));
+    if (!callback) {
+      return SemanticTransportError<Subscription>(Status::InvalidArgument,
+                                                  TransportErrc::kErrInvalidArg);
+    }
 
     auto ke = MakeKeyexpr(keyexpr_str);
-    if (!ke.IsOk()) return Result<Subscription>::Err(ke.Error());
+    if (!ke.IsOk()) return Result<Subscription>::ErrFrom(ke);
     Subscription subscription;
 
     subscription.impl_ = std::make_unique<Subscription::Impl>();
@@ -741,9 +760,13 @@ class ZenohTransport : public Transport {
       std::function<void(TransportQuery&)> callback) override {
     // An empty callback is a programming error; return an error rather than
     // registering a closure that would throw std::bad_function_call (#67).
-    if (!callback) return Result<Queryable>::Err(MakeError(TransportErrc::kErrInvalidArg));
+    if (!callback) {
+      return SemanticTransportError<Queryable>(Status::InvalidArgument,
+                                               TransportErrc::kErrInvalidArg);
+    }
     if (!session_valid_) {
-      return Result<Queryable>::Err(MakeError(TransportErrc::kErrDisconnected));
+      return SemanticTransportError<Queryable>(Status::Disconnected,
+                                               TransportErrc::kErrDisconnected);
     }
     Queryable q;
     q.impl_ = std::make_unique<Queryable::Impl>();
@@ -753,7 +776,7 @@ class ZenohTransport : public Transport {
     auto ke = MakeKeyexpr(keyexpr_str);
     if (!ke.IsOk()) {
       q.Reset();
-      return Result<Queryable>::Err(ke.Error());
+      return Result<Queryable>::ErrFrom(ke);
     }
 
     auto* context = new std::shared_ptr<QueryableState>(q.impl_->state);
@@ -781,6 +804,14 @@ class ZenohTransport : public Transport {
   z_result_t open_result_ = -1;
   bool session_valid_ = false;
 };
+
+namespace transport_test_access {
+
+std::unique_ptr<Transport> MakeDisconnectedTransport() {
+  return std::make_unique<ZenohTransport>(DisconnectedTransportTag{});
+}
+
+}  // namespace transport_test_access
 
 }  // namespace sitos
 

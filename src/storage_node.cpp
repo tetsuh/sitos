@@ -258,12 +258,12 @@ Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Transport
   const std::string declaration_key = state->prefix + "/**";
   auto queryable_result = transport.DeclareQueryable(
       declaration_key, [state](TransportQuery& query) { OnQuery(state, query); });
-  if (!queryable_result.IsOk()) return Result<void>::Err(queryable_result.Error());
+  if (!queryable_result.IsOk()) return Result<void>::ErrFrom(queryable_result);
   Queryable queryable = std::move(queryable_result).Value();
 
   auto subscriber_result = transport.DeclareSubscriber(
       declaration_key, [state](const TransportSample& sample) { OnSample(state, sample); });
-  if (!subscriber_result.IsOk()) return Result<void>::Err(subscriber_result.Error());
+  if (!subscriber_result.IsOk()) return Result<void>::ErrFrom(subscriber_result);
   Subscription subscriber = std::move(subscriber_result).Value();
 
   {

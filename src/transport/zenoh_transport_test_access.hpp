@@ -7,6 +7,7 @@
 #define SITOS_TRANSPORT_ZENOH_TRANSPORT_TEST_ACCESS_HPP
 
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -23,6 +24,9 @@ Encoding NormalizeWireEncoding(std::string wire_encoding);
 
 /// Verifies allocation failure occurs before a constructor argument transfers ownership.
 bool AllocationFailurePrecedesOwnershipTransfer();
+
+/// Returns a production transport with no opened Zenoh session.
+std::unique_ptr<Transport> MakeDisconnectedTransport();
 
 /// Internal access for Subscription ownership regression tests.
 class SubscriptionTestAccess {
