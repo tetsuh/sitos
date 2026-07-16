@@ -146,6 +146,11 @@ class FakeTransport final : public Transport {
       std::function<void(const TransportSample&)> callback) override {
     subscriber_keyexpr = std::string(keyexpr);
     subscriber_callback = std::move(callback);
+    if (subscriber_failure.has_value()) {
+      subscriber_callback = {};
+      return Result<Subscription>::Err(subscriber_failure->status, subscriber_failure->message,
+                                       subscriber_failure->cause);
+    }
     if (fail_subscriber) {
       subscriber_callback = {};
       return Result<Subscription>::Err(std::make_error_code(std::errc::io_error));
@@ -168,6 +173,11 @@ class FakeTransport final : public Transport {
       std::function<void(TransportQuery&)> callback) override {
     declared_keyexpr = std::string(keyexpr);
     query_callback = std::move(callback);
+    if (queryable_failure.has_value()) {
+      query_callback = {};
+      return Result<Queryable>::Err(queryable_failure->status, queryable_failure->message,
+                                    queryable_failure->cause);
+    }
     if (fail_queryable) {
       query_callback = {};
       return Result<Queryable>::Err(std::make_error_code(std::errc::io_error));
@@ -209,6 +219,8 @@ class FakeTransport final : public Transport {
   std::function<void(const TransportSample&)> subscriber_callback;
   bool fail_queryable = false;
   bool fail_subscriber = false;
+  std::optional<ErrorInfo> queryable_failure;
+  std::optional<ErrorInfo> subscriber_failure;
   bool invoke_queryable_during_declare = false;
   int queryable_declarations = 0;
   int subscriber_declarations = 0;
@@ -302,6 +314,49 @@ TEST(StorageNodeLifecycleTest, QueryableFailureDoesNotDeclareSubscriberAndCanRet
   transport.fail_queryable = false;
   ASSERT_TRUE(node.Start(std::make_shared<InMemoryEngine>(), {}).IsOk());
   node.Stop();
+}
+
+TEST(StorageNodeLifecycleTest, QueryableFailurePreservesErrorInfoAndCanRetry) {
+  FakeTransport transport;
+  const auto cause = MakeErrorCode(Status::Disconnected);
+  transport.queryable_failure = ErrorInfo{Status::Disconnected, "queryable offline", cause};
+  StorageNode node(transport);
+
+  auto result = node.Start(std::make_shared<InMemoryEngine>(), {});
+  ASSERT_FALSE(result.IsOk());
+  EXPECT_EQ(result.StatusCode(), Status::Disconnected);
+  EXPECT_EQ(result.Message(), "queryable offline");
+  EXPECT_EQ(result.Error(), cause);
+  EXPECT_EQ(transport.subscriber_declarations, 0);
+  EXPECT_FALSE(node.IsStarted());
+
+  transport.queryable_failure.reset();
+  ASSERT_TRUE(node.Start(std::make_shared<InMemoryEngine>(), {}).IsOk());
+  EXPECT_TRUE(node.IsStarted());
+  node.Stop();
+}
+
+TEST(StorageNodeLifecycleTest, SubscriberFailurePreservesErrorInfoAndRollsBack) {
+  FakeTransport transport;
+  const auto cause = MakeErrorCode(Status::InvalidArgument);
+  transport.subscriber_failure = ErrorInfo{Status::InvalidArgument, "subscriber rejected", cause};
+  StorageNode node(transport);
+
+  auto result = node.Start(std::make_shared<InMemoryEngine>(), {});
+  ASSERT_FALSE(result.IsOk());
+  EXPECT_EQ(result.StatusCode(), Status::InvalidArgument);
+  EXPECT_EQ(result.Message(), "subscriber rejected");
+  EXPECT_EQ(result.Error(), cause);
+  EXPECT_EQ(transport.queryable_resets, 1);
+  EXPECT_EQ(transport.subscriber_declarations, 0);
+  EXPECT_FALSE(node.IsStarted());
+
+  transport.subscriber_failure.reset();
+  ASSERT_TRUE(node.Start(std::make_shared<InMemoryEngine>(), {}).IsOk());
+  EXPECT_TRUE(node.IsStarted());
+  node.Stop();
+  EXPECT_EQ(transport.queryable_resets, 2);
+  EXPECT_EQ(transport.subscriber_resets, 1);
 }
 
 TEST(StorageNodeLifecycleTest, StagingCallbacksCannotTouchEngine) {
