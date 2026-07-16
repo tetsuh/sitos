@@ -18,6 +18,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -307,9 +308,28 @@ class TransportTest : public ::testing::Test {
   std::unique_ptr<sitos::Transport> transport_;
 };
 
+TEST(ZenohTransportStatusTest, ZeroTimeoutPrecedesDisconnectedSession) {
+  auto transport = sitos::transport_test_access::MakeDisconnectedTransport();
+  ASSERT_NE(transport, nullptr);
+
+  const auto result = transport->Get(
+      "sitos/test/status/zero-timeout-disconnected",
+      [](std::string_view, std::span<const std::byte>, const sitos::Encoding&) { return true; },
+      std::chrono::milliseconds::zero());
+
+  ExpectZenohSemanticError(result, sitos::Status::InvalidArgument, "invalid argument", -2);
+}
+
 TEST(ZenohTransportStatusTest, InvalidArgumentsPreserveStatusMessageAndCause) {
   auto transport = sitos::MakeZenohTransport();
   ASSERT_NE(transport, nullptr) << "Failed to open zenoh session";
+
+  const auto zero_timeout_result = transport->Get(
+      "sitos/test/status/zero-timeout",
+      [](std::string_view, std::span<const std::byte>, const sitos::Encoding&) { return true; },
+      std::chrono::milliseconds::zero());
+  ExpectZenohSemanticError(zero_timeout_result, sitos::Status::InvalidArgument, "invalid argument",
+                           -2);
 
   const auto timeout_result = transport->Get(
       "sitos/test/status/invalid-timeout",
@@ -372,6 +392,86 @@ TEST_F(TransportTest, GetWithoutQueryableDoesNotInvokeSink) {
   EXPECT_TRUE(result.IsOk());
   EXPECT_FALSE(callback_called)
       << "No queryable is registered, so the sink should not be invoked";
+}
+
+TEST_F(TransportTest, SinkFalseSuppressesLaterReplies) {
+  const std::string kSelector = "sitos/test/query/sink-false/**";
+  const std::vector<std::byte> kPayload = {std::byte{0x01}};
+  const sitos::Encoding kEncoding{std::string(sitos::Encoding::kSitosV1)};
+  int sink_calls = 0;
+
+  auto queryable = transport_->DeclareQueryable(kSelector, [&](sitos::TransportQuery& query) {
+    EXPECT_TRUE(query.Reply("sitos/test/query/sink-false/one", kPayload, kEncoding).IsOk());
+    EXPECT_TRUE(query.Reply("sitos/test/query/sink-false/two", kPayload, kEncoding).IsOk());
+  });
+  ASSERT_TRUE(queryable.IsOk()) << queryable.Error().message();
+
+  const auto result = transport_->Get(
+      kSelector,
+      [&](std::string_view, std::span<const std::byte>, const sitos::Encoding&) {
+        ++sink_calls;
+        return false;
+      },
+      std::chrono::milliseconds(1000));
+
+  EXPECT_TRUE(result.IsOk()) << result.Error().message();
+  EXPECT_EQ(sink_calls, 1);
+}
+
+TEST_F(TransportTest, GetWaitsForTerminalCompletion) {
+  const std::string kQueryKey = "sitos/test/query/terminal-completion";
+  const std::vector<std::byte> kPayload = {std::byte{0x01}};
+  const sitos::Encoding kEncoding{std::string(sitos::Encoding::kSitosV1)};
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool query_entered = false;
+  bool release_query = false;
+  bool get_returned = false;
+  bool sink_called = false;
+  sitos::Result<void> get_result = sitos::Result<void>::Err(sitos::Status::Error);
+
+  auto queryable = transport_->DeclareQueryable(kQueryKey, [&](sitos::TransportQuery& query) {
+    std::unique_lock<std::mutex> lock(mutex);
+    query_entered = true;
+    condition.notify_all();
+    condition.wait(lock, [&] { return release_query; });
+    lock.unlock();
+    EXPECT_TRUE(query.Reply(kQueryKey, kPayload, kEncoding).IsOk());
+  });
+  ASSERT_TRUE(queryable.IsOk()) << queryable.Error().message();
+
+  std::thread get_thread([&] {
+    auto result = transport_->Get(
+        kQueryKey,
+        [&](std::string_view, std::span<const std::byte> payload, const sitos::Encoding&) {
+          std::lock_guard<std::mutex> lock(mutex);
+          sink_called = std::vector<std::byte>(payload.begin(), payload.end()) == kPayload;
+          return true;
+        },
+        std::chrono::milliseconds(2000));
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      get_result = std::move(result);
+      get_returned = true;
+    }
+    condition.notify_all();
+  });
+
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(3), [&] { return query_entered; }));
+    EXPECT_FALSE(get_returned);
+    release_query = true;
+  }
+  condition.notify_all();
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(3), [&] { return get_returned; }));
+  }
+  get_thread.join();
+
+  EXPECT_TRUE(get_result.IsOk()) << get_result.Error().message();
+  EXPECT_TRUE(sink_called);
 }
 
 TEST_F(TransportTest, QueryableRoundTrip) {
@@ -585,7 +685,8 @@ TEST_F(TransportTest, GetSinkExceptionIsContained) {
       },
       std::chrono::milliseconds(2000));
 
-  EXPECT_TRUE(result.IsOk());
+  EXPECT_FALSE(result.IsOk());
+  EXPECT_EQ(result.StatusCode(), sitos::Status::Error);
   {
     std::unique_lock<std::mutex> lock(sink_mutex);
     EXPECT_TRUE(sink_cv.wait_for(lock, std::chrono::seconds(3),
