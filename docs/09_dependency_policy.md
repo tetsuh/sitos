@@ -49,7 +49,6 @@ to `nullptr`. Configuration text is never retained or included in diagnostics.
 Client-facing status classification and `ClientConfig` validation are dependency-free and
 live in `status.hpp`, `result.hpp`, and `client_config.hpp`.
 
-Only the transport adapter uses the zenoh-c API directly.
 Higher-level components see only the following abstract API.
 
 ```cpp

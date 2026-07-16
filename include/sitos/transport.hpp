@@ -174,8 +174,6 @@ class Transport {
 
 }  // namespace sitos
 
-/// Factory function for the default zenoh-based transport.
-/// Returns nullptr when zenoh support is disabled or the zenoh session cannot be opened.
 namespace sitos {
 
 /// Opens a zenoh transport using an optional complete JSON5 configuration.
