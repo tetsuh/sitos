@@ -43,6 +43,16 @@ void Queryable::Reset() noexcept {
   transport_internal::InvokeResetHandler(reset_handler_);
 }
 
-std::unique_ptr<Transport> MakeZenohTransport() { return nullptr; }
+Result<std::unique_ptr<Transport>> OpenZenohTransport(std::optional<std::string_view>) {
+  return Result<std::unique_ptr<Transport>>::Err(
+      Status::Error, "zenoh support is disabled",
+      std::make_error_code(std::errc::operation_not_supported));
+}
+
+std::unique_ptr<Transport> MakeZenohTransport() {
+  auto result = OpenZenohTransport();
+  if (!result.IsOk()) return nullptr;
+  return std::move(result).Value();
+}
 
 }  // namespace sitos

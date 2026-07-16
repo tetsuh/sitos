@@ -19,87 +19,14 @@
 #include <utility>
 #include <vector>
 
+#include "sitos/result.hpp"
+
 namespace sitos {
 
 namespace transport_test_access {
 class SubscriptionTestAccess;
 class DeclarationHandleTestAccess;
 }
-
-/// A simple result type that holds either a value or an error code.
-/// Modeled after a minimal subset of std::expected (C++23).
-template <typename T>
-class Result {
- public:
-  static Result Ok(T value) {
-    Result r;
-    r.value_ = std::move(value);
-    return r;
-  }
-
-  static Result Err(std::error_code ec) {
-    Result r;
-    r.error_ = ec;
-    return r;
-  }
-
-  bool IsOk() const { return !error_.has_value(); }
-  explicit operator bool() const { return IsOk(); }
-
-  /// Requires IsOk().
-  const T& Value() const & {
-    assert(IsOk());
-    return *value_;
-  }
-  /// Requires IsOk().
-  T& Value() & {
-    assert(IsOk());
-    return *value_;
-  }
-  T&& Value() && {
-    assert(IsOk());
-    return std::move(*value_);
-  }
-
-  /// Requires !IsOk().
-  const std::error_code& Error() const {
-    assert(!IsOk());
-    return *error_;
-  }
-
- private:
-  Result() = default;
-  std::optional<T> value_;
-  std::optional<std::error_code> error_;
-};
-
-template <>
-class Result<void> {
- public:
-  static Result Ok() {
-    Result r;
-    return r;
-  }
-
-  static Result Err(std::error_code ec) {
-    Result r;
-    r.error_ = ec;
-    return r;
-  }
-
-  bool IsOk() const { return !error_.has_value(); }
-  explicit operator bool() const { return IsOk(); }
-
-  /// Requires !IsOk().
-  const std::error_code& Error() const {
-    assert(!IsOk());
-    return *error_;
-  }
-
- private:
-  Result() = default;
-  std::optional<std::error_code> error_;
-};
 
 /// Transport-independent schema identifiers for encoded payloads.
 ///
@@ -247,9 +174,14 @@ class Transport {
 
 }  // namespace sitos
 
-/// Factory function for the default zenoh-based transport.
-/// Returns nullptr when zenoh support is disabled or the zenoh session cannot be opened.
 namespace sitos {
+
+/// Opens a zenoh transport using an optional complete JSON5 configuration.
+/// An absent configuration selects the zenoh default configuration.
+Result<std::unique_ptr<Transport>> OpenZenohTransport(
+    std::optional<std::string_view> config_json = std::nullopt);
+
+/// Compatibility factory that returns nullptr when opening fails.
 std::unique_ptr<Transport> MakeZenohTransport();
 }  // namespace sitos
 

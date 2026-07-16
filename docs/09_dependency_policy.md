@@ -39,7 +39,16 @@ zenoh-c >= 1.9.0, < 2.0
 
 ## 3. Transport adapter
 
-Only the transport adapter uses the zenoh-c API directly.
+Only the transport adapter uses the zenoh-c API directly. `OpenZenohTransport` accepts an
+optional complete JSON5 configuration and returns `Result<std::unique_ptr<Transport>>`;
+`nullopt` selects `z_config_default()`, an empty or malformed configuration is
+`Status::InvalidArgument`, and parse-success/session-open failures retain their native
+cause. `MakeZenohTransport()` remains the compatibility wrapper that converts any failure
+to `nullptr`. Configuration text is never retained or included in diagnostics.
+
+Client-facing status classification and `ClientConfig` validation are dependency-free and
+live in `status.hpp`, `result.hpp`, and `client_config.hpp`.
+
 Higher-level components see only the following abstract API.
 
 ```cpp

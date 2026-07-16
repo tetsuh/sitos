@@ -17,12 +17,14 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <string>
 #include <string_view>
 
 #include "sitos/transport.hpp"
 
+#include "config_failure.hpp"
 #include "declaration_handle_lifecycle.hpp"
 #include "zenoh_transport_test_access.hpp"
 
@@ -136,6 +138,22 @@ class ZenohOwned {
 
   T obj_{};
   bool moved_ = true;  // default-constructed state is "empty/moved-from"
+};
+
+// T invokes transfer from its constructor, after make_unique has allocated storage.
+template <typename T, typename Transfer>
+std::unique_ptr<T> MakeUniqueWithDeferredTransfer(Transfer&& transfer) {
+  return std::make_unique<T>(std::forward<Transfer>(transfer));
+}
+
+class AllocationFailureProbe {
+ public:
+  template <typename Transfer>
+  explicit AllocationFailureProbe(Transfer&& transfer) {
+    std::invoke(std::forward<Transfer>(transfer));
+  }
+
+  static void* operator new(std::size_t) { throw std::bad_alloc(); }
 };
 
 // Build a z_owned_keyexpr_t from a string. Returns an error Result if zenoh
@@ -270,6 +288,17 @@ std::optional<std::string> BuildWireEncoding(const Encoding& encoding) {
 
 Encoding NormalizeWireEncoding(std::string wire_encoding) {
   return NormalizeEncoding(std::move(wire_encoding));
+}
+
+bool AllocationFailurePrecedesOwnershipTransfer() {
+  bool ownership_transferred = false;
+  try {
+    static_cast<void>(MakeUniqueWithDeferredTransfer<AllocationFailureProbe>(
+        [&ownership_transferred] { ownership_transferred = true; }));
+  } catch (const std::bad_alloc&) {
+    return !ownership_transferred;
+  }
+  return false;
 }
 
 }  // namespace transport_test_access
@@ -553,10 +582,8 @@ void Queryable::Reset() noexcept {
 
 namespace {
 
-bool OpenZenohSession(z_owned_session_t* session) {
-  z_owned_config_t config;
-  if (z_config_default(&config) != Z_OK) return false;
-  return z_open(session, z_move(config), nullptr) == Z_OK;
+z_result_t OpenZenohSession(z_owned_session_t* session, z_moved_config_t* config) {
+  return z_open(session, config, nullptr);
 }
 
 }  // namespace
@@ -598,9 +625,14 @@ class ZenohTransport : public Transport {
   }
 
  public:
-  ZenohTransport() : session_valid_(OpenZenohSession(&session_)) {}
+  template <typename ConfigTransfer>
+  explicit ZenohTransport(ConfigTransfer&& config_transfer)
+      : open_result_(OpenZenohSession(
+            &session_, std::invoke(std::forward<ConfigTransfer>(config_transfer)))),
+        session_valid_(open_result_ == Z_OK) {}
 
   bool IsSessionValid() const { return session_valid_; }
+  z_result_t OpenResult() const { return open_result_; }
 
   ~ZenohTransport() override {
     if (session_valid_) {
@@ -746,13 +778,48 @@ class ZenohTransport : public Transport {
 
  private:
   z_owned_session_t session_{};
+  z_result_t open_result_ = -1;
   bool session_valid_ = false;
 };
 
 }  // namespace sitos
 
+sitos::Result<std::unique_ptr<sitos::Transport>> sitos::OpenZenohTransport(
+    std::optional<std::string_view> config_json) {
+  if (config_json.has_value() && config_json->empty()) {
+    return Result<std::unique_ptr<Transport>>::Err(Status::InvalidArgument,
+                                                   "zenoh configuration must not be empty");
+  }
+
+  ZenohOwned<z_owned_config_t> config;
+  z_result_t config_result = Z_OK;
+  if (config_json.has_value()) {
+    config_result =
+        zc_config_from_substr(config.get(), config_json->data(), config_json->size());
+  } else {
+    config_result = z_config_default(config.get());
+  }
+  if (config_result != Z_OK) {
+    const bool user_config_provided = config_json.has_value();
+    const auto status = transport_detail::ConfigFailureStatus(user_config_provided);
+    const char* message = user_config_provided ? "invalid zenoh configuration"
+                                               : "failed to create default zenoh configuration";
+    return Result<std::unique_ptr<Transport>>::Err(status, message, MakeError(config_result));
+  }
+
+  config.mark_valid();
+  auto transport = MakeUniqueWithDeferredTransfer<sitos::ZenohTransport>(
+      [&config] { return config.moved(); });
+  if (!transport->IsSessionValid()) {
+    return Result<std::unique_ptr<Transport>>::Err(Status::Error,
+                                                   "failed to open zenoh session",
+                                                   MakeError(transport->OpenResult()));
+  }
+  return Result<std::unique_ptr<Transport>>::Ok(std::move(transport));
+}
+
 std::unique_ptr<sitos::Transport> sitos::MakeZenohTransport() {
-  auto t = std::make_unique<sitos::ZenohTransport>();
-  if (!t->IsSessionValid()) return nullptr;
-  return t;
+  auto result = OpenZenohTransport();
+  if (!result.IsOk()) return nullptr;
+  return std::move(result).Value();
 }

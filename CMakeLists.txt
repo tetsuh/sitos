@@ -54,6 +54,8 @@ endfunction()
 
 # Core library
 add_library(sitos STATIC
+  src/client_config.cpp
+  src/status.cpp
   src/param_value.cpp
   src/batch.cpp
   src/key.cpp
