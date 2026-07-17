@@ -30,6 +30,9 @@ struct BatchEntry {
 [[nodiscard]] std::vector<std::byte> EncodeBatch(
     std::span<const std::pair<std::string, ParamValue>> entries);
 
+/// Encode a batch from the canonical BatchEntry representation.
+[[nodiscard]] std::vector<std::byte> EncodeBatch(std::span<const BatchEntry> entries);
+
 /// Decode a batch payload. Returns std::nullopt on malformed input
 /// (short count, truncated key/value, unknown value tag, or trailing bytes).
 [[nodiscard]] std::optional<std::vector<BatchEntry>> DecodeBatch(
