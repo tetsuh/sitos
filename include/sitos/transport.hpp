@@ -162,6 +162,9 @@ class Transport {
   /// later delivery while the method still waits for completion. Sink views are
   /// valid only for the callback. A sink must not recursively call blocking
   /// Get on the same Transport, but may call nonblocking Put or Delete.
+  /// An Error result does not imply the sink was never invoked: a reply-
+  /// processing failure can occur after earlier concrete keys were already
+  /// delivered, so callers must not treat Error as "no data was seen".
   using QueryResultSink =
       std::function<bool(std::string_view key, std::span<const std::byte> payload,
                          Encoding encoding)>;

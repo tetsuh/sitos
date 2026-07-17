@@ -112,7 +112,9 @@ successful transport completion. Sinks are serialized within one request and
 are never invoked after Get returns; a false result suppresses later delivery
 but does not bypass the completion wait. Distinct requests may invoke sinks
 concurrently. Low-level Get sinks must not recursively call blocking Get on the
-same Transport, but may call nonblocking Put or Delete. See ADR-0020.
+same Transport, but may call nonblocking Put or Delete. An `Error` result does
+not imply the sink was never invoked: a reply-processing failure can follow the
+delivery of earlier concrete keys. See ADR-0020.
 
 This abstraction is limited to **only the zenoh features that sitos needs**:
 

@@ -310,7 +310,7 @@ void OnGetReply(z_loaned_reply_t* reply, void* context) noexcept {
     }
     if (!completion) return;
 
-    auto lease = completion->AcquireCallbackLease(completion);
+    auto lease = completion->AcquireCallbackLease();
     if (!lease.IsEnrolled()) return;
     lease.Completion().ProcessReply([reply] { return ConvertGetReply(reply); });
   } catch (...) {
@@ -320,8 +320,12 @@ void OnGetReply(z_loaned_reply_t* reply, void* context) noexcept {
 }
 
 void DropGetReplyContext(void* context) noexcept {
-  // zenoh never invokes a closure after its drop callback. The context mutex
-  // synchronizes a reply callback that began before terminal closure drop.
+  // Lifetime safety here rests on the zenoh-c contract: for one get, zenoh
+  // invokes the reply callback and this drop callback from the same query task,
+  // so they never overlap and drop runs only after the last reply returns. The
+  // mutex therefore does not (and cannot) protect this context's lifetime; it
+  // only guards the shared-owner handoff so the read in OnGetReply and the move
+  // below are not a data race under that ordering.
   std::unique_ptr<GetReplyContext> reply_context(static_cast<GetReplyContext*>(context));
   std::shared_ptr<transport_internal::GetCompletion> completion;
   {

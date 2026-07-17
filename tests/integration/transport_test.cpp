@@ -452,7 +452,9 @@ TEST_F(TransportTest, GetWaitsForTerminalCompletion) {
           sink_called = std::vector<std::byte>(payload.begin(), payload.end()) == kPayload;
           return true;
         },
-        std::chrono::milliseconds(2000));
+        // Generous relative to the 3s orchestration waits below so a loaded
+        // runner cannot let Get time out before the test releases the query.
+        std::chrono::milliseconds(10000));
     {
       std::lock_guard<std::mutex> lock(mutex);
       get_result = std::move(result);
