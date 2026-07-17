@@ -44,7 +44,7 @@ Requirement IDs ([01_requirements.md](01_requirements.md)) are referenced as [F.
 | `SessionView` | Logical view that resolves overlay → snapshot (thin facade over ParamStore/ParamCache) | ParamStore or ParamCache |
 
 **Design principle**: `engine/` does not know about zenoh. `ParamStore`/`ParamCache` do not
-know about engine. Direct dependencies on the zenoh-cpp API are confined to the
+know about engine. Direct dependencies on the zenoh-c API are confined to the
 `transport/zenoh` layer, and higher-level components see only the `Transport` abstraction.
 This limits the impact scope when zenoh is upgraded ([09_dependency_policy.md](09_dependency_policy.md)).
 
@@ -182,12 +182,12 @@ so `CloseSession` never invalidates an in-flight reply.
 * Relationship with puts around `CreateSession`: the snapshot contains
   “the contents already reflected in the engine at the moment StorageNode processes CreateSession”.
   The caller must confirm completion of all required base writes before starting a session
-  (because put passes through StorageNode receive processing,
-  `ParamStore::Put` by default performs a round-trip confirmation (ack) to the queryable. §6.2)
+  (because put passes through StorageNode receive processing, `ParamStore::Put` only reports
+  Transport submission; acknowledgement and retry policy belong to Issues #14 and #17. §6.2)
 
 ### 4.4 Transport Integration Pseudocode
 
-Pseudocode for implementers. StorageNode does not use the raw zenoh-cpp API directly;
+Pseudocode for implementers. StorageNode does not use the raw zenoh-c API directly;
 it goes through the `Transport` abstraction ([09_dependency_policy.md](09_dependency_policy.md) §3).
 
 ```cpp
@@ -286,21 +286,18 @@ initially fetches + subscribes to `base/**` (no snapshot isolation).
 
 ### 6.1 API Semantics
 
-* `Put(key, value)` / `Put(entries)` — a batch is one zenoh put
+* `Put(key, value)` / `PutBatch(entries)` — a batch is one `:batch` wire put
   (multi-entry format in the payload, [03](03_wire_protocol.md) §5) [F09]
-* `Get<T>(key)` — zenoh get (round trip). Not for the hot path
-* `List(prefix, sink)` — zenoh get `<prefix>**`
-* `Subscribe(pattern, callback)` — application-facing subscription [F13]
+* `Get<T>(key)` — synchronous exact zenoh get. Zero replies are `NotFound`.
+* `Contains(key)` — exact get with zero replies mapped to `Ok(false)`.
+* `List(prefix, sink)` — synchronous zenoh get using the narrowest safe chunk-boundary
+  selector, followed by client-side raw-prefix filtering and lexical sorting.
 
 ### 6.2 Put Completion Guarantee
 
-Because zenoh put is fire-and-forget, provide an option that guarantees
-“Put complete = reflected in StorageNode”:
-
-* `PutOptions::ack = true` (default): after put, get the StorageNode ack queryable
-  (`<prefix>/meta/ack/...`) to confirm reflection
-* `ack = false`: prioritize low latency (for example, in-flight puts to a session overlay,
-  where ordering alone is sufficient)
+ParamStore write success means only that Transport accepted/submitted the operation. It does
+not confirm StorageNode application, durability, or cache visibility. Acknowledged writes and
+retry policy belong to Issues #14 and #17; this API does not add a `put_ack` configuration field.
 
 ## 7. Session Lifecycle (Overall Sequence)
 
@@ -347,10 +344,9 @@ External client        Controller(StorageNode)          Calc(ParamCache)
 ## 10. Configuration (Config)
 
 ```cpp
-struct Config {
+struct ClientConfig {
     std::string prefix = "sitos";
-    std::optional<std::string> zenoh_config_json;  // zenoh Config (JSON5)
-    bool put_ack = true;
+    std::optional<std::string> zenoh_config_json;  // complete zenoh Config (JSON5)
     std::chrono::milliseconds query_timeout{5000};
 };
 ```

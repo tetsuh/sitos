@@ -38,7 +38,7 @@ sitos/
 * **Language** (D9): code, comments, commit messages, Issues/PRs, and docs are English.
   This design document set is the English edition in `docs/`
 * Dependency resolution:
-  - **zenoh-c/zenoh-cpp**: First choice is to use official prebuilt releases via
+  - **zenoh-c**: First choice is to use official prebuilt releases via
     `find_package(zenohc)`. CI pins versions with FetchContent.
     Also provide a Corrosion (Rust) path for environments that need source builds
   - **RocksDB** (when `SITOS_WITH_ROCKSDB=ON`): `find_package(RocksDB)`.
@@ -49,7 +49,18 @@ sitos/
 * Presets: define `dev-windows`, `dev-linux`, `release`, and `python-wheel` in
   `CMakePresets.json`
 
-## 3. Build (Python wheel)
+## 3. Install (C++ consumer)
+
+The C++ library and public headers can be installed with the generated CMake export:
+
+```sh
+cmake --install build/release --prefix /opt/sitos
+```
+
+This installs `include/sitos/*`, the static library, and `sitosTargets.cmake` under
+`lib/cmake/sitos`. Consumers can link the exported `sitos::sitos` target.
+
+## 4. Build (Python wheel)
 
 * scikit-build-core + nanobind. Generate wheels with `python -m build`
 * CI build with cibuildwheel: `cp310–cp313 × {win_amd64, manylinux_2_28_x86_64}` [P03]
@@ -58,12 +69,12 @@ sitos/
   RocksDBEngine is separated as a `sitos-rocksdb` wheel or a future optional extra.
 * Runtime dependency: `numpy>=1.24`
 
-## 4. Test strategy
+## 5. Test strategy
 
 | Layer | Framework | Target | Run in CI |
 |---|---|---|---|
-| unit | gtest | ParamValue encode/decode (payload v1 golden tests), StorageEngine contract tests (common test suite instantiated for each engine), key validation, Overlay resolution | Always |
-| integration | gtest | Connect StorageNode + ParamStore + ParamCache with multiple zenoh sessions in one process. Full session lifecycle ([02] §7), disconnect/reconnect [N10], batch, ack | Always |
+| unit | gtest | ParamValue encode/decode (payload v1 golden tests), StorageEngine contract tests (common test suite instantiated for each engine), key validation, ParamStore validation/read semantics, Overlay resolution | Always |
+| integration | gtest | Connect StorageNode + ParamStore + ParamCache through one injected same-process Transport. Full session lifecycle ([02] §7), ParamStore round trips, disconnect/reconnect [N10], batch, ack | Always |
 | multiprocess | gtest + spawn | Attach/delivery/crash recovery with real process isolation | Always (Linux) / nightly (Windows) |
 | interop | pytest + zenoh-python | Read/write using only the wire specification ([03]) without the sitos library [C03] | Always |
 | python | pytest | API parity, NumPy zero-copy (writeable=False, base-buffer identity), GIL (concurrent get inside callback) | Always |
@@ -76,7 +87,7 @@ form reusable for InMemory/RocksDB/(future user engines) [X01].
 for encoded results (the cornerstone of compatibility across languages and versions).
 The Python side also references the same fixtures.
 
-### 4.1 Required test names
+### 5.1 Required test names
 
 To prevent AI/implementers from misreading the intent, the following test names are fixed for
 major behaviors.
@@ -96,7 +107,7 @@ major behaviors.
 | `PutAckTimesOutWhenNodeUnavailable` | N10 | ack timeout/status mapping |
 | `PythonCallbackDoesNotDeadlockWithGet` | P04 | get inside callback does not deadlock |
 
-## 4.2 Lifecycle sanitizer runs
+## 5.2 Lifecycle sanitizer runs
 
 Issue #11 lifecycle tests and Issue #13 batch sequencing tests have reproducible
 sanitizer configurations. TSan runs the zenoh-independent fake-Transport stress
@@ -121,7 +132,7 @@ repeat the ASan/UBSan configuration with `-DSITOS_WITH_ZENOH=ON` and run the lif
 integration targets. The CI sanitizer job uses zenoh OFF to keep TSan independent of
 zenoh runtime internals.
 
-## 5. CI (GitHub Actions)
+## 6. CI (GitHub Actions)
 
 | workflow | Trigger | Contents |
 |---|---|---|
@@ -131,14 +142,14 @@ zenoh runtime internals.
 | `dependency-upgrade.yml` | nightly / manual | Build and interop tests with the minimum supported and latest stable zenoh versions. Details: [09_dependency_policy.md](09_dependency_policy.md) |
 | `docs.yml` | push main | Doxygen + Sphinx → GitHub Pages |
 
-## 6. Quality gates
+## 7. Quality gates
 
 * Code coverage: line 80% or higher (gcov/llvm-cov, Codecov)
 * sanitizer: ASan/UBSan (Linux CI), TSan nightly for integration
 * Static analysis: clang-tidy (modernize-*, bugprone-*, concurrency-*)
 * Commit convention: Conventional Commits (automatic CHANGELOG generation with release-please)
 
-## 7. Release
+## 8. Release
 
 * Semantic versioning [C04]. C++ and Python use the same version
 * Artifacts: GitHub Release (source + prebuilt static/shared libraries), PyPI wheel.

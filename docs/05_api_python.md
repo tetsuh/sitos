@@ -21,12 +21,16 @@ nanobind wrapper for the C++ core + a thin pythonic layer [P01].
 
 ### 2.1 ParamStore
 
+The Python ParamStore API is planned for the v0.3 Python lane and is not implemented by
+Issue #15. Its future configuration must not imply acknowledged writes; acknowledgement
+and retry policy belong to Issues #14 and #17.
+
 ```python
+# Planned v0.3 API (not currently available)
 import sitos
 
-store = sitos.ParamStore(prefix="sitos", zenoh_config=None, put_ack=True)
-# Or share an existing zenoh session:
-# store = sitos.ParamStore.from_zenoh_session(session, prefix="sitos")
+store = sitos.ParamStore(prefix="sitos", zenoh_config=None)
+# Or share an existing transport/session when the Python facade is implemented.
 
 store.put("base", "recon/fov", 240.0)
 store.put_batch("base", {"recon/fov": 240.0, "recon/kernel": "sharp"})
