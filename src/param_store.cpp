@@ -86,8 +86,9 @@ std::string SafeParent(std::string_view requested_prefix) {
 
 bool IsUnderSafeParent(std::string_view relative, std::string_view safe_parent) {
   if (safe_parent.empty()) return true;
-  return relative.size() > safe_parent.size() && relative.starts_with(safe_parent) &&
-         relative[safe_parent.size()] == '/';
+  return relative == safe_parent ||
+         (relative.size() > safe_parent.size() && relative.starts_with(safe_parent) &&
+          relative[safe_parent.size()] == '/');
 }
 
 bool IsExpectedKind(const ParsedKey& parsed, const Scope& scope) {

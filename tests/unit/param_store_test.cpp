@@ -357,6 +357,7 @@ TEST(ParamStoreTest, ListIgnoresUnrelatedRepliesInsideSafeParentBeforeDecoding) 
   transport->replies = {
       {"sitos/base/foo/bar/value", ParamValue(1).Encode(),
        Encoding{std::string(Encoding::kSitosV1)}},
+      {"sitos/base/foo", {std::byte{0xff}}, Encoding{"application/octet-stream"}},
       {"sitos/base/foo/unrelated", {std::byte{0xff}}, Encoding{"application/octet-stream"}},
   };
   std::vector<std::string> keys;
