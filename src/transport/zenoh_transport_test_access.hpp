@@ -30,6 +30,9 @@ std::error_code MakeNativeError(std::int8_t code);
 /// Verifies allocation failure occurs before a constructor argument transfers ownership.
 bool AllocationFailurePrecedesOwnershipTransfer();
 
+/// Verifies the production Get options select native LATEST consolidation.
+bool UsesLatestGetConsolidation();
+
 /// Returns a production transport with no opened Zenoh session.
 std::unique_ptr<Transport> MakeDisconnectedTransport();
 

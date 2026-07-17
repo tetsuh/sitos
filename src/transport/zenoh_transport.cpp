@@ -27,6 +27,7 @@
 
 #include "config_failure.hpp"
 #include "declaration_handle_lifecycle.hpp"
+#include "get_completion.hpp"
 #include "zenoh_transport_test_access.hpp"
 
 namespace sitos {
@@ -254,44 +255,90 @@ Result<ZenohOwned<z_owned_bytes_t>> MakeBytes(std::span<const std::byte> payload
   return Result<ZenohOwned<z_owned_bytes_t>>::Ok(std::move(p));
 }
 
-struct GetReplyCtx {
-  explicit GetReplyCtx(const Transport::QueryResultSink& result_sink) : sink(result_sink) {}
+Result<transport_internal::QueryReply> ConvertGetReply(z_loaned_reply_t* reply) {
+  if (!z_reply_is_ok(reply)) {
+    return Result<transport_internal::QueryReply>::Err(
+        Status::Error, "zenoh get reply reported an error", MakeErrorCode(Status::Error));
+  }
 
-  Transport::QueryResultSink sink;
-  std::atomic<bool> stop{false};
+  const z_loaned_sample_t* sample = z_reply_ok(reply);
+  if (sample == nullptr) {
+    return Result<transport_internal::QueryReply>::Err(
+        Status::Error, "zenoh get reply did not contain a sample", MakeErrorCode(Status::Error));
+  }
+
+  const z_loaned_bytes_t* payload = z_sample_payload(sample);
+  if (payload == nullptr) {
+    return Result<transport_internal::QueryReply>::Err(
+        Status::Error, "zenoh get reply did not contain a payload", MakeErrorCode(Status::Error));
+  }
+  auto slice = std::make_shared<ZenohOwned<z_owned_slice_t>>();
+  const z_result_t slice_result = z_bytes_to_slice(payload, slice->get());
+  if (slice_result != Z_OK) {
+    return Result<transport_internal::QueryReply>::Err(
+        Status::Error, "failed to read zenoh get reply payload", MakeZenohError(slice_result));
+  }
+  slice->mark_valid();
+
+  z_view_string_t key_view;
+  z_keyexpr_as_view_string(z_sample_keyexpr(sample), &key_view);
+  std::string key(z_string_data(z_view_string_loan(&key_view)),
+                  z_string_len(z_view_string_loan(&key_view)));
+  const auto* data = reinterpret_cast<const std::byte*>(z_slice_data(slice->loan()));
+  const auto length = z_slice_len(slice->loan());
+
+  return Result<transport_internal::QueryReply>::Ok(
+      transport_internal::QueryReply{std::move(key), std::span<const std::byte>(data, length),
+                                     ReadEncoding(sample), std::move(slice)});
+}
+
+struct GetReplyContext {
+  explicit GetReplyContext(std::shared_ptr<transport_internal::GetCompletion> completion)
+      : completion(std::move(completion)) {}
+
+  std::mutex mutex;
+  std::shared_ptr<transport_internal::GetCompletion> completion;
 };
 
-void OnGetReply(z_loaned_reply_t* reply, void* context) {
-  auto* c = static_cast<GetReplyCtx*>(context);
+void OnGetReply(z_loaned_reply_t* reply, void* context) noexcept {
+  std::shared_ptr<transport_internal::GetCompletion> completion;
   try {
-    if (c->stop.load(std::memory_order_relaxed)) return;
-
-    const z_loaned_sample_t* sample = z_reply_ok(reply);
-    if (!sample) return;
-
-    const z_loaned_bytes_t* payload = z_sample_payload(sample);
-    ZenohOwned<z_owned_slice_t> slice;
-    if (z_bytes_to_slice(payload, slice.get()) != Z_OK) return;
-    slice.mark_valid();
-
-    const auto* data = reinterpret_cast<const std::byte*>(z_slice_data(slice.loan()));
-    auto len = z_slice_len(slice.loan());
-
-    z_view_string_t ks;
-    z_keyexpr_as_view_string(z_sample_keyexpr(sample), &ks);
-    std::string key_str(z_string_data(z_view_string_loan(&ks)),
-                        z_string_len(z_view_string_loan(&ks)));
-
-    Encoding enc = ReadEncoding(sample);
-
-    if (c->sink && !c->sink(key_str, std::span<const std::byte>(data, len), enc)) {
-      c->stop.store(true, std::memory_order_relaxed);
+    auto* reply_context = static_cast<GetReplyContext*>(context);
+    {
+      std::lock_guard<std::mutex> lock(reply_context->mutex);
+      completion = reply_context->completion;
     }
+    if (!completion) return;
+
+    auto lease = completion->AcquireCallbackLease();
+    if (!lease.IsEnrolled()) return;
+    lease.Completion().ProcessReply([reply] { return ConvertGetReply(reply); });
   } catch (...) {
     // Contain all C++ exceptions at the zenoh-c callback boundary (#67).
-    // The RAII slice owner drops a successfully-created slice while unwinding.
-    c->stop.store(true, std::memory_order_relaxed);
+    if (completion) completion->RecordCallbackFailure();
   }
+}
+
+void DropGetReplyContext(void* context) noexcept {
+  // Lifetime safety here rests on the zenoh-c contract: for one get, zenoh
+  // invokes the reply callback and this drop callback from the same query task,
+  // so they never overlap and drop runs only after the last reply returns. The
+  // mutex therefore does not (and cannot) protect this context's lifetime; it
+  // only guards the shared-owner handoff so the read in OnGetReply and the move
+  // below are not a data race under that ordering.
+  std::unique_ptr<GetReplyContext> reply_context(static_cast<GetReplyContext*>(context));
+  std::shared_ptr<transport_internal::GetCompletion> completion;
+  {
+    std::lock_guard<std::mutex> lock(reply_context->mutex);
+    completion = std::move(reply_context->completion);
+  }
+  if (completion) completion->MarkDropped();
+}
+
+void ConfigureGetOptions(z_get_options_t* options, std::chrono::milliseconds timeout) {
+  z_get_options_default(options);
+  options->consolidation.mode = Z_CONSOLIDATION_MODE_LATEST;
+  options->timeout_ms = static_cast<uint64_t>(timeout.count());
 }
 
 }  // namespace
@@ -326,6 +373,12 @@ bool AllocationFailurePrecedesOwnershipTransfer() {
     return !ownership_transferred;
   }
   return false;
+}
+
+bool UsesLatestGetConsolidation() {
+  z_get_options_t options;
+  ConfigureGetOptions(&options, std::chrono::milliseconds(1));
+  return options.consolidation.mode == Z_CONSOLIDATION_MODE_LATEST;
 }
 
 }  // namespace transport_test_access
@@ -716,31 +769,34 @@ class ZenohTransport : public Transport {
 
   Result<void> Get(std::string_view keyexpr, const QueryResultSink& sink,
                    std::chrono::milliseconds timeout) override {
+    if (timeout.count() <= 0) {
+      return SemanticTransportError<void>(Status::InvalidArgument, TransportErrc::kErrInvalidArg);
+    }
     if (!session_valid_) {
       return SemanticTransportError<void>(Status::Disconnected, TransportErrc::kErrDisconnected);
-    }
-    if (timeout.count() < 0) {
-      return SemanticTransportError<void>(Status::InvalidArgument, TransportErrc::kErrInvalidArg);
     }
 
     auto ke = MakeKeyexpr(keyexpr);
     if (!ke.IsOk()) return Result<void>::ErrFrom(ke);
 
-    auto* reply_ctx = new GetReplyCtx(sink);
-
+    auto completion = std::make_shared<transport_internal::GetCompletion>(sink);
+    auto* context = new GetReplyContext(completion);
     z_owned_closure_reply_t closure;
-    z_closure_reply(
-        &closure, OnGetReply, +[](void* context) { delete static_cast<GetReplyCtx*>(context); },
-        reply_ctx);
+    z_closure_reply(&closure, OnGetReply, DropGetReplyContext, context);
 
     z_get_options_t opts;
-    z_get_options_default(&opts);
-    opts.timeout_ms = static_cast<uint64_t>(timeout.count());
+    ConfigureGetOptions(&opts, timeout);
 
-    z_result_t rc = z_get(z_session_loan(&session_), ke.Value().loan(), "", z_move(closure), &opts);
-
-    if (rc != Z_OK) return Result<void>::Err(MakeZenohError(rc));
-    return Result<void>::Ok();
+    const z_result_t result =
+        z_get(z_session_loan(&session_), ke.Value().loan(), "", z_move(closure), &opts);
+    if (result != Z_OK) {
+      // z_get consumes the moved closure. Marking completion here is idempotent
+      // if zenoh already invoked the drop callback while reporting the failure.
+      completion->MarkDropped();
+      static_cast<void>(completion->WaitForResult());
+      return Result<void>::Err(MakeZenohError(result));
+    }
+    return completion->WaitForResult();
   }
 
   Result<Subscription> DeclareSubscriber(

@@ -86,6 +86,18 @@ target_link_libraries(sitos_logging_test
 sitos_enable_warnings(sitos_logging_test)
 gtest_discover_tests(sitos_logging_test)
 
+add_executable(sitos_transport_get_completion_test
+  unit/transport_get_completion_test.cpp)
+target_link_libraries(sitos_transport_get_completion_test
+  PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_transport_get_completion_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+sitos_enable_warnings(sitos_transport_get_completion_test)
+# Use configure-time source discovery to avoid CMake 4.4 JSON discovery failures
+# for this zenoh-independent completion test on the Windows runner.
+gtest_add_tests(
+  TARGET sitos_transport_get_completion_test
+  SOURCES unit/transport_get_completion_test.cpp)
+
 add_executable(sitos_storage_node_test
   unit/storage_node_test.cpp)
 target_link_libraries(sitos_storage_node_test

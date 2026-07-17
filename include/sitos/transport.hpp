@@ -153,8 +153,18 @@ class Transport {
   virtual Result<void> Delete(std::string_view key, PutOptions options) = 0;
 
   /// Query results for the given key expression.
-  /// The sink is called once per matching key. Return false from the sink to
-  /// stop early.
+  ///
+  /// `timeout` must be strictly positive. Success returns only after the
+  /// native reply closure has dropped and every sink invocation for this
+  /// request has finished; no sink runs after this method returns. Zero replies
+  /// are successful transport completion. The sink is serialized per request,
+  /// receives each concrete key at most once, and may return false to suppress
+  /// later delivery while the method still waits for completion. Sink views are
+  /// valid only for the callback. A sink must not recursively call blocking
+  /// Get on the same Transport, but may call nonblocking Put or Delete.
+  /// An Error result does not imply the sink was never invoked: a reply-
+  /// processing failure can occur after earlier concrete keys were already
+  /// delivered, so callers must not treat Error as "no data was seen".
   using QueryResultSink =
       std::function<bool(std::string_view key, std::span<const std::byte> payload,
                          Encoding encoding)>;
