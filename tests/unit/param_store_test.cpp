@@ -5,15 +5,18 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -49,22 +52,47 @@ class FakeTransport final : public Transport {
 
   Result<void> Put(std::string_view key, std::span<const std::byte> payload, Encoding encoding,
                    PutOptions) override {
+    std::lock_guard lock(mutex_);
     puts.push_back({std::string(key), {payload.begin(), payload.end()}, std::move(encoding)});
     return put_result;
   }
 
   Result<void> Delete(std::string_view key, PutOptions) override {
+    std::lock_guard lock(mutex_);
     deletes.emplace_back(key);
     return delete_result;
   }
 
   Result<void> Get(std::string_view keyexpr, const QueryResultSink& sink,
                    std::chrono::milliseconds) override {
-    get_keys.emplace_back(keyexpr);
-    for (const auto& reply : replies) {
-      if (!sink(reply.key, reply.payload, reply.encoding)) break;
+    std::vector<ReplyRecord> reply_copy;
+    Result<void> result = Result<void>::Ok();
+    {
+      std::lock_guard lock(mutex_);
+      get_keys.emplace_back(keyexpr);
+      reply_copy = replies;
+      result = get_result;
     }
-    return get_result;
+    const auto invoke = [&] {
+      {
+        std::lock_guard lock(mutex_);
+        callback_thread_id = std::this_thread::get_id();
+      }
+      for (const auto& reply : reply_copy) {
+        if (!sink(reply.key, reply.payload, reply.encoding)) break;
+      }
+    };
+    if (invoke_get_on_worker) {
+      std::thread worker(invoke);
+      worker.join();
+    } else {
+      invoke();
+    }
+    {
+      std::lock_guard lock(mutex_);
+      get_returned = true;
+    }
+    return result;
   }
 
   Result<Subscription> DeclareSubscriber(std::string_view,
@@ -84,6 +112,12 @@ class FakeTransport final : public Transport {
   Result<void> put_result = Result<void>::Ok();
   Result<void> delete_result = Result<void>::Ok();
   Result<void> get_result = Result<void>::Ok();
+  bool invoke_get_on_worker = false;
+  bool get_returned = false;
+  std::thread::id callback_thread_id;
+
+ private:
+  std::mutex mutex_;
 };
 
 std::shared_ptr<FakeTransport> OpenFake() {
@@ -195,6 +229,54 @@ TEST(ParamStoreTest, ExactGetAndContainsMapZeroReplyAndDecodeErrors) {
   EXPECT_EQ(malformed.StatusCode(), sitos::Status::Error);
 }
 
+TEST(ParamStoreTest, RejectsUnexpectedExactRepliesAndContainsPreservesErrors) {
+  auto transport = OpenFake();
+  auto store_result = sitos::ParamStore::Open(transport);
+  ASSERT_TRUE(store_result.IsOk());
+  auto store = std::move(store_result).Value();
+
+  transport->replies = {{"sitos/base/other", ParamValue(1).Encode(),
+                         Encoding{std::string(Encoding::kSitosV1)}}};
+  auto mismatched = store.Get("base", "key");
+  ASSERT_FALSE(mismatched.IsOk());
+  EXPECT_EQ(mismatched.StatusCode(), sitos::Status::Error);
+
+  transport->replies = {{"sitos/base/key", ParamValue(1).Encode(),
+                         Encoding{"application/octet-stream"}}};
+  auto wrong_encoding = store.Get("base", "key");
+  ASSERT_FALSE(wrong_encoding.IsOk());
+  EXPECT_EQ(wrong_encoding.StatusCode(), sitos::Status::Error);
+
+  auto contains = store.Contains("base", "key");
+  ASSERT_FALSE(contains.IsOk());
+  EXPECT_EQ(contains.StatusCode(), sitos::Status::Error);
+}
+
+TEST(ParamStoreTest, ListRejectsInvalidMatchingReplies) {
+  auto transport = OpenFake();
+  auto store_result = sitos::ParamStore::Open(transport);
+  ASSERT_TRUE(store_result.IsOk());
+  auto store = std::move(store_result).Value();
+
+  const std::vector<FakeTransport::ReplyRecord> invalid_replies = {
+      {"sitos/base/foo/key", ParamValue(1).Encode(), Encoding{"application/octet-stream"}},
+      {"sitos/base/foo/key", {std::byte{0xff}},
+       Encoding{std::string(Encoding::kSitosV1)}},
+      {"sitos/session/s1/foo/key", ParamValue(1).Encode(),
+       Encoding{std::string(Encoding::kSitosV1)}},
+      {"sitos/base/:batch", ParamValue(1).Encode(),
+       Encoding{std::string(Encoding::kSitosV1)}},
+  };
+  for (const auto& reply : invalid_replies) {
+    transport->replies = {reply};
+    auto result = store.List("base", "foo", [](std::string_view, const ParamValue&) {
+      ADD_FAILURE() << "invalid reply reached the ListSink";
+      return true;
+    });
+    EXPECT_EQ(result.StatusCode(), sitos::Status::Error);
+  }
+}
+
 TEST(ParamStoreTest, ListSortsRepliesFiltersPrefixAndStopsOnFalse) {
   auto transport = OpenFake();
   auto store_result = sitos::ParamStore::Open(transport);
@@ -286,6 +368,53 @@ TEST(ParamStoreTest, ListIgnoresUnrelatedRepliesInsideSafeParentBeforeDecoding) 
                         })
                   .IsOk());
   EXPECT_EQ(keys, (std::vector<std::string>{"foo/bar/value"}));
+}
+
+TEST(ParamStoreTest, ListRunsSinkOnCallerThreadAfterTransportCallback) {
+  auto transport = OpenFake();
+  auto store_result = sitos::ParamStore::Open(transport);
+  ASSERT_TRUE(store_result.IsOk());
+  auto store = std::move(store_result).Value();
+  transport->invoke_get_on_worker = true;
+  transport->replies = {
+      {"sitos/base/key", ParamValue(1).Encode(), Encoding{std::string(Encoding::kSitosV1)}}};
+
+  const auto caller_thread_id = std::this_thread::get_id();
+  std::thread::id sink_thread_id;
+  bool callback_had_returned = false;
+  ASSERT_TRUE(store
+                  .List("base", "", [&](std::string_view, const ParamValue&) {
+                    sink_thread_id = std::this_thread::get_id();
+                    callback_had_returned = transport->get_returned;
+                    return true;
+                  })
+                  .IsOk());
+  EXPECT_EQ(sink_thread_id, caller_thread_id);
+  EXPECT_NE(transport->callback_thread_id, caller_thread_id);
+  EXPECT_TRUE(callback_had_returned);
+}
+
+TEST(ParamStoreTest, IndependentParamStoreCallsMakeProgressConcurrently) {
+  auto transport = OpenFake();
+  auto store_result = sitos::ParamStore::Open(transport);
+  ASSERT_TRUE(store_result.IsOk());
+  auto store = std::move(store_result).Value();
+  transport->replies = {
+      {"sitos/base/key", ParamValue(1).Encode(), Encoding{std::string(Encoding::kSitosV1)}}};
+
+  std::atomic<bool> failed = false;
+  std::vector<std::thread> workers;
+  for (int i = 0; i < 8; ++i) {
+    workers.emplace_back([&, i] {
+      if (!store.Put("base", "key", static_cast<std::int64_t>(i)).IsOk() ||
+          !store.Get("base", "key").IsOk()) {
+        failed.store(true);
+      }
+    });
+  }
+  for (auto& worker : workers) worker.join();
+  EXPECT_FALSE(failed.load());
+  EXPECT_EQ(transport->puts.size(), 8U);
 }
 
 TEST(ParamStoreTest, ListSinkExceptionPropagatesAndStoreRemainsUsable) {
