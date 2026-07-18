@@ -247,17 +247,28 @@ Inside a queryable callback, do not wait; allow only short reads from engine/ove
 
 ### 5.1 Construction Sequence (Joining a Session)
 
+`ParamCache` is a move-only lifecycle object in this milestone. Its public read and write
+methods are deferred to Issue #19; tests use an internal test-access seam.
+
 ```
 ParamCache::Attach(sid):
-  1. declare subscriber: <prefix>/session/<sid>/**     … (a)
-  2. get: <prefix>/snap/<sid>/**    → store in cache   … (b)
-  3. get: <prefix>/session/<sid>/** → overwrite cache  … (c)
-  4. apply the buffer already received by (a), then apply sequentially thereafter
+  1. create an accepting candidate and declare <prefix>/session/<sid>/** (buffering);
+  2. get <prefix>/snap/<sid>/** into a private snapshot baseline;
+  3. get <prefix>/session/<sid>/** into a private overlay;
+  4. under the delta sequence lock, build baseline + overlay, drain buffered samples,
+     and atomically switch to live mode;
+  5. publish the candidate only after the transaction succeeds.
 ```
 
-Because the order is (a)→(b)→(c), puts that occur between (b) and (c) are also picked up by (a),
-so there are no missed updates (the same technique as zenoh Querying Subscriber).
-Duplicate application is idempotent because it overwrites the same key.
+The subscriber is declared before either Get. Every callback is either buffered or applied under
+one gap-free sequence lock, and the application order is snapshot, overlay, buffered samples,
+then live samples. A failed declaration, Get, or reply decode rolls back the candidate and leaves
+the cache detached and retryable. A valid session with zero replies (including an unknown session,
+which this protocol cannot distinguish from an empty one) attaches as an empty cache.
+
+`AttachBase()` uses the same subscriber-first transaction with `<prefix>/base/**` and a single
+base Get. `Detach()` closes callback admission, undeclares the subscription, waits for admitted
+callbacks, and only then clears state. No callback mutates the cache after Detach returns.
 
 ### 5.2 Data Structures and Zero-Copy Reads [N01]
 
@@ -279,8 +290,9 @@ class ParamCache {
 
 ### 5.3 Direct Base Reference Mode
 
-For simple use cases without sessions, also provide a mode where `Attach("base")`
-initially fetches + subscribes to `base/**` (no snapshot isolation).
+For simple use cases without sessions, `AttachBase()` initially fetches + subscribes to
+`base/**` (no snapshot isolation). A base DELETE erases its key. In session mode, a DELETE
+removes the overlay and restores the snapshot baseline when one exists.
 
 ## 6. ParamStore (Writes and Ad Hoc Reads)
 

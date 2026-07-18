@@ -220,62 +220,34 @@ public:
 
 ```cpp
 class ParamCache {
-public:
-    static Result<ParamCache> Open(const Config& config);
-    static Result<ParamCache> Open(std::shared_ptr<Transport> transport,
-                                   const Config& config);
+ public:
+  static Result<ParamCache> Open(ClientConfig config = {});
+  static Result<ParamCache> Open(std::shared_ptr<Transport> transport,
+                                 ClientConfig config = {});
 
-    /// Join a session: initially fetch snap + overlay, then start delta subscription.
-    /// Synchronously blocks until completion (timeout is config.query_timeout).
-    Result<void> Attach(std::string_view sid);
-    /// Direct base reference mode ([02] §5.3)
-    Result<void> AttachBase();
-    void Detach();
+  ~ParamCache();
+  ParamCache(const ParamCache&) = delete;
+  ParamCache& operator=(const ParamCache&) = delete;
+  ParamCache(ParamCache&&) noexcept;
+  ParamCache& operator=(ParamCache&&) noexcept;
 
-    // ---- Zero-copy reads [N01] ----
-    /// Shared reference to the value. The lock is held only during lookup. Return-value lifetime is managed by shared_ptr.
-    std::shared_ptr<const ParamValue> GetShared(std::string_view key) const;
-
-    template<typename T>
-    std::optional<T> Get(std::string_view key) const;          // Scalar (copy)
-    template<typename T>
-    T GetOr(std::string_view key, T default_value) const;
-
-    /// LUT reference: span pointing to the internal buffer + lifetime keepalive handle
-    template<typename T>
-    struct SpanHandle {
-        std::span<const T> span;
-        std::shared_ptr<const ParamValue> keepalive;
-    };
-    template<typename T>
-    std::optional<SpanHandle<T>> GetSpan(std::string_view key) const;
-
-    bool Contains(std::string_view key) const;
-    /// Enumerate within the cache (no communication)
-    void List(std::string_view prefix, const ListSink& sink) const;
-
-    // ---- Writes within a session (put to overlay) ----
-    Result<void> Put(std::string_view key, const ParamValue& value);
-    Result<void> PutBatch(std::span<const std::pair<std::string, ParamValue>> entries);
-
-    // ---- State ----
-    bool stale() const;   // true while disconnected. Recovers by refetching after reconnection [N10]
+  Result<void> Attach(std::string_view sid);
+  Result<void> AttachBase();
+  void Detach() noexcept;
 };
 ```
 
-### Usage Example (Compute Process)
+Issue #18 provides only construction and attachment lifecycle. Attach declares the subscriber
+before synchronously fetching snapshot and overlay data, buffers subscriber samples during the
+transaction, then drains that buffer and switches to live mode atomically. Failed declarations,
+transport errors, malformed replies, and invalid keys roll back all candidate state; a retry starts
+from detached state. A valid session with zero replies attaches empty because the current protocol
+cannot distinguish an unknown session from an empty one. Detach closes callback admission,
+undeclares the subscription, waits for in-flight callbacks, and then clears state.
 
-```cpp
-auto cache = sitos::ParamCache::Open(config).value.value();
-cache.Attach(sid);
-
-double fov   = cache.GetOr<double>("recon/fov", 240.0);
-auto lut     = cache.GetSpan<float>("recon/bhc/lut");   // zero-copy
-if (lut) Process(lut->span);
-
-cache.Put("recon/progress", 0.5);   // distributed to all participating processes
-```
-
+The internal cache uses immutable `shared_ptr<const ParamValue>` values and a shared mutex, but
+public `GetShared`, scalar Get/GetOr, GetSpan/SpanHandle, Contains, List, Put, PutBatch, and
+`stale()` belong to Issues #19/#20 and are not present in Issue #18.
 ## 5. SessionView — Composite View (Optional Use)
 
 A facade for the host process side that handles overlay → snapshot resolution through one read
