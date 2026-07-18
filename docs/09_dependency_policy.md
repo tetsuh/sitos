@@ -44,7 +44,9 @@ uses its installed `Findzenohc.cmake` module to recreate or reuse the externally
 `zenohc::zenohc` target before loading the exported static `sitos::sitos` target. Package
 discovery never uses FetchContent or network access. Consumers provide zenoh-c through
 `zenohc_ROOT`, `ZENOHC_ROOT`, or a normal CMake prefix when it is not installed in a standard
-location.
+location. The installed find module cannot enforce the supported zenoh-c version range because
+standalone releases do not expose portable installed version metadata; dependency selection is
+the consumer's responsibility and the range is validated by the dependency-upgrade workflow.
 
 The sitos install tree does not bundle zenoh-c. The application or package manager is
 responsible for deploying the shared `zenohc.dll`/`libzenohc.so` runtime and configuring the

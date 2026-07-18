@@ -19,9 +19,9 @@ if(_sitos_with_zenoh AND NOT TARGET zenohc::zenohc)
 
   if(NOT zenohc_FOUND)
     set(sitos_FOUND FALSE)
-    set(sitos_NOT_FOUND_MESSAGE
-        "sitos was built with Zenoh support, but zenoh-c was not found. "
-        "Set zenohc_ROOT or ZENOHC_ROOT, or add zenoh-c to CMAKE_PREFIX_PATH.")
+    string(CONCAT sitos_NOT_FOUND_MESSAGE
+      "sitos was built with Zenoh support, but zenoh-c was not found. "
+      "Set zenohc_ROOT or ZENOHC_ROOT, or add zenoh-c to CMAKE_PREFIX_PATH.")
     return()
   endif()
 endif()

@@ -1,5 +1,8 @@
 include(FindPackageHandleStandardArgs)
 
+# Standalone zenoh-c releases do not expose portable installed version metadata. The supported
+# range is therefore enforced by the dependency-upgrade workflow and remains the consumer's
+# responsibility when selecting an externally provisioned root.
 if(TARGET zenohc::zenohc)
   set(zenohc_FOUND TRUE)
   return()

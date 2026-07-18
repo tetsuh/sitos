@@ -107,7 +107,7 @@ configure_package_config_file(
 write_basic_package_version_file(
   "${SITOS_PACKAGE_VERSION_CONFIG}"
   VERSION ${PROJECT_VERSION}
-  COMPATIBILITY SameMajorVersion)
+  COMPATIBILITY SameMinorVersion)
 
 install(EXPORT sitosTargets
   FILE sitosTargets.cmake

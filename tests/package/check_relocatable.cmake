@@ -1,11 +1,11 @@
-foreach(_required_variable SITOS_PREFIX SITOS_SOURCE_DIR SITOS_BUILD_DIR ORIGINAL_PREFIX)
+foreach(_required_variable SITOS_PREFIX SITOS_SOURCE_DIR SITOS_BUILD_DIR ORIGINAL_PREFIX SITOS_INSTALL_LIBDIR)
   if(NOT DEFINED ${_required_variable})
     message(FATAL_ERROR "${_required_variable} must be defined")
   endif()
 endforeach()
 
 file(GLOB_RECURSE _package_files
-  "${SITOS_PREFIX}/lib/cmake/sitos/*.cmake")
+  "${SITOS_PREFIX}/${SITOS_INSTALL_LIBDIR}/cmake/sitos/*.cmake")
 set(_forbidden_strings
   "${SITOS_SOURCE_DIR}"
   "${SITOS_BUILD_DIR}"

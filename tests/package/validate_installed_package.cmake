@@ -7,6 +7,7 @@ endif()
 if(NOT DEFINED CMAKE_GENERATOR)
   set(CMAKE_GENERATOR Ninja)
 endif()
+include(GNUInstallDirs)
 
 function(run_checked)
   execute_process(
@@ -21,6 +22,7 @@ function(validate_clean_install prefix)
   run_checked(
     "${CMAKE_COMMAND}"
     "-DSITOS_PREFIX=${prefix}"
+    "-DSITOS_INSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}"
     -P "${SITOS_SOURCE_DIR}/tests/package/check_clean_install.cmake")
 endfunction()
 
@@ -31,9 +33,12 @@ function(validate_relocation prefix original_prefix build_dir)
     "-DSITOS_SOURCE_DIR=${SITOS_SOURCE_DIR}"
     "-DSITOS_BUILD_DIR=${build_dir}"
     "-DORIGINAL_PREFIX=${original_prefix}"
+    "-DSITOS_INSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}"
     -P "${SITOS_SOURCE_DIR}/tests/package/check_relocatable.cmake")
 endfunction()
 
+# Consumers are intentionally built but not executed: runtime shared-library deployment belongs
+# to the application or package manager, as specified by ADR-0021.
 function(validate_consumer prefix build_dir)
   set(_extra_args ${ARGN})
   run_checked(
