@@ -177,7 +177,9 @@ TEST(ParamCacheTest, AttachUsesSubscriberFirstAndAppliesSnapshotOverlayAndBuffer
   auto cache = std::move(result).Value();
   ASSERT_TRUE(cache.Attach("s1").IsOk());
   ASSERT_EQ(transport->calls.size(), 3U);
-  EXPECT_TRUE(transport->calls[0].starts_with("declare:sitos/session/s1/**"));
+  EXPECT_EQ(transport->calls[0], "declare:sitos/session/s1/**");
+  EXPECT_EQ(transport->calls[1], "get:sitos/snap/s1/**");
+  EXPECT_EQ(transport->calls[2], "get:sitos/session/s1/**");
   EXPECT_EQ(Access::Get(cache, "inherited")->As<std::int64_t>(), 3);
   EXPECT_EQ(Access::Get(cache, "overlaid")->As<std::int64_t>(), 2);
 }
@@ -272,6 +274,13 @@ TEST(ParamCacheTest, SessionDeleteRestoresSnapshotAndBatchIsAllOrNothing) {
                        std::string(Encoding::kSitosV1Batch));
   EXPECT_FALSE(Access::Get(cache, "prevalidated").has_value());
   EXPECT_FALSE(Access::Get(cache, "malformed").has_value());
+
+  const std::vector<BatchEntry> invalid_key_entries = {
+      {"valid_first", ParamValue(7)}, {"invalid key", ParamValue(8)}};
+  auto invalid_key_batch = sitos::EncodeBatch(invalid_key_entries);
+  transport->EmitOwned("sitos/session/s1/:batch", std::move(invalid_key_batch),
+                       std::string(Encoding::kSitosV1Batch));
+  EXPECT_FALSE(Access::Get(cache, "valid_first").has_value());
 
   transport->EmitOwned("sitos/session/s1/:batch", {std::byte{0xff}},
                        std::string(Encoding::kSitosV1Batch));

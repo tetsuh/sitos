@@ -464,8 +464,6 @@ std::optional<ParamValue> ParamCacheTestAccess::Get(const ParamCache& cache,
   return *it->second;
 }
 
-std::vector<std::string> ParamCacheTestAccess::Events(const ParamCache&) { return {}; }
-
 void ParamCacheTestAccess::SetCallbackHook(ParamCache& cache, std::function<void()> hook) {
   if (cache.impl_ == nullptr || cache.impl_->active_state == nullptr) return;
   cache.impl_->active_state->callback_hook = std::move(hook);

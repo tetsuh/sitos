@@ -8,7 +8,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "sitos/param_cache.hpp"
 #include "sitos/param_value.hpp"
@@ -20,8 +19,9 @@ class ParamCacheTestAccess {
   static bool IsAttached(const ParamCache& cache);
   static std::size_t Size(const ParamCache& cache);
   static std::optional<ParamValue> Get(const ParamCache& cache, std::string_view key);
-  static std::vector<std::string> Events(const ParamCache& cache);
+  // Precondition: no callback is executing while the hook is being set.
   static void SetCallbackHook(ParamCache& cache, std::function<void()> hook);
+  // Precondition: no callback is executing while the hook is being set.
   static void SetMutationHook(ParamCache& cache, std::function<void(std::size_t)> hook);
 };
 
