@@ -61,12 +61,12 @@ class TrackingTransport final : public sitos::Transport {
       std::function<void(const sitos::TransportSample&)> callback) override {
     auto wrapped = [this, callback = std::move(callback)](
                        const sitos::TransportSample& sample) {
+      callback(sample);
       {
         std::lock_guard lock(mutex_);
         ++callback_count_;
         callback_condition_.notify_all();
       }
-      callback(sample);
     };
     auto result = inner_->DeclareSubscriber(keyexpr, std::move(wrapped));
     {

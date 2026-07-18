@@ -94,6 +94,11 @@ class CallbackLease {
     entered_ = true;
   }
 
+  CallbackLease(const CallbackLease&) = delete;
+  CallbackLease& operator=(const CallbackLease&) = delete;
+  CallbackLease(CallbackLease&&) = delete;
+  CallbackLease& operator=(CallbackLease&&) = delete;
+
   ~CallbackLease() {
     if (!entered_) return;
     std::lock_guard lock(state_->gate_mutex);
@@ -270,8 +275,9 @@ Result<void> Fetch(const std::shared_ptr<param_cache_detail::Access::Impl::State
                         std::string_view key, std::span<const std::byte> payload,
                         Encoding encoding) {
     auto decoded = DecodeGetReply(state, snapshot, key, payload, encoding, out, invalid);
-    if (!decoded.IsOk()) protocol_error = std::move(decoded);
-    return decoded.IsOk();
+    const bool ok = decoded.IsOk();
+    if (!ok) protocol_error = std::move(decoded);
+    return ok;
   };
   auto result = transport->Get(query, sink, timeout);
   if (!result.IsOk()) return Result<void>::ErrFrom(result);

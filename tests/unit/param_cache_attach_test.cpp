@@ -264,6 +264,15 @@ TEST(ParamCacheTest, SessionDeleteRestoresSnapshotAndBatchIsAllOrNothing) {
                        std::string(Encoding::kSitosV1Batch));
   EXPECT_EQ(Access::Get(cache, "a")->As<std::int64_t>(), 4);
 
+  auto malformed_batch = sitos::EncodeBatch(
+      std::vector<BatchEntry>{{"prevalidated", ParamValue(5)}, {"malformed", ParamValue(6)}});
+  ASSERT_FALSE(malformed_batch.empty());
+  malformed_batch.pop_back();
+  transport->EmitOwned("sitos/session/s1/:batch", std::move(malformed_batch),
+                       std::string(Encoding::kSitosV1Batch));
+  EXPECT_FALSE(Access::Get(cache, "prevalidated").has_value());
+  EXPECT_FALSE(Access::Get(cache, "malformed").has_value());
+
   transport->EmitOwned("sitos/session/s1/:batch", {std::byte{0xff}},
                        std::string(Encoding::kSitosV1Batch));
   EXPECT_FALSE(Access::Get(cache, "bad").has_value());
