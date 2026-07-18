@@ -250,7 +250,7 @@ Inside a queryable callback, do not wait; allow only short reads from engine/ove
 `ParamCache` is a move-only lifecycle object in this milestone. Its public read and write
 methods are deferred to Issue #19; tests use an internal test-access seam.
 
-```
+```text
 ParamCache::Attach(sid):
   1. create an accepting candidate and declare <prefix>/session/<sid>/** (buffering);
   2. get <prefix>/snap/<sid>/** into a private snapshot baseline;

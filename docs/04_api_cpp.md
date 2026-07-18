@@ -268,7 +268,7 @@ public:
 |---|---|
 | `ParamValue` | Immutable. Can be freely shared |
 | `ParamStore` | All methods may be called concurrently |
-| `ParamCache` | Get methods may run concurrently. Attach/Detach must be serialized externally |
+| `ParamCache` | Attach/Detach lifecycle methods are serialized internally. Public read/reconnect semantics are deferred to Issues #19/#20 |
 | `StorageNode` | All methods may be called concurrently |
 | callback | Called from zenoh threads. Blocking is prohibited. From inside a callback, only Get-style APIs on the same object may be called |
 
