@@ -118,17 +118,27 @@ Result<ParamValue> DecodeReply(std::string_view expected_key, std::string_view a
   return Result<ParamValue>::Ok(std::move(*decoded));
 }
 
-Result<void> DecodeListReply(std::string_view config_prefix, const Scope& scope,
-                             std::string_view safe_parent, std::string_view prefix,
-                             std::string_view full_key, std::span<const std::byte> payload,
-                             const Encoding& encoding,
-                             std::vector<std::pair<std::string, ParamValue>>& values) {
-  auto parsed = ParseKey(config_prefix, full_key);
-  if (!parsed || !IsExpectedKind(*parsed, scope) || parsed->is_batch ||
-      !IsUnderSafeParent(parsed->relative_key, safe_parent)) {
+struct ListReplyContext {
+  // These views refer to storage owned by ParamStore::List and remain valid through
+  // synchronous Get.
+  std::string_view config_prefix;
+  Scope scope;
+  std::string_view safe_parent;
+  std::string_view prefix;
+};
+
+Result<void> DecodeListReply(
+    const ListReplyContext& context, std::string_view full_key,
+    std::span<const std::byte> payload, const Encoding& encoding,
+    std::vector<std::pair<std::string, ParamValue>>& values) {
+  auto parsed = ParseKey(context.config_prefix, full_key);
+  if (!parsed || !IsExpectedKind(*parsed, context.scope) || parsed->is_batch ||
+      !IsUnderSafeParent(parsed->relative_key, context.safe_parent)) {
     return Result<void>::Err(Status::Error, "transport returned an invalid list key");
   }
-  if (!prefix.empty() && !parsed->relative_key.starts_with(prefix)) return Result<void>::Ok();
+  if (!context.prefix.empty() && !parsed->relative_key.starts_with(context.prefix)) {
+    return Result<void>::Ok();
+  }
   if (encoding.id != Encoding::kSitosV1) {
     return Result<void>::Err(Status::Error, "transport returned an unexpected encoding");
   }
@@ -301,15 +311,16 @@ Result<void> ParamStore::List(std::string_view scope, std::string_view prefix,
   const std::string scope_path = ScopePath(parsed_scope.Value());
   const std::string safe_parent = SafeParent(prefix);
   const std::string selector = BuildScopeQuery(config_.prefix, scope_path, safe_parent);
+  const ListReplyContext context{config_.prefix, parsed_scope.Value(), safe_parent, prefix};
   std::vector<std::pair<std::string, ParamValue>> values;
   std::optional<Result<void>> callback_error;
 
   auto transport_result = transport_->Get(
       selector,
-      [this, parsed_scope, safe_parent, prefix, &callback_error, &values](
-          std::string_view full_key, std::span<const std::byte> payload, Encoding encoding) {
-        auto reply = DecodeListReply(config_.prefix, parsed_scope.Value(), safe_parent, prefix,
-                                     full_key, payload, encoding, values);
+      [&context, &callback_error, &values](std::string_view full_key,
+                                           std::span<const std::byte> payload,
+                                           Encoding encoding) {
+        auto reply = DecodeListReply(context, full_key, payload, encoding, values);
         if (!reply.IsOk()) {
           callback_error = std::move(reply);
           return false;
