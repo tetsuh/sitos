@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -128,7 +129,7 @@ class FakeTransport final : public Transport {
   TransportSample declaration_sample{
       "sitos/base/declaration", {}, Encoding{std::string(Encoding::kSitosV1)}, std::nullopt,
       TransportSample::Kind::Put};
-  int reset_count = 0;
+  std::atomic<int> reset_count{0};
   std::function<void()> reset_hook;
 };
 
