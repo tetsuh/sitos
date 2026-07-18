@@ -4,6 +4,7 @@
 #include "sitos/param_cache.hpp"
 
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -61,6 +62,9 @@ struct ParamCache::Impl {
     std::unordered_map<std::string, std::shared_ptr<const ParamValue>> snapshot_baseline;
     std::unordered_map<std::string, std::shared_ptr<const ParamValue>> effective_map;
     std::vector<Mutation> buffered;
+    std::function<void()> callback_hook;
+    std::function<void(std::size_t)> mutation_hook;
+    std::size_t mutation_count = 0;
   };
 
   explicit Impl(std::shared_ptr<Transport> transport_value, ClientConfig config_value)
@@ -73,11 +77,17 @@ struct ParamCache::Impl {
   Subscription subscription;
 };
 
+namespace param_cache_detail {
+struct Access {
+  using Impl = ParamCache::Impl;
+};
+}  // namespace param_cache_detail
+
 namespace {
 
 class CallbackLease {
  public:
-  explicit CallbackLease(const std::shared_ptr<ParamCache::Impl::State>& state) : state_(state) {
+  explicit CallbackLease(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state) : state_(state) {
     std::lock_guard lock(state_->gate_mutex);
     if (!state_->accepting) return;
     ++state_->in_flight;
@@ -94,21 +104,21 @@ class CallbackLease {
   explicit operator bool() const noexcept { return entered_; }
 
  private:
-  std::shared_ptr<ParamCache::Impl::State> state_;
+  std::shared_ptr<param_cache_detail::Access::Impl::State> state_;
   bool entered_ = false;
 };
 
-void CloseGate(const std::shared_ptr<ParamCache::Impl::State>& state) {
+void CloseGate(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state) {
   std::lock_guard lock(state->gate_mutex);
   state->accepting = false;
 }
 
-void WaitForCallbacks(const std::shared_ptr<ParamCache::Impl::State>& state) {
+void WaitForCallbacks(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state) {
   std::unique_lock lock(state->gate_mutex);
-  state->gate_condition.wait(lock, [&] { return state->in_flight == 0; });
+  state->gate_condition.wait(lock, [state] { return state->in_flight == 0; });
 }
 
-bool IsExpected(const ParsedKey& parsed, const ParamCache::Impl::State& state,
+bool IsExpected(const ParsedKey& parsed, const param_cache_detail::Access::Impl::State& state,
                 bool batch_allowed) {
   if (parsed.is_batch != batch_allowed) return false;
   if (state.session) {
@@ -117,12 +127,12 @@ bool IsExpected(const ParsedKey& parsed, const ParamCache::Impl::State& state,
   return parsed.kind == KeyKind::Base;
 }
 
-std::optional<ParamCache::Impl::Mutation> DecodeOrdinary(
-    const ParamCache::Impl::State& state, const TransportSample& sample) {
+std::optional<param_cache_detail::Access::Impl::Mutation> DecodeOrdinary(
+    const param_cache_detail::Access::Impl::State& state, const TransportSample& sample) {
   const auto parsed = ParseKey(state.prefix, sample.key);
   if (!parsed || !IsExpected(*parsed, state, false)) return std::nullopt;
   if (sample.kind == TransportSample::Kind::Delete) {
-    return ParamCache::Impl::Mutation{ParamCache::Impl::MutationKind::Delete,
+    return param_cache_detail::Access::Impl::Mutation{param_cache_detail::Access::Impl::MutationKind::Delete,
                                       parsed->relative_key, nullptr};
   }
   if (sample.encoding.id == Encoding::kSitosV1Batch) return std::nullopt;
@@ -134,17 +144,17 @@ std::optional<ParamCache::Impl::Mutation> DecodeOrdinary(
   } else {
     decoded = ParamValue(std::vector<std::byte>(sample.payload.begin(), sample.payload.end()));
   }
-  return ParamCache::Impl::Mutation{ParamCache::Impl::MutationKind::Put,
+  return param_cache_detail::Access::Impl::Mutation{param_cache_detail::Access::Impl::MutationKind::Put,
                                     parsed->relative_key,
                                     std::make_shared<const ParamValue>(std::move(*decoded))};
 }
 
-std::optional<std::vector<ParamCache::Impl::Mutation>> DecodeSample(
-    const std::shared_ptr<ParamCache::Impl::State>& state, const TransportSample& sample) {
+std::optional<std::vector<param_cache_detail::Access::Impl::Mutation>> DecodeSample(
+    const std::shared_ptr<param_cache_detail::Access::Impl::State>& state, const TransportSample& sample) {
   if (sample.kind == TransportSample::Kind::Delete) {
     auto mutation = DecodeOrdinary(*state, sample);
     if (!mutation.has_value()) return std::nullopt;
-    return std::vector<ParamCache::Impl::Mutation>{std::move(*mutation)};
+    return std::vector<param_cache_detail::Access::Impl::Mutation>{std::move(*mutation)};
   }
 
   const auto parsed = ParseKey(state->prefix, sample.key);
@@ -155,25 +165,25 @@ std::optional<std::vector<ParamCache::Impl::Mutation>> DecodeSample(
     }
     auto entries = DecodeBatch(sample.payload);
     if (!entries.has_value()) return std::nullopt;
-    std::vector<ParamCache::Impl::Mutation> mutations;
+    std::vector<param_cache_detail::Access::Impl::Mutation> mutations;
     mutations.reserve(entries->size());
     for (auto& entry : *entries) {
       if (!IsValidKey(entry.key)) return std::nullopt;
-      mutations.push_back(ParamCache::Impl::Mutation{
-          ParamCache::Impl::MutationKind::Put, std::move(entry.key),
+      mutations.push_back(param_cache_detail::Access::Impl::Mutation{
+          param_cache_detail::Access::Impl::MutationKind::Put, std::move(entry.key),
           std::make_shared<const ParamValue>(std::move(entry.value))});
     }
     return mutations;
   }
   auto ordinary = DecodeOrdinary(*state, sample);
   if (!ordinary.has_value()) return std::nullopt;
-  return std::vector<ParamCache::Impl::Mutation>{std::move(*ordinary)};
+  return std::vector<param_cache_detail::Access::Impl::Mutation>{std::move(*ordinary)};
 }
 
-void ApplyMutation(ParamCache::Impl::State& state,
-                   const ParamCache::Impl::Mutation& mutation) {
+void ApplyMutation(param_cache_detail::Access::Impl::State& state,
+                   const param_cache_detail::Access::Impl::Mutation& mutation) {
   std::unique_lock lock(state.map_mutex);
-  if (mutation.kind == ParamCache::Impl::MutationKind::Put) {
+  if (mutation.kind == param_cache_detail::Access::Impl::MutationKind::Put) {
     state.effective_map[mutation.key] = mutation.value;
     return;
   }
@@ -189,28 +199,33 @@ void ApplyMutation(ParamCache::Impl::State& state,
   }
 }
 
-void ApplyMutations(ParamCache::Impl::State& state,
-                    const std::vector<ParamCache::Impl::Mutation>& mutations) {
-  for (const auto& mutation : mutations) ApplyMutation(state, mutation);
+void ApplyMutations(param_cache_detail::Access::Impl::State& state,
+                    const std::vector<param_cache_detail::Access::Impl::Mutation>& mutations) {
+  for (const auto& mutation : mutations) {
+    ApplyMutation(state, mutation);
+    ++state.mutation_count;
+    if (state.mutation_hook) state.mutation_hook(state.mutation_count);
+  }
 }
 
-void OnSample(const std::shared_ptr<ParamCache::Impl::State>& state,
+void OnSample(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state,
               const TransportSample& sample) {
   CallbackLease lease(state);
   if (!lease) return;
+  if (state->callback_hook) state->callback_hook();
   auto mutations = DecodeSample(state, sample);
   if (!mutations.has_value()) return;
 
   std::lock_guard sequence_lock(state->sequence_mutex);
-  if (state->phase == ParamCache::Impl::Phase::Buffering) {
+  if (state->phase == param_cache_detail::Access::Impl::Phase::Buffering) {
     for (auto& mutation : *mutations) state->buffered.push_back(std::move(mutation));
     return;
   }
-  if (state->phase != ParamCache::Impl::Phase::Live) return;
+  if (state->phase != param_cache_detail::Access::Impl::Phase::Live) return;
   ApplyMutations(*state, *mutations);
 }
 
-Result<void> DecodeGetReply(const std::shared_ptr<ParamCache::Impl::State>& state,
+Result<void> DecodeGetReply(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state,
                             bool snapshot, std::string_view full_key,
                             std::span<const std::byte> payload, const Encoding& encoding,
                             std::unordered_map<std::string, std::shared_ptr<const ParamValue>>& out,
@@ -244,14 +259,15 @@ Result<void> DecodeGetReply(const std::shared_ptr<ParamCache::Impl::State>& stat
   return Result<void>::Ok();
 }
 
-Result<void> Fetch(const std::shared_ptr<ParamCache::Impl::State>& state,
+Result<void> Fetch(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state,
                    const std::shared_ptr<Transport>& transport, std::string_view query,
                    bool snapshot,
                    std::unordered_map<std::string, std::shared_ptr<const ParamValue>>& out,
                    std::chrono::milliseconds timeout) {
   bool invalid = false;
   Result<void> protocol_error = Result<void>::Ok();
-  const auto sink = [&](std::string_view key, std::span<const std::byte> payload,
+  const auto sink = [&state, snapshot, &out, &invalid, &protocol_error](
+                        std::string_view key, std::span<const std::byte> payload,
                         Encoding encoding) {
     auto decoded = DecodeGetReply(state, snapshot, key, payload, encoding, out, invalid);
     if (!decoded.IsOk()) protocol_error = std::move(decoded);
@@ -263,13 +279,13 @@ Result<void> Fetch(const std::shared_ptr<ParamCache::Impl::State>& state,
   return Result<void>::Ok();
 }
 
-void CleanupCandidate(const std::shared_ptr<ParamCache::Impl::State>& state,
+void CleanupCandidate(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state,
                       Subscription& subscription) {
   CloseGate(state);
   subscription = Subscription{};
   WaitForCallbacks(state);
   std::lock_guard sequence_lock(state->sequence_mutex);
-  state->phase = ParamCache::Impl::Phase::Stopping;
+  state->phase = param_cache_detail::Access::Impl::Phase::Stopping;
   std::unique_lock map_lock(state->map_mutex);
   state->snapshot_baseline.clear();
   state->effective_map.clear();
@@ -407,7 +423,7 @@ Result<void> ParamCache::AttachBase() {
 void ParamCache::Detach() noexcept {
   if (!impl_) return;
   std::lock_guard lifecycle_lock(impl_->lifecycle_mutex);
-  auto state = std::move(impl_->active_state);
+  const auto state = impl_->active_state;
   if (!state) return;
   CloseGate(state);
   impl_->subscription = Subscription{};
@@ -418,6 +434,7 @@ void ParamCache::Detach() noexcept {
   state->snapshot_baseline.clear();
   state->effective_map.clear();
   state->buffered.clear();
+  impl_->active_state.reset();
 }
 
 namespace param_cache_test_access {
@@ -442,6 +459,17 @@ std::optional<ParamValue> ParamCacheTestAccess::Get(const ParamCache& cache,
 }
 
 std::vector<std::string> ParamCacheTestAccess::Events(const ParamCache&) { return {}; }
+
+void ParamCacheTestAccess::SetCallbackHook(ParamCache& cache, std::function<void()> hook) {
+  if (cache.impl_ == nullptr || cache.impl_->active_state == nullptr) return;
+  cache.impl_->active_state->callback_hook = std::move(hook);
+}
+
+void ParamCacheTestAccess::SetMutationHook(
+    ParamCache& cache, std::function<void(std::size_t)> hook) {
+  if (cache.impl_ == nullptr || cache.impl_->active_state == nullptr) return;
+  cache.impl_->active_state->mutation_hook = std::move(hook);
+}
 
 }  // namespace param_cache_test_access
 

@@ -17,6 +17,10 @@ namespace param_cache_test_access {
 class ParamCacheTestAccess;
 }
 
+namespace param_cache_detail {
+struct Access;
+}
+
 /// Subscriber-side cache lifecycle. Read and write APIs are provided by later issues.
 class ParamCache {
  public:
@@ -34,9 +38,9 @@ class ParamCache {
   Result<void> AttachBase();
   void Detach() noexcept;
 
-  struct Impl;
-
  private:
+  struct Impl;
+  friend struct param_cache_detail::Access;
   friend class param_cache_test_access::ParamCacheTestAccess;
   explicit ParamCache(std::shared_ptr<Transport> transport, ClientConfig config);
   std::unique_ptr<Impl> impl_;
