@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -32,10 +33,27 @@ std::optional<std::uint32_t> ReadLeU32(std::span<const std::byte> p, std::size_t
 
 }  // namespace
 
-std::vector<std::byte> EncodeBatch(std::span<const std::pair<std::string, ParamValue>> entries) {
+namespace {
+
+template <typename Entry>
+std::vector<std::byte> EncodeBatchImpl(std::span<const Entry> entries) {
   std::vector<std::byte> out;
   AppendLeU32(static_cast<std::uint32_t>(entries.size()), out);
-  for (const auto& [key, value] : entries) {
+  for (const auto& entry : entries) {
+    const auto& key = [&]() -> const std::string& {
+      if constexpr (std::is_same_v<Entry, BatchEntry>) {
+        return entry.key;
+      } else {
+        return entry.first;
+      }
+    }();
+    const auto& value = [&]() -> const ParamValue& {
+      if constexpr (std::is_same_v<Entry, BatchEntry>) {
+        return entry.value;
+      } else {
+        return entry.second;
+      }
+    }();
     AppendLeU32(static_cast<std::uint32_t>(key.size()), out);
     const auto* kp = reinterpret_cast<const std::byte*>(key.data());
     out.insert(out.end(), kp, kp + key.size());
@@ -45,6 +63,16 @@ std::vector<std::byte> EncodeBatch(std::span<const std::pair<std::string, ParamV
     out.insert(out.end(), body.begin(), body.end());
   }
   return out;
+}
+
+}  // namespace
+
+std::vector<std::byte> EncodeBatch(std::span<const std::pair<std::string, ParamValue>> entries) {
+  return EncodeBatchImpl(entries);
+}
+
+std::vector<std::byte> EncodeBatch(std::span<const BatchEntry> entries) {
+  return EncodeBatchImpl(entries);
 }
 
 std::optional<std::vector<BatchEntry>> DecodeBatch(std::span<const std::byte> payload) {

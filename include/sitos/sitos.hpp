@@ -9,6 +9,7 @@
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/key.hpp"
 #include "sitos/logging.hpp"
+#include "sitos/param_store.hpp"
 #include "sitos/param_value.hpp"
 #include "sitos/result.hpp"
 #include "sitos/session.hpp"

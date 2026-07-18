@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(sitos VERSION 0.1.0 LANGUAGES CXX)
 
+include(GNUInstallDirs)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -55,6 +57,7 @@ endfunction()
 # Core library
 add_library(sitos STATIC
   src/client_config.cpp
+  src/param_store.cpp
   src/status.cpp
   src/param_value.cpp
   src/batch.cpp
@@ -85,3 +88,15 @@ if(SITOS_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
 endif()
+
+install(TARGETS sitos
+  EXPORT sitosTargets
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(EXPORT sitosTargets
+  FILE sitosTargets.cmake
+  NAMESPACE sitos::
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/sitos)

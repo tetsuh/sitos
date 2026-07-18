@@ -86,20 +86,8 @@ struct ClientConfig {
 };
 Result<void> ValidateClientConfig(const ClientConfig& config);
 
-struct Config {
-    std::string prefix = "sitos";
-    std::optional<std::string> zenoh_config_json;  // zenoh Config (JSON5)
-    bool put_ack = true;
-    std::chrono::milliseconds query_timeout{5000};
-};
-
 /// Payload format identifier ([03] §2.2). Corresponds to transport Encoding.
 enum class Encoding { SitosV1, SitosV1Batch, Raw };
-
-/// Put completion guarantee option ([02] §6.2)
-struct PutOptions {
-    bool ack = true;
-};
 
 /// Common sink for List APIs. Returning false aborts enumeration.
 using ListSink = std::function<bool(std::string_view key, const ParamValue&)>;
@@ -117,10 +105,9 @@ Key arguments are `std::string_view` in all APIs. Invalid keys ([03] §1.2) prod
 The `Transport` abstraction (a zenoh adapter that provides put/get/queryable/subscriber) is
 defined in [09_dependency_policy.md](09_dependency_policy.md) §3. Its Get timeout must be
 strictly positive; successful Get returns after terminal reply completion with no subsequent
-sink callback (ADR-0020). `ParamStore`/`ParamCache`/`StorageNode` do not expose raw zenoh-cpp
-types in the public API.
-zenoh session injection [X04] is performed by converting the session to
-`std::shared_ptr<Transport>` with the `ZenohTransport::From(session)` factory before passing it in.
+sink callback (ADR-0020). `ParamStore`/`ParamCache`/`StorageNode` do not expose raw zenoh-c
+types in the public API. An injected `std::shared_ptr<Transport>` can be passed directly to
+`ParamStore::Open`; configuration-aware Zenoh session creation remains an internal factory detail.
 
 ### 1.1 Status / Python Exception Mapping
 
@@ -129,7 +116,7 @@ zenoh session injection [X04] is performed by converting the session to
 | `Ok` | Success | None |
 | `NotFound` | get target absent, nonexistent session | `sitos.NotFoundError` |
 | `TypeMismatch` | Type conversion impossible, Bytes dtype/size mismatch | `sitos.TypeMismatchError` |
-| `Timeout` | query/ack does not complete within `Config::query_timeout` | `sitos.TimeoutError` |
+| `Timeout` | query does not complete within `ClientConfig::query_timeout` | `sitos.TimeoutError` |
 | `Disconnected` | zenoh session disconnected, StorageNode stopped | `sitos.DisconnectedError` |
 | `ReadOnly` | put/delete through the library API to `snap/<sid>/**` | `sitos.ReadOnlyError` |
 | `InvalidKey` | Key/scope/session id violates the grammar | `ValueError` |
@@ -143,45 +130,44 @@ All other Status values are converted to exceptions.
 
 ```cpp
 class ParamStore {
-public:
-    /// Open a new zenoh session (creates ZenohTransport internally)
-    static Result<ParamStore> Open(const Config& config);
-    /// Share an existing Transport [X04]
-    static Result<ParamStore> Open(std::shared_ptr<Transport> transport,
-                                   const Config& config);
+ public:
+  static Result<ParamStore> Open(ClientConfig config = {});
+  static Result<ParamStore> Open(std::shared_ptr<Transport> transport,
+                                 ClientConfig config = {});
 
-    // ---- Writes (scope: "base" or "session/<sid>") ----
-    Result<void> Put(std::string_view scope, std::string_view key,
-                     const ParamValue& value);
-    template<typename T>
-    Result<void> Put(std::string_view scope, std::string_view key, T&& value);
-    /// Batch [F09]: atomically delivered in one zenoh put
-    Result<void> PutBatch(std::string_view scope,
-                          std::span<const std::pair<std::string, ParamValue>> entries);
-    Result<void> Delete(std::string_view scope, std::string_view key); // base only [F12]
+  ParamStore(const ParamStore&) = delete;
+  ParamStore& operator=(const ParamStore&) = delete;
+  ParamStore(ParamStore&&) noexcept = default;
+  ParamStore& operator=(ParamStore&&) noexcept = default;
 
-    // ---- Reads (round trip. Use ParamCache for the hot path) ----
-    Result<ParamValue> Get(std::string_view scope, std::string_view key);
-    template<typename T>
-    Result<T> Get(std::string_view scope, std::string_view key);
-    bool Contains(std::string_view scope, std::string_view key);      // [F11]
+  Result<void> Put(std::string_view scope, std::string_view key,
+                   const ParamValue& value);
+  template <ParamInput T>
+  Result<void> Put(std::string_view scope, std::string_view key, T&& value);
+  Result<void> PutBatch(std::string_view scope,
+                        std::span<const BatchEntry> entries);
+  Result<void> Delete(std::string_view scope, std::string_view key);
 
-    /// Enumerate under prefix (chunk boundary). Abort if sink returns false. [F03]
-    Result<void> List(std::string_view scope, std::string_view prefix,
-                      const ListSink& sink);
-
-    // ---- Subscription [F13] ----
-    class Subscription;  // RAII. Destruction unsubscribes
-    using SubscribeCallback =
-        std::function<void(std::string_view key, const ParamValue&)>;
-    Result<Subscription> Subscribe(std::string_view scope,
-                                   std::string_view key_pattern,
-                                   SubscribeCallback callback);
+  Result<ParamValue> Get(std::string_view scope, std::string_view key);
+  template <SupportedParamType T>
+  Result<T> Get(std::string_view scope, std::string_view key);
+  Result<bool> Contains(std::string_view scope, std::string_view key);
+  Result<void> List(std::string_view scope, std::string_view prefix,
+                    const ListSink& sink);
 };
 ```
 
-`scope` format: `"base"`, `"session/<sid>"`, `"snap/<sid>"` (read-only).
-Put/Delete to `snap` returns `Status::ReadOnly`.
+`scope` is `"base"`, `"session/<sid>"`, or `"snap/<sid>"`. Snapshot writes return
+`Status::ReadOnly`; session Delete returns `Status::InvalidKey`. `Put`, `PutBatch`, and
+`Delete` report Transport submission only and do not wait for node application. `PutBatch`
+uses the canonical `:batch` key and sends one `sitos.v1.batch` message; an empty valid batch
+sends no message.
+
+`Get` waits for synchronous Transport completion. Zero replies map to `NotFound`, while
+`Contains` maps them to `Ok(false)`. `List` collects and validates all matching replies,
+sorts relative keys lexicographically, then invokes the sink on the caller thread. A false
+sink result is normal early termination; sink exceptions propagate unchanged. Raw prefixes
+are used: `foo` matches `foo`, `foo/bar`, and `foobar`, while `foo/` matches descendants only.
 
 ## 3. StorageEngine / StorageNode — Storage Node Side
 
