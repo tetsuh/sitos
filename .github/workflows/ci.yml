@@ -106,3 +106,34 @@ jobs:
 
       - name: Fixture validator (Python/struct independent check)
         run: python tests/fixtures/validate_fixtures.py
+
+  package-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libssl-dev
+
+      - name: Validate installed consumers and relocation
+        run: >-
+          cmake
+          -DSITOS_SOURCE_DIR="$GITHUB_WORKSPACE"
+          -DWORK_DIR="$GITHUB_WORKSPACE/build/package-validation"
+          -DCMAKE_GENERATOR=Ninja
+          -P tests/package/validate_installed_package.cmake
+
+  package-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate installed consumers and relocation (MSVC + Ninja)
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $workspace = $env:GITHUB_WORKSPACE.Replace('\', '/')
+          $command = "call `"$vsPath\VC\Auxiliary\Build\vcvars64.bat`" && cmake -DSITOS_SOURCE_DIR=`"$workspace`" -DWORK_DIR=`"$workspace/build/package-validation`" -DCMAKE_GENERATOR=Ninja -P `"$workspace/tests/package/validate_installed_package.cmake`""
+          cmd /c $command
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
