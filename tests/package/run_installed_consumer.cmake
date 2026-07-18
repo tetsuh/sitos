@@ -23,6 +23,10 @@ set(_configure_command
 if(DEFINED ZENOHC_ROOT)
   list(APPEND _configure_command "-Dzenohc_ROOT=${ZENOHC_ROOT}")
 endif()
+if(DEFINED ZENOHC_ROOT_ENV)
+  list(PREPEND _configure_command
+    "${CMAKE_COMMAND}" -E env "ZENOHC_ROOT=${ZENOHC_ROOT_ENV}")
+endif()
 
 execute_process(
   COMMAND ${_configure_command}

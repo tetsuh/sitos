@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   transport-isolation:
     # Acceptance criterion #2 for issue #3: the raw zenoh-c API must stay
@@ -39,6 +42,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Install dependencies
         run: |
@@ -71,6 +76,8 @@ jobs:
             option: SITOS_ENABLE_ASAN_UBSAN=ON
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
@@ -96,6 +103,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Configure, build and test (MSVC + Ninja)
         shell: pwsh
@@ -111,6 +120,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libssl-dev
@@ -127,6 +138,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Validate installed consumers and relocation (MSVC + Ninja)
         shell: pwsh

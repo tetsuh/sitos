@@ -5,34 +5,40 @@ if(TARGET zenohc::zenohc)
   return()
 endif()
 
-set(_zenohc_root_hints)
+set(_zenohc_root_hint)
 if(zenohc_ROOT)
-  list(APPEND _zenohc_root_hints "${zenohc_ROOT}")
+  set(_zenohc_root_hint "${zenohc_ROOT}")
+elseif(DEFINED ENV{ZENOHC_ROOT})
+  set(_zenohc_root_hint "$ENV{ZENOHC_ROOT}")
 endif()
-if(DEFINED ENV{ZENOHC_ROOT})
-  list(APPEND _zenohc_root_hints "$ENV{ZENOHC_ROOT}")
+
+set(_zenohc_find_options)
+if(_zenohc_root_hint)
+  list(APPEND _zenohc_find_options
+    HINTS "${_zenohc_root_hint}"
+    NO_DEFAULT_PATH)
 endif()
 
 find_path(ZENOHC_INCLUDE_DIR
   NAMES zenoh.h
-  HINTS ${_zenohc_root_hints}
+  ${_zenohc_find_options}
   PATH_SUFFIXES include)
 
 if(WIN32)
   find_file(ZENOHC_IMPLIB
     NAMES zenohc.dll.lib
-    HINTS ${_zenohc_root_hints}
+    ${_zenohc_find_options}
     PATH_SUFFIXES lib)
   find_file(ZENOHC_RUNTIME
     NAMES zenohc.dll
-    HINTS ${_zenohc_root_hints}
+    ${_zenohc_find_options}
     PATH_SUFFIXES bin)
   find_package_handle_standard_args(zenohc
     REQUIRED_VARS ZENOHC_INCLUDE_DIR ZENOHC_IMPLIB ZENOHC_RUNTIME)
 else()
   find_library(ZENOHC_LIBRARY
     NAMES zenohc
-    HINTS ${_zenohc_root_hints}
+    ${_zenohc_find_options}
     PATH_SUFFIXES lib)
   find_package_handle_standard_args(zenohc
     REQUIRED_VARS ZENOHC_INCLUDE_DIR ZENOHC_LIBRARY)
@@ -59,4 +65,5 @@ mark_as_advanced(
   ZENOHC_IMPLIB
   ZENOHC_LIBRARY
   ZENOHC_RUNTIME)
-unset(_zenohc_root_hints)
+unset(_zenohc_find_options)
+unset(_zenohc_root_hint)

@@ -89,4 +89,7 @@ run_checked("${CMAKE_COMMAND}" --install "${_on_build}" --prefix "${_on_original
 validate_clean_install("${_on_original}")
 run_checked("${CMAKE_COMMAND}" -E copy_directory "${_on_original}" "${_on_moved}")
 validate_relocation("${_on_moved}" "${_on_original}" "${_on_build}")
-validate_consumer("${_on_moved}" "${_on_consumer}" "-DZENOHC_ROOT=${_zenoh_root}")
+validate_consumer("${_on_moved}" "${_on_consumer}-cmake-root"
+  "-DZENOHC_ROOT=${_zenoh_root}")
+validate_consumer("${_on_moved}" "${_on_consumer}-environment-root"
+  "-DZENOHC_ROOT_ENV=${_zenoh_root}")
