@@ -31,6 +31,8 @@ add_sitos_public_header_compile_test(
   sitos_client_config_header_compile_test consumer/client_config_header_compile.cpp)
 add_sitos_public_header_compile_test(
   sitos_param_store_header_compile_test consumer/param_store_header_compile.cpp)
+add_sitos_public_header_compile_test(
+  sitos_param_cache_header_compile_test consumer/param_cache_header_compile.cpp)
 if(SITOS_WITH_ZENOH)
   sitos_copy_zenohc(sitos_param_store_header_compile_test)
 endif()
@@ -58,6 +60,12 @@ add_executable(sitos_client_config_test unit/client_config_test.cpp)
 target_link_libraries(sitos_client_config_test PRIVATE GTest::gtest_main sitos::sitos)
 sitos_enable_warnings(sitos_client_config_test)
 gtest_add_tests(TARGET sitos_client_config_test SOURCES unit/client_config_test.cpp)
+
+add_executable(sitos_param_cache_attach_test unit/param_cache_attach_test.cpp)
+target_link_libraries(sitos_param_cache_attach_test PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_param_cache_attach_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+sitos_enable_warnings(sitos_param_cache_attach_test)
+gtest_add_tests(TARGET sitos_param_cache_attach_test SOURCES unit/param_cache_attach_test.cpp)
 
 add_executable(sitos_param_store_test unit/param_store_test.cpp)
 target_link_libraries(sitos_param_store_test PRIVATE GTest::gtest_main sitos::sitos)
@@ -215,4 +223,15 @@ if(SITOS_WITH_ZENOH)
   gtest_add_tests(
     TARGET sitos_param_store_integration_test
     SOURCES integration/param_store_test.cpp)
+
+  add_executable(sitos_param_cache_integration_test
+    integration/param_cache_attach_test.cpp)
+  target_link_libraries(sitos_param_cache_integration_test
+    PRIVATE GTest::gtest_main sitos::sitos)
+  target_include_directories(sitos_param_cache_integration_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+  sitos_enable_warnings(sitos_param_cache_integration_test)
+  sitos_copy_zenohc(sitos_param_cache_integration_test)
+  gtest_add_tests(
+    TARGET sitos_param_cache_integration_test
+    SOURCES integration/param_cache_attach_test.cpp)
 endif()
