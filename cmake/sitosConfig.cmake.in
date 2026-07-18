@@ -1,0 +1,30 @@
+@PACKAGE_INIT@
+
+set(_sitos_with_zenoh "@SITOS_WITH_ZENOH@")
+if(_sitos_with_zenoh AND NOT TARGET zenohc::zenohc)
+  set(_sitos_module_path_defined FALSE)
+  if(DEFINED CMAKE_MODULE_PATH)
+    set(_sitos_module_path_defined TRUE)
+    set(_sitos_saved_module_path "${CMAKE_MODULE_PATH}")
+  endif()
+  list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}")
+  find_package(zenohc MODULE QUIET)
+  if(_sitos_module_path_defined)
+    set(CMAKE_MODULE_PATH "${_sitos_saved_module_path}")
+  else()
+    unset(CMAKE_MODULE_PATH)
+  endif()
+  unset(_sitos_saved_module_path)
+  unset(_sitos_module_path_defined)
+
+  if(NOT zenohc_FOUND)
+    set(sitos_FOUND FALSE)
+    string(CONCAT sitos_NOT_FOUND_MESSAGE
+      "sitos was built with Zenoh support, but zenoh-c was not found. "
+      "Set zenohc_ROOT or ZENOHC_ROOT, or add zenoh-c to CMAKE_PREFIX_PATH.")
+    return()
+  endif()
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/sitosTargets.cmake")
+check_required_components(sitos)

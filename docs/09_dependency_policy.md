@@ -37,6 +37,21 @@ zenoh-c >= 1.9.0, < 2.0
 * After validation by `dependency-upgrade.yml`, zenoh-c patch/minor updates are incorporated into
   sitos patch/minor releases
 
+### 2.1 Installed CMake packages
+
+An installed Zenoh-OFF `sitos` package has no Zenoh dependency. An installed Zenoh-ON package
+uses its installed `Findzenohc.cmake` module to recreate or reuse the externally provisioned
+`zenohc::zenohc` target before loading the exported static `sitos::sitos` target. Package
+discovery never uses FetchContent or network access. Consumers provide zenoh-c through
+`zenohc_ROOT`, `ZENOHC_ROOT`, or a normal CMake prefix when it is not installed in a standard
+location. The installed find module cannot enforce the supported zenoh-c version range because
+standalone releases do not expose portable installed version metadata; dependency selection is
+the consumer's responsibility and the range is validated by the dependency-upgrade workflow.
+
+The sitos install tree does not bundle zenoh-c. The application or package manager is
+responsible for deploying the shared `zenohc.dll`/`libzenohc.so` runtime and configuring the
+platform runtime search path. See ADR-0021.
+
 ## 3. Transport adapter
 
 Only the transport adapter uses the zenoh-c API directly. `OpenZenohTransport` accepts an

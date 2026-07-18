@@ -57,9 +57,26 @@ The C++ library and public headers can be installed with the generated CMake exp
 cmake --install build/release --prefix /opt/sitos
 ```
 
-This installs `include/sitos/*`, the static library, and `sitosTargets.cmake` under
-the platform's `${CMAKE_INSTALL_LIBDIR}/cmake/sitos` directory (commonly
-`lib/cmake/sitos`). Consumers can link the exported `sitos::sitos` target.
+This installs `include/sitos/*`, the static library, `sitosTargets.cmake`,
+`sitosConfig.cmake`, and the version file under the platform's
+`${CMAKE_INSTALL_LIBDIR}/cmake/sitos` directory (commonly `lib/cmake/sitos`).
+Consumers can use the installed package through the exported target. Because sitos is currently
+pre-1.0, the generated version file uses `SameMinorVersion`: a `0.1.x` consumer requirement
+accepts only `0.1` patch releases, not `0.2`.
+
+```sh
+cmake -S consumer -B build/consumer -G Ninja \
+  -DCMAKE_PREFIX_PATH=/opt/sitos
+cmake --build build/consumer
+```
+
+The consumer uses `find_package(sitos CONFIG REQUIRED)` and links
+`sitos::sitos`. The package version file uses `SameMinorVersion` while sitos remains pre-1.0.
+Zenoh-OFF packages have no Zenoh dependency. Zenoh-ON packages require an
+externally provisioned zenoh-c standalone tree discoverable through
+`zenohc_ROOT`, `ZENOHC_ROOT`, or a normal CMake prefix; downstream package
+discovery never downloads zenoh-c. The application or package manager must
+deploy `zenohc.dll` or `libzenohc.so` at runtime.
 
 ## 4. Build (Python wheel)
 

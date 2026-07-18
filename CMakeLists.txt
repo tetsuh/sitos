@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(sitos VERSION 0.1.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -96,7 +97,24 @@ install(TARGETS sitos
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+set(SITOS_CMAKE_INSTALL_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/sitos)
+set(SITOS_PACKAGE_CONFIG "${CMAKE_CURRENT_BINARY_DIR}/sitosConfig.cmake")
+set(SITOS_PACKAGE_VERSION_CONFIG "${CMAKE_CURRENT_BINARY_DIR}/sitosConfigVersion.cmake")
+configure_package_config_file(
+  cmake/sitosConfig.cmake.in
+  "${SITOS_PACKAGE_CONFIG}"
+  INSTALL_DESTINATION "${SITOS_CMAKE_INSTALL_DIR}")
+write_basic_package_version_file(
+  "${SITOS_PACKAGE_VERSION_CONFIG}"
+  VERSION ${PROJECT_VERSION}
+  COMPATIBILITY SameMinorVersion)
+
 install(EXPORT sitosTargets
   FILE sitosTargets.cmake
   NAMESPACE sitos::
-  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/sitos)
+  DESTINATION ${SITOS_CMAKE_INSTALL_DIR})
+install(FILES
+  "${SITOS_PACKAGE_CONFIG}"
+  "${SITOS_PACKAGE_VERSION_CONFIG}"
+  cmake/Findzenohc.cmake
+  DESTINATION ${SITOS_CMAKE_INSTALL_DIR})
