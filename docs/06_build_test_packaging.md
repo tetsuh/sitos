@@ -58,7 +58,8 @@ cmake --install build/release --prefix /opt/sitos
 ```
 
 This installs `include/sitos/*`, the static library, and `sitosTargets.cmake` under
-`lib/cmake/sitos`. Consumers can link the exported `sitos::sitos` target.
+the platform's `${CMAKE_INSTALL_LIBDIR}/cmake/sitos` directory (commonly
+`lib/cmake/sitos`). Consumers can link the exported `sitos::sitos` target.
 
 ## 4. Build (Python wheel)
 

@@ -118,6 +118,28 @@ Result<ParamValue> DecodeReply(std::string_view expected_key, std::string_view a
   return Result<ParamValue>::Ok(std::move(*decoded));
 }
 
+Result<void> DecodeListReply(std::string_view config_prefix, const Scope& scope,
+                             std::string_view safe_parent, std::string_view prefix,
+                             std::string_view full_key, std::span<const std::byte> payload,
+                             const Encoding& encoding,
+                             std::vector<std::pair<std::string, ParamValue>>& values) {
+  auto parsed = ParseKey(config_prefix, full_key);
+  if (!parsed || !IsExpectedKind(*parsed, scope) || parsed->is_batch ||
+      !IsUnderSafeParent(parsed->relative_key, safe_parent)) {
+    return Result<void>::Err(Status::Error, "transport returned an invalid list key");
+  }
+  if (!prefix.empty() && !parsed->relative_key.starts_with(prefix)) return Result<void>::Ok();
+  if (encoding.id != Encoding::kSitosV1) {
+    return Result<void>::Err(Status::Error, "transport returned an unexpected encoding");
+  }
+  auto decoded = ParamValue::Decode(payload);
+  if (!decoded.has_value()) {
+    return Result<void>::Err(Status::Error, "transport returned malformed payload");
+  }
+  values.emplace_back(parsed->relative_key, std::move(*decoded));
+  return Result<void>::Ok();
+}
+
 }  // namespace
 
 Result<ParamStore> ParamStore::Open(ClientConfig config) {
@@ -248,7 +270,8 @@ Result<ParamValue> ParamStore::Get(std::string_view scope, std::string_view key)
   std::optional<Result<ParamValue>> callback_result;
   auto transport_result = transport_->Get(
       *full_key,
-      [&](std::string_view actual_key, std::span<const std::byte> payload, Encoding encoding) {
+      [&callback_result, &full_key](std::string_view actual_key,
+                                    std::span<const std::byte> payload, Encoding encoding) {
         if (callback_result.has_value()) return false;
         callback_result = DecodeReply(*full_key, actual_key, payload, encoding);
         return callback_result->IsOk();
@@ -283,26 +306,14 @@ Result<void> ParamStore::List(std::string_view scope, std::string_view prefix,
 
   auto transport_result = transport_->Get(
       selector,
-      [&](std::string_view full_key, std::span<const std::byte> payload, Encoding encoding) {
-        auto parsed = ParseKey(config_.prefix, full_key);
-        if (!parsed || !IsExpectedKind(*parsed, parsed_scope.Value()) || parsed->is_batch ||
-            !IsUnderSafeParent(parsed->relative_key, safe_parent)) {
-          callback_error =
-              Result<void>::Err(Status::Error, "transport returned an invalid list key");
+      [this, parsed_scope, safe_parent, prefix, &callback_error, &values](
+          std::string_view full_key, std::span<const std::byte> payload, Encoding encoding) {
+        auto reply = DecodeListReply(config_.prefix, parsed_scope.Value(), safe_parent, prefix,
+                                     full_key, payload, encoding, values);
+        if (!reply.IsOk()) {
+          callback_error = std::move(reply);
           return false;
         }
-        if (!prefix.empty() && !parsed->relative_key.starts_with(prefix)) return true;
-        if (encoding.id != Encoding::kSitosV1) {
-          callback_error =
-              Result<void>::Err(Status::Error, "transport returned an unexpected encoding");
-          return false;
-        }
-        auto decoded = ParamValue::Decode(payload);
-        if (!decoded.has_value()) {
-          callback_error = Result<void>::Err(Status::Error, "transport returned malformed payload");
-          return false;
-        }
-        values.emplace_back(parsed->relative_key, std::move(*decoded));
         return true;
       },
       config_.query_timeout);
