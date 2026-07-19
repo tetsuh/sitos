@@ -27,3 +27,4 @@ See [docs/10_adr_process.md](../10_adr_process.md) for the process.
 | [0020](0020-synchronously-complete-transport-get.md) | Synchronously complete Transport Get requests |
 | [0021](0021-resolve-installed-zenoh-dependency.md) | Resolve installed Zenoh dependencies without fetching or bundling |
 | [0022](0022-make-param-cache-session-only.md) | Make ParamCache session-only |
+| [0023](0023-param-cache-consistency-and-benchmark-boundary.md) | Define ParamCache consistency and benchmark dependency boundary |
