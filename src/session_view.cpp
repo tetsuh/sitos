@@ -54,7 +54,7 @@ struct ListItem {
 }  // namespace
 
 struct SessionView::Impl {
-  std::weak_ptr<void> state;
+  std::weak_ptr<StorageNode::State> state;
   std::weak_ptr<void> overlay_owner;
   std::string sid;
 };
@@ -118,14 +118,13 @@ Result<SessionView> SessionView::Open(const StorageNode& node, std::string_view 
 Result<SessionView::Readers> SessionView::AcquireReaders() const {
   if (!impl_) return Result<Readers>::Err(Status::InvalidArgument, "moved-from SessionView");
 
-  auto opaque_state = impl_->state.lock();
-  if (!opaque_state) return Result<Readers>::ErrFrom(Disconnected());
-  auto state = std::static_pointer_cast<StorageNode::State>(opaque_state);
+  auto state = impl_->state.lock();
+  if (!state) return Result<Readers>::ErrFrom(Disconnected());
   auto lease = state->Enter();
   if (!lease) return Result<Readers>::ErrFrom(Disconnected());
 
   Readers readers;
-  readers.state_owner = opaque_state;
+  readers.state_owner = state;
   readers.lease = std::move(lease);
   {
     std::shared_lock lock(state->session_mutex);

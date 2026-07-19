@@ -305,6 +305,7 @@ Large binary values belong to the disk-backed `buffers/<sid>/**` scope described
 | `ParamStore` | All methods may be called concurrently |
 | `ParamCache` | Attach/Detach and local write sequencing are synchronized internally. Local reads are cache-only; stale/reconnect behavior is future #20 behavior |
 | `StorageNode` | All methods may be called concurrently |
+| `SessionView` | All methods may be called concurrently. List callbacks run on the caller thread outside internal locks; re-entry and Stop from inside a sink are safe |
 | callback | Called from zenoh threads. Blocking is prohibited. From inside a callback, only Get-style APIs on the same object may be called |
 
 (END OF DOCUMENT)
