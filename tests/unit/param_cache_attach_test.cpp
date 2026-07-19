@@ -40,6 +40,11 @@ using sitos::TransportQuery;
 using sitos::TransportSample;
 using Access = sitos::param_cache_test_access::ParamCacheTestAccess;
 
+void AssignToSelf(ParamCache& cache) {
+  auto* alias = &cache;
+  cache = std::move(*alias);
+}
+
 class FakeTransport final : public Transport {
  public:
   struct Reply {
@@ -435,7 +440,7 @@ TEST(ParamCacheTest, SelfMovePreservesActiveAttachment) {
   auto cache = std::move(result).Value();
   ASSERT_TRUE(cache.Attach("s1").IsOk());
 
-  cache = std::move(cache);
+  AssignToSelf(cache);
   EXPECT_TRUE(Access::IsAttached(cache));
   EXPECT_EQ(transport->reset_count, 0);
   cache.Detach();
