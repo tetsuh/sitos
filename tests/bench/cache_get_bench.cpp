@@ -109,9 +109,10 @@ BenchmarkState& State() {
 
     for (std::size_t index = 0; index < kKeyCount; ++index) {
       const auto suffix = std::to_string(index);
-      const auto scalar_key = std::string("key") + suffix;
-      const auto span_key = std::string("key") + suffix;
-      auto scalar_value = std::make_shared<const sitos::ParamValue>(static_cast<std::int64_t>(index));
+      const auto scalar_key = std::string("scalar_benchmark_key_") + suffix;
+      const auto span_key = std::string("span_benchmark_key___") + suffix;
+      auto scalar_value =
+          std::make_shared<const sitos::ParamValue>(static_cast<std::int64_t>(index));
       auto bytes = std::vector<std::byte>(16, std::byte{0});
       bytes.front() = static_cast<std::byte>(index & 0xffU);
       auto span_value = std::make_shared<const sitos::ParamValue>(std::move(bytes));
@@ -184,8 +185,7 @@ void BM_ParamCacheGetSpan(benchmark::State& state) {
       continue;
     }
     const auto span = result.Value().span;
-    benchmark::DoNotOptimize(span.data());
-    benchmark::DoNotOptimize(span.size());
+    benchmark::DoNotOptimize(span.front());
   }
   if (fixture.span_transport->get_count != get_count) state.SkipWithError("GetSpan used Transport");
 }
@@ -203,8 +203,7 @@ void BM_DirectLookupSpan(benchmark::State& state) {
       continue;
     }
     const auto span = value->second->AsSpan<std::byte>();
-    benchmark::DoNotOptimize(span->data());
-    benchmark::DoNotOptimize(span->size());
+    benchmark::DoNotOptimize(span->front());
   }
 }
 BENCHMARK(BM_DirectLookupSpan)->Arg(10000);
