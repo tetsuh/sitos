@@ -268,8 +268,11 @@ sorts lexically, and invokes the caller's sink after releasing internal locks. `
 a `SpanHandle` owning its immutable value through overwrite, Detach, move assignment, and cache
 destruction. Writes submit to the attached session first, then apply locally on success; peers
 receive updates asynchronously through the subscriber. Failed submission performs no local mutation.
-All APIs use the Result/Status model; `GetOr` substitutes only `NotFound`. `WaitForLocalDelivery`
-is deferred to #99 and stale/reconnect behavior to #20.
+Writes use per-cache last-serialized-wins ordering; there is no self-echo deduplication or global
+ordering across caches. `PutBatch` preserves caller order and duplicate keys in one canonical
+message, and is not reader-visible transaction isolation, so concurrent readers may observe
+partial application. All APIs use the Result/Status model; `GetOr` substitutes only `NotFound`.
+`WaitForLocalDelivery` is deferred to #99, and stale/reconnect behavior is future #20 behavior.
 ## 5. SessionView — Composite View (Optional Use)
 
 A facade for the host process side that handles overlay → snapshot resolution through one read
@@ -290,7 +293,7 @@ public:
 |---|---|
 | `ParamValue` | Immutable. Can be freely shared |
 | `ParamStore` | All methods may be called concurrently |
-| `ParamCache` | Attach/Detach and local write sequencing are synchronized internally. Local reads are cache-only; stale/reconnect behavior is deferred to #20 |
+| `ParamCache` | Attach/Detach and local write sequencing are synchronized internally. Local reads are cache-only; stale/reconnect behavior is future #20 behavior |
 | `StorageNode` | All methods may be called concurrently |
 | callback | Called from zenoh threads. Blocking is prohibited. From inside a callback, only Get-style APIs on the same object may be called |
 

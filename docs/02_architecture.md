@@ -297,6 +297,10 @@ class ParamCache {
   and immutable shared values. Delta application replaces values rather than mutating them.
 * `GetOr` substitutes only `NotFound`; `List` uses raw-prefix matching, lexical order, and
   caller-thread callbacks after releasing cache locks.
+* ParamCache writes use per-cache last-serialized-wins ordering. There is no self-echo
+  deduplication or global ordering across caches. `PutBatch` preserves caller order and duplicate
+  keys in one canonical message, but readers may observe partially applied batch entries because
+  batch application is not reader-visible transaction isolation.
 
 ### 5.3 Session Overlay Deletion
 
@@ -359,8 +363,8 @@ External client        Controller(StorageNode)          Calc(ParamCache)
 
 * APIs return `bool` / `std::optional` / `sitos::Result<T>` (error code +
   message). Exceptions are used only for unrecoverable cases such as constructor failure
-* On zenoh disconnection: ParamCache raises a stale flag, then recovers after reconnection
-  by performing the equivalent of Attach again [N10]
+* Stale-state detection and reconnect recovery for ParamCache are future Issue #20 behavior;
+  they are not provided by the current API.
 * Type-mismatched Get: arithmetic casts are allowed among numeric types (BOOL/S64/DP) [C05];
   all other cases return failure
 

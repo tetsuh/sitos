@@ -36,8 +36,6 @@ Result<void> InvalidKey(std::string_view message) {
   return Result<void>::Err(Status::InvalidKey, std::string(message));
 }
 
-}  // namespace
-
 struct TransparentStringHash {
   using is_transparent = void;
   std::size_t operator()(std::string_view value) const noexcept {
@@ -57,6 +55,8 @@ struct TransparentStringEqual {
   bool operator()(const std::string& left, std::string_view right) const noexcept { return left == right; }
   bool operator()(std::string_view left, const std::string& right) const noexcept { return left == right; }
 };
+
+}  // namespace
 
 struct ParamCache::Impl {
   using ValueMap = std::unordered_map<std::string, std::shared_ptr<const ParamValue>,
@@ -159,7 +159,7 @@ Result<void> ValidateCacheKey(std::string_view key) {
 bool MatchesPrefix(std::string_view key, std::string_view prefix) {
   if (prefix.empty()) return true;
   if (prefix.back() == '/') return key.starts_with(prefix);
-  return key == prefix || key.starts_with(prefix);
+  return key.starts_with(prefix);
 }
 
 void CloseGate(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state) {

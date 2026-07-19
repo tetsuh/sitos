@@ -6,7 +6,7 @@
 sitos/
   CMakeLists.txt              # Top level. Options: SITOS_WITH_ROCKSDB,
                               #   SITOS_BUILD_PYTHON, SITOS_BUILD_TESTS, SITOS_BUILD_EXAMPLES,
-                              #   SITOS_ENABLE_TSAN, SITOS_ENABLE_ASAN_UBSAN,
+                              #   SITOS_BUILD_BENCHMARKS, SITOS_ENABLE_TSAN, SITOS_ENABLE_ASAN_UBSAN,
                               #   SITOS_BUILD_GATEWAY (optional HTTP gateway, ADR-0015)
   cmake/                      # zenoh-c integration (FetchContent/Corrosion/find_package)
   include/sitos/              # Public headers (API from 04_api_cpp.md)
