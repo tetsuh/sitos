@@ -102,6 +102,10 @@ if(SITOS_BUILD_TESTS)
   add_subdirectory(tests)
 endif()
 
+if(SITOS_BUILD_BENCHMARKS)
+  add_subdirectory(tests/bench)
+endif()
+
 install(TARGETS sitos
   EXPORT sitosTargets
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}

@@ -12,12 +12,6 @@ FetchContent_MakeAvailable(googletest)
 
 include(GoogleTest)
 
-if(SITOS_BUILD_BENCHMARKS)
-  add_executable(sitos_cache_get_bench bench/cache_get_bench.cpp)
-  target_link_libraries(sitos_cache_get_bench PRIVATE sitos::sitos benchmark::benchmark)
-  sitos_enable_warnings(sitos_cache_get_bench)
-endif()
-
 set(SITOS_FIXTURE_DIR "${CMAKE_SOURCE_DIR}/tests/fixtures/payload_v1")
 
 function(add_sitos_public_header_compile_test target source)
