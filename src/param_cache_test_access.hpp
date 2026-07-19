@@ -27,6 +27,9 @@ class ParamCacheTestAccess {
   static std::optional<ParamValue> Get(const ParamCache& cache, std::string_view key);
   // Precondition: no callback is executing while the hook is being set.
   static void SetCallbackHook(ParamCache& cache, std::function<void()> hook);
+  // Precondition: no read is executing while the hook is being set.
+  // The hook runs after atomic State ownership is acquired and before map locking.
+  static void SetReadStateHook(ParamCache& cache, std::function<void()> hook);
   // Precondition: no callback is executing while the hook is being set.
   static void SetMutationHook(ParamCache& cache, std::function<void(std::size_t)> hook);
 };

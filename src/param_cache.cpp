@@ -87,6 +87,7 @@ struct ParamCache::Impl {
     ValueMap effective_map;
     std::vector<Mutation> buffered;
     std::function<void()> callback_hook;
+    std::function<void()> read_state_hook;
     std::function<void(std::size_t)> mutation_hook;
     std::size_t mutation_count = 0;
   };
@@ -168,6 +169,10 @@ void CloseGate(const std::shared_ptr<param_cache_detail::Access::Impl::State>& s
 void WaitForCallbacks(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state) {
   std::unique_lock lock(state->gate_mutex);
   state->gate_condition.wait(lock, [state] { return state->in_flight == 0; });
+}
+
+void NotifyReadStateLoaded(const param_cache_detail::Access::Impl::State& state) {
+  if (state.read_state_hook) state.read_state_hook();
 }
 
 bool IsExpected(const ParsedKey& parsed, const param_cache_detail::Access::Impl::State& state,
@@ -387,6 +392,7 @@ Result<std::shared_ptr<const ParamValue>> ParamCache::GetShared(std::string_view
     return Result<std::shared_ptr<const ParamValue>>::Err(Status::InvalidArgument,
                                                           "ParamCache is detached");
   }
+  NotifyReadStateLoaded(*state);
   std::shared_lock lock(state->map_mutex);
   const auto it = state->effective_map.find(key);
   if (it == state->effective_map.end()) {
@@ -402,6 +408,7 @@ Result<bool> ParamCache::Contains(std::string_view key) const {
   if (!impl_) return Result<bool>::Err(Status::InvalidArgument, "moved-from ParamCache");
   const auto state = LoadState(*impl_);
   if (!state) return Result<bool>::Err(Status::InvalidArgument, "ParamCache is detached");
+  NotifyReadStateLoaded(*state);
   std::shared_lock lock(state->map_mutex);
   return Result<bool>::Ok(state->effective_map.find(key) != state->effective_map.end());
 }
@@ -420,6 +427,7 @@ Result<void> ParamCache::List(std::string_view prefix, const ListSink& sink) con
   if (!impl_) return InvalidArgument("moved-from ParamCache");
   const auto state = LoadState(*impl_);
   if (!state) return InvalidArgument("ParamCache is detached");
+  NotifyReadStateLoaded(*state);
   std::vector<std::pair<std::string, std::shared_ptr<const ParamValue>>> values;
   {
     std::shared_lock lock(state->map_mutex);
@@ -585,6 +593,12 @@ void ParamCacheTestAccess::SetCallbackHook(ParamCache& cache, std::function<void
   const auto state = cache.impl_ == nullptr ? nullptr : LoadState(*cache.impl_);
   if (!state) return;
   state->callback_hook = std::move(hook);
+}
+
+void ParamCacheTestAccess::SetReadStateHook(ParamCache& cache, std::function<void()> hook) {
+  const auto state = cache.impl_ == nullptr ? nullptr : LoadState(*cache.impl_);
+  if (!state) return;
+  state->read_state_hook = std::move(hook);
 }
 
 void ParamCacheTestAccess::SetMutationHook(

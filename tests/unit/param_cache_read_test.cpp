@@ -212,6 +212,9 @@ class ParamCacheReadTest : public ::testing::Test {
     ASSERT_TRUE(result.IsOk());
     cache.emplace(std::move(result).Value());
     transport->snapshot_replies.push_back(FakeTransport::Value("sitos/snap/s1/a", sitos::ParamValue(1)));
+    transport->snapshot_replies.push_back(
+        FakeTransport::Value("sitos/snap/s1/bytes",
+                             sitos::ParamValue(std::vector<std::byte>{std::byte{1}})));
     ASSERT_TRUE(cache->Attach("s1").IsOk());
   }
 
@@ -523,9 +526,13 @@ TEST_F(ParamCacheReadTest, DetachWaitsForInFlightLocalBatchOperation) {
   RunDetachLeaseTest(*cache, *transport, true);
 }
 
-bool IsReadLinearizationStatus(sitos::Status status) {
-  return status == sitos::Status::Ok || status == sitos::Status::InvalidArgument;
-}
+struct ReplacementHandshake {
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool mutation_applied = false;
+  bool release_writer = false;
+  std::ptrdiff_t readers_finished = 0;
+};
 
 TEST_F(ParamCacheReadTest, ConcurrentReadersAndWriterSwapsAreSafe) {
   ASSERT_TRUE(cache->Put("bytes", std::vector<std::byte>{std::byte{1}}).IsOk());
@@ -533,11 +540,18 @@ TEST_F(ParamCacheReadTest, ConcurrentReadersAndWriterSwapsAreSafe) {
   constexpr int kRounds = 64;
   std::atomic<bool> readers_ok = true;
   std::atomic<bool> writers_ok = true;
+  ReplacementHandshake handshake;
 
-  const auto run_replacement_rounds = [&](const auto& replace) {
+  Access::SetMutationHook(*cache, [&](std::size_t) {
+    std::unique_lock lock(handshake.mutex);
+    handshake.mutation_applied = true;
+    handshake.condition.notify_all();
+    handshake.condition.wait(lock, [&] { return handshake.release_writer; });
+  });
+
+  const auto run_replacement_rounds = [&](const auto& replace, std::int64_t expected_base) {
     std::barrier round_start(kReaderCount + 1);
-    std::barrier snapshots_ready(kReaderCount + 1);
-    std::barrier concurrent_operations(kReaderCount + 1);
+    std::barrier old_snapshots_ready(kReaderCount + 1);
     std::barrier round_complete(kReaderCount + 1);
     std::vector<std::thread> readers;
     readers.reserve(kReaderCount);
@@ -550,8 +564,18 @@ TEST_F(ParamCacheReadTest, ConcurrentReadersAndWriterSwapsAreSafe) {
           if (!held_value.IsOk() || !held_span.IsOk() || held_span.Value().span.empty()) {
             readers_ok.store(false);
           }
-          snapshots_ready.arrive_and_wait();
-          concurrent_operations.arrive_and_wait();
+          old_snapshots_ready.arrive_and_wait();
+
+          {
+            std::unique_lock lock(handshake.mutex);
+            handshake.condition.wait(lock, [&] { return handshake.mutation_applied; });
+          }
+          if (held_value.IsOk() && held_value.Value()->As<std::int64_t>() < 1) {
+            readers_ok.store(false);
+          }
+          if (held_span.IsOk() && held_span.Value().span.front() != std::byte{1}) {
+            readers_ok.store(false);
+          }
 
           const auto shared = cache->GetShared("a");
           const auto scalar = cache->Get<std::int64_t>("a");
@@ -560,27 +584,37 @@ TEST_F(ParamCacheReadTest, ConcurrentReadersAndWriterSwapsAreSafe) {
           const auto listed = cache->List("", [](std::string_view, const sitos::ParamValue&) {
             return true;
           });
-          if (!shared.IsOk() || !scalar.IsOk() || !span.IsOk() || span.Value().span.empty() ||
-              !contains.IsOk() || !contains.Value() || !listed.IsOk()) {
+          const auto expected = expected_base + round;
+          if (!shared.IsOk() || shared.Value()->As<std::int64_t>() != expected || !scalar.IsOk() ||
+              scalar.Value() != expected || !span.IsOk() || span.Value().span.empty() ||
+              span.Value().span.front() != std::byte{1} || !contains.IsOk() || !contains.Value() ||
+              !listed.IsOk()) {
             readers_ok.store(false);
           }
 
+          {
+            std::lock_guard lock(handshake.mutex);
+            ++handshake.readers_finished;
+            if (handshake.readers_finished == kReaderCount) {
+              handshake.release_writer = true;
+              handshake.condition.notify_all();
+            }
+          }
           round_complete.arrive_and_wait();
-          if (held_value.IsOk() && held_value.Value()->As<std::int64_t>() < 1) {
-            readers_ok.store(false);
-          }
-          if (held_span.IsOk() && held_span.Value().span.front() == std::byte{0}) {
-            readers_ok.store(false);
-          }
         }
       });
     }
 
     std::thread writer([&] {
       for (int round = 0; round < kRounds; ++round) {
+        {
+          std::lock_guard lock(handshake.mutex);
+          handshake.mutation_applied = false;
+          handshake.release_writer = false;
+          handshake.readers_finished = 0;
+        }
         round_start.arrive_and_wait();
-        snapshots_ready.arrive_and_wait();
-        concurrent_operations.arrive_and_wait();
+        old_snapshots_ready.arrive_and_wait();
         replace(round);
         round_complete.arrive_and_wait();
       }
@@ -589,60 +623,116 @@ TEST_F(ParamCacheReadTest, ConcurrentReadersAndWriterSwapsAreSafe) {
     writer.join();
   };
 
-  run_replacement_rounds([&](int round) {
-    const auto value = static_cast<std::int64_t>(round + 2);
-    const auto byte = static_cast<unsigned char>(round + 2);
-    if (!cache->Put("a", value).IsOk() ||
-        !cache->Put("bytes", std::vector<std::byte>{static_cast<std::byte>(byte)}).IsOk()) {
-      writers_ok.store(false);
-    }
-  });
-
-  run_replacement_rounds([&](int round) {
-    const auto value = sitos::ParamValue(static_cast<std::int64_t>(round + kRounds + 2));
-    const auto bytes = std::vector<std::byte>{static_cast<std::byte>(round + kRounds + 2)};
-    transport->Deliver({"sitos/session/s1/a", value.Encode(),
-                        sitos::Encoding{std::string(sitos::Encoding::kSitosV1)}, std::nullopt,
-                        sitos::TransportSample::Kind::Put});
-    transport->Deliver({"sitos/session/s1/bytes", bytes,
-                        sitos::Encoding{std::string(sitos::Encoding::kSitosV1)}, std::nullopt,
-                        sitos::TransportSample::Kind::Put});
-  });
-
-  std::barrier detach_start(kReaderCount + 1);
-  std::vector<std::thread> detach_readers;
-  detach_readers.reserve(kReaderCount);
-  for (std::ptrdiff_t reader = 0; reader < kReaderCount; ++reader) {
-    detach_readers.emplace_back([&] {
-      detach_start.arrive_and_wait();
-      for (int round = 0; round < kRounds; ++round) {
-        const auto shared = cache->GetShared("a");
-        const auto scalar = cache->Get<std::int64_t>("a");
-        const auto span = cache->GetSpan<std::byte>("bytes");
-        const auto contains = cache->Contains("a");
-        const auto listed = cache->List("", [](std::string_view, const sitos::ParamValue&) {
-          return true;
-        });
-        if (!IsReadLinearizationStatus(shared.StatusCode()) ||
-            !IsReadLinearizationStatus(scalar.StatusCode()) ||
-            !IsReadLinearizationStatus(span.StatusCode()) ||
-            !IsReadLinearizationStatus(contains.StatusCode()) ||
-            !IsReadLinearizationStatus(listed.StatusCode())) {
-          readers_ok.store(false);
+  run_replacement_rounds(
+      [&](int round) {
+        if (!cache->Put("a", static_cast<std::int64_t>(round + 2)).IsOk()) {
+          writers_ok.store(false);
         }
-      }
-    });
-  }
-  std::thread detach([&] {
-    detach_start.arrive_and_wait();
-    cache->Detach();
-  });
-  for (auto& reader : detach_readers) reader.join();
-  detach.join();
+      },
+      2);
 
+  run_replacement_rounds(
+      [&](int round) {
+        const auto value = sitos::ParamValue(static_cast<std::int64_t>(round + kRounds + 2));
+        transport->Deliver({"sitos/session/s1/a", value.Encode(),
+                            sitos::Encoding{std::string(sitos::Encoding::kSitosV1)}, std::nullopt,
+                            sitos::TransportSample::Kind::Put});
+      },
+      kRounds + 2);
+
+  Access::SetMutationHook(*cache, {});
   EXPECT_TRUE(readers_ok.load());
   EXPECT_TRUE(writers_ok.load());
-  EXPECT_FALSE(Access::IsAttached(*cache));
+}
+
+TEST_F(ParamCacheReadTest, ReadsRetainingStateSurviveDetachUnpublication) {
+  std::mutex event_mutex;
+  std::condition_variable event_condition;
+
+  const auto run = [&]<typename Call, typename Verify>(Call call, Verify verify) {
+    bool state_loaded = false;
+    bool release_read = false;
+    bool detached = false;
+    using ReadResult = decltype(call());
+    std::optional<ReadResult> read_result;
+
+    Access::SetReadStateHook(*cache, [&] {
+      std::unique_lock lock(event_mutex);
+      state_loaded = true;
+      event_condition.notify_all();
+      event_condition.wait(lock, [&] { return release_read; });
+    });
+    std::thread reader([&] { read_result.emplace(call()); });
+    {
+      std::unique_lock lock(event_mutex);
+      event_condition.wait(lock, [&] { return state_loaded; });
+    }
+    std::thread detacher([&] {
+      cache->Detach();
+      std::lock_guard lock(event_mutex);
+      detached = true;
+      event_condition.notify_all();
+    });
+    {
+      std::unique_lock lock(event_mutex);
+      event_condition.wait(lock, [&] { return detached; });
+    }
+    EXPECT_FALSE(Access::IsAttached(*cache));
+    {
+      std::lock_guard lock(event_mutex);
+      release_read = true;
+      event_condition.notify_all();
+    }
+    reader.join();
+    detacher.join();
+    ASSERT_TRUE(read_result.has_value());
+    verify(*read_result);
+
+    Access::SetReadStateHook(*cache, {});
+    ASSERT_TRUE(cache->Attach("s1").IsOk());
+    state_loaded = false;
+    release_read = false;
+    detached = false;
+  };
+
+  run(
+      [&] { return cache->GetShared("a"); },
+      [](const sitos::Result<std::shared_ptr<const sitos::ParamValue>>& result) {
+        ASSERT_TRUE(result.IsOk());
+        EXPECT_EQ(result.Value()->As<std::int64_t>(), 1);
+      });
+  run(
+      [&] { return cache->Get<std::int64_t>("a"); },
+      [](const sitos::Result<std::int64_t>& result) {
+        ASSERT_TRUE(result.IsOk());
+        EXPECT_EQ(result.Value(), 1);
+      });
+  run(
+      [&] { return cache->GetSpan<std::byte>("bytes"); },
+      [](const sitos::Result<sitos::SpanHandle<std::byte>>& result) {
+        ASSERT_TRUE(result.IsOk());
+        ASSERT_FALSE(result.Value().span.empty());
+        EXPECT_EQ(result.Value().span.front(), std::byte{1});
+      });
+  run(
+      [&] { return cache->Contains("a"); },
+      [](const sitos::Result<bool>& result) {
+        ASSERT_TRUE(result.IsOk());
+        EXPECT_TRUE(result.Value());
+      });
+
+  std::vector<std::string> keys;
+  run(
+      [&] {
+        return cache->List("", [&](std::string_view key, const sitos::ParamValue&) {
+          keys.emplace_back(key);
+          return true;
+        });
+      },
+      [&](const sitos::Result<void>& result) {
+        ASSERT_TRUE(result.IsOk());
+        EXPECT_EQ(keys, (std::vector<std::string>{"a", "bytes"}));
+      });
 }
 
 TEST_F(ParamCacheReadTest, RejectedLocalOperationsAvoidTransportAndGetOrPropagatesTypeMismatch) {
