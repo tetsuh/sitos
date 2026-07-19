@@ -96,6 +96,27 @@ TEST_F(ParamCacheReadTest, InvalidKeysAndDetachedStateReturnDefinedStatuses) {
   EXPECT_EQ(cache->GetShared("a").StatusCode(), sitos::Status::InvalidArgument);
 }
 
+TEST_F(ParamCacheReadTest, ListRejectsAllWhitespacePrefixesWithoutSideEffects) {
+  for (const auto prefix : {" ", "\t", "\r", "\n"}) {
+    int callback_count = 0;
+    const auto result = cache->List(prefix, [&](std::string_view, const sitos::ParamValue&) {
+      ++callback_count;
+      return true;
+    });
+    EXPECT_EQ(result.StatusCode(), sitos::Status::InvalidKey);
+    EXPECT_EQ(callback_count, 0);
+    EXPECT_EQ(cache->Get<std::int64_t>("a").Value(), 1);
+  }
+
+  ASSERT_TRUE(cache->Put("t", std::int64_t{2}).IsOk());
+  int callback_count = 0;
+  EXPECT_TRUE(cache->List("t", [&](std::string_view, const sitos::ParamValue&) {
+    ++callback_count;
+    return true;
+  }).IsOk());
+  EXPECT_EQ(callback_count, 1);
+}
+
 TEST_F(ParamCacheReadTest, GetSharedIsLocalAndSurvivesOverwrite) {
   const auto before = cache->GetShared("a");
   ASSERT_TRUE(before.IsOk());

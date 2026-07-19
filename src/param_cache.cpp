@@ -109,9 +109,9 @@ struct Access {
 
 namespace {
 
-class OperationLease {
+class StateLease {
  public:
-  explicit OperationLease(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state)
+  explicit StateLease(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state)
       : state_(state) {
     std::lock_guard lock(state_->gate_mutex);
     if (!state_->accepting) return;
@@ -119,9 +119,12 @@ class OperationLease {
     entered_ = true;
   }
 
-  OperationLease(const OperationLease&) = delete;
-  OperationLease& operator=(const OperationLease&) = delete;
-  ~OperationLease() {
+  StateLease(const StateLease&) = delete;
+  StateLease& operator=(const StateLease&) = delete;
+  StateLease(StateLease&&) = delete;
+  StateLease& operator=(StateLease&&) = delete;
+
+  ~StateLease() {
     if (!entered_) return;
     std::lock_guard lock(state_->gate_mutex);
     --state_->in_flight;
@@ -135,33 +138,8 @@ class OperationLease {
   bool entered_ = false;
 };
 
-class CallbackLease {
- public:
-  explicit CallbackLease(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state) : state_(state) {
-    std::lock_guard lock(state_->gate_mutex);
-    if (!state_->accepting) return;
-    ++state_->in_flight;
-    entered_ = true;
-  }
-
-  CallbackLease(const CallbackLease&) = delete;
-  CallbackLease& operator=(const CallbackLease&) = delete;
-  CallbackLease(CallbackLease&&) = delete;
-  CallbackLease& operator=(CallbackLease&&) = delete;
-
-  ~CallbackLease() {
-    if (!entered_) return;
-    std::lock_guard lock(state_->gate_mutex);
-    --state_->in_flight;
-    if (state_->in_flight == 0) state_->gate_condition.notify_all();
-  }
-
-  explicit operator bool() const noexcept { return entered_; }
-
- private:
-  std::shared_ptr<param_cache_detail::Access::Impl::State> state_;
-  bool entered_ = false;
-};
+using OperationLease = StateLease;
+using CallbackLease = StateLease;
 
 std::shared_ptr<param_cache_detail::Access::Impl::State> LoadState(
     const param_cache_detail::Access::Impl& impl) {
@@ -435,7 +413,7 @@ Result<void> ParamCache::List(std::string_view prefix, const ListSink& sink) con
   if (!prefix.empty()) {
     if (prefix.front() == '/' || prefix.find("//") != std::string_view::npos ||
         prefix.find_first_of("*?#$%@:") != std::string_view::npos ||
-        prefix.find_first_of(" \\t\\r\\n") != std::string_view::npos) {
+        prefix.find_first_of(" \t\r\n") != std::string_view::npos) {
       return InvalidKey("invalid List prefix");
     }
     const auto chunks = prefix.ends_with('/') ? prefix.substr(0, prefix.size() - 1) : prefix;
