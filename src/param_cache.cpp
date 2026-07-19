@@ -157,9 +157,7 @@ Result<void> ValidateCacheKey(std::string_view key) {
 }
 
 bool MatchesPrefix(std::string_view key, std::string_view prefix) {
-  if (prefix.empty()) return true;
-  if (prefix.back() == '/') return key.starts_with(prefix);
-  return key.starts_with(prefix);
+  return prefix.empty() || key.starts_with(prefix);
 }
 
 void CloseGate(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state) {
