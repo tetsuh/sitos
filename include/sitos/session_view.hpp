@@ -37,11 +37,7 @@ class SessionView {
   Result<T> Get(std::string_view key) const {
     auto value = Get(key);
     if (!value.IsOk()) return Result<T>::ErrFrom(value);
-    auto converted = value.Value().template As<T>();
-    if (!converted.has_value()) {
-      return Result<T>::Err(Status::TypeMismatch, "parameter value type mismatch");
-    }
-    return Result<T>::Ok(std::move(*converted));
+    return param_detail::ConvertParamValue<T>(value.Value());
   }
 
   template <SupportedParamType T>
