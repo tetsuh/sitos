@@ -26,3 +26,4 @@ See [docs/10_adr_process.md](../10_adr_process.md) for the process.
 | [0019](0019-client-result-status-configuration.md) | Additive client result and configuration foundation |
 | [0020](0020-synchronously-complete-transport-get.md) | Synchronously complete Transport Get requests |
 | [0021](0021-resolve-installed-zenoh-dependency.md) | Resolve installed Zenoh dependencies without fetching or bundling |
+| [0022](0022-make-param-cache-session-only.md) | Make ParamCache session-only |

@@ -58,7 +58,6 @@ store.close()        # Supports context manager (__enter__/__exit__)
 ```python
 cache = sitos.ParamCache(prefix="sitos")
 cache.attach(sid)                     # Fetch snapshot + overlay
-# cache.attach_base()                 # Direct base reference mode
 
 fov  = cache.get("recon/fov", default=240.0)
 lut  = cache.get_array("recon/bhc/lut", dtype="float32")   # -> numpy.ndarray

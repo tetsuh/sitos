@@ -40,6 +40,11 @@ using sitos::TransportQuery;
 using sitos::TransportSample;
 using Access = sitos::param_cache_test_access::ParamCacheTestAccess;
 
+void AssignToSelf(ParamCache& cache) {
+  auto* alias = &cache;
+  cache = std::move(*alias);
+}
+
 class FakeTransport final : public Transport {
  public:
   struct Reply {
@@ -67,6 +72,11 @@ class FakeTransport final : public Transport {
     if (hook) hook();
     for (const auto& reply : replies_copy) {
       if (!sink(reply.key, reply.payload, reply.encoding)) break;
+    }
+    {
+      std::lock_guard lock(mutex);
+      const auto result_it = get_result_factories.find(std::string(keyexpr));
+      if (result_it != get_result_factories.end()) return result_it->second();
     }
     return get_result;
   }
@@ -120,6 +130,7 @@ class FakeTransport final : public Transport {
   std::mutex mutex;
   std::vector<std::string> calls;
   std::unordered_map<std::string, std::vector<Reply>> replies;
+  std::unordered_map<std::string, std::function<Result<void>()>> get_result_factories;
   std::function<void()> get_hook;
   std::function<void(const TransportSample&)> subscriber;
   Result<Subscription> declaration_result = Result<Subscription>::Ok(Subscription{});
@@ -127,7 +138,7 @@ class FakeTransport final : public Transport {
   bool emit_during_declaration = false;
   std::vector<std::byte> declaration_payload;
   TransportSample declaration_sample{
-      "sitos/base/declaration", {}, Encoding{std::string(Encoding::kSitosV1)}, std::nullopt,
+      "sitos/session/s1/declaration", {}, Encoding{std::string(Encoding::kSitosV1)}, std::nullopt,
       TransportSample::Kind::Put};
   std::atomic<int> reset_count{0};
   std::function<void()> reset_hook;
@@ -189,13 +200,13 @@ TEST(ParamCacheTest, DeclarationCallbackIsBufferedBeforeInitialGet) {
   const auto payload = Payload(ParamValue(std::int64_t{9}));
   transport->declaration_payload = payload;
   transport->declaration_sample = TransportSample{
-      "sitos/base/declaration", transport->declaration_payload,
+      "sitos/session/s1/declaration", transport->declaration_payload,
       Encoding{std::string(Encoding::kSitosV1)}, std::nullopt, TransportSample::Kind::Put};
   transport->emit_during_declaration = true;
   auto result = ParamCache::Open(transport);
   ASSERT_TRUE(result.IsOk());
   auto cache = std::move(result).Value();
-  ASSERT_TRUE(cache.AttachBase().IsOk());
+  ASSERT_TRUE(cache.Attach("s1").IsOk());
   ASSERT_TRUE(Access::Get(cache, "declaration").has_value());
   EXPECT_EQ(Access::Get(cache, "declaration")->As<std::int64_t>(), 9);
 }
@@ -207,7 +218,7 @@ TEST(ParamCacheTest, AttachRejectsInvalidSidAndAlreadyAttachedWithoutWireCalls) 
   auto cache = std::move(result).Value();
   EXPECT_EQ(cache.Attach("bad sid").StatusCode(), sitos::Status::InvalidKey);
   EXPECT_TRUE(transport->calls.empty());
-  ASSERT_TRUE(cache.AttachBase().IsOk());
+  ASSERT_TRUE(cache.Attach("s1").IsOk());
   const auto call_count = transport->calls.size();
   EXPECT_EQ(cache.Attach("s1").StatusCode(), sitos::Status::InvalidArgument);
   EXPECT_EQ(transport->calls.size(), call_count);
@@ -293,7 +304,7 @@ TEST(ParamCacheTest, BatchAndOrdinarySamplesDoNotInterleave) {
   auto result = ParamCache::Open(transport);
   ASSERT_TRUE(result.IsOk());
   auto cache = std::move(result).Value();
-  ASSERT_TRUE(cache.AttachBase().IsOk());
+  ASSERT_TRUE(cache.Attach("s1").IsOk());
 
   std::mutex mutex;
   std::condition_variable condition;
@@ -310,7 +321,7 @@ TEST(ParamCacheTest, BatchAndOrdinarySamplesDoNotInterleave) {
                                             {"batch_b", ParamValue(2)}};
   auto batch = sitos::EncodeBatch(entries);
   std::thread batch_thread([&] {
-    transport->EmitOwned("sitos/base/:batch", std::move(batch),
+    transport->EmitOwned("sitos/session/s1/:batch", std::move(batch),
                          std::string(Encoding::kSitosV1Batch));
   });
   {
@@ -318,7 +329,7 @@ TEST(ParamCacheTest, BatchAndOrdinarySamplesDoNotInterleave) {
     ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(2), [&] { return first_mutation; }));
   }
   std::thread ordinary_thread([&] {
-    transport->EmitOwned("sitos/base/ordinary", Payload(ParamValue(3)));
+    transport->EmitOwned("sitos/session/s1/ordinary", Payload(ParamValue(3)));
   });
   EXPECT_FALSE(Access::Get(cache, "ordinary").has_value());
   {
@@ -338,7 +349,7 @@ TEST(ParamCacheTest, DetachWaitsForInFlightCallbackAndRejectsStaleCallback) {
   auto result = ParamCache::Open(transport);
   ASSERT_TRUE(result.IsOk());
   auto cache = std::move(result).Value();
-  ASSERT_TRUE(cache.AttachBase().IsOk());
+  ASSERT_TRUE(cache.Attach("s1").IsOk());
 
   std::mutex mutex;
   std::condition_variable condition;
@@ -352,7 +363,7 @@ TEST(ParamCacheTest, DetachWaitsForInFlightCallbackAndRejectsStaleCallback) {
     condition.wait(lock, [&] { return release_callback; });
   });
   std::thread sample_thread([&] {
-    transport->EmitOwned("sitos/base/in_flight", Payload(ParamValue(1)));
+    transport->EmitOwned("sitos/session/s1/in_flight", Payload(ParamValue(1)));
   });
   {
     std::unique_lock lock(mutex);
@@ -384,7 +395,7 @@ TEST(ParamCacheTest, DetachWaitsForInFlightCallbackAndRejectsStaleCallback) {
   detach_thread.join();
   EXPECT_FALSE(Access::IsAttached(cache));
   EXPECT_FALSE(Access::Get(cache, "in_flight").has_value());
-  transport->EmitOwned("sitos/base/stale", Payload(ParamValue(2)));
+  transport->EmitOwned("sitos/session/s1/stale", Payload(ParamValue(2)));
   EXPECT_FALSE(Access::Get(cache, "stale").has_value());
   EXPECT_EQ(transport->reset_count, 1);
 }
@@ -398,8 +409,8 @@ TEST(ParamCacheTest, ActiveMoveAssignmentResetsDestinationExactlyOnce) {
   ASSERT_TRUE(second_result.IsOk());
   auto first = std::move(first_result).Value();
   auto second = std::move(second_result).Value();
-  ASSERT_TRUE(first.AttachBase().IsOk());
-  ASSERT_TRUE(second.AttachBase().IsOk());
+  ASSERT_TRUE(first.Attach("s1").IsOk());
+  ASSERT_TRUE(second.Attach("s1").IsOk());
   second = std::move(first);
   EXPECT_EQ(second_transport->reset_count, 1);
   EXPECT_TRUE(Access::IsAttached(second));
@@ -407,34 +418,218 @@ TEST(ParamCacheTest, ActiveMoveAssignmentResetsDestinationExactlyOnce) {
   EXPECT_EQ(first_transport->reset_count, 1);
 }
 
+TEST(ParamCacheTest, AttachedMoveConstructionTransfersOwnership) {
+  auto transport = std::make_shared<FakeTransport>();
+  auto result = ParamCache::Open(transport);
+  ASSERT_TRUE(result.IsOk());
+  auto cache = std::move(result).Value();
+  ASSERT_TRUE(cache.Attach("s1").IsOk());
+
+  auto moved = std::move(cache);
+  EXPECT_FALSE(Access::IsAttached(cache));
+  EXPECT_TRUE(Access::IsAttached(moved));
+  EXPECT_EQ(transport->reset_count, 0);
+  moved.Detach();
+  EXPECT_EQ(transport->reset_count, 1);
+}
+
+TEST(ParamCacheTest, SelfMovePreservesActiveAttachment) {
+  auto transport = std::make_shared<FakeTransport>();
+  auto result = ParamCache::Open(transport);
+  ASSERT_TRUE(result.IsOk());
+  auto cache = std::move(result).Value();
+  ASSERT_TRUE(cache.Attach("s1").IsOk());
+
+  AssignToSelf(cache);
+  EXPECT_TRUE(Access::IsAttached(cache));
+  EXPECT_EQ(transport->reset_count, 0);
+  cache.Detach();
+  EXPECT_EQ(transport->reset_count, 1);
+}
+
+TEST(ParamCacheTest, ActiveMoveAssignmentWaitsForInFlightDestinationCallback) {
+  auto source_transport = std::make_shared<FakeTransport>();
+  auto destination_transport = std::make_shared<FakeTransport>();
+  auto source_result = ParamCache::Open(source_transport);
+  auto destination_result = ParamCache::Open(destination_transport);
+  ASSERT_TRUE(source_result.IsOk());
+  ASSERT_TRUE(destination_result.IsOk());
+  auto source = std::move(source_result).Value();
+  auto destination = std::move(destination_result).Value();
+  ASSERT_TRUE(source.Attach("s1").IsOk());
+  ASSERT_TRUE(destination.Attach("s1").IsOk());
+
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool callback_entered = false;
+  bool release_callback = false;
+  bool assignment_returned = false;
+  Access::SetCallbackHook(destination, [&] {
+    std::unique_lock lock(mutex);
+    callback_entered = true;
+    condition.notify_all();
+    condition.wait(lock, [&] { return release_callback; });
+  });
+  destination_transport->reset_hook = [&] { condition.notify_all(); };
+  std::thread sample_thread([&] {
+    destination_transport->EmitOwned("sitos/session/s1/in_flight", Payload(ParamValue(1)));
+  });
+  {
+    std::unique_lock lock(mutex);
+    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(2), [&] {
+      return callback_entered;
+    }));
+  }
+
+  std::thread assignment_thread([&] {
+    destination = std::move(source);
+    std::lock_guard lock(mutex);
+    assignment_returned = true;
+    condition.notify_all();
+  });
+  {
+    std::unique_lock lock(mutex);
+    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(2), [&] {
+      return destination_transport->reset_count == 1;
+    }));
+    EXPECT_FALSE(assignment_returned);
+  }
+  {
+    std::lock_guard lock(mutex);
+    release_callback = true;
+  }
+  condition.notify_all();
+  sample_thread.join();
+  assignment_thread.join();
+
+  EXPECT_TRUE(Access::IsAttached(destination));
+  EXPECT_FALSE(Access::IsAttached(source));
+  destination.Detach();
+  EXPECT_EQ(destination_transport->reset_count, 1);
+  EXPECT_EQ(source_transport->reset_count, 1);
+}
+
+TEST(ParamCacheTest, DestructionWaitsForInFlightCallback) {
+  auto transport = std::make_shared<FakeTransport>();
+  auto result = ParamCache::Open(transport);
+  ASSERT_TRUE(result.IsOk());
+  std::optional<ParamCache> cache(std::move(result).Value());
+  ASSERT_TRUE(cache->Attach("s1").IsOk());
+
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool callback_entered = false;
+  bool release_callback = false;
+  bool destruction_returned = false;
+  Access::SetCallbackHook(*cache, [&] {
+    std::unique_lock lock(mutex);
+    callback_entered = true;
+    condition.notify_all();
+    condition.wait(lock, [&] { return release_callback; });
+  });
+  transport->reset_hook = [&] { condition.notify_all(); };
+  std::thread sample_thread([&] {
+    transport->EmitOwned("sitos/session/s1/in_flight", Payload(ParamValue(1)));
+  });
+  {
+    std::unique_lock lock(mutex);
+    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(2), [&] {
+      return callback_entered;
+    }));
+  }
+
+  std::thread destruction_thread([&] {
+    cache.reset();
+    std::lock_guard lock(mutex);
+    destruction_returned = true;
+    condition.notify_all();
+  });
+  {
+    std::unique_lock lock(mutex);
+    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(2), [&] {
+      return transport->reset_count == 1;
+    }));
+    EXPECT_FALSE(destruction_returned);
+  }
+  {
+    std::lock_guard lock(mutex);
+    release_callback = true;
+  }
+  condition.notify_all();
+  sample_thread.join();
+  destruction_thread.join();
+  EXPECT_TRUE(destruction_returned);
+  EXPECT_FALSE(cache.has_value());
+}
+
 TEST(ParamCacheTest, DetachClearsStateAndRejectsLateSamples) {
   auto transport = std::make_shared<FakeTransport>();
   auto result = ParamCache::Open(transport);
   ASSERT_TRUE(result.IsOk());
   auto cache = std::move(result).Value();
-  ASSERT_TRUE(cache.AttachBase().IsOk());
-  transport->EmitOwned("sitos/base/key", Payload(ParamValue(1)));
+  ASSERT_TRUE(cache.Attach("s1").IsOk());
+  transport->EmitOwned("sitos/session/s1/key", Payload(ParamValue(1)));
   ASSERT_TRUE(Access::Get(cache, "key").has_value());
   cache.Detach();
   EXPECT_FALSE(Access::IsAttached(cache));
-  transport->EmitOwned("sitos/base/key", Payload(ParamValue(2)));
+  transport->EmitOwned("sitos/session/s1/key", Payload(ParamValue(2)));
   EXPECT_FALSE(Access::Get(cache, "key").has_value());
   cache.Detach();
 }
 
-TEST(ParamCacheTest, AttachBaseUsesSubscriberFirstAndDeleteErases) {
+TEST(ParamCacheTest, SessionAttachUsesSubscriberFirstAndDeleteRestoresBaseline) {
   auto transport = std::make_shared<FakeTransport>();
-  transport->replies["sitos/base/**"] = {
-      {"sitos/base/key", Payload(ParamValue(1)), Encoding{std::string(Encoding::kSitosV1)}}};
+  transport->replies["sitos/snap/s1/**"] = {
+      {"sitos/snap/s1/key", Payload(ParamValue(1)), Encoding{std::string(Encoding::kSitosV1)}}};
   auto result = ParamCache::Open(transport);
   ASSERT_TRUE(result.IsOk());
   auto cache = std::move(result).Value();
-  ASSERT_TRUE(cache.AttachBase().IsOk());
-  ASSERT_EQ(transport->calls.size(), 2U);
-  EXPECT_TRUE(transport->calls[0].starts_with("declare:sitos/base/**"));
+  ASSERT_TRUE(cache.Attach("s1").IsOk());
+  ASSERT_EQ(transport->calls.size(), 3U);
+  EXPECT_EQ(transport->calls[0], "declare:sitos/session/s1/**");
+  EXPECT_EQ(transport->calls[1], "get:sitos/snap/s1/**");
+  EXPECT_EQ(transport->calls[2], "get:sitos/session/s1/**");
   EXPECT_EQ(Access::Get(cache, "key")->As<std::int64_t>(), 1);
-  transport->EmitOwned("sitos/base/key", {}, "ignored", TransportSample::Kind::Delete);
-  EXPECT_FALSE(Access::Get(cache, "key").has_value());
+  transport->EmitOwned("sitos/session/s1/key", Payload(ParamValue(2)));
+  EXPECT_EQ(Access::Get(cache, "key")->As<std::int64_t>(), 2);
+  transport->EmitOwned("sitos/session/s1/key", {}, "ignored", TransportSample::Kind::Delete);
+  EXPECT_EQ(Access::Get(cache, "key")->As<std::int64_t>(), 1);
+}
+
+TEST(ParamCacheTest, ForeignScopeSamplesAreIgnored) {
+  auto transport = std::make_shared<FakeTransport>();
+  auto result = ParamCache::Open(transport);
+  ASSERT_TRUE(result.IsOk());
+  auto cache = std::move(result).Value();
+  ASSERT_TRUE(cache.Attach("s1").IsOk());
+
+  transport->EmitOwned("sitos/base/base_value", Payload(ParamValue(1)));
+  transport->EmitOwned("sitos/snap/s1/snapshot_value", Payload(ParamValue(2)));
+  transport->EmitOwned("sitos/session/s2/foreign_value", Payload(ParamValue(3)));
+
+  EXPECT_FALSE(Access::Get(cache, "base_value").has_value());
+  EXPECT_FALSE(Access::Get(cache, "snapshot_value").has_value());
+  EXPECT_FALSE(Access::Get(cache, "foreign_value").has_value());
+}
+
+TEST(ParamCacheTest, ForeignDeleteBatchAndMalformedSamplesDoNotMutate) {
+  auto transport = std::make_shared<FakeTransport>();
+  auto result = ParamCache::Open(transport);
+  ASSERT_TRUE(result.IsOk());
+  auto cache = std::move(result).Value();
+  ASSERT_TRUE(cache.Attach("s1").IsOk());
+  transport->EmitOwned("sitos/session/s1/unchanged", Payload(ParamValue(7)));
+
+  transport->EmitOwned("sitos/base/unchanged", {}, "ignored", TransportSample::Kind::Delete);
+  const std::vector<BatchEntry> base_entries = {{"unchanged", ParamValue(8)}};
+  auto base_batch = sitos::EncodeBatch(base_entries);
+  transport->EmitOwned("sitos/base/:batch", std::move(base_batch),
+                       std::string(Encoding::kSitosV1Batch));
+  transport->EmitOwned("malformed-key", Payload(ParamValue(9)));
+
+  ASSERT_TRUE(Access::Get(cache, "unchanged").has_value());
+  EXPECT_EQ(Access::Get(cache, "unchanged")->As<std::int64_t>(), 7);
+  EXPECT_EQ(Access::Size(cache), 1U);
 }
 
 TEST(ParamCacheTest, UnknownEncodingUsesBytesAndMalformedKnownValueIsIgnored) {
@@ -442,37 +637,150 @@ TEST(ParamCacheTest, UnknownEncodingUsesBytesAndMalformedKnownValueIsIgnored) {
   auto result = ParamCache::Open(transport);
   ASSERT_TRUE(result.IsOk());
   auto cache = std::move(result).Value();
-  ASSERT_TRUE(cache.AttachBase().IsOk());
-  transport->EmitOwned("sitos/base/raw", {std::byte{1}, std::byte{2}}, "application/octet-stream");
+  ASSERT_TRUE(cache.Attach("s1").IsOk());
+  transport->EmitOwned("sitos/session/s1/raw", {std::byte{1}, std::byte{2}}, "application/octet-stream");
   auto raw = Access::Get(cache, "raw");
   ASSERT_TRUE(raw.has_value());
   ASSERT_TRUE(raw->As<std::vector<std::byte>>().has_value());
   EXPECT_EQ(raw->As<std::vector<std::byte>>()->size(), 2U);
-  transport->EmitOwned("sitos/base/bad", {std::byte{0xff}}, std::string(Encoding::kSitosV1));
+  transport->EmitOwned("sitos/session/s1/bad", {std::byte{0xff}}, std::string(Encoding::kSitosV1));
   EXPECT_FALSE(Access::Get(cache, "bad").has_value());
 }
 
-TEST(ParamCacheTest, FailedAttachRollsBackPartialRepliesAndProtocolErrors) {
-  auto transport = std::make_shared<FakeTransport>();
-  transport->replies["sitos/base/**"] = {
-      {"sitos/base/partial", Payload(ParamValue(1)),
-       Encoding{std::string(Encoding::kSitosV1)}}};
-  auto result = ParamCache::Open(transport);
-  ASSERT_TRUE(result.IsOk());
-  auto cache = std::move(result).Value();
-  transport->get_result = Result<void>::Err(sitos::Status::Error, "after partial reply");
-  auto failed = cache.AttachBase();
-  ASSERT_FALSE(failed.IsOk());
-  EXPECT_FALSE(Access::IsAttached(cache));
-  EXPECT_FALSE(Access::Get(cache, "partial").has_value());
-  EXPECT_EQ(transport->reset_count, 1);
+TEST(ParamCacheTest, FailedAttachStagesRollbackPreservesErrorAndCanRetry) {
+  const auto cause = std::make_error_code(std::errc::connection_reset);
 
-  transport->get_result = Result<void>::Ok();
-  transport->replies["sitos/base/**"][0].payload = {std::byte{0xff}};
-  failed = cache.AttachBase();
-  ASSERT_FALSE(failed.IsOk());
-  EXPECT_FALSE(Access::IsAttached(cache));
-  EXPECT_EQ(transport->reset_count, 2);
+  {
+    auto transport = std::make_shared<FakeTransport>();
+    auto result = ParamCache::Open(transport);
+    ASSERT_TRUE(result.IsOk());
+    auto cache = std::move(result).Value();
+    transport->declaration_result = Result<Subscription>::Err(
+        sitos::Status::Disconnected, "declaration offline", cause);
+
+    auto failed = cache.Attach("s1");
+    ASSERT_FALSE(failed.IsOk());
+    EXPECT_EQ(failed.StatusCode(), sitos::Status::Disconnected);
+    EXPECT_EQ(failed.Message(), "declaration offline");
+    EXPECT_EQ(failed.Error(), cause);
+    EXPECT_FALSE(Access::IsAttached(cache));
+    EXPECT_EQ(transport->reset_count, 0);
+
+    transport->declaration_result = Result<Subscription>::Ok(Subscription{});
+    ASSERT_TRUE(cache.Attach("s1").IsOk());
+    cache.Detach();
+    EXPECT_EQ(transport->reset_count, 1);
+  }
+
+  {
+    auto transport = std::make_shared<FakeTransport>();
+    auto result = ParamCache::Open(transport);
+    ASSERT_TRUE(result.IsOk());
+    auto cache = std::move(result).Value();
+    transport->get_result_factories["sitos/snap/s1/**"] = [cause, first = true]() mutable {
+      if (first) {
+        first = false;
+        return Result<void>::Err(sitos::Status::Disconnected, "snapshot offline", cause);
+      }
+      return Result<void>::Ok();
+    };
+
+    auto failed = cache.Attach("s1");
+    ASSERT_FALSE(failed.IsOk());
+    EXPECT_EQ(failed.StatusCode(), sitos::Status::Disconnected);
+    EXPECT_EQ(failed.Message(), "snapshot offline");
+    EXPECT_EQ(failed.Error(), cause);
+    EXPECT_FALSE(Access::IsAttached(cache));
+    EXPECT_EQ(transport->reset_count, 1);
+    EXPECT_EQ(Access::Size(cache), 0U);
+
+    auto retry = cache.Attach("s1");
+    ASSERT_TRUE(retry.IsOk()) << static_cast<int>(retry.StatusCode()) << ": " << retry.Message();
+    cache.Detach();
+    EXPECT_EQ(transport->reset_count, 2);
+  }
+
+  {
+    auto transport = std::make_shared<FakeTransport>();
+    transport->replies["sitos/snap/s1/**"] = {
+        {"sitos/snap/s1/partial", Payload(ParamValue(1)),
+         Encoding{std::string(Encoding::kSitosV1)}}};
+    auto result = ParamCache::Open(transport);
+    ASSERT_TRUE(result.IsOk());
+    auto cache = std::move(result).Value();
+    transport->get_result_factories["sitos/session/s1/**"] = [cause, first = true]() mutable {
+      if (first) {
+        first = false;
+        return Result<void>::Err(sitos::Status::Error, "overlay invalid", cause);
+      }
+      return Result<void>::Ok();
+    };
+
+    auto failed = cache.Attach("s1");
+    ASSERT_FALSE(failed.IsOk());
+    EXPECT_EQ(failed.StatusCode(), sitos::Status::Error);
+    EXPECT_EQ(failed.Message(), "overlay invalid");
+    EXPECT_EQ(failed.Error(), cause);
+    EXPECT_FALSE(Access::IsAttached(cache));
+    EXPECT_FALSE(Access::Get(cache, "partial").has_value());
+    EXPECT_EQ(transport->reset_count, 1);
+
+    transport->get_result_factories.clear();
+    ASSERT_TRUE(cache.Attach("s1").IsOk());
+    EXPECT_EQ(Access::Get(cache, "partial")->As<std::int64_t>(), 1);
+    cache.Detach();
+    EXPECT_EQ(transport->reset_count, 2);
+  }
+}
+
+TEST(ParamCacheTest, InitialReplyProtocolErrorsRollBackAndCanRetry) {
+  const auto verify = [](const std::function<void(FakeTransport&)>& configure,
+                         std::string_view expected_message) {
+    auto transport = std::make_shared<FakeTransport>();
+    configure(*transport);
+    auto result = ParamCache::Open(transport);
+    ASSERT_TRUE(result.IsOk());
+    auto cache = std::move(result).Value();
+
+    const auto failed = cache.Attach("s1");
+    ASSERT_FALSE(failed.IsOk());
+    EXPECT_EQ(failed.StatusCode(), sitos::Status::Error);
+    EXPECT_EQ(failed.Message(), expected_message);
+    EXPECT_EQ(failed.Error(), sitos::MakeErrorCode(sitos::Status::Error));
+    EXPECT_FALSE(Access::IsAttached(cache));
+    EXPECT_EQ(Access::Size(cache), 0U);
+    EXPECT_EQ(transport->reset_count, 1);
+
+    transport->replies.clear();
+    const auto retry = cache.Attach("s1");
+    ASSERT_TRUE(retry.IsOk()) << retry.Message();
+    cache.Detach();
+    EXPECT_EQ(transport->reset_count, 2);
+  };
+
+  verify(
+      [](FakeTransport& transport) {
+        transport.replies["sitos/snap/s1/**"] = {
+            {"sitos/snap/s1/malformed", {std::byte{0xff}},
+             Encoding{std::string(Encoding::kSitosV1)}}};
+      },
+      "transport returned malformed payload");
+
+  verify(
+      [](FakeTransport& transport) {
+        transport.replies["sitos/session/s1/**"] = {
+            {"sitos/snap/s1/wrong_scope", Payload(ParamValue(1)),
+             Encoding{std::string(Encoding::kSitosV1)}}};
+      },
+      "transport returned an invalid cache key");
+
+  verify(
+      [](FakeTransport& transport) {
+        transport.replies["sitos/snap/s1/**"] = {
+            {"sitos/snap/s1/value", {},
+             Encoding{std::string(Encoding::kSitosV1Batch)}}};
+      },
+      "transport returned a batch for a value query");
 }
 
 TEST(ParamCacheTest, FailedAttachPreservesTransportErrorAndCanRetry) {
@@ -482,7 +790,7 @@ TEST(ParamCacheTest, FailedAttachPreservesTransportErrorAndCanRetry) {
   auto cache = std::move(result).Value();
   const auto cause = std::make_error_code(std::errc::connection_reset);
   transport->get_result = Result<void>::Err(sitos::Status::Disconnected, "offline", cause);
-  auto failed = cache.AttachBase();
+  auto failed = cache.Attach("s1");
   ASSERT_FALSE(failed.IsOk());
   EXPECT_EQ(transport->reset_count, 1);
   EXPECT_EQ(failed.StatusCode(), sitos::Status::Disconnected);
@@ -490,7 +798,7 @@ TEST(ParamCacheTest, FailedAttachPreservesTransportErrorAndCanRetry) {
   EXPECT_EQ(failed.Error(), cause);
   EXPECT_FALSE(Access::IsAttached(cache));
   transport->get_result = Result<void>::Ok();
-  ASSERT_TRUE(cache.AttachBase().IsOk());
+  ASSERT_TRUE(cache.Attach("s1").IsOk());
   EXPECT_EQ(transport->reset_count, 1);
   cache.Detach();
   EXPECT_EQ(transport->reset_count, 2);

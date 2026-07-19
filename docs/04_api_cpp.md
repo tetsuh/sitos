@@ -232,18 +232,20 @@ class ParamCache {
   ParamCache& operator=(ParamCache&&) noexcept;
 
   Result<void> Attach(std::string_view sid);
-  Result<void> AttachBase();
   void Detach() noexcept;
 };
 ```
 
-Issue #18 provides only construction and attachment lifecycle. Attach declares the subscriber
-before synchronously fetching snapshot and overlay data, buffers subscriber samples during the
-transaction, then drains that buffer and switches to live mode atomically. Failed declarations,
-transport errors, malformed replies, and invalid keys roll back all candidate state; a retry starts
-from detached state. A valid session with zero replies attaches empty because the current protocol
-cannot distinguish an unknown session from an empty one. Detach closes callback admission,
-undeclares the subscription, waits for in-flight callbacks, and then clears state.
+Issue #18 provides only construction and attachment lifecycle. ParamCache attaches only to an
+explicit syntactically valid session id. It does not perform a session-existence preflight: a
+valid unknown or empty session may attach as an empty cache because the current protocol cannot
+distinguish those cases. Attach declares the subscriber before synchronously fetching snapshot and
+overlay data, buffers subscriber samples during the transaction, then drains that buffer and
+switches to live mode atomically. Failed declarations, transport errors, malformed replies, and
+invalid keys roll back all candidate state; a retry starts from detached state. Detach closes
+callback admission, undeclares the subscription, waits for in-flight callbacks, and then clears
+state. Base reads and writes use ParamStore's explicit `"base"` scope; ParamCache does not expose
+or subscribe to a base attachment mode.
 
 The internal cache uses immutable `shared_ptr<const ParamValue>` values and a shared mutex, but
 public `GetShared`, scalar Get/GetOr, GetSpan/SpanHandle, Contains, List, Put, PutBatch, and

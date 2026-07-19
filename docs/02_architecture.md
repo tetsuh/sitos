@@ -266,9 +266,11 @@ then live samples. A failed declaration, Get, or reply decode rolls back the can
 the cache detached and retryable. A valid session with zero replies (including an unknown session,
 which this protocol cannot distinguish from an empty one) attaches as an empty cache.
 
-`AttachBase()` uses the same subscriber-first transaction with `<prefix>/base/**` and a single
-base Get. `Detach()` closes callback admission, undeclares the subscription, waits for admitted
-callbacks, and only then clears state. No callback mutates the cache after Detach returns.
+ParamCache is session-only: applications normally create the session before attaching, but
+Attach validates only the session-id syntax. The current protocol does not perform a session
+existence preflight, so an unknown or empty session may attach successfully with an empty cache.
+`Detach()` closes callback admission, undeclares the subscription, waits for admitted callbacks,
+and only then clears state. No callback mutates the cache after Detach returns.
 
 ### 5.2 Data Structures and Zero-Copy Reads [N01]
 
@@ -288,11 +290,11 @@ class ParamCache {
 * Delta application (writer) only replaces the value with a new `shared_ptr<const ParamValue>`.
   Old values held by existing readers are protected by shared_ptr
 
-### 5.3 Direct Base Reference Mode
+### 5.3 Session Overlay Deletion
 
-For simple use cases without sessions, `AttachBase()` initially fetches + subscribes to
-`base/**` (no snapshot isolation). A base DELETE erases its key. In session mode, a DELETE
-removes the overlay and restores the snapshot baseline when one exists.
+In session mode, a DELETE removes the overlay and restores the snapshot baseline when one exists.
+Base reads and writes use ParamStore's explicit `"base"` scope; ParamCache does not subscribe to
+or query `base/**`.
 
 ## 6. ParamStore (Writes and Ad Hoc Reads)
 
