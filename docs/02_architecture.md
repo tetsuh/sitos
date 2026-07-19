@@ -278,10 +278,12 @@ and only then clears state. No callback mutates the cache after Detach returns.
 class ParamCache {
     Result<std::shared_ptr<const ParamValue>> GetShared(std::string_view key) const;
     template <SupportedParamType T> Result<T> Get(std::string_view key) const;
+    template <SupportedParamType T> Result<T> GetOr(std::string_view key, T default_value) const;
     template <ParamSpanElement T> Result<SpanHandle<T>> GetSpan(std::string_view key) const;
     Result<bool> Contains(std::string_view key) const;
     Result<void> List(std::string_view prefix, const ListSink& sink) const;
     Result<void> Put(std::string_view key, const ParamValue& value);
+    template <ParamInput T> Result<void> Put(std::string_view key, T&& value);
     Result<void> PutBatch(std::span<const BatchEntry> entries);
 };
 ```
@@ -289,7 +291,8 @@ class ParamCache {
 * `ParamValue` holds `std::variant<bool, std::int64_t, double, std::string,
   std::vector<std::byte>>`.
 * `SpanHandle<T>` returns a zero-copy span into a BYTES value and owns the immutable value
-  through shared_ptr aliasing, surviving overwrite, Detach, move assignment, and destruction.
+  by directly retaining shared ownership of the immutable `ParamValue`, surviving overwrite, Detach,
+  move assignment, and destruction.
 * Reader active-State publication uses atomic shared_ptr snapshots; map lookup uses a shared lock
   and immutable shared values. Delta application replaces values rather than mutating them.
 * `GetOr` substitutes only `NotFound`; `List` uses raw-prefix matching, lexical order, and
