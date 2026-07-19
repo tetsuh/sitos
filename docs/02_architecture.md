@@ -247,8 +247,8 @@ Inside a queryable callback, do not wait; allow only short reads from engine/ove
 
 ### 5.1 Construction Sequence (Joining a Session)
 
-`ParamCache` is a move-only lifecycle object in this milestone. Its public read and write
-methods are deferred to Issue #19; tests use an internal test-access seam.
+`ParamCache` is a move-only session cache. Issue #19 provides Result-bearing local reads and
+session-overlay writes; tests also use an internal test-access seam.
 
 ```text
 ParamCache::Attach(sid):
@@ -276,19 +276,24 @@ and only then clears state. No callback mutates the cache after Detach returns.
 
 ```cpp
 class ParamCache {
-    // Key → decoded value. Values are held by shared_ptr,
-    // so readers can safely keep references outside the lock section.
-    std::unordered_map<std::string, std::shared_ptr<const ParamValue>> map_;
-    mutable std::shared_mutex mutex_;
+    Result<std::shared_ptr<const ParamValue>> GetShared(std::string_view key) const;
+    template <SupportedParamType T> Result<T> Get(std::string_view key) const;
+    template <ParamSpanElement T> Result<SpanHandle<T>> GetSpan(std::string_view key) const;
+    Result<bool> Contains(std::string_view key) const;
+    Result<void> List(std::string_view prefix, const ListSink& sink) const;
+    Result<void> Put(std::string_view key, const ParamValue& value);
+    Result<void> PutBatch(std::span<const BatchEntry> entries);
 };
 ```
 
 * `ParamValue` holds `std::variant<bool, std::int64_t, double, std::string,
-  std::vector<std::byte>>`
-* `Get<std::span<const float>>(key)` returns a span pointing to the internal buffer of a BYTES value
-  via shared_ptr aliasing — no copy, lifetime-safe
-* Delta application (writer) only replaces the value with a new `shared_ptr<const ParamValue>`.
-  Old values held by existing readers are protected by shared_ptr
+  std::vector<std::byte>>`.
+* `SpanHandle<T>` returns a zero-copy span into a BYTES value and owns the immutable value
+  through shared_ptr aliasing, surviving overwrite, Detach, move assignment, and destruction.
+* Reader active-State publication uses atomic shared_ptr snapshots; map lookup uses a shared lock
+  and immutable shared values. Delta application replaces values rather than mutating them.
+* `GetOr` substitutes only `NotFound`; `List` uses raw-prefix matching, lexical order, and
+  caller-thread callbacks after releasing cache locks.
 
 ### 5.3 Session Overlay Deletion
 
@@ -343,7 +348,8 @@ External client        Controller(StorageNode)          Calc(ParamCache)
 | zenoh callbacks (queryable/subscriber) | zenoh internal thread pool. sitos callbacks return quickly (engine I/O is allowed; blocking waits are prohibited) |
 | Transport Get sink | zenoh reply callback. Sinks are serialized per request, must return quickly, and must not recursively call blocking Get on the same Transport (ADR-0020) |
 | ParamCache delta application | zenoh subscriber thread. The writer lock is held only briefly for replacement |
-| ParamCache Get | Any application thread (shared lock) [N07] |
+| ParamCache local reads | Any application thread (atomic State snapshot + shared map lock) [N07] |
+| ParamCache writes | Caller thread; submission occurs without lifecycle or map locks, then local sequencing |
 | Python callbacks | Dedicated dispatch thread + queue (the GIL is not acquired on zenoh threads) [P04] |
 
 ## 9. Error Handling Policy
