@@ -45,12 +45,17 @@ if(SITOS_WITH_ZENOH)
 endif()
 
 if(SITOS_BUILD_BENCHMARKS)
+  # CMP0135 is unavailable at the declared CMake 3.20 minimum.
+  # Set it only where available so newer CMake versions avoid stale archive timestamps.
+  if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+  endif()
   set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
   set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
   FetchContent_Declare(
     googlebenchmark
     URL https://github.com/google/benchmark/archive/refs/tags/v1.8.3.zip
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    URL_HASH SHA256=abfc22e33e3594d0edf8eaddaf4d84a2ffc491ad74b6a7edc6e7a608f690e691)
   FetchContent_MakeAvailable(googlebenchmark)
 endif()
 

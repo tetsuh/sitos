@@ -114,8 +114,9 @@ BenchmarkState& State() {
 void BM_ParamCacheGetScalar(benchmark::State& state) {
   auto& fixture = State();
   const auto get_count = fixture.transport->get_count;
+  const auto key_count = static_cast<std::size_t>(state.range(0));
   for (auto _ : state) {
-    const auto& key = fixture.keys[static_cast<std::size_t>(state.iterations() % 10000)];
+    const auto& key = fixture.keys[static_cast<std::size_t>(state.iterations()) % key_count];
     auto result = fixture.cache.Get<std::int64_t>(key);
     benchmark::DoNotOptimize(result);
   }
@@ -125,8 +126,9 @@ BENCHMARK(BM_ParamCacheGetScalar)->Arg(10000);
 
 void BM_DirectLookupScalar(benchmark::State& state) {
   auto& fixture = State();
+  const auto key_count = static_cast<std::size_t>(state.range(0));
   for (auto _ : state) {
-    const auto& key = fixture.keys[static_cast<std::size_t>(state.iterations() % 10000)];
+    const auto& key = fixture.keys[static_cast<std::size_t>(state.iterations()) % key_count];
     const auto value = fixture.direct_values.find(key);
     benchmark::DoNotOptimize(value->second->As<std::int64_t>());
   }
@@ -136,8 +138,9 @@ BENCHMARK(BM_DirectLookupScalar)->Arg(10000);
 void BM_ParamCacheGetSpan(benchmark::State& state) {
   auto& fixture = State();
   const auto get_count = fixture.transport->get_count;
+  const auto key_count = static_cast<std::size_t>(state.range(0));
   for (auto _ : state) {
-    const auto& key = fixture.keys[static_cast<std::size_t>(state.iterations() % 10000)];
+    const auto& key = fixture.keys[static_cast<std::size_t>(state.iterations()) % key_count];
     auto result = fixture.cache.GetSpan<std::byte>(key);
     benchmark::DoNotOptimize(result);
   }
@@ -147,8 +150,9 @@ BENCHMARK(BM_ParamCacheGetSpan)->Arg(10000);
 
 void BM_DirectLookupSpan(benchmark::State& state) {
   auto& fixture = State();
+  const auto key_count = static_cast<std::size_t>(state.range(0));
   for (auto _ : state) {
-    const auto& key = fixture.keys[static_cast<std::size_t>(state.iterations() % 10000)];
+    const auto& key = fixture.keys[static_cast<std::size_t>(state.iterations()) % key_count];
     const auto value = fixture.direct_values.find(key);
     benchmark::DoNotOptimize(value->second->AsSpan<std::byte>());
   }
