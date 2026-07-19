@@ -547,10 +547,6 @@ void ParamCache::Detach() noexcept {
   WaitForCallbacks(state);
   std::lock_guard sequence_lock(state->sequence_mutex);
   state->phase = Impl::Phase::Stopping;
-  std::unique_lock map_lock(state->map_mutex);
-  state->snapshot_baseline.clear();
-  state->effective_map.clear();
-  state->buffered.clear();
   StoreState(*impl_, nullptr);
 }
 
@@ -565,6 +561,14 @@ std::size_t ParamCacheTestAccess::Size(const ParamCache& cache) {
   if (!state) return 0;
   std::shared_lock lock(state->map_mutex);
   return state->effective_map.size();
+}
+
+std::optional<ParamCacheTestAccess::GateState> ParamCacheTestAccess::GetGateState(
+    const ParamCache& cache) {
+  const auto state = cache.impl_ == nullptr ? nullptr : LoadState(*cache.impl_);
+  if (!state) return std::nullopt;
+  std::lock_guard lock(state->gate_mutex);
+  return GateState{state->accepting, state->in_flight};
 }
 
 std::optional<ParamValue> ParamCacheTestAccess::Get(const ParamCache& cache,

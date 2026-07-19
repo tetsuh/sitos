@@ -3,6 +3,8 @@
 
 #include "sitos/param_cache.hpp"
 
+#include <atomic>
+#include <barrier>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -23,6 +25,7 @@
 #include <gtest/gtest.h>
 
 #include "param_cache_test_access.hpp"
+#include "transport/declaration_handle_test_access.hpp"
 #include "sitos/batch.hpp"
 
 namespace {
@@ -31,19 +34,41 @@ using Access = sitos::param_cache_test_access::ParamCacheTestAccess;
 
 class FakeTransport final : public sitos::Transport {
  public:
+  struct Reply {
+    std::string key;
+    std::vector<std::byte> payload;
+    sitos::Encoding encoding;
+  };
+
+  static Reply Value(std::string key, const sitos::ParamValue& value) {
+    return Reply{std::move(key), value.Encode(),
+                 sitos::Encoding{std::string(sitos::Encoding::kSitosV1)}};
+  }
+
   sitos::Result<void> Put(std::string_view key, std::span<const std::byte> payload,
                           sitos::Encoding encoding, sitos::PutOptions options) override {
-    ++put_count;
-    puts.push_back(std::string(key));
-    put_payloads.emplace_back(payload.begin(), payload.end());
-    put_encodings.push_back(encoding.id);
-    put_options.push_back(options);
-    if (sync_delivery && subscriber) {
+    std::function<void(const sitos::TransportSample&)> callback;
+    bool deliver = false;
+    {
+      std::unique_lock lock(mutex_);
+      ++put_count_;
+      puts_.emplace_back(key);
+      put_payloads_.emplace_back(payload.begin(), payload.end());
+      put_encodings_.push_back(encoding.id);
+      put_options_.push_back(options);
+      submission_entered_ = true;
+      condition_.notify_all();
+      condition_.wait(lock, [this] { return !block_submission_ || release_submission_; });
+      callback = subscriber_;
+      deliver = sync_delivery_;
+    }
+    if (deliver && callback) {
       sitos::TransportSample sample{std::string(key), payload, std::move(encoding), std::nullopt,
                                     sitos::TransportSample::Kind::Put};
-      subscriber(sample);
+      callback(sample);
     }
-    return put_result;
+    std::lock_guard lock(mutex_);
+    return put_result_;
   }
 
   sitos::Result<void> Delete(std::string_view, sitos::PutOptions) override {
@@ -52,18 +77,32 @@ class FakeTransport final : public sitos::Transport {
 
   sitos::Result<void> Get(std::string_view query, const QueryResultSink& sink,
                           std::chrono::milliseconds) override {
-    ++get_count;
-    const bool snapshot = query.find("/snap/") != std::string_view::npos;
-    for (const auto& reply : snapshot ? snapshot_replies : overlay_replies) {
+    std::vector<Reply> replies;
+    sitos::Result<void> result = sitos::Result<void>::Ok();
+    {
+      std::lock_guard lock(mutex_);
+      ++get_count_;
+      replies = query.find("/snap/") != std::string_view::npos ? snapshot_replies : overlay_replies;
+      result = get_result_;
+    }
+    for (const auto& reply : replies) {
       if (!sink(reply.key, reply.payload, reply.encoding)) break;
     }
-    return get_result;
+    return result;
   }
 
   sitos::Result<sitos::Subscription> DeclareSubscriber(
       std::string_view, std::function<void(const sitos::TransportSample&)> callback) override {
-    subscriber = std::move(callback);
-    return sitos::Result<sitos::Subscription>::Ok(sitos::Subscription{});
+    {
+      std::lock_guard lock(mutex_);
+      subscriber_ = std::move(callback);
+    }
+    return sitos::Result<sitos::Subscription>::Ok(
+        sitos::transport_test_access::DeclarationHandleTestAccess::MakeSubscription([this] {
+          std::lock_guard lock(mutex_);
+          ++reset_count_;
+          condition_.notify_all();
+        }));
   }
 
   sitos::Result<sitos::Queryable> DeclareQueryable(
@@ -71,28 +110,98 @@ class FakeTransport final : public sitos::Transport {
     return sitos::Result<sitos::Queryable>::Ok(sitos::Queryable{});
   }
 
-  struct Reply {
-    std::string key;
-    std::vector<std::byte> payload;
-    sitos::Encoding encoding;
-  };
+  void BlockSubmission() {
+    std::lock_guard lock(mutex_);
+    block_submission_ = true;
+    release_submission_ = false;
+    submission_entered_ = false;
+  }
 
-  static Reply Value(std::string key, const sitos::ParamValue& value) {
-    return Reply{std::move(key), value.Encode(), sitos::Encoding{std::string(sitos::Encoding::kSitosV1)}};
+  void WaitForSubmission() {
+    std::unique_lock lock(mutex_);
+    condition_.wait(lock, [this] { return submission_entered_; });
+  }
+
+  void ReleaseSubmission() {
+    std::lock_guard lock(mutex_);
+    release_submission_ = true;
+    condition_.notify_all();
+  }
+
+  void WaitForReset() {
+    std::unique_lock lock(mutex_);
+    condition_.wait(lock, [this] { return reset_count_ != 0; });
+  }
+
+  void SetSynchronousDelivery(bool enabled) {
+    std::lock_guard lock(mutex_);
+    sync_delivery_ = enabled;
+  }
+
+  void Deliver(const sitos::TransportSample& sample) {
+    std::function<void(const sitos::TransportSample&)> callback;
+    {
+      std::lock_guard lock(mutex_);
+      callback = subscriber_;
+    }
+    if (callback) callback(sample);
+  }
+
+  std::size_t PutCount() const {
+    std::lock_guard lock(mutex_);
+    return put_count_;
+  }
+
+  std::size_t GetCount() const {
+    std::lock_guard lock(mutex_);
+    return get_count_;
+  }
+
+  std::vector<std::string> Puts() const {
+    std::lock_guard lock(mutex_);
+    return puts_;
+  }
+
+  std::vector<std::byte> PutPayload(std::size_t index) const {
+    std::lock_guard lock(mutex_);
+    return put_payloads_.at(index);
+  }
+
+  std::string PutEncoding(std::size_t index) const {
+    std::lock_guard lock(mutex_);
+    return put_encodings_.at(index);
+  }
+
+  sitos::Result<void> PutResult() const {
+    std::lock_guard lock(mutex_);
+    return put_result_;
+  }
+
+  void SetPutResult(sitos::Result<void> result) {
+    std::lock_guard lock(mutex_);
+    put_result_ = std::move(result);
   }
 
   std::vector<Reply> snapshot_replies;
   std::vector<Reply> overlay_replies;
-  std::vector<std::string> puts;
-  std::vector<std::vector<std::byte>> put_payloads;
-  std::vector<std::string> put_encodings;
-  std::vector<sitos::PutOptions> put_options;
-  std::function<void(const sitos::TransportSample&)> subscriber;
-  sitos::Result<void> put_result = sitos::Result<void>::Ok();
-  sitos::Result<void> get_result = sitos::Result<void>::Ok();
-  std::size_t put_count = 0;
-  std::size_t get_count = 0;
-  bool sync_delivery = false;
+  sitos::Result<void> get_result_ = sitos::Result<void>::Ok();
+
+ private:
+  mutable std::mutex mutex_;
+  std::condition_variable condition_;
+  std::vector<std::string> puts_;
+  std::vector<std::vector<std::byte>> put_payloads_;
+  std::vector<std::string> put_encodings_;
+  std::vector<sitos::PutOptions> put_options_;
+  std::function<void(const sitos::TransportSample&)> subscriber_;
+  sitos::Result<void> put_result_ = sitos::Result<void>::Ok();
+  std::size_t put_count_ = 0;
+  std::size_t get_count_ = 0;
+  std::size_t reset_count_ = 0;
+  bool sync_delivery_ = false;
+  bool block_submission_ = false;
+  bool release_submission_ = false;
+  bool submission_entered_ = false;
 };
 
 class ParamCacheReadTest : public ::testing::Test {
@@ -145,7 +254,7 @@ TEST_F(ParamCacheReadTest, GetSharedIsLocalAndSurvivesOverwrite) {
   ASSERT_TRUE(cache->Put("a", std::int64_t{2}).IsOk());
   EXPECT_EQ(before.Value()->As<std::int64_t>(), 1);
   EXPECT_EQ(cache->Get<std::int64_t>("a").Value(), 2);
-  EXPECT_TRUE(transport->puts.front().find("session/s1/a") != std::string::npos);
+  EXPECT_TRUE(transport->Puts().front().find("session/s1/a") != std::string::npos);
 }
 
 TEST_F(ParamCacheReadTest, GetAndGetOrUseArithmeticConversionRules) {
@@ -204,15 +313,16 @@ TEST_F(ParamCacheReadTest, SpanHandleSurvivesOverwriteDetachMoveAndCacheDestruct
 }
 
 TEST_F(ParamCacheReadTest, RejectedWritesAndTransportFailuresPreserveLocalState) {
-  const auto before = transport->put_count;
+  const auto before = transport->PutCount();
   EXPECT_EQ(cache->Put("bad/key/", std::int64_t{9}).StatusCode(), sitos::Status::InvalidKey);
   const std::vector<sitos::BatchEntry> invalid_entries{{"valid", sitos::ParamValue(2)},
                                                          {"bad/key/", sitos::ParamValue(3)}};
   EXPECT_EQ(cache->PutBatch(invalid_entries).StatusCode(), sitos::Status::InvalidKey);
-  EXPECT_EQ(transport->put_count, before);
+  EXPECT_EQ(transport->PutCount(), before);
 
   const auto cause = std::make_error_code(std::errc::io_error);
-  transport->put_result = sitos::Result<void>::Err(sitos::Status::Disconnected, "offline", cause);
+  transport->SetPutResult(
+      sitos::Result<void>::Err(sitos::Status::Disconnected, "offline", cause));
   const auto put_result = cache->Put("a", std::int64_t{9});
   EXPECT_EQ(put_result.StatusCode(), sitos::Status::Disconnected);
   EXPECT_EQ(put_result.Message(), "offline");
@@ -226,22 +336,21 @@ TEST_F(ParamCacheReadTest, RejectedWritesAndTransportFailuresPreserveLocalState)
 }
 
 TEST_F(ParamCacheReadTest, SynchronousSubscriberCallbackDoesNotDeadlockPut) {
-  transport->sync_delivery = true;
+  transport->SetSynchronousDelivery(true);
   ASSERT_TRUE(cache->Put("sync", std::int64_t{8}).IsOk());
   EXPECT_EQ(cache->Get<std::int64_t>("sync").Value(), 8);
-  EXPECT_EQ(transport->put_count, 1U);
+  EXPECT_EQ(transport->PutCount(), 1U);
 }
 
 TEST_F(ParamCacheReadTest, DelayedSelfEchoUsesSubscriberSerializationOrder) {
   ASSERT_TRUE(cache->Put("ordered", std::int64_t{1}).IsOk());
   ASSERT_TRUE(cache->Put("ordered", std::int64_t{2}).IsOk());
-  ASSERT_EQ(transport->put_payloads.size(), 2U);
-  ASSERT_TRUE(transport->subscriber);
-  const auto& payload = transport->put_payloads.front();
+  ASSERT_EQ(transport->PutCount(), 2U);
+  const auto payload = transport->PutPayload(0);
   sitos::TransportSample delayed{"sitos/session/s1/ordered", payload,
                                 sitos::Encoding{std::string(sitos::Encoding::kSitosV1)},
                                 std::nullopt, sitos::TransportSample::Kind::Put};
-  transport->subscriber(delayed);
+  transport->Deliver(delayed);
   EXPECT_EQ(cache->Get<std::int64_t>("ordered").Value(), 1);
 }
 
@@ -250,11 +359,10 @@ TEST_F(ParamCacheReadTest, PutBatchUsesOneCanonicalSubmissionAndPreservesOrder) 
                                                 {"a", sitos::ParamValue(1)},
                                                 {"b", sitos::ParamValue(3)}};
   ASSERT_TRUE(cache->PutBatch(entries).IsOk());
-  ASSERT_EQ(transport->puts.size(), 1U);
-  EXPECT_NE(transport->puts.front().find("/session/s1/:batch"), std::string::npos);
-  ASSERT_EQ(transport->put_encodings.front(), sitos::Encoding::kSitosV1Batch);
-  ASSERT_FALSE(transport->put_options.front().ack);
-  const auto decoded = sitos::DecodeBatch(transport->put_payloads.front());
+  ASSERT_EQ(transport->PutCount(), 1U);
+  EXPECT_NE(transport->Puts().front().find("/session/s1/:batch"), std::string::npos);
+  ASSERT_EQ(transport->PutEncoding(0), sitos::Encoding::kSitosV1Batch);
+  const auto decoded = sitos::DecodeBatch(transport->PutPayload(0));
   ASSERT_TRUE(decoded.has_value());
   ASSERT_EQ(decoded->size(), entries.size());
   EXPECT_EQ((*decoded)[0].key, "b");
@@ -268,13 +376,13 @@ TEST_F(ParamCacheReadTest, PutBatchUsesOneCanonicalSubmissionAndPreservesOrder) 
 TEST_F(ParamCacheReadTest, EmptyPutBatchMakesNoTransportOperation) {
   const std::vector<sitos::BatchEntry> empty;
   ASSERT_TRUE(cache->PutBatch(empty).IsOk());
-  EXPECT_TRUE(transport->puts.empty());
+  EXPECT_EQ(transport->PutCount(), 0U);
 }
 
 TEST_F(ParamCacheReadTest, ContainsIsLocalAndDistinguishesAbsence) {
   EXPECT_TRUE(cache->Contains("a").Value());
   EXPECT_FALSE(cache->Contains("missing").Value());
-  EXPECT_TRUE(transport->puts.empty());
+  EXPECT_EQ(transport->PutCount(), 0U);
 }
 
 TEST_F(ParamCacheReadTest, ListUsesRawPrefixAndLexicographicOrder) {
@@ -308,16 +416,16 @@ TEST_F(ParamCacheReadTest, ListStopsOnFalseAndAllowsReentrantReads) {
 }
 
 TEST_F(ParamCacheReadTest, HotPathPerformsNoTransportOperation) {
-  const auto before_puts = transport->put_count;
-  const auto before_gets = transport->get_count;
+  const auto before_puts = transport->PutCount();
+  const auto before_gets = transport->GetCount();
   EXPECT_TRUE(cache->GetShared("a").IsOk());
   EXPECT_TRUE(cache->Get<std::int64_t>("a").IsOk());
   EXPECT_TRUE(cache->GetOr<std::int64_t>("a", 9).IsOk());
   EXPECT_TRUE(cache->GetSpan<std::byte>("a").StatusCode() == sitos::Status::TypeMismatch);
   EXPECT_TRUE(cache->Contains("a").IsOk());
   EXPECT_TRUE(cache->List("a", [](std::string_view, const sitos::ParamValue&) { return true; }).IsOk());
-  EXPECT_EQ(transport->put_count, before_puts);
-  EXPECT_EQ(transport->get_count, before_gets);
+  EXPECT_EQ(transport->PutCount(), before_puts);
+  EXPECT_EQ(transport->GetCount(), before_gets);
 }
 
 TEST_F(ParamCacheReadTest, ListPropagatesSinkExceptionAndUsesStableSnapshot) {
@@ -345,77 +453,218 @@ TEST_F(ParamCacheReadTest, ListPropagatesSinkExceptionAndUsesStableSnapshot) {
   EXPECT_EQ(cache->Get<std::int64_t>("foo/new").Value(), 4);
 }
 
-TEST_F(ParamCacheReadTest, DetachWaitsForInFlightLocalOperation) {
-  std::mutex mutex;
-  std::condition_variable condition;
-  bool entered = false;
-  bool release = false;
-  bool detached = false;
-  Access::SetMutationHook(*cache, [&](std::size_t) {
-    std::unique_lock lock(mutex);
-    entered = true;
-    condition.notify_all();
-    condition.wait(lock, [&] { return release; });
-  });
+void RunDetachLeaseTest(sitos::ParamCache& cache, FakeTransport& transport, bool batch) {
+  std::mutex event_mutex;
+  std::condition_variable event_condition;
+  std::vector<std::string> events;
+  sitos::Result<void> operation_result = sitos::Result<void>::Err(sitos::Status::Error, "unset");
 
-  std::thread put_thread([&] { ASSERT_TRUE(cache->Put("lease", std::int64_t{4}).IsOk()); });
-  {
-    std::unique_lock lock(mutex);
-    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(5), [&] { return entered; }));
-  }
-  std::thread detach_thread([&] {
-    cache->Detach();
-    std::lock_guard lock(mutex);
-    detached = true;
-    condition.notify_all();
+  Access::SetMutationHook(cache, [&](std::size_t) {
+    std::lock_guard lock(event_mutex);
+    events.emplace_back("mutation");
+    event_condition.notify_all();
   });
+  transport.BlockSubmission();
+  std::thread operation([&] {
+    if (batch) {
+      const std::vector<sitos::BatchEntry> entries{{"batch_lease", sitos::ParamValue(4)}};
+      operation_result = cache.PutBatch(entries);
+    } else {
+      operation_result = cache.Put("lease", std::int64_t{4});
+    }
+  });
+  transport.WaitForSubmission();
+
+  const auto admitted = Access::GetGateState(cache);
+  ASSERT_TRUE(admitted.has_value());
+  EXPECT_TRUE(admitted->accepting);
+  EXPECT_EQ(admitted->in_flight, 1U);
+
+  std::thread detach([&] {
+    cache.Detach();
+    std::lock_guard lock(event_mutex);
+    events.emplace_back("detach");
+    event_condition.notify_all();
+  });
+  transport.WaitForReset();
+
+  const auto closed = Access::GetGateState(cache);
+  ASSERT_TRUE(closed.has_value());
+  EXPECT_FALSE(closed->accepting);
+  EXPECT_EQ(closed->in_flight, 1U);
+  EXPECT_TRUE(Access::IsAttached(cache));
+  const auto before_probe = transport.PutCount();
+  EXPECT_EQ(cache.Put("rejected", std::int64_t{9}).StatusCode(), sitos::Status::InvalidArgument);
+  EXPECT_EQ(transport.PutCount(), before_probe);
+
+  transport.ReleaseSubmission();
   {
-    std::unique_lock lock(mutex);
-    EXPECT_FALSE(condition.wait_for(lock, std::chrono::milliseconds(50), [&] { return detached; }));
-    release = true;
-    condition.notify_all();
+    std::unique_lock lock(event_mutex);
+    ASSERT_TRUE(event_condition.wait_for(lock, std::chrono::seconds(5), [&] {
+      return !events.empty() && events.front() == "mutation";
+    }));
   }
-  put_thread.join();
-  detach_thread.join();
-  EXPECT_TRUE(detached);
-  EXPECT_FALSE(Access::IsAttached(*cache));
+  operation.join();
+  detach.join();
+
+  ASSERT_TRUE(operation_result.IsOk()) << operation_result.Message();
+  ASSERT_EQ(events.size(), 2U);
+  EXPECT_EQ(events[0], "mutation");
+  EXPECT_EQ(events[1], "detach");
+  EXPECT_FALSE(Access::IsAttached(cache));
+  EXPECT_FALSE(Access::Get(cache, batch ? "batch_lease" : "lease").has_value());
+}
+
+TEST_F(ParamCacheReadTest, DetachWaitsForInFlightLocalOperation) {
+  RunDetachLeaseTest(*cache, *transport, false);
 }
 
 TEST_F(ParamCacheReadTest, DetachWaitsForInFlightLocalBatchOperation) {
-  std::mutex mutex;
-  std::condition_variable condition;
-  bool entered = false;
-  bool release = false;
-  bool detached = false;
-  Access::SetMutationHook(*cache, [&](std::size_t) {
-    std::unique_lock lock(mutex);
-    entered = true;
-    condition.notify_all();
-    condition.wait(lock, [&] { return release; });
-  });
+  RunDetachLeaseTest(*cache, *transport, true);
+}
 
-  const std::vector<sitos::BatchEntry> entries{{"batch_lease", sitos::ParamValue(4)}};
-  std::thread put_thread([&] { ASSERT_TRUE(cache->PutBatch(entries).IsOk()); });
+bool IsReadLinearizationStatus(sitos::Status status) {
+  return status == sitos::Status::Ok || status == sitos::Status::InvalidArgument;
+}
+
+TEST_F(ParamCacheReadTest, ConcurrentReadersAndWriterSwapsAreSafe) {
+  ASSERT_TRUE(cache->Put("bytes", std::vector<std::byte>{std::byte{1}}).IsOk());
+  constexpr std::ptrdiff_t kReaderCount = 4;
+  constexpr int kIterations = 256;
+  std::mutex hook_mutex;
+  std::condition_variable hook_condition;
+  bool hook_entered = false;
+  bool release_hook = false;
+  std::atomic<bool> readers_ok = true;
+
+  const auto run_readers = [&] {
+    std::barrier start(kReaderCount);
+    std::vector<std::thread> readers;
+    readers.reserve(kReaderCount);
+    for (std::ptrdiff_t reader = 0; reader < kReaderCount; ++reader) {
+      readers.emplace_back([&] {
+        start.arrive_and_wait();
+        for (int iteration = 0; iteration < kIterations; ++iteration) {
+          const auto shared = cache->GetShared("a");
+          const auto scalar = cache->Get<std::int64_t>("a");
+          const auto span = cache->GetSpan<std::byte>("bytes");
+          const auto contains = cache->Contains("a");
+          const auto listed = cache->List("", [](std::string_view, const sitos::ParamValue&) {
+            return true;
+          });
+          if (!IsReadLinearizationStatus(shared.StatusCode()) ||
+              !IsReadLinearizationStatus(scalar.StatusCode()) ||
+              !IsReadLinearizationStatus(span.StatusCode()) ||
+              !IsReadLinearizationStatus(contains.StatusCode()) ||
+              !IsReadLinearizationStatus(listed.StatusCode())) {
+            readers_ok.store(false);
+          }
+        }
+      });
+    }
+    for (auto& reader : readers) reader.join();
+  };
+
+  Access::SetMutationHook(*cache, [&](std::size_t) {
+    std::unique_lock lock(hook_mutex);
+    hook_entered = true;
+    hook_condition.notify_all();
+    hook_condition.wait(lock, [&] { return release_hook; });
+  });
+  std::thread local_writer([&] { EXPECT_TRUE(cache->Put("a", std::int64_t{2}).IsOk()); });
   {
-    std::unique_lock lock(mutex);
-    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(5), [&] { return entered; }));
+    std::unique_lock lock(hook_mutex);
+    ASSERT_TRUE(hook_condition.wait_for(lock, std::chrono::seconds(5),
+                                        [&] { return hook_entered; }));
   }
-  std::thread detach_thread([&] {
-    cache->Detach();
-    std::lock_guard lock(mutex);
-    detached = true;
-    condition.notify_all();
+  run_readers();
+  {
+    std::lock_guard lock(hook_mutex);
+    release_hook = true;
+    hook_condition.notify_all();
+  }
+  local_writer.join();
+
+  {
+    std::lock_guard lock(hook_mutex);
+    hook_entered = false;
+    release_hook = false;
+  }
+  const auto payload = sitos::ParamValue(3).Encode();
+  std::thread subscriber_writer([&] {
+    transport->Deliver({"sitos/session/s1/a", payload,
+                        sitos::Encoding{std::string(sitos::Encoding::kSitosV1)}, std::nullopt,
+                        sitos::TransportSample::Kind::Put});
   });
   {
-    std::unique_lock lock(mutex);
-    EXPECT_FALSE(condition.wait_for(lock, std::chrono::milliseconds(50), [&] { return detached; }));
-    release = true;
-    condition.notify_all();
+    std::unique_lock lock(hook_mutex);
+    ASSERT_TRUE(hook_condition.wait_for(lock, std::chrono::seconds(5),
+                                        [&] { return hook_entered; }));
   }
-  put_thread.join();
-  detach_thread.join();
-  EXPECT_TRUE(detached);
+  run_readers();
+  {
+    std::lock_guard lock(hook_mutex);
+    release_hook = true;
+    hook_condition.notify_all();
+  }
+  subscriber_writer.join();
+
+  Access::SetMutationHook(*cache, {});
+  std::barrier detach_start(kReaderCount + 1);
+  std::vector<std::thread> detach_readers;
+  detach_readers.reserve(kReaderCount);
+  for (std::ptrdiff_t reader = 0; reader < kReaderCount; ++reader) {
+    detach_readers.emplace_back([&] {
+      detach_start.arrive_and_wait();
+      for (int iteration = 0; iteration < kIterations; ++iteration) {
+        const auto shared = cache->GetShared("a");
+        const auto scalar = cache->Get<std::int64_t>("a");
+        const auto span = cache->GetSpan<std::byte>("bytes");
+        const auto contains = cache->Contains("a");
+        const auto listed = cache->List("", [](std::string_view, const sitos::ParamValue&) {
+          return true;
+        });
+        if (!IsReadLinearizationStatus(shared.StatusCode()) ||
+            !IsReadLinearizationStatus(scalar.StatusCode()) ||
+            !IsReadLinearizationStatus(span.StatusCode()) ||
+            !IsReadLinearizationStatus(contains.StatusCode()) ||
+            !IsReadLinearizationStatus(listed.StatusCode())) {
+          readers_ok.store(false);
+        }
+      }
+    });
+  }
+  std::thread detach([&] {
+    detach_start.arrive_and_wait();
+    cache->Detach();
+  });
+  for (auto& reader : detach_readers) reader.join();
+  detach.join();
+  EXPECT_TRUE(readers_ok.load());
   EXPECT_FALSE(Access::IsAttached(*cache));
+}
+
+TEST_F(ParamCacheReadTest, RejectedLocalOperationsAvoidTransportAndGetOrPropagatesTypeMismatch) {
+  const auto before = transport->PutCount();
+  cache->Detach();
+  EXPECT_EQ(cache->Put("a", std::int64_t{2}).StatusCode(), sitos::Status::InvalidArgument);
+  const std::vector<sitos::BatchEntry> entries{{"a", sitos::ParamValue(2)}};
+  EXPECT_EQ(cache->PutBatch(entries).StatusCode(), sitos::Status::InvalidArgument);
+  EXPECT_EQ(transport->PutCount(), before);
+
+  auto opened = sitos::ParamCache::Open(transport);
+  ASSERT_TRUE(opened.IsOk());
+  auto moved = std::move(opened).Value();
+  ASSERT_TRUE(moved.Attach("s1").IsOk());
+  *cache = std::move(moved);
+  EXPECT_EQ(moved.Put("a", std::int64_t{2}).StatusCode(), sitos::Status::InvalidArgument);
+  EXPECT_EQ(moved.PutBatch(entries).StatusCode(), sitos::Status::InvalidArgument);
+  EXPECT_EQ(transport->PutCount(), before);
+
+  ASSERT_TRUE(cache->Put("bytes", std::vector<std::byte>{std::byte{1}}).IsOk());
+  EXPECT_EQ(cache->GetOr<std::int64_t>("bytes", 7).StatusCode(), sitos::Status::TypeMismatch);
+  sitos::ListSink null_sink;
+  EXPECT_EQ(cache->List("", null_sink).StatusCode(), sitos::Status::InvalidArgument);
 }
 
 }  // namespace
