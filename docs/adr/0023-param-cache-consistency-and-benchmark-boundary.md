@@ -7,8 +7,8 @@ Proposed — 2026-07-19
 ## Context
 
 ParamCache adds local Result-bearing reads and session-scoped write-through operations. Readers
-must remain safe while subscriber callbacks, local writes, and Detach replace or clear cache
-state. Write submission can synchronously invoke a subscriber callback, while delayed self-echoes
+must remain safe while subscriber callbacks and local writes replace cache values, while Detach
+unpublishes active cache State. Write submission can synchronously invoke a subscriber callback, while delayed self-echoes
 cannot be identified without out-of-scope publisher or revision metadata. The N01 acceptance
 criterion also needs reproducible local measurements without adding a runtime or installed
 package dependency. The ADR process requires an explicit decision for the consistency model,
@@ -27,7 +27,8 @@ dependency that is excluded from ordinary, package, install, and export builds.
 * Good: readers retain State and value ownership safely across replacement and Detach without a
   lifecycle mutex or payload copy.
 * Good: Detach closes admission, resets the subscription, waits for callback and write leases,
-  then clears and unpublishes State.
+  then atomically unpublishes active State. Reader State/value snapshots acquired before that
+  boundary remain immutable and are reclaimed naturally when their shared owners release.
 * Good: local writes avoid holding cache locks during Transport submission and preserve a
   deterministic per-cache mutation order.
 * Good: benchmark builds measure the public local read APIs without changing installed-package
