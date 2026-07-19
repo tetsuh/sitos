@@ -247,21 +247,35 @@ so it is not a v0.2 blocker. Include it by v1.0.
 * References: [02] §5, [04] §4
 * Implementation targets: `include/sitos/param_cache.hpp`, `src/param_cache.cpp`,
   `tests/integration/param_cache_attach_test.cpp`
-* Scope: Attach(sid)/AttachBase/Detach, loss-prevention sequence (a)→(b)→(c),
-  shared_ptr-based cache, delta application
+* Scope: Attach(sid)/Detach, loss-prevention sequence (a)→(b)→(c), shared_ptr-based cache,
+  delta application; the former AttachBase mode is superseded by #100
 * Acceptance criteria: integration tests — final state is correct even with a concurrent put during Attach
   (race reproduction test), batch apply, subscription stops after Detach
 * Depends on: #5, #12, #13
+
+### #100 ParamCache: remove AttachBase mode
+* Milestone: v0.2
+* References: [02] §5, [04] §4, ADR-0022
+* Implementation targets: `include/sitos/param_cache.hpp`, `src/param_cache.cpp`,
+  `tests/unit/param_cache_attach_test.cpp`, `tests/integration/param_cache_attach_test.cpp`
+* Scope: remove the public AttachBase API and all ParamCache base-mode paths; require an
+  explicit syntactically valid session id without session-existence preflight; preserve #18
+  lifecycle and callback guarantees; make ADR-0022 Proposed until merge
+* Acceptance criteria: build-tree and installed consumers prove AttachBase is absent; session
+  lifecycle/concurrency tests remain green; no ParamCache base selector is declared or queried;
+  Zenoh-OFF/ON package validation passes
+* Depends on: #18; blocks #19
 
 ### #19 ParamCache: zero-copy reads and performance
 * Milestone: v0.2
 * References: [04] §4, [01] N01
 * Implementation targets: `include/sitos/param_cache.hpp`, `src/param_cache.cpp`,
   `tests/unit/param_cache_read_test.cpp`, `tests/bench/cache_get_bench.cpp`
-* Scope: GetShared/Get/GetOr/GetSpan (SpanHandle), List, bench harness
+* Scope: GetShared/Get/GetOr/GetSpan (SpanHandle), Contains, List, session-only Put/PutBatch,
+  operation lease, and benchmark harness
 * Acceptance criteria: bench — Get is in the target order (including confirmation of no interprocess communication).
   The old buffer remains valid even if the value is updated while holding SpanHandle (verified with ASan)
-* Depends on: #18
+* Depends on: #100
 
 ### #20 Disconnect/reconnect recovery
 * Milestone: v1.0
