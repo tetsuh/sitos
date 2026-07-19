@@ -127,8 +127,8 @@ major behaviors.
 
 ## 5.2 Lifecycle sanitizer runs
 
-Issue #11 lifecycle tests, Issue #13 batch sequencing tests, and Issue #18 ParamCache
-fake-Transport lifecycle tests have reproducible sanitizer configurations. TSan runs the
+Issue #11 lifecycle tests, Issue #13 batch sequencing tests, Issue #18 ParamCache, and Issue #21
+SessionView lifecycle/concurrency tests have reproducible sanitizer configurations. TSan runs the
 zenoh-independent fake-Transport paths; ASan/UBSan runs the same paths separately:
 
 ```sh
@@ -136,13 +136,13 @@ cmake -S . -B build/tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=OFF -DSITOS_ENABLE_TSAN=ON
 cmake --build build/tsan
 ctest --test-dir build/tsan --output-on-failure \
-  -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|ParamCacheTest|ParamCacheReadTest'
+  -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture'
 
 cmake -S . -B build/asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=OFF -DSITOS_ENABLE_ASAN_UBSAN=ON
 cmake --build build/asan
 ctest --test-dir build/asan --output-on-failure \
-  -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|ParamCacheTest|ParamCacheReadTest'
+  -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture'
 ```
 
 For a platform where the zenoh-c standalone runtime supports sanitizer instrumentation,

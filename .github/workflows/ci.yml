@@ -97,7 +97,7 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1
         run: >-
           ctest --test-dir build/sanitizer-${{ matrix.name }}
-          --output-on-failure -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|TransportGetCompletionTest|ParamCacheTest|ParamCacheReadTest'
+          --output-on-failure -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|TransportGetCompletionTest|ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture'
 
   build-windows:
     runs-on: windows-latest

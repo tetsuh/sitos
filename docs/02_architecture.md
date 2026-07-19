@@ -332,7 +332,7 @@ overlay or ParamCache.
 
 ## 7. ParamStore (Writes and Ad Hoc Reads)
 
-### 6.1 API Semantics
+### 7.1 API Semantics
 
 * `Put(key, value)` / `PutBatch(entries)` — a batch is one `:batch` wire put
   (multi-entry format in the payload, [03](03_wire_protocol.md) §5) [F09]
@@ -341,7 +341,7 @@ overlay or ParamCache.
 * `List(prefix, sink)` — synchronous zenoh get using the narrowest safe chunk-boundary
   selector, followed by client-side raw-prefix filtering and lexical sorting.
 
-### 6.2 Put Completion Guarantee
+### 7.2 Put Completion Guarantee
 
 ParamStore write success means only that Transport accepted/submitted the operation. It does
 not confirm StorageNode application, durability, or cache visibility. Acknowledged writes and
