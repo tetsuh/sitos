@@ -733,6 +733,56 @@ TEST(ParamCacheTest, FailedAttachStagesRollbackPreservesErrorAndCanRetry) {
   }
 }
 
+TEST(ParamCacheTest, InitialReplyProtocolErrorsRollBackAndCanRetry) {
+  const auto verify = [](const std::function<void(FakeTransport&)>& configure,
+                         std::string_view expected_message) {
+    auto transport = std::make_shared<FakeTransport>();
+    configure(*transport);
+    auto result = ParamCache::Open(transport);
+    ASSERT_TRUE(result.IsOk());
+    auto cache = std::move(result).Value();
+
+    const auto failed = cache.Attach("s1");
+    ASSERT_FALSE(failed.IsOk());
+    EXPECT_EQ(failed.StatusCode(), sitos::Status::Error);
+    EXPECT_EQ(failed.Message(), expected_message);
+    EXPECT_EQ(failed.Error(), sitos::MakeErrorCode(sitos::Status::Error));
+    EXPECT_FALSE(Access::IsAttached(cache));
+    EXPECT_EQ(Access::Size(cache), 0U);
+    EXPECT_EQ(transport->reset_count, 1);
+
+    transport->replies.clear();
+    const auto retry = cache.Attach("s1");
+    ASSERT_TRUE(retry.IsOk()) << retry.Message();
+    cache.Detach();
+    EXPECT_EQ(transport->reset_count, 2);
+  };
+
+  verify(
+      [](FakeTransport& transport) {
+        transport.replies["sitos/snap/s1/**"] = {
+            {"sitos/snap/s1/malformed", {std::byte{0xff}},
+             Encoding{std::string(Encoding::kSitosV1)}}};
+      },
+      "transport returned malformed payload");
+
+  verify(
+      [](FakeTransport& transport) {
+        transport.replies["sitos/session/s1/**"] = {
+            {"sitos/snap/s1/wrong_scope", Payload(ParamValue(1)),
+             Encoding{std::string(Encoding::kSitosV1)}}};
+      },
+      "transport returned an invalid cache key");
+
+  verify(
+      [](FakeTransport& transport) {
+        transport.replies["sitos/snap/s1/**"] = {
+            {"sitos/snap/s1/value", {},
+             Encoding{std::string(Encoding::kSitosV1Batch)}}};
+      },
+      "transport returned a batch for a value query");
+}
+
 TEST(ParamCacheTest, FailedAttachPreservesTransportErrorAndCanRetry) {
   auto transport = std::make_shared<FakeTransport>();
   auto result = ParamCache::Open(transport);
