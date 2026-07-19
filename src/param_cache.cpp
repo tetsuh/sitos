@@ -46,11 +46,10 @@ struct ParamCache::Impl {
   };
 
   struct State {
-    explicit State(std::string prefix_value, bool session_value, std::string sid_value)
-        : prefix(std::move(prefix_value)), session(session_value), sid(std::move(sid_value)) {}
+    explicit State(std::string prefix_value, std::string sid_value)
+        : prefix(std::move(prefix_value)), sid(std::move(sid_value)) {}
 
     std::string prefix;
-    bool session;
     std::string sid;
     Phase phase = Phase::Buffering;
     std::mutex gate_mutex;
@@ -125,11 +124,8 @@ void WaitForCallbacks(const std::shared_ptr<param_cache_detail::Access::Impl::St
 
 bool IsExpected(const ParsedKey& parsed, const param_cache_detail::Access::Impl::State& state,
                 bool batch_allowed) {
-  if (parsed.is_batch != batch_allowed) return false;
-  if (state.session) {
-    return parsed.kind == KeyKind::Session && parsed.sid == state.sid;
-  }
-  return parsed.kind == KeyKind::Base;
+  return parsed.is_batch == batch_allowed && parsed.kind == KeyKind::Session &&
+         parsed.sid == state.sid;
 }
 
 std::optional<param_cache_detail::Access::Impl::Mutation> DecodeOrdinary(
@@ -192,13 +188,9 @@ void ApplyMutation(param_cache_detail::Access::Impl::State& state,
     state.effective_map[mutation.key] = mutation.value;
     return;
   }
-  if (state.session) {
-    const auto baseline = state.snapshot_baseline.find(mutation.key);
-    if (baseline != state.snapshot_baseline.end()) {
-      state.effective_map[mutation.key] = baseline->second;
-    } else {
-      state.effective_map.erase(mutation.key);
-    }
+  const auto baseline = state.snapshot_baseline.find(mutation.key);
+  if (baseline != state.snapshot_baseline.end()) {
+    state.effective_map[mutation.key] = baseline->second;
   } else {
     state.effective_map.erase(mutation.key);
   }
@@ -239,9 +231,8 @@ Result<void> DecodeGetReply(const std::shared_ptr<param_cache_detail::Access::Im
   const bool expected = parsed.has_value() && !parsed->is_batch &&
                        ((snapshot && parsed->kind == KeyKind::Snapshot &&
                          parsed->sid == state->sid) ||
-                        (!snapshot && ((state->session && parsed->kind == KeyKind::Session &&
-                                        parsed->sid == state->sid) ||
-                                       (!state->session && parsed->kind == KeyKind::Base))));
+                        (!snapshot && parsed->kind == KeyKind::Session &&
+                         parsed->sid == state->sid));
   if (!expected) {
     invalid = true;
     return Result<void>::Err(Status::Error, "transport returned an invalid cache key");
@@ -342,7 +333,7 @@ Result<void> ParamCache::Attach(std::string_view sid) {
   std::lock_guard lifecycle_lock(impl_->lifecycle_mutex);
   if (impl_->active_state) return InvalidArgument("ParamCache is already attached");
 
-  auto state = std::make_shared<Impl::State>(impl_->config.prefix, true, std::string(sid));
+  auto state = std::make_shared<Impl::State>(impl_->config.prefix, std::string(sid));
   Subscription subscription;
   auto declared = impl_->transport->DeclareSubscriber(
       ScopeQuery(impl_->config, "session/" + std::string(sid)),
@@ -378,44 +369,6 @@ Result<void> ParamCache::Attach(std::string_view sid) {
       state->snapshot_baseline = std::move(snapshot);
       state->effective_map = state->snapshot_baseline;
       for (auto& [key, value] : overlay) state->effective_map[key] = std::move(value);
-    }
-    ApplyMutations(*state, state->buffered);
-    state->buffered.clear();
-    state->phase = Impl::Phase::Live;
-  }
-  impl_->active_state = state;
-  impl_->subscription = std::move(subscription);
-  return Result<void>::Ok();
-}
-
-Result<void> ParamCache::AttachBase() {
-  if (!impl_) return InvalidArgument("moved-from ParamCache");
-  std::lock_guard lifecycle_lock(impl_->lifecycle_mutex);
-  if (impl_->active_state) return InvalidArgument("ParamCache is already attached");
-
-  auto state = std::make_shared<Impl::State>(impl_->config.prefix, false, "");
-  Subscription subscription;
-  auto declared = impl_->transport->DeclareSubscriber(
-      ScopeQuery(impl_->config, "base"),
-      [state](const TransportSample& sample) { OnSample(state, sample); });
-  if (!declared.IsOk()) {
-    CloseGate(state);
-    WaitForCallbacks(state);
-    return Result<void>::ErrFrom(declared);
-  }
-  subscription = std::move(declared).Value();
-  std::unordered_map<std::string, std::shared_ptr<const ParamValue>> initial;
-  auto initial_result = Fetch(state, impl_->transport, ScopeQuery(impl_->config, "base"), false,
-                              initial, impl_->config.query_timeout);
-  if (!initial_result.IsOk()) {
-    CleanupCandidate(state, subscription);
-    return initial_result;
-  }
-  {
-    std::lock_guard sequence_lock(state->sequence_mutex);
-    {
-      std::unique_lock map_lock(state->map_mutex);
-      state->effective_map = std::move(initial);
     }
     ApplyMutations(*state, state->buffered);
     state->buffered.clear();

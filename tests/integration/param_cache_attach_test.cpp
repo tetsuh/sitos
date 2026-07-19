@@ -225,13 +225,14 @@ TEST_F(ParamCacheIntegrationTest, BatchDuringAndAfterAttachIsAppliedInOrder) {
 }
 
 TEST_F(ParamCacheIntegrationTest, DetachStopsFurtherUpdates) {
-  ASSERT_TRUE(cache_->AttachBase().IsOk());
+  ASSERT_TRUE(node_.CreateSession("s1").IsOk());
+  ASSERT_TRUE(cache_->Attach("s1").IsOk());
   const auto previous = tracking_->CallbackCount();
-  ASSERT_TRUE(store_->Put("base", "before_detach", std::int64_t{1}).IsOk());
+  ASSERT_TRUE(store_->Put("session/s1", "before_detach", std::int64_t{1}).IsOk());
   tracking_->WaitForCallbackAfter(previous);
   ASSERT_TRUE(Access::Get(*cache_, "before_detach").has_value());
   cache_->Detach();
-  ASSERT_TRUE(store_->Put("base", "after_detach", std::int64_t{2}).IsOk());
+  ASSERT_TRUE(store_->Put("session/s1", "after_detach", std::int64_t{2}).IsOk());
   EXPECT_FALSE(Access::Get(*cache_, "after_detach").has_value());
 }
 

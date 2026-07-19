@@ -35,7 +35,6 @@ class ParamCache {
   ParamCache& operator=(ParamCache&&) noexcept;
 
   Result<void> Attach(std::string_view sid);
-  Result<void> AttachBase();
   void Detach() noexcept;
 
  private:
