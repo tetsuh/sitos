@@ -12,6 +12,12 @@ FetchContent_MakeAvailable(googletest)
 
 include(GoogleTest)
 
+if(SITOS_BUILD_BENCHMARKS)
+  add_executable(sitos_cache_get_bench bench/cache_get_bench.cpp)
+  target_link_libraries(sitos_cache_get_bench PRIVATE sitos::sitos benchmark::benchmark)
+  sitos_enable_warnings(sitos_cache_get_bench)
+endif()
+
 set(SITOS_FIXTURE_DIR "${CMAKE_SOURCE_DIR}/tests/fixtures/payload_v1")
 
 function(add_sitos_public_header_compile_test target source)
@@ -33,9 +39,15 @@ add_sitos_public_header_compile_test(
   sitos_param_store_header_compile_test consumer/param_store_header_compile.cpp)
 add_sitos_public_header_compile_test(
   sitos_param_cache_header_compile_test consumer/param_cache_header_compile.cpp)
+add_sitos_public_header_compile_test(
+  sitos_param_concepts_header_compile_test consumer/param_concepts_header_compile.cpp)
+add_sitos_public_header_compile_test(
+  sitos_list_sink_header_compile_test consumer/list_sink_header_compile.cpp)
 if(SITOS_WITH_ZENOH)
   sitos_copy_zenohc(sitos_param_store_header_compile_test)
   sitos_copy_zenohc(sitos_param_cache_header_compile_test)
+  sitos_copy_zenohc(sitos_param_concepts_header_compile_test)
+  sitos_copy_zenohc(sitos_list_sink_header_compile_test)
 endif()
 
 add_executable(sitos_bootstrap_test unit/bootstrap_test.cpp)
@@ -70,6 +82,11 @@ if(SITOS_WITH_ZENOH)
   sitos_copy_zenohc(sitos_param_cache_attach_test)
 endif()
 gtest_add_tests(TARGET sitos_param_cache_attach_test SOURCES unit/param_cache_attach_test.cpp)
+
+add_executable(sitos_param_cache_read_test unit/param_cache_read_test.cpp)
+target_link_libraries(sitos_param_cache_read_test PRIVATE GTest::gtest_main sitos::sitos)
+sitos_enable_warnings(sitos_param_cache_read_test)
+gtest_add_tests(TARGET sitos_param_cache_read_test SOURCES unit/param_cache_read_test.cpp)
 
 add_executable(sitos_param_store_test unit/param_store_test.cpp)
 target_link_libraries(sitos_param_store_test PRIVATE GTest::gtest_main sitos::sitos)
