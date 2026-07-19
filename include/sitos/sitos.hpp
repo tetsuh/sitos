@@ -16,6 +16,7 @@
 #include "sitos/param_value.hpp"
 #include "sitos/result.hpp"
 #include "sitos/session.hpp"
+#include "sitos/session_view.hpp"
 #include "sitos/status.hpp"
 #include "sitos/storage_engine.hpp"
 #include "sitos/storage_node.hpp"

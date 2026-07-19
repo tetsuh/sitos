@@ -47,6 +47,8 @@ struct StorageNodeConfig {
 };
 
 /// Serves base-scope Get/List queries and base writes through Transport declarations.
+class SessionView;
+
 class StorageNode {
  public:
   using Config = StorageNodeConfig;
@@ -93,6 +95,8 @@ class StorageNode {
   bool IsStarted() const noexcept;
 
  private:
+  friend class SessionView;
+
   struct State {
     State(std::shared_ptr<StorageEngine> storage, std::string key_prefix,
           std::shared_ptr<LogSink> diagnostics)

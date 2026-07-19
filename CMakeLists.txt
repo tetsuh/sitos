@@ -84,6 +84,7 @@ add_library(sitos STATIC
   src/in_memory_engine.cpp
   src/logging.cpp
   src/storage_node.cpp
+  src/session_view.cpp
   src/transport/get_completion.cpp
   src/transport/declaration_handle_lifecycle.cpp
 )
