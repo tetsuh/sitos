@@ -29,3 +29,4 @@ See [docs/10_adr_process.md](../10_adr_process.md) for the process.
 | [0022](0022-make-param-cache-session-only.md) | Make ParamCache session-only |
 | [0023](0023-param-cache-consistency-and-lifetime.md) | Define ParamCache consistency and lifetime boundary |
 | [0024](0024-opt-in-google-benchmark-build-boundary.md) | Keep Google Benchmark opt-in and outside installed packages |
+| [0025](0025-session-view-lifetime-and-composite-read-consistency.md) | Define SessionView lifetime and composite-read consistency |
