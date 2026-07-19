@@ -46,6 +46,14 @@ bool SameOwner(const std::weak_ptr<void>& expected,
   return !expected.owner_before(actual) && !actual.owner_before(expected);
 }
 
+struct TransparentStringHash {
+  using is_transparent = void;
+
+  std::size_t operator()(std::string_view value) const noexcept {
+    return std::hash<std::string_view>{}(value);
+  }
+};
+
 struct ListItem {
   std::string key;
   ParamValue value;
@@ -196,7 +204,7 @@ Result<void> SessionView::List(std::string_view prefix, const ListSink& sink) co
   auto readers = std::move(acquired).Value();
 
   std::vector<ListItem> values;
-  std::unordered_set<std::string> overlay_keys;
+  std::unordered_set<std::string, TransparentStringHash, std::equal_to<>> overlay_keys;
   std::optional<Result<void>> decode_error;
   try {
     const bool overlay_completed = readers.overlay->List(prefix, [&decode_error, &overlay_keys, &values](
@@ -217,7 +225,7 @@ Result<void> SessionView::List(std::string_view prefix, const ListSink& sink) co
 
     const bool snapshot_completed = readers.snapshot->List(prefix, [&decode_error, &overlay_keys, &values](
         std::string_view key, Bytes bytes) {
-      if (overlay_keys.contains(std::string(key))) return true;
+      if (overlay_keys.contains(key)) return true;
       auto decoded = ParamValue::Decode(bytes);
       if (!decoded.has_value()) {
         decode_error = StorageError("malformed parameter payload");
@@ -238,6 +246,8 @@ Result<void> SessionView::List(std::string_view prefix, const ListSink& sink) co
     return left.key < right.key;
   });
 
+  readers.overlay.reset();
+  readers.snapshot.reset();
   readers.lease.reset();
   readers.state_owner.reset();
   for (const auto& item : values) {

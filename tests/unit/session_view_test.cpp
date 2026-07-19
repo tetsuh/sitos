@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <barrier>
 #include <chrono>
 #include <condition_variable>
 #include <functional>
@@ -103,6 +104,100 @@ void AssignToSelf(SessionView& view) {
   auto* alias = &view;
   view = std::move(*alias);
 }
+
+struct BlockingReadControl {
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool entered = false;
+  bool released = false;
+
+  void Enter() {
+    std::unique_lock lock(mutex);
+    entered = true;
+    cv.notify_all();
+    cv.wait(lock, [this] { return released; });
+  }
+
+  void WaitUntilEntered() {
+    std::unique_lock lock(mutex);
+    cv.wait(lock, [this] { return entered; });
+  }
+
+  void Release() {
+    {
+      std::scoped_lock lock(mutex);
+      released = true;
+    }
+    cv.notify_all();
+  }
+};
+
+class BlockingSnapshotReader final : public StorageReader {
+ public:
+  BlockingSnapshotReader(std::shared_ptr<const StorageReader> inner,
+                         std::shared_ptr<BlockingReadControl> control)
+      : inner_(std::move(inner)), control_(std::move(control)) {}
+
+  bool Get(std::string_view key, const EntrySink& sink) const override {
+    control_->Enter();
+    return inner_->Get(key, sink);
+  }
+
+  bool List(std::string_view prefix, const EntrySink& sink) const override {
+    return inner_->List(prefix, sink);
+  }
+
+ private:
+  std::shared_ptr<const StorageReader> inner_;
+  std::shared_ptr<BlockingReadControl> control_;
+};
+
+class BlockingSnapshotEngine final : public InMemoryEngine {
+ public:
+  explicit BlockingSnapshotEngine(std::shared_ptr<BlockingReadControl> control)
+      : control_(std::move(control)) {}
+
+  std::shared_ptr<const StorageReader> TakeSnapshot() const override {
+    return std::make_shared<BlockingSnapshotReader>(InMemoryEngine::TakeSnapshot(), control_);
+  }
+
+ private:
+  std::shared_ptr<BlockingReadControl> control_;
+};
+
+class TrackingSnapshotReader final : public StorageReader {
+ public:
+  TrackingSnapshotReader(std::shared_ptr<const StorageReader> inner,
+                         std::shared_ptr<int> token)
+      : inner_(std::move(inner)), token_(std::move(token)) {}
+
+  bool Get(std::string_view key, const EntrySink& sink) const override {
+    return inner_->Get(key, sink);
+  }
+
+  bool List(std::string_view prefix, const EntrySink& sink) const override {
+    return inner_->List(prefix, sink);
+  }
+
+ private:
+  std::shared_ptr<const StorageReader> inner_;
+  std::shared_ptr<int> token_;
+};
+
+class TrackingSnapshotEngine final : public InMemoryEngine {
+ public:
+  std::shared_ptr<const StorageReader> TakeSnapshot() const override {
+    auto token = std::make_shared<int>(0);
+    snapshot_token_ = token;
+    return std::make_shared<TrackingSnapshotReader>(InMemoryEngine::TakeSnapshot(),
+                                                    std::move(token));
+  }
+
+  std::weak_ptr<int> SnapshotToken() const { return snapshot_token_; }
+
+ private:
+  mutable std::weak_ptr<int> snapshot_token_;
+};
 
 class SessionViewFixture : public ::testing::Test {
  protected:
@@ -294,6 +389,7 @@ TEST(SessionViewTest, OpenRejectsInvalidAndUnknownSession) {
 TEST(SessionViewTest, OutlivesNodeWithoutRetainingState) {
   TestTransport transport;
   auto engine = std::make_shared<InMemoryEngine>();
+  std::weak_ptr<InMemoryEngine> weak_engine = engine;
   auto view = [&] {
     auto node = std::make_unique<StorageNode>(transport);
     EXPECT_TRUE(node->Start(engine, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
@@ -301,7 +397,134 @@ TEST(SessionViewTest, OutlivesNodeWithoutRetainingState) {
     return SessionView::Open(*node, "s1");
   }();
   ASSERT_TRUE(view.IsOk());
+  engine.reset();
+  EXPECT_TRUE(weak_engine.expired());
   EXPECT_EQ(view.Value().Get("key").StatusCode(), Status::Disconnected);
+}
+
+TEST(SessionViewTest, ListReleasesSnapshotBeforeSink) {
+  TestTransport transport;
+  auto engine = std::make_shared<TrackingSnapshotEngine>();
+  ASSERT_TRUE(engine->Put("key", ParamValue(std::int64_t{1}).Encode()));
+  StorageNode node(transport);
+  ASSERT_TRUE(node.Start(engine, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  auto snapshot_token = engine->SnapshotToken();
+  auto view = SessionView::Open(node, "s1");
+  ASSERT_TRUE(view.IsOk());
+  ASSERT_FALSE(snapshot_token.expired());
+  auto listed = view.Value().List("", [&](std::string_view, const ParamValue&) {
+    auto close = node.CloseSession("s1");
+    EXPECT_TRUE(close.IsOk());
+    EXPECT_TRUE(snapshot_token.expired());
+    return true;
+  });
+  EXPECT_TRUE(listed.IsOk());
+}
+
+TEST(SessionViewTest, CapturedReadCompletesAcrossClose) {
+  TestTransport transport;
+  auto control = std::make_shared<BlockingReadControl>();
+  auto engine = std::make_shared<BlockingSnapshotEngine>(control);
+  ASSERT_TRUE(engine->Put("key", ParamValue(std::int64_t{1}).Encode()));
+  StorageNode node(transport);
+  ASSERT_TRUE(node.Start(engine, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  auto view = SessionView::Open(node, "s1");
+  ASSERT_TRUE(view.IsOk());
+
+  Result<ParamValue> read = Result<ParamValue>::Err(Status::Error, "not started");
+  std::thread reader([&] { read = view.Value().Get("key"); });
+  control->WaitUntilEntered();
+  ASSERT_TRUE(node.CloseSession("s1").IsOk());
+  EXPECT_EQ(view.Value().Get("key").StatusCode(), Status::NotFound);
+  control->Release();
+  reader.join();
+  ASSERT_TRUE(read.IsOk());
+  auto value = read.Value().As<std::int64_t>();
+  ASSERT_TRUE(value.has_value());
+  EXPECT_EQ(*value, 1);
+}
+
+TEST(SessionViewTest, StopWaitsForCapturedReadAndClosesAdmission) {
+  TestTransport transport;
+  auto control = std::make_shared<BlockingReadControl>();
+  auto engine = std::make_shared<BlockingSnapshotEngine>(control);
+  ASSERT_TRUE(engine->Put("key", ParamValue(std::int64_t{1}).Encode()));
+  StorageNode node(transport);
+  ASSERT_TRUE(node.Start(engine, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  auto view = SessionView::Open(node, "s1");
+  ASSERT_TRUE(view.IsOk());
+  const auto quick_payload = ParamValue(std::int64_t{2}).Encode();
+  transport.Publish("sitos/session/s1/quick", quick_payload,
+                    Encoding{std::string(Encoding::kSitosV1)});
+
+  std::thread reader([&] { EXPECT_TRUE(view.Value().Get("key").IsOk()); });
+  control->WaitUntilEntered();
+  std::atomic<bool> stop_started = false;
+  std::thread stopper([&] {
+    stop_started = true;
+    node.Stop();
+  });
+  while (!stop_started.load()) std::this_thread::yield();
+  while (view.Value().Get("quick").StatusCode() != Status::Disconnected) {
+    std::this_thread::yield();
+  }
+  control->Release();
+  reader.join();
+  stopper.join();
+}
+
+TEST(SessionViewTest, ConcurrentReadsAndOverlayWritesAreSynchronized) {
+  TestTransport transport;
+  auto engine = std::make_shared<InMemoryEngine>();
+  StorageNode node(transport);
+  ASSERT_TRUE(node.Start(engine, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  auto view = SessionView::Open(node, "s1");
+  ASSERT_TRUE(view.IsOk());
+  std::barrier start(3);
+  std::atomic<bool> failed = false;
+  auto reader = [&] {
+    start.arrive_and_wait();
+    for (int i = 0; i < 200; ++i) {
+      auto result = view.Value().Get("key");
+      if (!result.IsOk() && result.StatusCode() != Status::NotFound) failed = true;
+      auto listed = view.Value().List("", [](std::string_view, const ParamValue&) { return true; });
+      if (!listed.IsOk()) failed = true;
+    }
+  };
+  std::thread get_reader(reader);
+  std::thread list_reader(reader);
+  start.arrive_and_wait();
+  for (int i = 0; i < 200; ++i) {
+    auto payload = ParamValue(std::int64_t{i}).Encode();
+    transport.Publish("sitos/session/s1/key", payload,
+                      Encoding{std::string(Encoding::kSitosV1)});
+  }
+  get_reader.join();
+  list_reader.join();
+  EXPECT_FALSE(failed.load());
+}
+
+TEST(SessionViewTest, ListRejectsMalformedNonShadowedSnapshot) {
+  TestTransport transport;
+  auto engine = std::make_shared<InMemoryEngine>();
+  ASSERT_TRUE(engine->Put("valid", ParamValue(std::int64_t{1}).Encode()));
+  ASSERT_TRUE(engine->Put("bad", std::vector<std::byte>{std::byte{0xff}}));
+  StorageNode node(transport);
+  ASSERT_TRUE(node.Start(engine, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  auto view = SessionView::Open(node, "s1");
+  ASSERT_TRUE(view.IsOk());
+  int callbacks = 0;
+  auto listed = view.Value().List("", [&](std::string_view, const ParamValue&) {
+    ++callbacks;
+    return true;
+  });
+  EXPECT_EQ(listed.StatusCode(), Status::Error);
+  EXPECT_EQ(callbacks, 0);
 }
 
 }  // namespace
