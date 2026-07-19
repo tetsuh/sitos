@@ -36,6 +36,13 @@ class TrackingTransport final : public sitos::Transport {
 
   sitos::Result<void> Put(std::string_view key, std::span<const std::byte> payload,
                           sitos::Encoding encoding, sitos::PutOptions options) override {
+    {
+      std::lock_guard lock(mutex_);
+      put_keys_.emplace_back(key);
+      put_payloads_.emplace_back(payload.begin(), payload.end());
+      put_encodings_.push_back(encoding.id);
+      put_options_.push_back(options);
+    }
     return inner_->Put(key, payload, std::move(encoding), options);
   }
 
@@ -113,6 +120,21 @@ class TrackingTransport final : public sitos::Transport {
     return callback_count_;
   }
 
+  std::size_t PutCount() const {
+    std::lock_guard lock(mutex_);
+    return put_keys_.size();
+  }
+
+  std::vector<std::byte> LastPutPayload() const {
+    std::lock_guard lock(mutex_);
+    return put_payloads_.back();
+  }
+
+  std::string LastPutEncoding() const {
+    std::lock_guard lock(mutex_);
+    return put_encodings_.back();
+  }
+
  private:
   std::shared_ptr<sitos::Transport> inner_;
   mutable std::mutex mutex_;
@@ -124,6 +146,10 @@ class TrackingTransport final : public sitos::Transport {
   bool release_first_get_ = false;
   std::size_t get_count_ = 0;
   std::size_t callback_count_ = 0;
+  std::vector<std::string> put_keys_;
+  std::vector<std::vector<std::byte>> put_payloads_;
+  std::vector<std::string> put_encodings_;
+  std::vector<sitos::PutOptions> put_options_;
 };
 
 class ParamCacheIntegrationTest : public ::testing::Test {
@@ -222,6 +248,56 @@ TEST_F(ParamCacheIntegrationTest, BatchDuringAndAfterAttachIsAppliedInOrder) {
   tracking_->WaitForCallbackAfter(after_previous);
   EXPECT_EQ(Access::Get(*cache_, "after_a")->As<std::int64_t>(), 4);
   EXPECT_EQ(Access::Get(*cache_, "after_b")->As<std::int64_t>(), 5);
+}
+
+TEST_F(ParamCacheIntegrationTest, CacheWritesReachPeersAndStayOutOfBaseAndOtherSessions) {
+  ASSERT_TRUE(store_->Put("base", "shared", std::int64_t{1}).IsOk());
+  ASSERT_TRUE(node_.CreateSession("s1").IsOk());
+  ASSERT_TRUE(node_.CreateSession("s2").IsOk());
+  ASSERT_TRUE(cache_->Attach("s1").IsOk());
+
+  auto peer_tracking = std::make_shared<TrackingTransport>(transport_);
+  auto peer_result = sitos::ParamCache::Open(peer_tracking, {.prefix = std::string(kPrefix),
+                                                               .query_timeout = 1000ms});
+  ASSERT_TRUE(peer_result.IsOk());
+  auto peer = std::move(peer_result).Value();
+  ASSERT_TRUE(peer.Attach("s1").IsOk());
+
+  auto other_tracking = std::make_shared<TrackingTransport>(transport_);
+  auto other_result = sitos::ParamCache::Open(other_tracking, {.prefix = std::string(kPrefix),
+                                                                 .query_timeout = 1000ms});
+  ASSERT_TRUE(other_result.IsOk());
+  auto other = std::move(other_result).Value();
+  ASSERT_TRUE(other.Attach("s2").IsOk());
+
+  const auto peer_before = peer_tracking->CallbackCount();
+  ASSERT_TRUE(cache_->Put("shared", std::int64_t{2}).IsOk());
+  EXPECT_EQ(cache_->Get<std::int64_t>("shared").Value(), 2);
+  peer_tracking->WaitForCallbackAfter(peer_before);
+  EXPECT_EQ(peer.Get<std::int64_t>("shared").Value(), 2);
+  EXPECT_EQ(other.Get<std::int64_t>("shared").Value(), 1);
+  EXPECT_EQ(store_->Get<std::int64_t>("base", "shared").Value(), 1);
+
+  const auto peer_batch_before = peer_tracking->CallbackCount();
+  const std::vector<sitos::BatchEntry> entries{{"ordered", sitos::ParamValue(1)},
+                                                 {"ordered", sitos::ParamValue(2)},
+                                                 {"other", sitos::ParamValue(3)}};
+  ASSERT_TRUE(cache_->PutBatch(entries).IsOk());
+  peer_tracking->WaitForCallbackAfter(peer_batch_before);
+  EXPECT_EQ(peer.Get<std::int64_t>("ordered").Value(), 2);
+  EXPECT_EQ(peer.Get<std::int64_t>("other").Value(), 3);
+  EXPECT_EQ(tracking_->PutCount(), 2U);
+  EXPECT_EQ(tracking_->LastPutEncoding(), sitos::Encoding::kSitosV1Batch);
+  const auto decoded = sitos::DecodeBatch(tracking_->LastPutPayload());
+  ASSERT_TRUE(decoded.has_value());
+  ASSERT_EQ(decoded->size(), entries.size());
+  EXPECT_EQ((*decoded)[0].key, "ordered");
+  EXPECT_EQ((*decoded)[1].key, "ordered");
+  EXPECT_EQ((*decoded)[2].key, "other");
+
+  cache_->Detach();
+  peer.Detach();
+  other.Detach();
 }
 
 TEST_F(ParamCacheIntegrationTest, DetachStopsFurtherUpdates) {

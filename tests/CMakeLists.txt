@@ -79,6 +79,7 @@ gtest_add_tests(TARGET sitos_param_cache_attach_test SOURCES unit/param_cache_at
 
 add_executable(sitos_param_cache_read_test unit/param_cache_read_test.cpp)
 target_link_libraries(sitos_param_cache_read_test PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_param_cache_read_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 sitos_enable_warnings(sitos_param_cache_read_test)
 gtest_add_tests(TARGET sitos_param_cache_read_test SOURCES unit/param_cache_read_test.cpp)
 
