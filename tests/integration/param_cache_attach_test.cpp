@@ -256,16 +256,17 @@ TEST_F(ParamCacheIntegrationTest, CacheWritesReachPeersAndStayOutOfBaseAndOtherS
   ASSERT_TRUE(node_.CreateSession("s2").IsOk());
   ASSERT_TRUE(cache_->Attach("s1").IsOk());
 
+  sitos::ClientConfig cache_config;
+  cache_config.prefix = std::string(kPrefix);
+  cache_config.query_timeout = 1000ms;
   auto peer_tracking = std::make_shared<TrackingTransport>(transport_);
-  auto peer_result = sitos::ParamCache::Open(peer_tracking, {.prefix = std::string(kPrefix),
-                                                               .query_timeout = 1000ms});
+  auto peer_result = sitos::ParamCache::Open(peer_tracking, cache_config);
   ASSERT_TRUE(peer_result.IsOk());
   auto peer = std::move(peer_result).Value();
   ASSERT_TRUE(peer.Attach("s1").IsOk());
 
   auto other_tracking = std::make_shared<TrackingTransport>(transport_);
-  auto other_result = sitos::ParamCache::Open(other_tracking, {.prefix = std::string(kPrefix),
-                                                                 .query_timeout = 1000ms});
+  auto other_result = sitos::ParamCache::Open(other_tracking, cache_config);
   ASSERT_TRUE(other_result.IsOk());
   auto other = std::move(other_result).Value();
   ASSERT_TRUE(other.Attach("s2").IsOk());
