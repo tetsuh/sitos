@@ -185,7 +185,7 @@ void BM_ParamCacheGetSpan(benchmark::State& state) {
       continue;
     }
     const auto span = result.Value().span;
-    benchmark::DoNotOptimize(span.front());
+    benchmark::DoNotOptimize(std::to_integer<unsigned char>(span.front()));
   }
   if (fixture.span_transport->get_count != get_count) state.SkipWithError("GetSpan used Transport");
 }
@@ -203,7 +203,7 @@ void BM_DirectLookupSpan(benchmark::State& state) {
       continue;
     }
     const auto span = value->second->AsSpan<std::byte>();
-    benchmark::DoNotOptimize(span->front());
+    benchmark::DoNotOptimize(std::to_integer<unsigned char>(span->front()));
   }
 }
 BENCHMARK(BM_DirectLookupSpan)->Arg(10000);
