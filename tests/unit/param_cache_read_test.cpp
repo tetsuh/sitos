@@ -336,7 +336,9 @@ TEST_F(ParamCacheReadTest, ListPropagatesSinkExceptionAndUsesStableSnapshot) {
   ASSERT_TRUE(cache->List("foo/", [&](std::string_view key, const sitos::ParamValue&) {
     EXPECT_EQ(std::this_thread::get_id(), caller);
     keys.emplace_back(key);
-    if (key == "foo/a") EXPECT_TRUE(cache->Put("foo/new", std::int64_t{4}).IsOk());
+    if (key == "foo/a") {
+      EXPECT_TRUE(cache->Put("foo/new", std::int64_t{4}).IsOk());
+    }
     return true;
   }).IsOk());
   EXPECT_EQ(keys, (std::vector<std::string>{"foo/a", "foo/z"}));
