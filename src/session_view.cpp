@@ -6,7 +6,6 @@
 #include "sitos/session_view.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <cstddef>
 #include <memory>
 #include <mutex>
@@ -18,15 +17,12 @@
 #include <utility>
 #include <vector>
 
+#include "list_prefix_validation.hpp"
 #include "sitos/key.hpp"
 #include "sitos/storage_node.hpp"
 
 namespace sitos {
 namespace {
-
-Result<void> InvalidKey(std::string_view message) {
-  return Result<void>::Err(Status::InvalidKey, std::string(message));
-}
 
 Result<void> InvalidArgument(std::string_view message) {
   return Result<void>::Err(Status::InvalidArgument, std::string(message));
@@ -48,42 +44,6 @@ bool SameOwner(const std::weak_ptr<void>& expected,
                const std::shared_ptr<const StorageEngine>& actual) {
   if (expected.expired()) return false;
   return !expected.owner_before(actual) && !actual.owner_before(expected);
-}
-
-bool ContainsWhitespaceOrWildcard(std::string_view value) {
-  for (char c : value) {
-    const auto byte = static_cast<unsigned char>(c);
-    if (std::isspace(byte) != 0 || c == '*' || c == '?') return true;
-  }
-  return false;
-}
-
-bool ContainsBatchSegment(std::string_view value) {
-  std::size_t start = 0;
-  while (start <= value.size()) {
-    const std::size_t end = value.find('/', start);
-    const std::size_t length = end == std::string_view::npos ? value.size() - start : end - start;
-    if (value.substr(start, length) == ":batch") return true;
-    if (end == std::string_view::npos) break;
-    start = end + 1;
-  }
-  return false;
-}
-
-Result<void> ValidateListPrefix(std::string_view prefix) {
-  if (prefix.empty()) return Result<void>::Ok();
-  if (prefix.front() == '/' || prefix.find("//") != std::string_view::npos ||
-      ContainsWhitespaceOrWildcard(prefix) || ContainsBatchSegment(prefix)) {
-    return InvalidKey("invalid list prefix");
-  }
-  if (prefix.back() == '/') {
-    if (prefix.size() == 1 || !IsValidPrefix(prefix.substr(0, prefix.size() - 1))) {
-      return InvalidKey("invalid list prefix");
-    }
-    return Result<void>::Ok();
-  }
-  if (!IsValidKey(prefix)) return InvalidKey("invalid list prefix");
-  return Result<void>::Ok();
 }
 
 struct ListItem {
@@ -229,7 +189,7 @@ Result<bool> SessionView::Contains(std::string_view key) const {
 }
 
 Result<void> SessionView::List(std::string_view prefix, const ListSink& sink) const {
-  auto prefix_result = ValidateListPrefix(prefix);
+  auto prefix_result = param_detail::ValidateListPrefix(prefix);
   if (!prefix_result.IsOk()) return prefix_result;
   if (!sink) return InvalidArgument("null List sink");
   auto acquired = AcquireReaders();
