@@ -381,4 +381,41 @@ TEST_F(ParamCacheReadTest, DetachWaitsForInFlightLocalOperation) {
   EXPECT_FALSE(Access::IsAttached(*cache));
 }
 
+TEST_F(ParamCacheReadTest, DetachWaitsForInFlightLocalBatchOperation) {
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool entered = false;
+  bool release = false;
+  bool detached = false;
+  Access::SetMutationHook(*cache, [&](std::size_t) {
+    std::unique_lock lock(mutex);
+    entered = true;
+    condition.notify_all();
+    condition.wait(lock, [&] { return release; });
+  });
+
+  const std::vector<sitos::BatchEntry> entries{{"batch_lease", sitos::ParamValue(4)}};
+  std::thread put_thread([&] { ASSERT_TRUE(cache->PutBatch(entries).IsOk()); });
+  {
+    std::unique_lock lock(mutex);
+    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(5), [&] { return entered; }));
+  }
+  std::thread detach_thread([&] {
+    cache->Detach();
+    std::lock_guard lock(mutex);
+    detached = true;
+    condition.notify_all();
+  });
+  {
+    std::unique_lock lock(mutex);
+    EXPECT_FALSE(condition.wait_for(lock, std::chrono::milliseconds(50), [&] { return detached; }));
+    release = true;
+    condition.notify_all();
+  }
+  put_thread.join();
+  detach_thread.join();
+  EXPECT_TRUE(detached);
+  EXPECT_FALSE(Access::IsAttached(*cache));
+}
+
 }  // namespace
