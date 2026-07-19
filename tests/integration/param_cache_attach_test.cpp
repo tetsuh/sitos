@@ -125,6 +125,11 @@ class TrackingTransport final : public sitos::Transport {
     return put_keys_.size();
   }
 
+  std::vector<std::string> PutKeys() const {
+    std::lock_guard lock(mutex_);
+    return put_keys_;
+  }
+
   std::vector<std::byte> LastPutPayload() const {
     std::lock_guard lock(mutex_);
     return put_payloads_.back();
@@ -273,6 +278,9 @@ TEST_F(ParamCacheIntegrationTest, CacheWritesReachPeersAndStayOutOfBaseAndOtherS
 
   const auto peer_before = peer_tracking->CallbackCount();
   ASSERT_TRUE(cache_->Put("shared", std::int64_t{2}).IsOk());
+  const auto put_keys = tracking_->PutKeys();
+  ASSERT_EQ(put_keys.size(), 1U);
+  EXPECT_EQ(put_keys[0], std::string(kPrefix) + "/session/s1/shared");
   EXPECT_EQ(cache_->Get<std::int64_t>("shared").Value(), 2);
   peer_tracking->WaitForCallbackAfter(peer_before);
   EXPECT_EQ(peer.Get<std::int64_t>("shared").Value(), 2);
@@ -284,6 +292,9 @@ TEST_F(ParamCacheIntegrationTest, CacheWritesReachPeersAndStayOutOfBaseAndOtherS
                                                  {"ordered", sitos::ParamValue(2)},
                                                  {"other", sitos::ParamValue(3)}};
   ASSERT_TRUE(cache_->PutBatch(entries).IsOk());
+  const auto batch_keys = tracking_->PutKeys();
+  ASSERT_EQ(batch_keys.size(), 2U);
+  EXPECT_EQ(batch_keys[1], std::string(kPrefix) + "/session/s1/:batch");
   peer_tracking->WaitForCallbackAfter(peer_batch_before);
   EXPECT_EQ(peer.Get<std::int64_t>("ordered").Value(), 2);
   EXPECT_EQ(peer.Get<std::int64_t>("other").Value(), 3);
