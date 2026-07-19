@@ -247,9 +247,32 @@ callback admission, undeclares the subscription, waits for in-flight callbacks, 
 state. Base reads and writes use ParamStore's explicit `"base"` scope; ParamCache does not expose
 or subscribe to a base attachment mode.
 
-The internal cache uses immutable `shared_ptr<const ParamValue>` values and a shared mutex, but
-public `GetShared`, scalar Get/GetOr, GetSpan/SpanHandle, Contains, List, Put, PutBatch, and
-`stale()` belong to Issues #19/#20 and are not present in Issue #18.
+The internal cache uses immutable `shared_ptr<const ParamValue>` values and a shared mutex.
+Issue #19 adds the Result-bearing local API and session-overlay writes:
+
+```cpp
+Result<std::shared_ptr<const ParamValue>> GetShared(std::string_view key) const;
+template <SupportedParamType T> Result<T> Get(std::string_view key) const;
+template <SupportedParamType T> Result<T> GetOr(std::string_view key, T fallback) const;
+template <ParamSpanElement T> Result<SpanHandle<T>> GetSpan(std::string_view key) const;
+Result<bool> Contains(std::string_view key) const;
+Result<void> List(std::string_view prefix, const ListSink& sink) const;
+Result<void> Put(std::string_view key, const ParamValue& value);
+template <ParamInput T> Result<void> Put(std::string_view key, T&& value);
+Result<void> PutBatch(std::span<const BatchEntry> entries);
+```
+
+Reads are cache-local and perform no Transport operation or payload deep copy. `List` uses raw
+prefix semantics (`foo` includes `foo`, `foo/bar`, and `foobar`; `foo/` includes descendants),
+sorts lexically, and invokes the caller's sink after releasing internal locks. `GetSpan` returns
+a `SpanHandle` owning its immutable value through overwrite, Detach, move assignment, and cache
+destruction. Writes submit to the attached session first, then apply locally on success; peers
+receive updates asynchronously through the subscriber. Failed submission performs no local mutation.
+Writes use per-cache last-serialized-wins ordering; there is no self-echo deduplication or global
+ordering across caches. `PutBatch` preserves caller order and duplicate keys in one canonical
+message, and is not reader-visible transaction isolation, so concurrent readers may observe
+partial application. All APIs use the Result/Status model; `GetOr` substitutes only `NotFound`.
+`WaitForLocalDelivery` is deferred to #99, and stale/reconnect behavior is future #20 behavior.
 ## 5. SessionView — Composite View (Optional Use)
 
 A facade for the host process side that handles overlay → snapshot resolution through one read
@@ -270,7 +293,7 @@ public:
 |---|---|
 | `ParamValue` | Immutable. Can be freely shared |
 | `ParamStore` | All methods may be called concurrently |
-| `ParamCache` | Attach/Detach lifecycle methods are serialized internally. Public read/reconnect semantics are deferred to Issues #19/#20 |
+| `ParamCache` | Attach/Detach and local write sequencing are synchronized internally. Local reads are cache-only; stale/reconnect behavior is future #20 behavior |
 | `StorageNode` | All methods may be called concurrently |
 | callback | Called from zenoh threads. Blocking is prohibited. From inside a callback, only Get-style APIs on the same object may be called |
 

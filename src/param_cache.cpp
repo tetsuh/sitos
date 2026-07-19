@@ -3,10 +3,13 @@
 
 #include "sitos/param_cache.hpp"
 
+#include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string_view>
 #include <optional>
 #include <shared_mutex>
 #include <string>
@@ -33,9 +36,31 @@ Result<void> InvalidKey(std::string_view message) {
   return Result<void>::Err(Status::InvalidKey, std::string(message));
 }
 
+struct TransparentStringHash {
+  using is_transparent = void;
+  std::size_t operator()(std::string_view value) const noexcept {
+    return std::hash<std::string_view>{}(value);
+  }
+  std::size_t operator()(const std::string& value) const noexcept {
+    return operator()(std::string_view(value));
+  }
+};
+
+struct TransparentStringEqual {
+  using is_transparent = void;
+  bool operator()(std::string_view left, std::string_view right) const noexcept { return left == right; }
+  bool operator()(const std::string& left, const std::string& right) const noexcept {
+    return left == right;
+  }
+  bool operator()(const std::string& left, std::string_view right) const noexcept { return left == right; }
+  bool operator()(std::string_view left, const std::string& right) const noexcept { return left == right; }
+};
+
 }  // namespace
 
 struct ParamCache::Impl {
+  using ValueMap = std::unordered_map<std::string, std::shared_ptr<const ParamValue>,
+                                      TransparentStringHash, TransparentStringEqual>;
   enum class Phase { Buffering, Live, Stopping };
   enum class MutationKind { Put, Delete };
 
@@ -58,10 +83,11 @@ struct ParamCache::Impl {
     std::size_t in_flight = 0;
     std::mutex sequence_mutex;
     mutable std::shared_mutex map_mutex;
-    std::unordered_map<std::string, std::shared_ptr<const ParamValue>> snapshot_baseline;
-    std::unordered_map<std::string, std::shared_ptr<const ParamValue>> effective_map;
+    ValueMap snapshot_baseline;
+    ValueMap effective_map;
     std::vector<Mutation> buffered;
     std::function<void()> callback_hook;
+    std::function<void()> read_state_hook;
     std::function<void(std::size_t)> mutation_hook;
     std::size_t mutation_count = 0;
   };
@@ -72,7 +98,7 @@ struct ParamCache::Impl {
   std::shared_ptr<Transport> transport;
   ClientConfig config;
   std::mutex lifecycle_mutex;
-  std::shared_ptr<State> active_state;
+  std::atomic<std::shared_ptr<State>> active_state;
   Subscription subscription;
 };
 
@@ -84,21 +110,22 @@ struct Access {
 
 namespace {
 
-class CallbackLease {
+class StateLease {
  public:
-  explicit CallbackLease(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state) : state_(state) {
+  explicit StateLease(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state)
+      : state_(state) {
     std::lock_guard lock(state_->gate_mutex);
     if (!state_->accepting) return;
     ++state_->in_flight;
     entered_ = true;
   }
 
-  CallbackLease(const CallbackLease&) = delete;
-  CallbackLease& operator=(const CallbackLease&) = delete;
-  CallbackLease(CallbackLease&&) = delete;
-  CallbackLease& operator=(CallbackLease&&) = delete;
+  StateLease(const StateLease&) = delete;
+  StateLease& operator=(const StateLease&) = delete;
+  StateLease(StateLease&&) = delete;
+  StateLease& operator=(StateLease&&) = delete;
 
-  ~CallbackLease() {
+  ~StateLease() {
     if (!entered_) return;
     std::lock_guard lock(state_->gate_mutex);
     --state_->in_flight;
@@ -112,6 +139,28 @@ class CallbackLease {
   bool entered_ = false;
 };
 
+using OperationLease = StateLease;
+using CallbackLease = StateLease;
+
+std::shared_ptr<param_cache_detail::Access::Impl::State> LoadState(
+    const param_cache_detail::Access::Impl& impl) {
+  return impl.active_state.load(std::memory_order_acquire);
+}
+
+void StoreState(param_cache_detail::Access::Impl& impl,
+                const std::shared_ptr<param_cache_detail::Access::Impl::State>& state) {
+  impl.active_state.store(state, std::memory_order_release);
+}
+
+Result<void> ValidateCacheKey(std::string_view key) {
+  if (!IsValidKey(key)) return InvalidKey("invalid cache key");
+  return Result<void>::Ok();
+}
+
+bool MatchesPrefix(std::string_view key, std::string_view prefix) {
+  return prefix.empty() || key.starts_with(prefix);
+}
+
 void CloseGate(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state) {
   std::lock_guard lock(state->gate_mutex);
   state->accepting = false;
@@ -120,6 +169,10 @@ void CloseGate(const std::shared_ptr<param_cache_detail::Access::Impl::State>& s
 void WaitForCallbacks(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state) {
   std::unique_lock lock(state->gate_mutex);
   state->gate_condition.wait(lock, [state] { return state->in_flight == 0; });
+}
+
+void NotifyReadStateLoaded(const param_cache_detail::Access::Impl::State& state) {
+  if (state.read_state_hook) state.read_state_hook();
 }
 
 bool IsExpected(const ParsedKey& parsed, const param_cache_detail::Access::Impl::State& state,
@@ -225,7 +278,7 @@ void OnSample(const std::shared_ptr<param_cache_detail::Access::Impl::State>& st
 Result<void> DecodeGetReply(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state,
                             bool snapshot, std::string_view full_key,
                             std::span<const std::byte> payload, const Encoding& encoding,
-                            std::unordered_map<std::string, std::shared_ptr<const ParamValue>>& out,
+                            param_cache_detail::Access::Impl::ValueMap& out,
                             bool& invalid) {
   const auto parsed = ParseKey(state->prefix, full_key);
   const bool expected = parsed.has_value() && !parsed->is_batch &&
@@ -258,7 +311,7 @@ Result<void> DecodeGetReply(const std::shared_ptr<param_cache_detail::Access::Im
 Result<void> Fetch(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state,
                    const std::shared_ptr<Transport>& transport, std::string_view query,
                    bool snapshot,
-                   std::unordered_map<std::string, std::shared_ptr<const ParamValue>>& out,
+                   param_cache_detail::Access::Impl::ValueMap& out,
                    std::chrono::milliseconds timeout) {
   bool invalid = false;
   Result<void> protocol_error = Result<void>::Ok();
@@ -327,11 +380,124 @@ Result<ParamCache> ParamCache::Open(std::shared_ptr<Transport> transport, Client
   return Result<ParamCache>::Ok(ParamCache(std::move(transport), std::move(config)));
 }
 
+Result<std::shared_ptr<const ParamValue>> ParamCache::GetShared(std::string_view key) const {
+  auto key_result = ValidateCacheKey(key);
+  if (!key_result.IsOk()) return Result<std::shared_ptr<const ParamValue>>::ErrFrom(key_result);
+  if (!impl_) {
+    return Result<std::shared_ptr<const ParamValue>>::Err(Status::InvalidArgument,
+                                                          "moved-from ParamCache");
+  }
+  const auto state = LoadState(*impl_);
+  if (!state) {
+    return Result<std::shared_ptr<const ParamValue>>::Err(Status::InvalidArgument,
+                                                          "ParamCache is detached");
+  }
+  NotifyReadStateLoaded(*state);
+  std::shared_lock lock(state->map_mutex);
+  const auto it = state->effective_map.find(key);
+  if (it == state->effective_map.end()) {
+    return Result<std::shared_ptr<const ParamValue>>::Err(Status::NotFound,
+                                                          "parameter key not found");
+  }
+  return Result<std::shared_ptr<const ParamValue>>::Ok(it->second);
+}
+
+Result<bool> ParamCache::Contains(std::string_view key) const {
+  auto key_result = ValidateCacheKey(key);
+  if (!key_result.IsOk()) return Result<bool>::ErrFrom(key_result);
+  if (!impl_) return Result<bool>::Err(Status::InvalidArgument, "moved-from ParamCache");
+  const auto state = LoadState(*impl_);
+  if (!state) return Result<bool>::Err(Status::InvalidArgument, "ParamCache is detached");
+  NotifyReadStateLoaded(*state);
+  std::shared_lock lock(state->map_mutex);
+  return Result<bool>::Ok(state->effective_map.find(key) != state->effective_map.end());
+}
+
+Result<void> ParamCache::List(std::string_view prefix, const ListSink& sink) const {
+  if (!sink) return InvalidArgument("null List sink");
+  if (!prefix.empty()) {
+    if (prefix.front() == '/' || prefix.find("//") != std::string_view::npos ||
+        prefix.find_first_of("*?#$%@:") != std::string_view::npos ||
+        prefix.find_first_of(" \t\r\n") != std::string_view::npos) {
+      return InvalidKey("invalid List prefix");
+    }
+    const auto chunks = prefix.ends_with('/') ? prefix.substr(0, prefix.size() - 1) : prefix;
+    if (!IsValidKey(chunks)) return InvalidKey("invalid List prefix");
+  }
+  if (!impl_) return InvalidArgument("moved-from ParamCache");
+  const auto state = LoadState(*impl_);
+  if (!state) return InvalidArgument("ParamCache is detached");
+  NotifyReadStateLoaded(*state);
+  std::vector<std::pair<std::string, std::shared_ptr<const ParamValue>>> values;
+  {
+    std::shared_lock lock(state->map_mutex);
+    values.reserve(state->effective_map.size());
+    for (const auto& [key, value] : state->effective_map) {
+      if (MatchesPrefix(key, prefix)) values.emplace_back(key, value);
+    }
+  }
+  std::sort(values.begin(), values.end(),
+            [](const auto& left, const auto& right) { return left.first < right.first; });
+  for (const auto& [key, value] : values) {
+    if (!sink(key, *value)) break;
+  }
+  return Result<void>::Ok();
+}
+
+Result<void> ParamCache::Put(std::string_view key, const ParamValue& value) {
+  auto key_result = ValidateCacheKey(key);
+  if (!key_result.IsOk()) return key_result;
+  if (!impl_) return InvalidArgument("moved-from ParamCache");
+  const auto state = LoadState(*impl_);
+  if (!state) return InvalidArgument("ParamCache is detached");
+  const auto full_key = BuildKey(state->prefix, "session/" + state->sid, key);
+  if (!full_key) return InvalidKey("invalid cache key");
+  auto payload = value.Encode();
+  OperationLease lease(state);
+  if (!lease) return InvalidArgument("ParamCache is detached");
+  auto result = impl_->transport->Put(*full_key, payload, Encoding{std::string(Encoding::kSitosV1)}, {});
+  if (!result.IsOk()) return Result<void>::ErrFrom(result);
+  const auto owned = std::make_shared<const ParamValue>(value);
+  const Impl::Mutation mutation{Impl::MutationKind::Put, std::string(key), owned};
+  std::lock_guard sequence_lock(state->sequence_mutex);
+  if (state->phase != Impl::Phase::Live) return InvalidArgument("ParamCache is detached");
+  ApplyMutations(*state, std::vector<Impl::Mutation>{mutation});
+  return Result<void>::Ok();
+}
+
+Result<void> ParamCache::PutBatch(std::span<const BatchEntry> entries) {
+  if (!impl_) return InvalidArgument("moved-from ParamCache");
+  const auto state = LoadState(*impl_);
+  if (!state) return InvalidArgument("ParamCache is detached");
+  for (const auto& entry : entries) {
+    if (!IsValidKey(entry.key)) return InvalidKey("invalid batch key");
+  }
+  if (entries.empty()) return Result<void>::Ok();
+  const auto full_key = BuildBatchKey(state->prefix, "session/" + state->sid);
+  if (!full_key) return InvalidKey("invalid batch scope");
+  auto payload = EncodeBatch(entries);
+  OperationLease lease(state);
+  if (!lease) return InvalidArgument("ParamCache is detached");
+  auto result = impl_->transport->Put(*full_key, payload,
+                                      Encoding{std::string(Encoding::kSitosV1Batch)}, {});
+  if (!result.IsOk()) return Result<void>::ErrFrom(result);
+  std::vector<Impl::Mutation> mutations;
+  mutations.reserve(entries.size());
+  for (const auto& entry : entries) {
+    mutations.push_back(Impl::Mutation{Impl::MutationKind::Put, entry.key,
+                                       std::make_shared<const ParamValue>(entry.value)});
+  }
+  std::lock_guard sequence_lock(state->sequence_mutex);
+  if (state->phase != Impl::Phase::Live) return InvalidArgument("ParamCache is detached");
+  ApplyMutations(*state, mutations);
+  return Result<void>::Ok();
+}
+
 Result<void> ParamCache::Attach(std::string_view sid) {
   if (!impl_) return InvalidArgument("moved-from ParamCache");
   if (!IsValidSessionId(sid)) return InvalidKey("invalid session id");
   std::lock_guard lifecycle_lock(impl_->lifecycle_mutex);
-  if (impl_->active_state) return InvalidArgument("ParamCache is already attached");
+  if (LoadState(*impl_)) return InvalidArgument("ParamCache is already attached");
 
   auto state = std::make_shared<Impl::State>(impl_->config.prefix, std::string(sid));
   Subscription subscription;
@@ -345,8 +511,8 @@ Result<void> ParamCache::Attach(std::string_view sid) {
   }
   subscription = std::move(declared).Value();
 
-  std::unordered_map<std::string, std::shared_ptr<const ParamValue>> snapshot;
-  std::unordered_map<std::string, std::shared_ptr<const ParamValue>> overlay;
+  param_cache_detail::Access::Impl::ValueMap snapshot;
+  param_cache_detail::Access::Impl::ValueMap overlay;
   auto snapshot_result = Fetch(state, impl_->transport,
                                ScopeQuery(impl_->config, "snap/" + std::string(sid)), true,
                                snapshot, impl_->config.query_timeout);
@@ -374,7 +540,7 @@ Result<void> ParamCache::Attach(std::string_view sid) {
     state->buffered.clear();
     state->phase = Impl::Phase::Live;
   }
-  impl_->active_state = state;
+  StoreState(*impl_, state);
   impl_->subscription = std::move(subscription);
   return Result<void>::Ok();
 }
@@ -382,50 +548,64 @@ Result<void> ParamCache::Attach(std::string_view sid) {
 void ParamCache::Detach() noexcept {
   if (!impl_) return;
   std::lock_guard lifecycle_lock(impl_->lifecycle_mutex);
-  const auto state = impl_->active_state;
+  const auto state = LoadState(*impl_);
   if (!state) return;
   CloseGate(state);
   impl_->subscription = Subscription{};
   WaitForCallbacks(state);
   std::lock_guard sequence_lock(state->sequence_mutex);
   state->phase = Impl::Phase::Stopping;
-  std::unique_lock map_lock(state->map_mutex);
-  state->snapshot_baseline.clear();
-  state->effective_map.clear();
-  state->buffered.clear();
-  impl_->active_state.reset();
+  StoreState(*impl_, nullptr);
 }
 
 namespace param_cache_test_access {
 
 bool ParamCacheTestAccess::IsAttached(const ParamCache& cache) {
-  return cache.impl_ != nullptr && cache.impl_->active_state != nullptr;
+  return cache.impl_ != nullptr && LoadState(*cache.impl_) != nullptr;
 }
 
 std::size_t ParamCacheTestAccess::Size(const ParamCache& cache) {
-  if (cache.impl_ == nullptr || cache.impl_->active_state == nullptr) return 0;
-  std::shared_lock lock(cache.impl_->active_state->map_mutex);
-  return cache.impl_->active_state->effective_map.size();
+  const auto state = cache.impl_ == nullptr ? nullptr : LoadState(*cache.impl_);
+  if (!state) return 0;
+  std::shared_lock lock(state->map_mutex);
+  return state->effective_map.size();
+}
+
+std::optional<ParamCacheTestAccess::GateState> ParamCacheTestAccess::GetGateState(
+    const ParamCache& cache) {
+  const auto state = cache.impl_ == nullptr ? nullptr : LoadState(*cache.impl_);
+  if (!state) return std::nullopt;
+  std::lock_guard lock(state->gate_mutex);
+  return GateState{state->accepting, state->in_flight};
 }
 
 std::optional<ParamValue> ParamCacheTestAccess::Get(const ParamCache& cache,
                                                      std::string_view key) {
-  if (cache.impl_ == nullptr || cache.impl_->active_state == nullptr) return std::nullopt;
-  std::shared_lock lock(cache.impl_->active_state->map_mutex);
-  const auto it = cache.impl_->active_state->effective_map.find(std::string(key));
-  if (it == cache.impl_->active_state->effective_map.end()) return std::nullopt;
+  const auto state = cache.impl_ == nullptr ? nullptr : LoadState(*cache.impl_);
+  if (!state) return std::nullopt;
+  std::shared_lock lock(state->map_mutex);
+  const auto it = state->effective_map.find(key);
+  if (it == state->effective_map.end()) return std::nullopt;
   return *it->second;
 }
 
 void ParamCacheTestAccess::SetCallbackHook(ParamCache& cache, std::function<void()> hook) {
-  if (cache.impl_ == nullptr || cache.impl_->active_state == nullptr) return;
-  cache.impl_->active_state->callback_hook = std::move(hook);
+  const auto state = cache.impl_ == nullptr ? nullptr : LoadState(*cache.impl_);
+  if (!state) return;
+  state->callback_hook = std::move(hook);
+}
+
+void ParamCacheTestAccess::SetReadStateHook(ParamCache& cache, std::function<void()> hook) {
+  const auto state = cache.impl_ == nullptr ? nullptr : LoadState(*cache.impl_);
+  if (!state) return;
+  state->read_state_hook = std::move(hook);
 }
 
 void ParamCacheTestAccess::SetMutationHook(
     ParamCache& cache, std::function<void(std::size_t)> hook) {
-  if (cache.impl_ == nullptr || cache.impl_->active_state == nullptr) return;
-  cache.impl_->active_state->mutation_hook = std::move(hook);
+  const auto state = cache.impl_ == nullptr ? nullptr : LoadState(*cache.impl_);
+  if (!state) return;
+  state->mutation_hook = std::move(hook);
 }
 
 }  // namespace param_cache_test_access

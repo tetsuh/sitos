@@ -6,7 +6,7 @@
 sitos/
   CMakeLists.txt              # Top level. Options: SITOS_WITH_ROCKSDB,
                               #   SITOS_BUILD_PYTHON, SITOS_BUILD_TESTS, SITOS_BUILD_EXAMPLES,
-                              #   SITOS_ENABLE_TSAN, SITOS_ENABLE_ASAN_UBSAN,
+                              #   SITOS_BUILD_BENCHMARKS, SITOS_ENABLE_TSAN, SITOS_ENABLE_ASAN_UBSAN,
                               #   SITOS_BUILD_GATEWAY (optional HTTP gateway, ADR-0015)
   cmake/                      # zenoh-c integration (FetchContent/Corrosion/find_package)
   include/sitos/              # Public headers (API from 04_api_cpp.md)
@@ -136,13 +136,13 @@ cmake -S . -B build/tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=OFF -DSITOS_ENABLE_TSAN=ON
 cmake --build build/tsan
 ctest --test-dir build/tsan --output-on-failure \
-  -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|ParamCacheTest'
+  -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|ParamCacheTest|ParamCacheReadTest'
 
 cmake -S . -B build/asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=OFF -DSITOS_ENABLE_ASAN_UBSAN=ON
 cmake --build build/asan
 ctest --test-dir build/asan --output-on-failure \
-  -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|ParamCacheTest'
+  -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|ParamCacheTest|ParamCacheReadTest'
 ```
 
 For a platform where the zenoh-c standalone runtime supports sanitizer instrumentation,

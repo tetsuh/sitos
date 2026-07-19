@@ -260,7 +260,7 @@ so it is not a v0.2 blocker. Include it by v1.0.
   `tests/unit/param_cache_attach_test.cpp`, `tests/integration/param_cache_attach_test.cpp`
 * Scope: remove the public AttachBase API and all ParamCache base-mode paths; require an
   explicit syntactically valid session id without session-existence preflight; preserve #18
-  lifecycle and callback guarantees; make ADR-0022 Proposed until merge
+  lifecycle and callback guarantees; ADR-0022 is Accepted after merge
 * Acceptance criteria: build-tree and installed consumers prove AttachBase is absent; session
   lifecycle/concurrency tests remain green; no ParamCache base selector is declared or queried;
   Zenoh-OFF/ON package validation passes
@@ -271,11 +271,16 @@ so it is not a v0.2 blocker. Include it by v1.0.
 * References: [04] §4, [01] N01
 * Implementation targets: `include/sitos/param_cache.hpp`, `src/param_cache.cpp`,
   `tests/unit/param_cache_read_test.cpp`, `tests/bench/cache_get_bench.cpp`
-* Scope: GetShared/Get/GetOr/GetSpan (SpanHandle), Contains, List, session-only Put/PutBatch,
-  operation lease, and benchmark harness
-* Acceptance criteria: bench — Get is in the target order (including confirmation of no interprocess communication).
-  The old buffer remains valid even if the value is updated while holding SpanHandle (verified with ASan)
-* Depends on: #100
+* Scope: Result-bearing GetShared/Get/GetOr/GetSpan (SpanHandle), Contains, raw-prefix lexical
+  List, session-only Put/PutBatch, atomic active-State publication, operation lease, shared public
+  `param_concepts.hpp` and `list_sink.hpp`, deterministic lifecycle/concurrency tests, and opt-in
+  benchmark harness
+* Acceptance criteria: local reads perform no Transport calls or deep payload copies; List invokes
+  caller sinks after releasing cache locks; SpanHandle survives overwrite/Detach/destruction;
+  writes submit first and apply locally on success; same-session Zenoh propagation and other-sid
+  isolation pass; WSL2 Release Zenoh-OFF scalar Get/GetSpan medians are below 1,000 ns/op and no
+  more than four times direct-lookup baselines
+* Depends on: #100 (completed)
 
 ### #20 Disconnect/reconnect recovery
 * Milestone: v1.0

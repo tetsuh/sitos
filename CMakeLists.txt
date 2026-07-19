@@ -15,6 +15,7 @@ option(SITOS_WITH_ROCKSDB "Build with RocksDB storage engine support" OFF)
 option(SITOS_BUILD_PYTHON "Build Python bindings" OFF)
 option(SITOS_BUILD_TESTS "Build tests" ON)
 option(SITOS_BUILD_EXAMPLES "Build examples" OFF)
+option(SITOS_BUILD_BENCHMARKS "Build optional Google Benchmark targets" OFF)
 option(SITOS_ENABLE_TSAN "Enable ThreadSanitizer for supported compilers" OFF)
 option(SITOS_ENABLE_ASAN_UBSAN "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
@@ -41,6 +42,21 @@ option(SITOS_WITH_ZENOH "Download and link prebuilt zenoh-c" OFF)
 
 if(SITOS_WITH_ZENOH)
   include(cmake/zenohc.cmake)
+endif()
+
+if(SITOS_BUILD_BENCHMARKS)
+  # CMP0135 is unavailable at the declared CMake 3.20 minimum.
+  # Set it only where available so newer CMake versions avoid stale archive timestamps.
+  if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+  endif()
+  set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+  set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    googlebenchmark
+    URL https://github.com/google/benchmark/archive/refs/tags/v1.8.3.zip
+    URL_HASH SHA256=abfc22e33e3594d0edf8eaddaf4d84a2ffc491ad74b6a7edc6e7a608f690e691)
+  FetchContent_MakeAvailable(googlebenchmark)
 endif()
 
 # Scoped warning flags. Applied per-target (not globally) so vendored deps
@@ -89,6 +105,10 @@ endif()
 if(SITOS_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+if(SITOS_BUILD_BENCHMARKS)
+  add_subdirectory(tests/bench)
 endif()
 
 install(TARGETS sitos
