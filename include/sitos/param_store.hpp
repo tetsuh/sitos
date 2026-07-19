@@ -42,7 +42,7 @@ class ParamStore {
 
   template <ParamInput T>
   Result<void> Put(std::string_view scope, std::string_view key, T&& value) {
-    auto converted = MakeParamValue(std::forward<T>(value));
+    auto converted = param_detail::MakeParamValue(std::forward<T>(value));
     if (!converted.IsOk()) return Result<void>::ErrFrom(converted);
     return Put(scope, key, converted.Value());
   }
@@ -69,23 +69,6 @@ class ParamStore {
  private:
   ParamStore(std::shared_ptr<Transport> transport, ClientConfig config)
       : transport_(std::move(transport)), config_(std::move(config)) {}
-
-  template <typename T>
-  static Result<ParamValue> MakeParamValue(T&& value) {
-    using D = std::decay_t<T>;
-    if constexpr (std::is_pointer_v<D> &&
-                  std::is_same_v<std::remove_cv_t<std::remove_pointer_t<D>>, char>) {
-      if (value == nullptr) {
-        return Result<ParamValue>::Err(Status::InvalidArgument, "null string argument");
-      }
-    } else if constexpr (std::is_integral_v<D> && !std::is_same_v<D, bool>) {
-      if (!std::in_range<std::int64_t>(value)) {
-        return Result<ParamValue>::Err(Status::InvalidArgument,
-                                       "integral value is outside payload range");
-      }
-    }
-    return Result<ParamValue>::Ok(ParamValue(std::forward<T>(value)));
-  }
 
   static Result<Scope> ParseAndValidateScope(std::string_view scope);
   static Result<void> ValidateUserKey(std::string_view key);
