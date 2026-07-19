@@ -46,6 +46,15 @@ concept ParamSpanElement = std::is_object_v<std::remove_cv_t<T>> &&
 
 namespace param_detail {
 
+template <SupportedParamType T>
+Result<T> ConvertParamValue(const ParamValue& value) {
+  auto converted = value.template As<T>();
+  if (!converted.has_value()) {
+    return Result<T>::Err(Status::TypeMismatch, "parameter value type mismatch");
+  }
+  return Result<T>::Ok(std::move(*converted));
+}
+
 template <ParamInput T>
 Result<ParamValue> MakeParamValue(T&& value) {
   using D = std::decay_t<T>;
