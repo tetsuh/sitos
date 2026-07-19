@@ -56,7 +56,9 @@ class SessionView {
 
  private:
   struct Impl;
+  struct Readers;
   explicit SessionView(std::unique_ptr<Impl> impl) noexcept;
+  Result<Readers> AcquireReaders() const;
   std::unique_ptr<Impl> impl_;
 };
 

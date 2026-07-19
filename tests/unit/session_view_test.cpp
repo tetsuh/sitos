@@ -99,6 +99,11 @@ class TestTransport final : public Transport {
   std::function<void(TransportQuery&)> queryable;
 };
 
+void AssignToSelf(SessionView& view) {
+  auto* alias = &view;
+  view = std::move(*alias);
+}
+
 class SessionViewFixture : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -262,7 +267,7 @@ TEST(SessionViewTest, MoveAndInvalidArgumentsAreDeterministic) {
   EXPECT_EQ(source.Value().Get("key").StatusCode(), Status::InvalidArgument);
   SessionView assigned = std::move(moved);
   EXPECT_EQ(moved.Get("key").StatusCode(), Status::InvalidArgument);
-  assigned = std::move(assigned);
+  AssignToSelf(assigned);
   EXPECT_EQ(assigned.Get("key").StatusCode(), Status::NotFound);
 }
 

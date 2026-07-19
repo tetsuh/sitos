@@ -99,6 +99,13 @@ struct SessionView::Impl {
   std::string sid;
 };
 
+struct SessionView::Readers {
+  std::shared_ptr<void> state_owner;
+  std::optional<StorageNode::State::CallbackLease> lease;
+  std::shared_ptr<StorageEngine> overlay;
+  std::shared_ptr<const StorageReader> snapshot;
+};
+
 SessionView::SessionView(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
 
 SessionView::~SessionView() = default;
@@ -148,37 +155,43 @@ Result<SessionView> SessionView::Open(const StorageNode& node, std::string_view 
   return Result<SessionView>::Ok(SessionView(std::move(impl)));
 }
 
-Result<ParamValue> SessionView::Get(std::string_view key) const {
-  if (!IsValidKey(key)) return Result<ParamValue>::Err(Status::InvalidKey, "invalid key");
-  if (!impl_) return Result<ParamValue>::Err(Status::InvalidArgument, "moved-from SessionView");
+Result<SessionView::Readers> SessionView::AcquireReaders() const {
+  if (!impl_) return Result<Readers>::Err(Status::InvalidArgument, "moved-from SessionView");
 
   auto opaque_state = impl_->state.lock();
-  if (!opaque_state) return Result<ParamValue>::ErrFrom(Disconnected());
+  if (!opaque_state) return Result<Readers>::ErrFrom(Disconnected());
   auto state = std::static_pointer_cast<StorageNode::State>(opaque_state);
   auto lease = state->Enter();
-  if (!lease) return Result<ParamValue>::ErrFrom(Disconnected());
+  if (!lease) return Result<Readers>::ErrFrom(Disconnected());
 
-  std::shared_ptr<StorageEngine> overlay;
-  std::shared_ptr<const StorageReader> snapshot;
+  Readers readers;
+  readers.state_owner = opaque_state;
+  readers.lease = std::move(lease);
   {
     std::shared_lock lock(state->session_mutex);
-    if (!state->sessions.contains(impl_->sid)) {
-      return Result<ParamValue>::ErrFrom(NotFound());
-    }
+    if (!state->sessions.contains(impl_->sid)) return Result<Readers>::ErrFrom(NotFound());
     auto overlay_it = state->overlays.find(impl_->sid);
     auto snapshot_it = state->snapshots.find(impl_->sid);
     if (overlay_it == state->overlays.end() || snapshot_it == state->snapshots.end() ||
         !SameOwner(impl_->overlay_owner, overlay_it->second)) {
-      return Result<ParamValue>::ErrFrom(NotFound());
+      return Result<Readers>::ErrFrom(NotFound());
     }
-    overlay = overlay_it->second;
-    snapshot = snapshot_it->second;
+    readers.overlay = overlay_it->second;
+    readers.snapshot = snapshot_it->second;
   }
+  return Result<Readers>::Ok(std::move(readers));
+}
+
+Result<ParamValue> SessionView::Get(std::string_view key) const {
+  if (!IsValidKey(key)) return Result<ParamValue>::Err(Status::InvalidKey, "invalid key");
+  auto acquired = AcquireReaders();
+  if (!acquired.IsOk()) return Result<ParamValue>::ErrFrom(acquired);
+  auto readers = std::move(acquired).Value();
 
   std::optional<ParamValue> value;
   bool found = false;
   try {
-    found = overlay->Get(key, [&](std::string_view, Bytes bytes) {
+    found = readers.overlay->Get(key, [&value](std::string_view, Bytes bytes) {
       value = ParamValue::Decode(bytes);
       return true;
     });
@@ -194,7 +207,7 @@ Result<ParamValue> SessionView::Get(std::string_view key) const {
 
   value.reset();
   try {
-    found = snapshot->Get(key, [&](std::string_view, Bytes bytes) {
+    found = readers.snapshot->Get(key, [&value](std::string_view, Bytes bytes) {
       value = ParamValue::Decode(bytes);
       return true;
     });
@@ -219,41 +232,23 @@ Result<void> SessionView::List(std::string_view prefix, const ListSink& sink) co
   auto prefix_result = ValidateListPrefix(prefix);
   if (!prefix_result.IsOk()) return prefix_result;
   if (!sink) return InvalidArgument("null List sink");
-  if (!impl_) return InvalidArgument("moved-from SessionView");
-
-  auto opaque_state = impl_->state.lock();
-  if (!opaque_state) return Disconnected();
-  auto state = std::static_pointer_cast<StorageNode::State>(opaque_state);
-  auto lease = state->Enter();
-  if (!lease) return Disconnected();
-
-  std::shared_ptr<StorageEngine> overlay;
-  std::shared_ptr<const StorageReader> snapshot;
-  {
-    std::shared_lock lock(state->session_mutex);
-    if (!state->sessions.contains(impl_->sid)) return NotFound();
-    auto overlay_it = state->overlays.find(impl_->sid);
-    auto snapshot_it = state->snapshots.find(impl_->sid);
-    if (overlay_it == state->overlays.end() || snapshot_it == state->snapshots.end() ||
-        !SameOwner(impl_->overlay_owner, overlay_it->second)) {
-      return NotFound();
-    }
-    overlay = overlay_it->second;
-    snapshot = snapshot_it->second;
-  }
+  auto acquired = AcquireReaders();
+  if (!acquired.IsOk()) return Result<void>::ErrFrom(acquired);
+  auto readers = std::move(acquired).Value();
 
   std::vector<ListItem> values;
   std::unordered_set<std::string> overlay_keys;
   std::optional<Result<void>> decode_error;
   try {
-    const bool overlay_completed = overlay->List(prefix, [&](std::string_view key, Bytes bytes) {
+    const bool overlay_completed = readers.overlay->List(prefix, [&decode_error, &overlay_keys, &values](
+        std::string_view key, Bytes bytes) {
       auto decoded = ParamValue::Decode(bytes);
       if (!decoded.has_value()) {
         decode_error = StorageError("malformed parameter payload");
         return false;
       }
       overlay_keys.emplace(key);
-      values.push_back({std::string(key), std::move(*decoded)});
+      values.emplace_back(std::string(key), std::move(*decoded));
       return true;
     });
     if (!overlay_completed && !decode_error.has_value()) {
@@ -261,14 +256,15 @@ Result<void> SessionView::List(std::string_view prefix, const ListSink& sink) co
     }
     if (decode_error.has_value()) return *decode_error;
 
-    const bool snapshot_completed = snapshot->List(prefix, [&](std::string_view key, Bytes bytes) {
+    const bool snapshot_completed = readers.snapshot->List(prefix, [&decode_error, &overlay_keys, &values](
+        std::string_view key, Bytes bytes) {
       if (overlay_keys.contains(std::string(key))) return true;
       auto decoded = ParamValue::Decode(bytes);
       if (!decoded.has_value()) {
         decode_error = StorageError("malformed parameter payload");
         return false;
       }
-      values.push_back({std::string(key), std::move(*decoded)});
+      values.emplace_back(std::string(key), std::move(*decoded));
       return true;
     });
     if (!snapshot_completed && !decode_error.has_value()) {
@@ -279,16 +275,14 @@ Result<void> SessionView::List(std::string_view prefix, const ListSink& sink) co
   }
   if (decode_error.has_value()) return *decode_error;
 
-  std::sort(values.begin(), values.end(),
-            [](const ListItem& left, const ListItem& right) { return left.key < right.key; });
+  std::ranges::sort(values, [](const ListItem& left, const ListItem& right) {
+    return left.key < right.key;
+  });
 
-  lease.reset();
-  try {
-    for (const auto& item : values) {
-      if (!sink(item.key, item.value)) break;
-    }
-  } catch (...) {
-    throw;
+  readers.lease.reset();
+  readers.state_owner.reset();
+  for (const auto& item : values) {
+    if (!sink(item.key, item.value)) break;
   }
   return Result<void>::Ok();
 }
