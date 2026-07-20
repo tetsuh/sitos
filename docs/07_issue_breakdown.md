@@ -310,11 +310,12 @@ so it is not a v0.2 blocker. Include it by v1.0.
 * Milestone: v0.3
 * References: [05], [06] §3
 * Implementation targets: `python/pyproject.toml`, `python/bindings/module.cpp`,
-  `python/sitos/__init__.py`, `tests/python/test_import.py`
-* Scope: `_sitos` module, scikit-build-core, cibuildwheel configuration,
-  ParamValue ↔ Python type conversion
-* Acceptance criteria: `pip install dist/*.whl && python -c "import sitos"` on both OSes.
-  pytest for type conversion (shared golden fixtures)
+  `python/sitos/__init__.py`, `tests/python/test_import.py`, `.github/workflows/wheels.yml`
+* Scope: `_sitos` module, scikit-build-core, non-publishing cibuildwheel configuration,
+  explicit `SITOS_ZENOHC_ROOT` staging, and ParamValue ↔ Python type conversion
+* Acceptance criteria: repaired wheel installation with `--only-binary=:all:` on both OSes without
+  Rust or a C++ toolchain; pytest for type conversion (shared golden fixtures); CPython 3.10–3.13
+  Windows/Linux wheel matrix; no RocksDB or build artifacts in the wheel
 * Depends on: #4 (can proceed in parallel; preferably after #15/#18 APIs settle)
 
 ### #23 Python ParamStore
@@ -431,9 +432,9 @@ so it is not a v0.2 blocker. Include it by v1.0.
 ### #35 Release / publication readiness
 * Milestone: v1.0
 * References: [06] §7
-* Implementation targets: `NOTICE`, `.github/workflows/wheels.yml`,
-  `.github/release-please-config.json`, `pyproject.toml`
-* Scope: NOTICE, complete the pre-publication checklist, reserve PyPI/crates names, release-please
+* Implementation targets: `NOTICE`, `.github/release-please-config.json`, `pyproject.toml`
+* Scope: NOTICE, complete the pre-publication checklist, reserve PyPI/crates names, release-please,
+  and add publication to the non-publishing wheel validation owned by Issue #22
 * Acceptance criteria: All checklist items completed, dry-run publish to TestPyPI succeeds
 * Depends on: M4 completed, #34
 

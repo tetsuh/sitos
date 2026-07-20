@@ -19,6 +19,25 @@ nanobind wrapper for the C++ core + a thin pythonic layer [P01].
 
 ## 2. API
 
+### 2.0 Payload conversion foundation (Issue #22)
+
+The initial Python wheel exposes only the payload-v1 conversion helpers. They are intentionally
+small and form the shared foundation for later ParamStore, ParamCache, and SessionView bindings.
+
+```python
+import sitos
+
+payload = sitos.encode_value(240.0)  # type tag + little-endian payload-v1 body
+value = sitos.decode_value(payload)  # -> 240.0
+```
+
+`encode_value` accepts only `bool`, signed-64-bit-range `int`, `float`, `str`, and `bytes`.
+Integers outside the signed 64-bit range raise `OverflowError`; unsupported input raises
+`TypeError`. `decode_value` accepts only `bytes` and raises `ValueError` for malformed, truncated,
+overlong fixed-width, unknown-tag, or invalid UTF-8 payloads. Existing codec behavior is preserved,
+including canonical NaN encoding and nonzero BOOL decoding. Buffer-protocol and NumPy conversion
+remain Issue #27 scope.
+
 ### 2.1 ParamStore
 
 The Python ParamStore API is planned for the v0.3 Python lane and is not implemented by
