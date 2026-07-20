@@ -68,7 +68,10 @@ def validate_linux_native_dependencies(extension: Path, runtime: Path) -> None:
         [ldd, str(extension)], check=True, capture_output=True, text=True, env=environment
     ).stdout
     runtime_line = next((line for line in resolved.splitlines() if "libzenohc" in line), None)
-    if runtime_line is None or str(runtime.parent) not in runtime_line:
+    if runtime_line is None or "=>" not in runtime_line:
+        raise RuntimeError("sitos._sitos does not resolve zenoh-c from the wheel runtime directory")
+    resolved_name = runtime_line.partition("=>")[2].strip().split(maxsplit=1)[0]
+    if resolved_name == "not" or Path(resolved_name).resolve() != runtime.resolve():
         raise RuntimeError("sitos._sitos does not resolve zenoh-c from the wheel runtime directory")
 
 
