@@ -46,9 +46,9 @@ struct StorageNodeConfig {
   std::shared_ptr<LogSink> log_sink = DefaultLogSink();
 };
 
-/// Serves base-scope Get/List queries and base writes through Transport declarations.
 class SessionView;
 
+/// Serves base-scope Get/List queries and base writes through Transport declarations.
 class StorageNode {
  public:
   using Config = StorageNodeConfig;

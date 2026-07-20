@@ -85,10 +85,11 @@ class CallbackTrackingTransport final : public sitos::Transport {
 TEST(SessionViewIntegrationTest, MatchesParamCacheAfterObservedSessionDelivery) {
   auto transport = std::shared_ptr<sitos::Transport>(sitos::MakeZenohTransport().release());
   ASSERT_TRUE(transport);
-  auto tracking = std::make_shared<CallbackTrackingTransport>(transport);
+  auto node_tracking = std::make_shared<CallbackTrackingTransport>(transport);
+  auto cache_tracking = std::make_shared<CallbackTrackingTransport>(transport);
   auto engine = std::make_shared<sitos::InMemoryEngine>();
   sitos::StorageNode node;
-  ASSERT_TRUE(node.Start(engine, *transport, {.prefix = "sitos/session_view_test"}).IsOk());
+  ASSERT_TRUE(node.Start(engine, *node_tracking, {.prefix = "sitos/session_view_test"}).IsOk());
 
   sitos::ClientConfig config;
   config.prefix = "sitos/session_view_test";
@@ -96,10 +97,12 @@ TEST(SessionViewIntegrationTest, MatchesParamCacheAfterObservedSessionDelivery) 
   auto store_result = sitos::ParamStore::Open(transport, config);
   ASSERT_TRUE(store_result.IsOk());
   auto store = std::move(store_result).Value();
+  const auto node_before_base = node_tracking->CallbackCount();
   ASSERT_TRUE(store.Put("base", "inherited", std::int64_t{1}).IsOk());
+  node_tracking->WaitForCallbackAfter(node_before_base);
   ASSERT_TRUE(node.CreateSession("s1").IsOk());
 
-  auto cache_result = sitos::ParamCache::Open(tracking, config);
+  auto cache_result = sitos::ParamCache::Open(cache_tracking, config);
   ASSERT_TRUE(cache_result.IsOk());
   auto cache = std::move(cache_result).Value();
   ASSERT_TRUE(cache.Attach("s1").IsOk());
@@ -109,9 +112,11 @@ TEST(SessionViewIntegrationTest, MatchesParamCacheAfterObservedSessionDelivery) 
   EXPECT_EQ(view.Get<std::int64_t>("inherited").Value(), 1);
   EXPECT_EQ(cache.Get<std::int64_t>("inherited").Value(), 1);
 
-  const auto previous = tracking->CallbackCount();
+  const auto node_before_session = node_tracking->CallbackCount();
+  const auto cache_before_session = cache_tracking->CallbackCount();
   ASSERT_TRUE(store.Put("session/s1", "result", std::int64_t{42}).IsOk());
-  tracking->WaitForCallbackAfter(previous);
+  node_tracking->WaitForCallbackAfter(node_before_session);
+  cache_tracking->WaitForCallbackAfter(cache_before_session);
   ASSERT_EQ(view.Get<std::int64_t>("result").Value(), 42);
   ASSERT_EQ(cache.Get<std::int64_t>("result").Value(), 42);
 
