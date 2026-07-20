@@ -16,23 +16,24 @@ source_root="/tmp/zenoh-c-${version}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 lock_artifact="${script_dir}/../third_party/zenoh-c/${version}/Cargo.lock"
 lock_sha256="a33695f093ad94cc745d9e5eb9b85a76f5abd63c5c35b66c8c514b0212e1b5a3"
+sha256_check_format='%s  %s\n'
 
 rm -rf "${source_root}" "${stage_root}"
 mkdir -p "${stage_root}"
 curl --fail --silent --show-error --location --proto "${https_protocol}" \
   --proto-redir "${https_protocol}" "${url}" --output "${archive}"
-printf '%s  %s\n' "${expected_sha256}" "${archive}" | sha256sum --check --strict
+printf "${sha256_check_format}" "${expected_sha256}" "${archive}" | sha256sum --check --strict
 mkdir -p "${source_root}"
 tar -xzf "${archive}" --strip-components=1 -C "${source_root}"
 [[ -f "${lock_artifact}" ]]
-printf '%s  %s\n' "${lock_sha256}" "${lock_artifact}" | sha256sum --check --strict
+printf "${sha256_check_format}" "${lock_sha256}" "${lock_artifact}" | sha256sum --check --strict
 cp "${lock_artifact}" "${source_root}/Cargo.lock"
-printf '%s  %s\n' "${lock_sha256}" "${source_root}/Cargo.lock" | sha256sum --check --strict
+printf "${sha256_check_format}" "${lock_sha256}" "${source_root}/Cargo.lock" | sha256sum --check --strict
 
 if ! command -v rustup >/dev/null 2>&1; then
   curl --fail --silent --show-error --location --proto "${https_protocol}" \
     --proto-redir "${https_protocol}" "${rustup_url}" --output "${rustup_archive}"
-  printf '%s  %s\n' "${rustup_sha256}" "${rustup_archive}" | sha256sum --check --strict
+  printf "${sha256_check_format}" "${rustup_sha256}" "${rustup_archive}" | sha256sum --check --strict
   chmod +x "${rustup_archive}"
   "${rustup_archive}" -y --profile minimal --default-toolchain none
   # shellcheck disable=SC1091
