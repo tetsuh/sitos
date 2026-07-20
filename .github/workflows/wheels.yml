@@ -41,7 +41,8 @@ jobs:
         auditwheel --version'
         && bash /project/scripts/build_manylinux_zenohc.sh /opt/zenohc-stage
         && cp /project/.github/wheel-tools-requirements.txt /opt/zenohc-stage/
-      CIBW_DEPENDENCY_CONSTRAINTS: none
+      # This is cibuildwheel's own build/repair/test-tool constraint input.
+      CIBW_DEPENDENCY_VERSIONS: .github/wheel-tools-requirements.txt
       # cibuildwheel forwards these to its build-isolation and test environments.
       CIBW_ENVIRONMENT_LINUX: >-
         CMAKE_ARGS="-DSITOS_ZENOHC_ROOT=/opt/zenohc-stage"
@@ -93,7 +94,8 @@ jobs:
       CIBW_BEFORE_ALL_WINDOWS: >-
         python {project}/scripts/stage_zenohc.py C:/sitos-zenohc-stage --platform windows
         && copy {project}\\.github\\wheel-tools-requirements.txt C:\\sitos-zenohc-stage\\wheel-tools-requirements.txt
-      CIBW_DEPENDENCY_CONSTRAINTS: none
+      # This is cibuildwheel's own build/repair/test-tool constraint input.
+      CIBW_DEPENDENCY_VERSIONS: .github/wheel-tools-requirements.txt
       # cibuildwheel forwards these to its build-isolation and test environments.
       CIBW_ENVIRONMENT_WINDOWS: >-
         CMAKE_ARGS="-DSITOS_ZENOHC_ROOT=C:/sitos-zenohc-stage"
