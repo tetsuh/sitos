@@ -149,12 +149,7 @@ Result<SessionView::Readers> SessionView::AcquireReaders() const {
   return Result<Readers>::Ok(std::move(readers));
 }
 
-Result<ParamValue> SessionView::Get(std::string_view key) const {
-  if (!IsValidKey(key)) return Result<ParamValue>::Err(Status::InvalidKey, "invalid key");
-  auto acquired = AcquireReaders();
-  if (!acquired.IsOk()) return Result<ParamValue>::ErrFrom(acquired);
-  auto readers = std::move(acquired).Value();
-
+Result<ParamValue> SessionView::Read(const Readers& readers, std::string_view key) const {
   std::optional<ParamValue> value;
   bool found = false;
   try {
@@ -188,14 +183,27 @@ Result<ParamValue> SessionView::Get(std::string_view key) const {
   return Result<ParamValue>::Ok(std::move(*value));
 }
 
+Result<ParamValue> SessionView::Get(std::string_view key) const {
+  if (!impl_) return Result<ParamValue>::Err(Status::InvalidArgument, "moved-from SessionView");
+  if (!IsValidKey(key)) return Result<ParamValue>::Err(Status::InvalidKey, "invalid key");
+  auto acquired = AcquireReaders();
+  if (!acquired.IsOk()) return Result<ParamValue>::ErrFrom(acquired);
+  return Read(acquired.Value(), key);
+}
+
 Result<bool> SessionView::Contains(std::string_view key) const {
-  auto value = Get(key);
+  if (!impl_) return Result<bool>::Err(Status::InvalidArgument, "moved-from SessionView");
+  if (!IsValidKey(key)) return Result<bool>::Err(Status::InvalidKey, "invalid key");
+  auto acquired = AcquireReaders();
+  if (!acquired.IsOk()) return Result<bool>::ErrFrom(acquired);
+  auto value = Read(acquired.Value(), key);
   if (value.IsOk()) return Result<bool>::Ok(true);
   if (value.StatusCode() == Status::NotFound) return Result<bool>::Ok(false);
   return Result<bool>::ErrFrom(value);
 }
 
 Result<void> SessionView::List(std::string_view prefix, const ListSink& sink) const {
+  if (!impl_) return InvalidArgument("moved-from SessionView");
   auto prefix_result = param_detail::ValidateListPrefix(prefix);
   if (!prefix_result.IsOk()) return prefix_result;
   if (!sink) return InvalidArgument("null List sink");
