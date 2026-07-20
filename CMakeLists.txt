@@ -104,6 +104,16 @@ if(SITOS_BUILD_PYTHON)
 endif()
 sitos_enable_warnings(sitos)
 
+# GCC PR115016: GCC 14/15 can report a false-positive -Wfree-nonheap-object
+# when optimizing std::vector operations. Limit the workaround to the affected
+# compiler versions and source file so genuine diagnostics remain enabled.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+   AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 14
+   AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16)
+  set_property(SOURCE src/param_value.cpp APPEND PROPERTY
+    COMPILE_OPTIONS -Wno-free-nonheap-object)
+endif()
+
 if(SITOS_WITH_ZENOH)
   target_sources(sitos PRIVATE src/transport/zenoh_transport.cpp)
   target_link_libraries(sitos PRIVATE zenohc::zenohc)
