@@ -40,10 +40,12 @@ jobs:
         echo "=== auditwheel (owned by the cibuildwheel manylinux image) ===";
         auditwheel --version'
         && bash /project/scripts/build_manylinux_zenohc.sh /opt/zenohc-stage
+        && cp /project/.github/wheel-tools-requirements.txt /opt/zenohc-stage/
+      CIBW_DEPENDENCY_CONSTRAINTS: none
       # cibuildwheel forwards these to its build-isolation and test environments.
       CIBW_ENVIRONMENT_LINUX: >-
         CMAKE_ARGS="-DSITOS_ZENOHC_ROOT=/opt/zenohc-stage"
-        PIP_CONSTRAINT=/project/.github/wheel-tools-requirements.txt
+        PIP_CONSTRAINT=/opt/zenohc-stage/wheel-tools-requirements.txt
         PIP_REQUIRE_HASHES=1
         PIP_ONLY_BINARY=:all:
       CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
@@ -90,10 +92,12 @@ jobs:
       CIBW_ARCHS_WINDOWS: AMD64
       CIBW_BEFORE_ALL_WINDOWS: >-
         python {project}/scripts/stage_zenohc.py C:/sitos-zenohc-stage --platform windows
+        && copy {project}\\.github\\wheel-tools-requirements.txt C:\\sitos-zenohc-stage\\wheel-tools-requirements.txt
+      CIBW_DEPENDENCY_CONSTRAINTS: none
       # cibuildwheel forwards these to its build-isolation and test environments.
       CIBW_ENVIRONMENT_WINDOWS: >-
         CMAKE_ARGS="-DSITOS_ZENOHC_ROOT=C:/sitos-zenohc-stage"
-        PIP_CONSTRAINT={project}/.github/wheel-tools-requirements.txt
+        PIP_CONSTRAINT=C:/sitos-zenohc-stage/wheel-tools-requirements.txt
         PIP_REQUIRE_HASHES=1
         PIP_ONLY_BINARY=:all:
       CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >-
