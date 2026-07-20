@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      latest_compatible:
+        description: Run the non-publishing latest-Rust compatibility lane.
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: "17 3 * * 1"
 
@@ -14,93 +20,123 @@ permissions:
 
 jobs:
   linux:
-    name: Linux CPython wheels
+    name: Linux CPython 3.12 wheel
     runs-on: ubuntu-24.04
     env:
-      CIBW_BUILD: cp310-manylinux_x86_64 cp311-manylinux_x86_64 cp312-manylinux_x86_64 cp313-manylinux_x86_64
+      CIBW_BUILD: cp312-manylinux_x86_64
       CIBW_ARCHS_LINUX: x86_64
-      # GCC 14 image pinned by immutable digest. This retains the manylinux_2_28 ABI policy while
-      # providing the C++20 std::format implementation required by the core library.
+      # GCC 14 image pinned by immutable digest. This retains the manylinux_2_28 ABI policy.
       CIBW_MANYLINUX_X86_64_IMAGE: quay.io/pypa/manylinux_2_28_x86_64@sha256:a61875a2f84cab7df8de222ff12cabc08ff86eb4ad402ac90ba7bdaed9600cca
       CIBW_BEFORE_ALL_LINUX: >-
         bash -c 'set -eu;
         echo "=== compiler ===";
         gcc --version;
         g++ --version;
-        g++ -dM -E -x c++ /dev/null | grep -E "__GNUC__|__GNUC_MINOR__|__GNUC_PATCHLEVEL__";
         echo "=== glibc ===";
         getconf GNU_LIBC_VERSION;
         echo "=== libstdc++ ===";
         libstdcxx="$(g++ -print-file-name=libstdc++.so.6)";
-        echo "libstdc++=${libstdcxx}";
         strings "${libstdcxx}" | grep -E "^GLIBCXX_[0-9]" | sort -V | tail -n 1;
-        echo "=== auditwheel ===";
+        echo "=== auditwheel (owned by the cibuildwheel manylinux image) ===";
         auditwheel --version'
         && bash /project/scripts/build_manylinux_zenohc.sh /opt/zenohc-stage
-      CIBW_ENVIRONMENT_LINUX: >-
-        CMAKE_ARGS="-DSITOS_ZENOHC_ROOT=/opt/zenohc-stage"
-        LD_LIBRARY_PATH=/opt/zenohc-stage/lib
-      CIBW_REPAIR_WHEEL_COMMAND_LINUX: auditwheel repair -w {dest_dir} {wheel}
+      CIBW_ENVIRONMENT_LINUX: CMAKE_ARGS="-DSITOS_ZENOHC_ROOT=/opt/zenohc-stage"
+      CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
+        LD_LIBRARY_PATH=/opt/zenohc-stage/lib auditwheel repair -w {dest_dir} {wheel}
       CIBW_TEST_REQUIRES: pytest==8.3.3
       CIBW_TEST_COMMAND: python -m pytest {project}/tests/python -q
     steps:
-      - uses: actions/checkout@v5
+      # actions/checkout v5.0.0
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
         with:
           persist-credentials: false
-      - name: Install pinned wheel tools
-        run: python -m pip install cibuildwheel==4.1.0 build==1.2.2 auditwheel==6.1.0
-      - name: Build and test repaired wheels
+      - name: Install hash-locked wheel tools
+        run: python -m pip install --only-binary=:all: --require-hashes -r .github/wheel-tools-requirements.txt
+      - name: Build and test repaired wheel
         run: python -m cibuildwheel --output-dir wheelhouse python
-      - name: Validate wheel contents and manylinux policy
+      - name: Validate contents, native dependencies, and clean installation
         run: |
           set -eu
           for wheel in wheelhouse/*.whl; do
-            python scripts/check_wheel.py "$wheel"
+            python scripts/check_wheel.py "$wheel" --platform linux
             auditwheel show "$wheel" | tee "${wheel}.auditwheel.txt"
             grep --fixed-strings "manylinux_2_28_x86_64" "${wheel}.auditwheel.txt"
+            venv="$(mktemp -d)"
+            python -m venv "$venv"
+            env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" -m pip install --only-binary=:all: "$wheel"
+            (cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" -c 'import sitos; assert sitos.decode_value(sitos.encode_value(b"wheel")) == b"wheel"')
           done
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
+      # actions/upload-artifact v4.6.2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: sitos-wheels-linux
+          name: sitos-wheel-linux-cp312
           path: wheelhouse/*.whl
           if-no-files-found: error
 
   windows:
-    name: Windows CPython wheels
+    name: Windows CPython 3.12 wheel
     runs-on: windows-latest
     env:
-      CIBW_BUILD: cp310-win_amd64 cp311-win_amd64 cp312-win_amd64 cp313-win_amd64
+      CIBW_BUILD: cp312-win_amd64
       CIBW_ARCHS_WINDOWS: AMD64
       CIBW_BEFORE_ALL_WINDOWS: >-
-        python {project}/scripts/stage_zenohc.py C:/sitos-zenohc-stage
-        --platform windows
-      CIBW_ENVIRONMENT_WINDOWS: >-
-        CMAKE_ARGS="-DSITOS_ZENOHC_ROOT=C:/sitos-zenohc-stage"
+        python {project}/scripts/stage_zenohc.py C:/sitos-zenohc-stage --platform windows
+      CIBW_ENVIRONMENT_WINDOWS: CMAKE_ARGS="-DSITOS_ZENOHC_ROOT=C:/sitos-zenohc-stage"
       CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >-
-        delvewheel repair --add-path C:/sitos-zenohc-stage/bin
-        -w {dest_dir} {wheel}
+        delvewheel repair --add-path C:/sitos-zenohc-stage/bin -w {dest_dir} {wheel}
       CIBW_TEST_REQUIRES: pytest==8.3.3
       CIBW_TEST_COMMAND: python -m pytest {project}/tests/python -q
     steps:
-      - uses: actions/checkout@v5
+      # actions/checkout v5.0.0
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
         with:
           persist-credentials: false
-      - name: Install pinned wheel tools
+      - name: Install hash-locked wheel tools
         shell: pwsh
-        run: python -m pip install cibuildwheel==4.1.0 build==1.2.2 delvewheel==1.1.3
-      - name: Build and test repaired wheels
+        run: python -m pip install --only-binary=:all: --require-hashes -r .github/wheel-tools-requirements.txt
+      - name: Build and test repaired wheel
         shell: pwsh
         run: python -m cibuildwheel --output-dir wheelhouse python
-      - name: Validate wheel contents
+      - name: Validate contents, native dependencies, and clean installation
         shell: pwsh
         run: |
+          $dumpbin = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Microsoft Visual Studio" -Filter dumpbin.exe -Recurse | Select-Object -First 1
+          if ($null -eq $dumpbin) { throw "dumpbin.exe was not found" }
+          $env:Path = "$($dumpbin.DirectoryName);$env:Path"
           Get-ChildItem wheelhouse\*.whl | ForEach-Object {
-            python scripts/check_wheel.py $_.FullName
+            python scripts/check_wheel.py $_.FullName --platform windows
+            delvewheel show $_.FullName | Tee-Object -FilePath "$($_.FullName).delvewheel.txt"
+            $venv = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())
+            python -m venv $venv
+            Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+            & "$venv\Scripts\python.exe" -m pip install --only-binary=:all: $_.FullName
+            Push-Location $env:RUNNER_TEMP
+            try {
+              & "$venv\Scripts\python.exe" -c 'import sitos; assert sitos.decode_value(sitos.encode_value(b"wheel")) == b"wheel"'
+            } finally {
+              Pop-Location
+            }
           }
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
+      # actions/upload-artifact v4.6.2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: sitos-wheels-windows
+          name: sitos-wheel-windows-cp312
           path: wheelhouse/*.whl
           if-no-files-found: error
+
+  latest-compatible-rust:
+    name: Latest compatible Rust (non-publishing)
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.latest_compatible)
+    runs-on: ubuntu-24.04
+    steps:
+      # actions/checkout v5.0.0
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
+      - name: Build pinned zenoh-c graph with Rust stable
+        env:
+          SITOS_RUST_TOOLCHAIN: stable
+        run: |
+          docker run --rm -v "$PWD:/project" -w /project \
+            quay.io/pypa/manylinux_2_28_x86_64@sha256:a61875a2f84cab7df8de222ff12cabc08ff86eb4ad402ac90ba7bdaed9600cca \
+            bash scripts/build_manylinux_zenohc.sh /tmp/zenohc-stage

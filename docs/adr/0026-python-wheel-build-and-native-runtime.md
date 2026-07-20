@@ -8,53 +8,70 @@ Proposed — 2026-07-20
 
 Issue #22 introduces the first Python extension and a distributable wheel. The repository CMake
 project is the source of the C++ version, while `python/pyproject.toml` is the scikit-build-core
-entry point. Wheel builds must support CPython 3.10–3.13 on Windows and manylinux 2.28 Linux without
-requiring a compiler at installation time. The existing prebuilt Linux zenoh-c standalone binary
-cannot be relabeled as manylinux 2.28, and the ParamValue-only extension may not retain a linker
-edge to the zenoh-c runtime.
+entry point. The production wheel target is CPython 3.12 `manylinux_2_28_x86_64`, validated on
+Ubuntu 24.04 and Rocky Linux 10. CPython 3.12 `win_amd64` is non-publishing build/test coverage
+only. Other Python versions, Ubuntu 26.04, and formal Windows publication are deferred.
+
+The existing prebuilt Linux zenoh-c standalone binary cannot be relabeled as manylinux 2.28. The
+standard wheel must contain one, and only one, zenoh-c runtime without requiring a compiler at
+installation time. The ParamValue-only extension may not retain a linker edge without explicitly
+linking the Zenoh-enabled `sitos` target.
 
 ## Decision
 
-We will build wheels through the repository root CMake project, derive Python metadata and
-`sitos.__version__` from the CMake project version, install only a Python CMake component, and run
-non-publishing cibuildwheel validation for the CPython 3.10–3.13 Windows and manylinux 2.28 matrix.
-Linux wheel builds will use the pinned
-`quay.io/pypa/manylinux_2_28_x86_64@sha256:a61875a2f84cab7df8de222ff12cabc08ff86eb4ad402ac90ba7bdaed9600cca`
-builder, whose GCC 14 toolchain supports the core library's C++20 `std::format` use. They compile
-pinned zenoh-c sources with the upstream Rust 1.93.0 toolchain and stage the result through the
-explicit `SITOS_ZENOHC_ROOT` CMake cache path; Windows wheels will stage the pinned official MSVC
-standalone archive.
+We build wheels through the repository root CMake project, derive Python metadata and
+`sitos.__version__` from the CMake project version, install only a Python CMake component, and
+perform non-publishing cibuildwheel validation for CPython 3.12 on Linux and Windows. Linux uses
+the pinned `quay.io/pypa/manylinux_2_28_x86_64@sha256:a61875a2f84cab7df8de222ff12cabc08ff86eb4ad402ac90ba7bdaed9600cca`
+builder. Windows stages the pinned official MSVC standalone archive through the explicit
+`SITOS_ZENOHC_ROOT` CMake cache path.
 
-The Linux build replaces the stale upstream `Cargo.lock` from the zenoh-c 1.9.0 archive with the
-repository-owned artifact `third_party/zenoh-c/1.9.0/Cargo.lock` before running
-`cargo +1.93.0 build --locked`. The artifact SHA-256 is
-`a33695f093ad94cc745d9e5eb9b85a76f5abd63c5c35b66c8c514b0212e1b5a3` and resolves all Zenoh
-packages, including root `zenoh-c`, to 1.9.0 from
-`release/1.9.0#81c6c933b6e41d72a05f04c4442ef57717ddc72b`. This compensates for upstream release
-commit `499de93`, which updated the 1.9.0 manifests but left the archive's lock entries at 1.8.0
-and `main#91c230a8...`. The lock was regenerated with Cargo 1.93.0 from the SHA-256-verified
-1.9.0 source archive. Updating zenoh-c requires regenerating the artifact with the pinned release
-source and toolchain, reviewing the lock diff and dependency provenance, updating its SHA-256,
-and updating this ADR before changing the build script.
+The Python CMake component installs only the extension and Python package sources. It never copies
+the zenoh-c runtime. `auditwheel repair` (Linux) and `delvewheel repair` (Windows) exclusively own
+runtime bundling. Post-repair validation requires exactly one bundled zenoh-c library, verifies the
+extension declares and resolves its native dependency against that wheel-local runtime, and performs
+an exact-filename `pip install --only-binary=:all:` clean-environment import/conversion check with
+staging and loader paths removed. The standard wheel links `sitos` to `zenohc::zenohc` deliberately;
+codec-only linkage is not the selected contract.
 
-Linux CI prints the compiler and auditwheel versions, then verifies the repaired wheel with
-`auditwheel show` against the `manylinux_2_28_x86_64` policy. Repaired wheels explicitly contain
-the zenoh-c runtime and do not contain RocksDB or C++ SDK/build artifacts.
+Both zenoh-c `LICENSE` and `NOTICE.md` are copied from the SHA-256-verified 1.9.0 upstream source
+into unambiguous wheel distribution license metadata names. Wheel validation rejects RocksDB,
+GTest/GMock, CMake exports, headers, static libraries, benchmarks, and build artifacts.
+
+Production Linux wheels install checksum-verified `rustup-init`, use Rust 1.93.0, replace the stale
+zenoh-c 1.9.0 archive lock with repository-owned
+`third_party/zenoh-c/1.9.0/Cargo.lock`, and run `cargo --locked`. Its SHA-256 is
+`a33695f093ad94cc745d9e5eb9b85a76f5abd63c5c35b66c8c514b0212e1b5a3`; it resolves Zenoh 1.9.0
+through `release/1.9.0#81c6c933b6e41d72a05f04c4442ef57717ddc72b`. Updating zenoh-c requires
+regenerating and reviewing this lock from the verified release source, updating its hash, and
+updating this ADR. A scheduled or manually requested, non-publishing latest-compatible lane uses
+moving Rust stable with the same fixed lock to detect toolchain compatibility; it never selects the
+production runtime or publishes artifacts.
+
+Workflow Python tooling is installed from `.github/wheel-tools-requirements.txt` using exact versions,
+binary-only downloads, and reviewed SHA-256 hashes for direct and transitive packages. The current
+non-yanked Windows repair tool is delvewheel 1.13.0. Official GitHub Actions are immutable commit
+SHA pins. `auditwheel` is supplied by the pinned cibuildwheel manylinux image rather than a host pip
+installation; CI prints its actual version. Updating the builder image or wheel-tool lock requires
+reviewing dependency/tool provenance and rerunning both wheel jobs.
 
 ## Consequences
 
-* Good: Installed wheels work without Rust, CMake, Ninja, or a C++ compiler.
-* Good: The CMake version remains the single source of package version truth.
-* Good: Explicit staging makes native dependency provenance and CMake validation visible.
+* Good: Installed production wheels work without Rust, CMake, Ninja, or a C++ compiler.
+* Good: The CMake version remains the single source of package-version truth.
+* Good: Runtime ownership, dependency resolution, and license provenance are unambiguous.
+* Good: The pinned production graph and latest-Rust compatibility signal are distinct.
 * Bad: Linux wheel builds require a pinned Rust toolchain and are slower than consuming a prebuilt
   standalone archive.
-* Bad: Wheel CI must maintain auditwheel/delvewheel repair and native license checks.
-* Neutral: Issue #22 builds and tests wheels but does not publish them; publication remains Issue #35.
+* Bad: Wheel CI must maintain repair, clean-install, native-dependency, and third-party license checks.
+* Neutral: Issue #22 validates wheels but does not publish them; publication remains Issue #35.
 
 ## Options Considered
 
 * **Relabel the existing Linux standalone binary as manylinux 2.28** — rejected because its GLIBC
   requirements are newer than the wheel policy permits.
+* **Install zenoh-c directly from the Python CMake component** — rejected because it duplicates the
+  repair tool's runtime and allows a wheel to carry conflicting native libraries.
 * **Use `FETCHCONTENT_SOURCE_DIR_ZENOHC` as the permanent local-source contract** — rejected because
   it hides wheel provisioning behind a FetchContent implementation detail.
 * **Bundle only native libraries referenced by the extension** — rejected because codec-only builds

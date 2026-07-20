@@ -1,7 +1,10 @@
 # sitos — Python API Specification
 
-Package name: `sitos`. Python 3.10+ [P05].
-nanobind wrapper for the C++ core + a thin pythonic layer [P01].
+Package name: `sitos`. Issue #22 validates CPython 3.12 wheels: the
+`manylinux_2_28_x86_64` production target on Ubuntu 24.04/Rocky Linux 10 and
+non-publishing `win_amd64` development coverage. Other Python versions and formal Windows
+publication are deferred. The package is a nanobind wrapper for the C++ core plus a thin
+pythonic layer [P01].
 
 ## 1. Value Type Mapping
 
