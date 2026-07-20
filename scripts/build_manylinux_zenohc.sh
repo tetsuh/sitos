@@ -15,13 +15,15 @@ source_root="/tmp/zenoh-c-${version}"
 
 rm -rf "${source_root}" "${stage_root}"
 mkdir -p "${stage_root}"
-curl --fail --silent --show-error --location "${url}" --output "${archive}"
+curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+  "${url}" --output "${archive}"
 printf '%s  %s\n' "${expected_sha256}" "${archive}" | sha256sum --check --strict
 mkdir -p "${source_root}"
 tar -xzf "${archive}" --strip-components=1 -C "${source_root}"
 
 if ! command -v rustup >/dev/null 2>&1; then
-  curl --fail --silent --show-error --location "${rustup_url}" --output "${rustup_archive}"
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    "${rustup_url}" --output "${rustup_archive}"
   printf '%s  %s\n' "${rustup_sha256}" "${rustup_archive}" | sha256sum --check --strict
   chmod +x "${rustup_archive}"
   "${rustup_archive}" -y --profile minimal --default-toolchain none
