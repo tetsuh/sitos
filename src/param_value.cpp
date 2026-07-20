@@ -81,7 +81,9 @@ std::vector<std::byte> ParamValue::Encode() const {
   std::vector<std::byte> out;
   out.reserve(1 + body.size());
   out.push_back(static_cast<std::byte>(static_cast<std::uint8_t>(type())));
-  out.insert(out.end(), body.begin(), body.end());
+  if (!body.empty()) {
+    out.insert(out.end(), body.begin(), body.end());
+  }
   return out;
 }
 
