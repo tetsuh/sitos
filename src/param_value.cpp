@@ -57,17 +57,13 @@ std::vector<std::byte> ParamValue::EncodeBody() const {
     }
     case 3: {  // Str
       const auto& s = std::get<std::string>(value_);
-      if (!s.empty()) {
-        const auto* p = reinterpret_cast<const std::byte*>(s.data());
-        body.insert(body.end(), p, p + s.size());
-      }
+      const auto* p = reinterpret_cast<const std::byte*>(s.data());
+      body.insert(body.end(), p, p + s.size());
       break;
     }
     case 4: {  // Bytes
       const auto& b = std::get<std::vector<std::byte>>(value_);
-      if (!b.empty()) {
-        body.insert(body.end(), b.begin(), b.end());
-      }
+      body.insert(body.end(), b.begin(), b.end());
       break;
     }
     default:

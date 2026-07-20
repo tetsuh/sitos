@@ -35,8 +35,10 @@ def main() -> None:
             raise RuntimeError("wheel does not contain the zenoh-c runtime")
         if not any(name.lower().endswith("sitos/licenses/license") for name in names):
             raise RuntimeError("wheel does not contain the zenoh-c license")
-        metadata = next(name for name in names if name.endswith(".dist-info/METADATA"))
-        metadata_text = wheel.read(metadata).decode("utf-8")
+        metadata_candidates = [name for name in names if name.endswith(".dist-info/METADATA")]
+        if not metadata_candidates:
+            raise RuntimeError("wheel does not contain .dist-info/METADATA")
+        metadata_text = wheel.read(metadata_candidates[0]).decode("utf-8")
         if f"Version: {version}" not in metadata_text:
             raise RuntimeError("wheel metadata version does not match CMake version")
 

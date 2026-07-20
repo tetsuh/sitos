@@ -21,7 +21,7 @@ non-publishing cibuildwheel validation for the CPython 3.10–3.13 Windows and m
 Linux wheel builds will use the pinned
 `quay.io/pypa/manylinux_2_28_x86_64@sha256:a61875a2f84cab7df8de222ff12cabc08ff86eb4ad402ac90ba7bdaed9600cca`
 builder, whose GCC 14 toolchain supports the core library's C++20 `std::format` use. They compile
-pinned zenoh-c sources with the pinned Rust 1.88.0 toolchain and stage the result through the
+pinned zenoh-c sources with the pinned Rust 1.97.1 toolchain and stage the result through the
 explicit `SITOS_ZENOHC_ROOT` CMake cache path; Windows wheels will stage the pinned official MSVC
 standalone archive. Linux CI prints the compiler and auditwheel versions, then verifies the repaired
 wheel with `auditwheel show` against the `manylinux_2_28_x86_64` policy. Repaired wheels explicitly
