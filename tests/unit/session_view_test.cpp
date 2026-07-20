@@ -394,6 +394,7 @@ TEST_F(SessionViewFixture, ClosedAndRecreatedSessionExpiresOldView) {
   ASSERT_TRUE(node->CloseSession("s1").IsOk());
   EXPECT_EQ(view.Value().Get("key").StatusCode(), Status::NotFound);
   ASSERT_TRUE(node->CreateSession("s1").IsOk());
+  PublishValue("key", ParamValue(std::int64_t{9}));
   EXPECT_EQ(view.Value().Get("key").StatusCode(), Status::NotFound);
 }
 
