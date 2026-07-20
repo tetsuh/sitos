@@ -122,7 +122,9 @@ else()
 endif()
 
 if(SITOS_BUILD_PYTHON)
-  nanobind_add_module(_sitos MODULE python/bindings/module.cpp)
+  nanobind_add_module(_sitos MODULE
+    python/bindings/module.cpp
+    python/bindings/param_value_conversion.cpp)
   target_link_libraries(_sitos PRIVATE sitos::sitos)
   target_include_directories(_sitos PRIVATE src)
   target_compile_definitions(_sitos PRIVATE
