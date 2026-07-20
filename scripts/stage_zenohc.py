@@ -14,6 +14,7 @@ from pathlib import Path
 VERSION = "1.9.0"
 WINDOWS_SHA256 = "ebaa3c1ed303cf42c5af666b750da761c16d158f698cf17e5e8e0b4bd5524442"
 LICENSE_SHA256 = "01a44774f7b1a453595c7c6d7f7308284ba6a1059dc49e14dad6647e1d44a338"
+NOTICE_SHA256 = "ce71024d9e85cd28e31b023859531c447c7ef16063a2ea2979d412c6680858ed"
 
 
 def main() -> None:
@@ -50,7 +51,20 @@ def main() -> None:
         if hashlib.sha256(license_data).hexdigest() != LICENSE_SHA256:
             raise RuntimeError("unexpected zenoh-c license hash")
         license_path.write_bytes(license_data)
-    for required in (root / "include" / "zenoh.h", root / "lib" / "zenohc.dll.lib", root / "bin" / "zenohc.dll", license_path):
+    notice_path = root / "NOTICE.md"
+    if not notice_path.is_file():
+        notice_url = f"https://raw.githubusercontent.com/eclipse-zenoh/zenoh-c/{VERSION}/NOTICE.md"
+        notice_data = urllib.request.urlopen(notice_url, timeout=60).read()
+        if hashlib.sha256(notice_data).hexdigest() != NOTICE_SHA256:
+            raise RuntimeError("unexpected zenoh-c notice hash")
+        notice_path.write_bytes(notice_data)
+    for required in (
+        root / "include" / "zenoh.h",
+        root / "lib" / "zenohc.dll.lib",
+        root / "bin" / "zenohc.dll",
+        license_path,
+        notice_path,
+    ):
         if not required.is_file():
             raise RuntimeError(f"staged zenoh-c tree is incomplete: {required}")
     print(f"staged zenoh-c {VERSION} at {root}")

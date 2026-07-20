@@ -131,14 +131,6 @@ if(SITOS_BUILD_PYTHON)
     ARCHIVE DESTINATION sitos COMPONENT python)
   install(FILES python/sitos/__init__.py
     DESTINATION sitos COMPONENT python)
-  if(SITOS_WITH_ZENOH)
-    install(FILES "${SITOS_ZENOHC_RUNTIME}"
-      DESTINATION sitos COMPONENT python)
-    if(EXISTS "${SITOS_ZENOHC_LICENSE}")
-      install(FILES "${SITOS_ZENOHC_LICENSE}"
-        DESTINATION sitos/licenses COMPONENT python)
-    endif()
-  endif()
 endif()
 
 if(SITOS_BUILD_TESTS)
