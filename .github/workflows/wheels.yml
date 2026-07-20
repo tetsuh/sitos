@@ -59,7 +59,8 @@ jobs:
           set -eu
           for wheel in wheelhouse/*.whl; do
             python scripts/check_wheel.py "$wheel" --platform linux
-            auditwheel show "$wheel" | tee "${wheel}.auditwheel.txt"
+            docker run --rm -v "$PWD:/project" -w /project "$CIBW_MANYLINUX_X86_64_IMAGE" \
+              auditwheel show "$wheel" | tee "${wheel}.auditwheel.txt"
             grep --fixed-strings "manylinux_2_28_x86_64" "${wheel}.auditwheel.txt"
             venv="$(mktemp -d)"
             python -m venv "$venv"
