@@ -52,12 +52,15 @@ and `delvewheel`. It never selects the production runtime, uploads an artifact, 
 Production workflow Python tooling is installed from `.github/wheel-tools-requirements.txt` using
 exact versions, binary-only downloads, and reviewed SHA-256 hashes for direct and transitive
 packages. `PIP_CONSTRAINT`, `PIP_REQUIRE_HASHES`, and `PIP_ONLY_BINARY` are passed into the actual
-cibuildwheel build-isolation and test environments; the lock therefore governs the backend,
-repair, test, and runtime dependency installation rather than only the host launcher. The current
-non-yanked Windows repair tool is delvewheel 1.13.0. `auditwheel` is supplied by the pinned
-cibuildwheel manylinux image rather than a host pip installation; CI prints its actual version.
-Updating the builder image or wheel-tool lock requires reviewing dependency/tool provenance and
-rerunning both wheel jobs. Rocky Linux 10 clean-install validation uses
+cibuildwheel build-isolation environment, so the lock governs backend and repair tooling rather
+than only the host launcher. Post-repair validation creates a separate clean venv, hash-installs
+its fetched test and runtime dependencies from the same lock, then installs the newly generated
+local wheel with `--no-deps`. That generated wheel cannot have a pre-build hash; CI records its
+SHA-256 before installation, and `--no-deps` ensures it is the only install outside hash enforcement.
+The current non-yanked Windows repair tool is delvewheel 1.13.0. `auditwheel` is supplied by the
+pinned cibuildwheel manylinux image rather than a host pip installation; CI prints its actual
+version. Updating the builder image or wheel-tool lock requires reviewing dependency/tool
+provenance and rerunning both wheel jobs. Rocky Linux 10 clean-install validation uses
 `rockylinux/rockylinux@sha256:e372170ca8630f0f03e9b70fdd0bf4a3ce3426b0de7cdba615f06337389de176`.
 
 ## Consequences

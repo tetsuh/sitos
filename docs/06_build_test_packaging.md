@@ -105,12 +105,18 @@ the same cache variable. When the variable is empty, normal C++ builds retain th
 FetchContent path. CMake validates staged headers and native runtime files before configuring.
 
 To test a repaired wheel without a compiler or source-tree import, select its exact filename and use
-an isolated environment:
+an isolated environment. CI first hash-installs fetched test/runtime dependencies from
+`.github/wheel-tools-requirements.txt`, records the generated wheel SHA-256, and installs that local
+artifact with `--no-deps`; a generated artifact cannot have a pre-build hash.
 
 ```sh
+project_root="$(pwd)"
 python -m venv /tmp/sitos-wheel-test
-/tmp/sitos-wheel-test/bin/python -m pip install --only-binary=:all: dist/<exact-wheel>.whl
-/tmp/sitos-wheel-test/bin/python -m pytest tests/python
+/tmp/sitos-wheel-test/bin/python -m pip install --only-binary=:all: --require-hashes \
+  -r .github/wheel-tools-requirements.txt
+sha256sum dist/<exact-wheel>.whl
+/tmp/sitos-wheel-test/bin/python -m pip install --no-deps --only-binary=:all: dist/<exact-wheel>.whl
+(cd /tmp && /tmp/sitos-wheel-test/bin/python -m pytest "$project_root/tests/python")
 ```
 
 On Windows, use `C:\\path\\to\\sitos-wheel-test\\Scripts\\python.exe` instead. Inspect the wheel
