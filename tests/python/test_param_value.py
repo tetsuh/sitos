@@ -92,7 +92,7 @@ def test_malformed_payloads_are_rejected() -> None:
         b"",
         b"\xff",
         b"\x00",
-        b"\x00\x00",
+        b"\x00\x00\x00",
         b"\x01\x00",
         b"\x01" + b"\x00" * 9,
         b"\x02\x00",
