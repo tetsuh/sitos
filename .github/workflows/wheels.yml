@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       latest_compatible:
-        description: Run the non-publishing latest-Rust compatibility lane.
+        description: Run the non-publishing latest-compatible toolchain lane.
         required: false
         default: false
         type: boolean
@@ -40,7 +40,12 @@ jobs:
         echo "=== auditwheel (owned by the cibuildwheel manylinux image) ===";
         auditwheel --version'
         && bash /project/scripts/build_manylinux_zenohc.sh /opt/zenohc-stage
-      CIBW_ENVIRONMENT_LINUX: CMAKE_ARGS="-DSITOS_ZENOHC_ROOT=/opt/zenohc-stage"
+      # cibuildwheel forwards these to its build-isolation and test environments.
+      CIBW_ENVIRONMENT_LINUX: >-
+        CMAKE_ARGS="-DSITOS_ZENOHC_ROOT=/opt/zenohc-stage"
+        PIP_CONSTRAINT=/project/.github/wheel-tools-requirements.txt
+        PIP_REQUIRE_HASHES=1
+        PIP_ONLY_BINARY=:all:
       CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
         LD_LIBRARY_PATH=/opt/zenohc-stage/lib auditwheel repair -w {dest_dir} {wheel}
       CIBW_TEST_REQUIRES: pytest==8.3.3
@@ -66,6 +71,9 @@ jobs:
             python -m venv "$venv"
             env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" -m pip install --only-binary=:all: "$wheel"
             (cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" -c 'import sitos; assert sitos.decode_value(sitos.encode_value(b"wheel")) == b"wheel"')
+            docker run --rm -v "$PWD:/project:ro" -w /tmp \
+              rockylinux/rockylinux@sha256:e372170ca8630f0f03e9b70fdd0bf4a3ce3426b0de7cdba615f06337389de176 \
+              bash -ceu 'dnf -y install python3.12 python3.12-pip; python3.12 -m venv /tmp/sitos-wheel; /tmp/sitos-wheel/bin/python -m pip install --only-binary=:all: /project/'"${wheel}"'; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python -c "import sitos; assert sitos.decode_value(sitos.encode_value(b\\\"wheel\\\")) == b\\\"wheel\\\""'
           done
       # actions/upload-artifact v4.6.2
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -82,7 +90,12 @@ jobs:
       CIBW_ARCHS_WINDOWS: AMD64
       CIBW_BEFORE_ALL_WINDOWS: >-
         python {project}/scripts/stage_zenohc.py C:/sitos-zenohc-stage --platform windows
-      CIBW_ENVIRONMENT_WINDOWS: CMAKE_ARGS="-DSITOS_ZENOHC_ROOT=C:/sitos-zenohc-stage"
+      # cibuildwheel forwards these to its build-isolation and test environments.
+      CIBW_ENVIRONMENT_WINDOWS: >-
+        CMAKE_ARGS="-DSITOS_ZENOHC_ROOT=C:/sitos-zenohc-stage"
+        PIP_CONSTRAINT={project}/.github/wheel-tools-requirements.txt
+        PIP_REQUIRE_HASHES=1
+        PIP_ONLY_BINARY=:all:
       CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >-
         delvewheel repair --add-path C:/sitos-zenohc-stage/bin -w {dest_dir} {wheel}
       CIBW_TEST_REQUIRES: pytest==8.3.3
@@ -131,19 +144,48 @@ jobs:
           path: wheelhouse/*.whl
           if-no-files-found: error
 
-  latest-compatible-rust:
-    name: Latest compatible Rust (non-publishing)
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.latest_compatible)
+  latest-compatible:
+    name: Latest compatible Python and Rust (non-publishing)
+    # A maintainer adds the run-latest-compatible label to a PR to request this
+    # expensive non-publishing check. Scheduled and default-branch dispatch runs
+    # use the same path.
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.latest_compatible) ||
+      (github.event_name == 'pull_request' && github.event.action == 'labeled' &&
+       github.event.label.name == 'run-latest-compatible')
     runs-on: ubuntu-24.04
+    env:
+      CIBW_BUILD: cp312-manylinux_x86_64
+      CIBW_ARCHS_LINUX: x86_64
+      CIBW_MANYLINUX_X86_64_IMAGE: quay.io/pypa/manylinux_2_28_x86_64@sha256:a61875a2f84cab7df8de222ff12cabc08ff86eb4ad402ac90ba7bdaed9600cca
+      CIBW_BEFORE_ALL_LINUX: >-
+        SITOS_RUST_TOOLCHAIN=stable bash /project/scripts/build_manylinux_zenohc.sh /opt/zenohc-stage
+      CIBW_ENVIRONMENT_LINUX: CMAKE_ARGS="-DSITOS_ZENOHC_ROOT=/opt/zenohc-stage"
+      CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
+        LD_LIBRARY_PATH=/opt/zenohc-stage/lib auditwheel repair -w {dest_dir} {wheel}
     steps:
       # actions/checkout v5.0.0
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
         with:
           persist-credentials: false
-      - name: Build pinned zenoh-c graph with Rust stable
-        env:
-          SITOS_RUST_TOOLCHAIN: stable
+      - name: Install and report latest compatible Python wheel tooling
         run: |
-          docker run --rm -v "$PWD:/project" -w /project \
-            quay.io/pypa/manylinux_2_28_x86_64@sha256:a61875a2f84cab7df8de222ff12cabc08ff86eb4ad402ac90ba7bdaed9600cca \
-            bash scripts/build_manylinux_zenohc.sh /tmp/zenohc-stage
+          python -m pip install --upgrade --only-binary=:all: \
+            build cibuildwheel scikit-build-core nanobind delvewheel
+          python -m pip freeze | grep -E '^(build|cibuildwheel|delvewheel|nanobind|scikit-build-core)=='
+      - name: Build with latest compatible Python tooling and Rust stable
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("python/pyproject.toml")
+          text = path.read_text()
+          text = text.replace("scikit-build-core==0.10.7", "scikit-build-core>=0.10.7")
+          text = text.replace("nanobind==2.9.2", "nanobind>=2.9.2")
+          path.write_text(text)
+          PY
+          python -m cibuildwheel --output-dir latest-wheelhouse python
+          git diff -- python/pyproject.toml
+          git checkout -- python/pyproject.toml
+      - name: Confirm no artifact publication
+        run: test -n "$(find latest-wheelhouse -name '*.whl' -print -quit)"

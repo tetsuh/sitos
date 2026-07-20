@@ -44,16 +44,21 @@ zenoh-c 1.9.0 archive lock with repository-owned
 `a33695f093ad94cc745d9e5eb9b85a76f5abd63c5c35b66c8c514b0212e1b5a3`; it resolves Zenoh 1.9.0
 through `release/1.9.0#81c6c933b6e41d72a05f04c4442ef57717ddc72b`. Updating zenoh-c requires
 regenerating and reviewing this lock from the verified release source, updating its hash, and
-updating this ADR. A scheduled or manually requested, non-publishing latest-compatible lane uses
-moving Rust stable with the same fixed lock to detect toolchain compatibility; it never selects the
-production runtime or publishes artifacts.
+updating this ADR. A scheduled, default-branch-dispatched, or explicitly `run-latest-compatible`-labeled PR,
+non-publishing compatibility lane uses moving Rust stable with the same fixed lock and builds a
+wheel after selecting the latest compatible `build`, `cibuildwheel`, `scikit-build-core`, `nanobind`,
+and `delvewheel`. It never selects the production runtime, uploads an artifact, or publishes one.
 
-Workflow Python tooling is installed from `.github/wheel-tools-requirements.txt` using exact versions,
-binary-only downloads, and reviewed SHA-256 hashes for direct and transitive packages. The current
-non-yanked Windows repair tool is delvewheel 1.13.0. Official GitHub Actions are immutable commit
-SHA pins. `auditwheel` is supplied by the pinned cibuildwheel manylinux image rather than a host pip
-installation; CI prints its actual version. Updating the builder image or wheel-tool lock requires
-reviewing dependency/tool provenance and rerunning both wheel jobs.
+Production workflow Python tooling is installed from `.github/wheel-tools-requirements.txt` using
+exact versions, binary-only downloads, and reviewed SHA-256 hashes for direct and transitive
+packages. `PIP_CONSTRAINT`, `PIP_REQUIRE_HASHES`, and `PIP_ONLY_BINARY` are passed into the actual
+cibuildwheel build-isolation and test environments; the lock therefore governs the backend,
+repair, test, and runtime dependency installation rather than only the host launcher. The current
+non-yanked Windows repair tool is delvewheel 1.13.0. `auditwheel` is supplied by the pinned
+cibuildwheel manylinux image rather than a host pip installation; CI prints its actual version.
+Updating the builder image or wheel-tool lock requires reviewing dependency/tool provenance and
+rerunning both wheel jobs. Rocky Linux 10 clean-install validation uses
+`rockylinux/rockylinux@sha256:e372170ca8630f0f03e9b70fdd0bf4a3ce3426b0de7cdba615f06337389de176`.
 
 ## Consequences
 

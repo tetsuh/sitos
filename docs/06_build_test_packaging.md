@@ -93,11 +93,13 @@ specific to the wheel tag (`../build/python-wheel/{wheel_tag}`), so CPython buil
 another's CMake cache. The CMake project version is the single source for wheel metadata and
 `sitos.__version__`.
 
-CI builds exactly `cp310–cp313 × {win_amd64, manylinux_2_28_x86_64}` [P03]. Standard wheels bundle
-zenoh-c and do not include RocksDB (Linux: auditwheel repair, Windows: delvewheel). Linux wheels
-build the pinned zenoh-c source in the manylinux_2_28 builder with the pinned Rust 1.93.0 toolchain;
-the build script replaces the archive's stale Cargo.lock with the versioned repository-owned lock
-artifact and runs `cargo --locked`. The result is staged in the standalone layout and passed to CMake as
+The production target is `cp312-manylinux_2_28_x86_64`, validated on Ubuntu 24.04 and Rocky Linux
+10. `cp312-win_amd64` receives non-publishing build/test coverage only; other Python versions and
+formal Windows publication are deferred. Standard wheels bundle exactly one zenoh-c runtime and do
+not include RocksDB (Linux: auditwheel repair, Windows: delvewheel). Linux wheels build the pinned
+zenoh-c source in the manylinux_2_28 builder with the pinned Rust 1.93.0 toolchain; the build script
+replaces the archive's stale Cargo.lock with the versioned repository-owned lock artifact and runs
+`cargo --locked`. The result is staged in the standalone layout and passed to CMake as
 `-DSITOS_ZENOHC_ROOT=/opt/zenohc-stage`. Windows stages the pinned official standalone archive with
 the same cache variable. When the variable is empty, normal C++ builds retain the existing pinned
 FetchContent path. CMake validates staged headers and native runtime files before configuring.
@@ -112,9 +114,10 @@ python -m venv /tmp/sitos-wheel-test
 ```
 
 On Windows, use `C:\\path\\to\\sitos-wheel-test\\Scripts\\python.exe` instead. Inspect the wheel
-with `python scripts/check_wheel.py dist/<exact-wheel>.whl`; the check derives the CMake version and rejects RocksDB,
-GoogleTest, GoogleMock, SDK/CMake exports, and build-tree artifacts and requires `_sitos` plus the
-zenoh-c runtime. The installed wheel does not require Rust, CMake, Ninja, or a C++ compiler.
+with `python scripts/check_wheel.py --platform linux dist/<exact-wheel>.whl` (or `--platform windows`);
+the check derives the CMake version and rejects RocksDB, GoogleTest, GoogleMock, SDK/CMake exports,
+and build-tree artifacts and requires `_sitos` plus exactly one zenoh-c runtime. The installed wheel
+does not require Rust, CMake, Ninja, or a C++ compiler.
 
 RocksDBEngine is separated as a `sitos-rocksdb` wheel or a future optional extra. Runtime dependency:
 `numpy>=1.24`.

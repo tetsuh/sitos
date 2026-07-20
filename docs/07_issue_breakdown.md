@@ -313,9 +313,10 @@ so it is not a v0.2 blocker. Include it by v1.0.
   `python/sitos/__init__.py`, `tests/python/test_import.py`, `.github/workflows/wheels.yml`
 * Scope: `_sitos` module, scikit-build-core, non-publishing cibuildwheel configuration,
   explicit `SITOS_ZENOHC_ROOT` staging, and ParamValue ↔ Python type conversion
-* Acceptance criteria: repaired wheel installation with `--only-binary=:all:` on both OSes without
-  Rust or a C++ toolchain; pytest for type conversion (shared golden fixtures); CPython 3.10–3.13
-  Windows/Linux wheel matrix; no RocksDB or build artifacts in the wheel
+* Acceptance criteria: repaired CPython 3.12 manylinux_2_28 x86_64 production-wheel installation on
+  Ubuntu 24.04 and Rocky Linux 10, plus non-publishing CPython 3.12 Windows build/test coverage;
+  exact-filename `--only-binary=:all:` installation without Rust or a C++ toolchain; pytest for type
+  conversion (shared golden fixtures); no RocksDB or build artifacts in the wheel
 * Depends on: #4 (can proceed in parallel; preferably after #15/#18 APIs settle)
 
 ### #23 Python ParamStore
