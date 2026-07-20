@@ -3,6 +3,7 @@
 
 #include "sitos/list_sink.hpp"
 #include "sitos/param_concepts.hpp"
+#include "sitos/session_view.hpp"
 #include "sitos/sitos.hpp"
 
 static_assert(sitos::ParamInput<std::int64_t>);
@@ -15,6 +16,12 @@ concept HasAttachBase = requires(T& value) {
 };
 
 static_assert(!HasAttachBase<sitos::ParamCache>);
+
+template <typename T>
+concept HasSessionViewPut = requires(T& value) {
+  value.Put("key", sitos::ParamValue(std::int64_t{1}));
+};
+static_assert(!HasSessionViewPut<sitos::SessionView>);
 
 int main() {
   static_cast<void>(sitos::MakeZenohTransport());

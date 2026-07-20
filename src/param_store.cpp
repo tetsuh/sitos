@@ -5,8 +5,9 @@
 
 #include "sitos/param_store.hpp"
 
+#include "list_prefix_validation.hpp"
+
 #include <algorithm>
-#include <cctype>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -36,25 +37,6 @@ std::string ScopePath(const Scope& scope) {
       return "snap/" + scope.sid;
   }
   return {};
-}
-
-bool ContainsWhitespaceOrWildcard(std::string_view value) {
-  for (char c : value) {
-    if (std::isspace(static_cast<unsigned char>(c)) || c == '*' || c == '?') return true;
-  }
-  return false;
-}
-
-bool ContainsBatchSegment(std::string_view value) {
-  std::size_t start = 0;
-  while (start <= value.size()) {
-    const std::size_t end = value.find('/', start);
-    const std::size_t length = end == std::string_view::npos ? value.size() - start : end - start;
-    if (value.substr(start, length) == ":batch") return true;
-    if (end == std::string_view::npos) break;
-    start = end + 1;
-  }
-  return false;
 }
 
 std::string BuildScopeQuery(std::string_view prefix, std::string_view scope_path,
@@ -189,19 +171,7 @@ Result<void> ParamStore::ValidateUserKey(std::string_view key) {
 }
 
 Result<void> ParamStore::ValidateListPrefix(std::string_view prefix) {
-  if (prefix.empty()) return Result<void>::Ok();
-  if (prefix.front() == '/' || prefix.find("//") != std::string_view::npos ||
-      ContainsWhitespaceOrWildcard(prefix) || ContainsBatchSegment(prefix)) {
-    return InvalidKey("invalid list prefix");
-  }
-  if (prefix.back() == '/') {
-    if (prefix.size() == 1 || !IsValidPrefix(prefix.substr(0, prefix.size() - 1))) {
-      return InvalidKey("invalid list prefix");
-    }
-    return Result<void>::Ok();
-  }
-  if (!IsValidKey(prefix)) return InvalidKey("invalid list prefix");
-  return Result<void>::Ok();
+  return param_detail::ValidateListPrefix(prefix);
 }
 
 Result<void> ParamStore::Put(std::string_view scope, std::string_view key,

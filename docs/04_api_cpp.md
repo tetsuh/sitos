@@ -273,19 +273,29 @@ ordering across caches. `PutBatch` preserves caller order and duplicate keys in 
 message, and is not reader-visible transaction isolation, so concurrent readers may observe
 partial application. All APIs use the Result/Status model; `GetOr` substitutes only `NotFound`.
 `WaitForLocalDelivery` is deferred to #99, and stale/reconnect behavior is future #20 behavior.
-## 5. SessionView — Composite View (Optional Use)
+## 5. SessionView — Read-Only Composite View
 
-A facade for the host process side that handles overlay → snapshot resolution through one read
-interface.
+`SessionView` is the host-process facade for an active session. It is opened through the Result-based
+factory and does not perform Transport operations or writes.
 
 ```cpp
 class SessionView {
-public:
-    SessionView(const StorageNode& node, std::string_view sid);
-    // Get/GetOr/GetSpan/Contains/List with the same shape as ParamCache (in-process resolution)
-    // Put writes to the overlay + distributes via zenoh
+ public:
+  static Result<SessionView> Open(const StorageNode& node, std::string_view sid);
+
+  Result<ParamValue> Get(std::string_view key) const;
+  template <SupportedParamType T> Result<T> Get(std::string_view key) const;
+  template <SupportedParamType T> Result<T> GetOr(std::string_view key, T default_value) const;
+  Result<bool> Contains(std::string_view key) const;
+  Result<void> List(std::string_view prefix, const ListSink& sink) const;
 };
 ```
+
+Reads resolve overlay before snapshot and fall back only when the overlay key is absent. A malformed
+selected payload returns `Status::Error`. `List` materializes and validates the merged set, sorts
+keys lexically using raw-prefix matching, releases internal synchronization, and then invokes the
+caller sink. `GetShared`, `GetSpan`, `Put`, `PutBatch`, and `Delete` are intentionally absent.
+Large binary values belong to the disk-backed `buffers/<sid>/**` scope described by ADR-0014.
 
 ## 6. Thread-Safety Contract
 
@@ -295,6 +305,7 @@ public:
 | `ParamStore` | All methods may be called concurrently |
 | `ParamCache` | Attach/Detach and local write sequencing are synchronized internally. Local reads are cache-only; stale/reconnect behavior is future #20 behavior |
 | `StorageNode` | All methods may be called concurrently |
+| `SessionView` | All methods may be called concurrently. List callbacks run on the caller thread outside internal locks; re-entry and Stop from inside a sink are safe |
 | callback | Called from zenoh threads. Blocking is prohibited. From inside a callback, only Get-style APIs on the same object may be called |
 
 (END OF DOCUMENT)

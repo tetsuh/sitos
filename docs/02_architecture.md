@@ -41,7 +41,7 @@ Requirement IDs ([01_requirements.md](01_requirements.md)) are referenced as [F.
 | `ParamStore` | Client API: typed Put/Get/List/Delete/Subscribe. Wraps a zenoh session | zenoh |
 | `ParamCache` | Subscriber-side read cache. Initial fetch + delta subscription + zero-copy Get | zenoh |
 | `SessionController` | Session creation, snapshot registration, and destruction (inside the process that owns StorageNode) | StorageNode |
-| `SessionView` | Logical view that resolves overlay → snapshot (thin facade over ParamStore/ParamCache) | ParamStore or ParamCache |
+| `SessionView` | Host-process read-only view that resolves session overlay → snapshot | StorageNode |
 
 **Design principle**: `engine/` does not know about zenoh. `ParamStore`/`ParamCache` do not
 know about engine. Direct dependencies on the zenoh-c API are confined to the
@@ -308,9 +308,32 @@ In session mode, a DELETE removes the overlay and restores the snapshot baseline
 Base reads and writes use ParamStore's explicit `"base"` scope; ParamCache does not subscribe to
 or query `base/**`.
 
-## 6. ParamStore (Writes and Ad Hoc Reads)
+## 6. SessionView (Host-Process Composite Read)
 
-### 6.1 API Semantics
+`SessionView` is a move-only, read-only in-process facade opened with
+`SessionView::Open(const StorageNode&, sid)`. It performs no Transport operations and resolves the
+active session overlay before its immutable snapshot. A snapshot value is used only when the
+overlay does not contain the key; malformed selected payloads fail with `Status::Error` rather than
+falling back.
+
+`Open` captures the node State under `lifecycle_mutex_`, releases that mutex, and enters the
+captured State's existing callback gate before inspecting session tables. Each later operation locks
+its weak State, enters that gate, and copies the session reader pair under `session_mutex`. The view
+stores only weak State and weak overlay-owner identities, so Stop, CloseSession, and same-id
+recreation cannot leave a dangling or resource-pinning view. C++ shared-owner identity, not raw
+pointer addresses, distinguishes session generations.
+
+`Get` returns an owned `ParamValue`; typed `Get`, `GetOr`, `Contains`, and `List` follow the same
+Result/Status conventions as the client APIs. `List` materializes and validates the complete merged
+set, applies raw-prefix semantics and lexical ordering, then releases the gate and engine locks
+before invoking the caller sink. Sink false is a successful early stop and sink exceptions propagate
+on the caller thread. `GetShared`, `GetSpan`, and all writes are intentionally absent. Large images
+and compute artifacts belong to the disk-backed `buffers/<sid>/**` scope (ADR-0014), not the session
+overlay or ParamCache.
+
+## 7. ParamStore (Writes and Ad Hoc Reads)
+
+### 7.1 API Semantics
 
 * `Put(key, value)` / `PutBatch(entries)` — a batch is one `:batch` wire put
   (multi-entry format in the payload, [03](03_wire_protocol.md) §5) [F09]
@@ -319,13 +342,13 @@ or query `base/**`.
 * `List(prefix, sink)` — synchronous zenoh get using the narrowest safe chunk-boundary
   selector, followed by client-side raw-prefix filtering and lexical sorting.
 
-### 6.2 Put Completion Guarantee
+### 7.2 Put Completion Guarantee
 
 ParamStore write success means only that Transport accepted/submitted the operation. It does
 not confirm StorageNode application, durability, or cache visibility. Acknowledged writes and
 retry policy belong to Issues #14 and #17; this API does not add a `put_ack` configuration field.
 
-## 7. Session Lifecycle (Overall Sequence)
+## 8. Session Lifecycle (Overall Sequence)
 
 ```
 External client        Controller(StorageNode)          Calc(ParamCache)
@@ -348,7 +371,7 @@ External client        Controller(StorageNode)          Calc(ParamCache)
      │                      │   delete snapshots/overlays [F10]│
 ```
 
-## 8. Thread Model
+## 9. Thread Model
 
 | Component | Threads |
 |---|---|
@@ -359,7 +382,7 @@ External client        Controller(StorageNode)          Calc(ParamCache)
 | ParamCache writes | Caller thread; submission occurs without lifecycle or map locks, then local sequencing |
 | Python callbacks | Dedicated dispatch thread + queue (the GIL is not acquired on zenoh threads) [P04] |
 
-## 9. Error Handling Policy
+## 10. Error Handling Policy
 
 * APIs return `bool` / `std::optional` / `sitos::Result<T>` (error code +
   message). Exceptions are used only for unrecoverable cases such as constructor failure
@@ -368,7 +391,7 @@ External client        Controller(StorageNode)          Calc(ParamCache)
 * Type-mismatched Get: arithmetic casts are allowed among numeric types (BOOL/S64/DP) [C05];
   all other cases return failure
 
-## 10. Configuration (Config)
+## 11. Configuration (Config)
 
 ```cpp
 struct ClientConfig {

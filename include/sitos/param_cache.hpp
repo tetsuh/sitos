@@ -58,11 +58,7 @@ class ParamCache {
   Result<T> Get(std::string_view key) const {
     auto shared = GetShared(key);
     if (!shared.IsOk()) return Result<T>::ErrFrom(shared);
-    auto converted = shared.Value()->template As<T>();
-    if (!converted.has_value()) {
-      return Result<T>::Err(Status::TypeMismatch, "parameter value type mismatch");
-    }
-    return Result<T>::Ok(std::move(*converted));
+    return param_detail::ConvertParamValue<T>(*shared.Value());
   }
 
   template <SupportedParamType T>

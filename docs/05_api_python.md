@@ -87,14 +87,19 @@ node.stop()
 
 ### 2.4 SessionView
 
-API for using the composite view of snapshot + overlay directly from Python inside the process
-that owns StorageNode. It has the same semantics as C++ `SessionView`.
+The future Python binding will expose the same read-only semantics as C++ `SessionView` for the
+process that owns StorageNode. Python binding work belongs to Issue #25; this section is a plan,
+not an implemented API.
 
 ```python
-view = node.session_view(sid)
-fov = view.get("recon/fov", default=240.0)      # Resolve in overlay → snapshot order
-view.put("recon/progress", 0.5)                 # Write to overlay + distribute
+view = node.session_view(sid)  # Future Issue #25 binding
+fov = view.get("recon/fov", default=240.0)  # Future read-only composite view
+keys = view.list("recon/")
 ```
+
+The view resolves overlay before snapshot and performs no writes. `put`, `put_batch`, and `delete`
+are intentionally not part of SessionView. Large binary values use the disk-backed buffers API,
+not the session overlay or ParamCache.
 
 Custom engines [X01] can also be defined in Python
 (subclass `sitos.StorageEngine` and implement `put/get/list/delete`.

@@ -296,8 +296,10 @@ so it is not a v0.2 blocker. Include it by v1.0.
 * References: [04] §5
 * Implementation targets: `include/sitos/session_view.hpp`, `src/session_view.cpp`,
   `tests/unit/session_view_test.cpp`
-* Scope: in-process resolving read from overlay → snapshot, Put delivery
-* Acceptance criteria: unit + integration — resolution order, consistency with direct engine reference
+* Scope: move-only read-only in-process resolving reads from overlay → snapshot; Result-bearing
+  Get/GetOr/Contains/List, lifecycle and composite-read consistency, ADR-0025
+* Acceptance criteria: unit + integration — resolution order, malformed-payload behavior, lexical
+  materialized List, lifecycle/ownership/Stop safety, and synchronized consistency with ParamCache
 * Depends on: #12
 
 ---

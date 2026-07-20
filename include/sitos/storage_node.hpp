@@ -46,6 +46,8 @@ struct StorageNodeConfig {
   std::shared_ptr<LogSink> log_sink = DefaultLogSink();
 };
 
+class SessionView;
+
 /// Serves base-scope Get/List queries and base writes through Transport declarations.
 class StorageNode {
  public:
@@ -93,6 +95,8 @@ class StorageNode {
   bool IsStarted() const noexcept;
 
  private:
+  friend class SessionView;
+
   struct State {
     State(std::shared_ptr<StorageEngine> storage, std::string key_prefix,
           std::shared_ptr<LogSink> diagnostics)

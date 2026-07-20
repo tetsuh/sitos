@@ -37,11 +37,14 @@ add_sitos_public_header_compile_test(
   sitos_param_concepts_header_compile_test consumer/param_concepts_header_compile.cpp)
 add_sitos_public_header_compile_test(
   sitos_list_sink_header_compile_test consumer/list_sink_header_compile.cpp)
+add_sitos_public_header_compile_test(
+  sitos_session_view_header_compile_test consumer/session_view_header_compile.cpp)
 if(SITOS_WITH_ZENOH)
   sitos_copy_zenohc(sitos_param_store_header_compile_test)
   sitos_copy_zenohc(sitos_param_cache_header_compile_test)
   sitos_copy_zenohc(sitos_param_concepts_header_compile_test)
   sitos_copy_zenohc(sitos_list_sink_header_compile_test)
+  sitos_copy_zenohc(sitos_session_view_header_compile_test)
 endif()
 
 add_executable(sitos_bootstrap_test unit/bootstrap_test.cpp)
@@ -160,6 +163,17 @@ if(SITOS_WITH_ZENOH)
 endif()
 gtest_add_tests(TARGET sitos_storage_node_test SOURCES unit/storage_node_test.cpp)
 
+add_executable(sitos_session_view_test
+  unit/session_view_test.cpp)
+target_link_libraries(sitos_session_view_test
+  PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_session_view_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+sitos_enable_warnings(sitos_session_view_test)
+if(SITOS_WITH_ZENOH)
+  sitos_copy_zenohc(sitos_session_view_test)
+endif()
+gtest_add_tests(TARGET sitos_session_view_test SOURCES unit/session_view_test.cpp)
+
 # --- Zenoh smoke test (integration) ---
 if(SITOS_WITH_ZENOH)
   add_executable(sitos_zenoh_smoke_test
@@ -239,6 +253,16 @@ if(SITOS_WITH_ZENOH)
   gtest_add_tests(
     TARGET sitos_param_store_integration_test
     SOURCES integration/param_store_test.cpp)
+
+  add_executable(sitos_session_view_integration_test
+    integration/session_view_test.cpp)
+  target_link_libraries(sitos_session_view_integration_test
+    PRIVATE GTest::gtest_main sitos::sitos)
+  sitos_enable_warnings(sitos_session_view_integration_test)
+  sitos_copy_zenohc(sitos_session_view_integration_test)
+  gtest_add_tests(
+    TARGET sitos_session_view_integration_test
+    SOURCES integration/session_view_test.cpp)
 
   add_executable(sitos_param_cache_integration_test
     integration/param_cache_attach_test.cpp)
