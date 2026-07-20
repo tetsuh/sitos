@@ -3,7 +3,7 @@ set -euo pipefail
 
 stage_root="${1:?usage: build_manylinux_zenohc.sh <stage-root>}"
 version="1.9.0"
-rust_toolchain="1.85.0"
+rust_toolchain="1.88.0"
 archive="/tmp/zenoh-c-${version}.tar.gz"
 url="https://github.com/eclipse-zenoh/zenoh-c/archive/refs/tags/${version}.tar.gz"
 expected_sha256="6d66b1d1c725700148a6ea90faf93aa99c72db71a348bf30f5838b5a1be192d9"
