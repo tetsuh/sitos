@@ -95,8 +95,9 @@ another's CMake cache. The CMake project version is the single source for wheel 
 
 CI builds exactly `cp310–cp313 × {win_amd64, manylinux_2_28_x86_64}` [P03]. Standard wheels bundle
 zenoh-c and do not include RocksDB (Linux: auditwheel repair, Windows: delvewheel). Linux wheels
-build the pinned zenoh-c source in the manylinux_2_28 builder with the pinned Rust toolchain; the
-result is staged in the standalone layout and passed to CMake as
+build the pinned zenoh-c source in the manylinux_2_28 builder with the pinned Rust 1.93.0 toolchain;
+the build script replaces the archive's stale Cargo.lock with the versioned repository-owned lock
+artifact and runs `cargo --locked`. The result is staged in the standalone layout and passed to CMake as
 `-DSITOS_ZENOHC_ROOT=/opt/zenohc-stage`. Windows stages the pinned official standalone archive with
 the same cache variable. When the variable is empty, normal C++ builds retain the existing pinned
 FetchContent path. CMake validates staged headers and native runtime files before configuring.

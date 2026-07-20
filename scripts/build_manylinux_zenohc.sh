@@ -13,6 +13,9 @@ archive="/tmp/zenoh-c-${version}.tar.gz"
 url="https://github.com/eclipse-zenoh/zenoh-c/archive/refs/tags/${version}.tar.gz"
 expected_sha256="6d66b1d1c725700148a6ea90faf93aa99c72db71a348bf30f5838b5a1be192d9"
 source_root="/tmp/zenoh-c-${version}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+lock_artifact="${script_dir}/../third_party/zenoh-c/${version}/Cargo.lock"
+lock_sha256="a33695f093ad94cc745d9e5eb9b85a76f5abd63c5c35b66c8c514b0212e1b5a3"
 
 rm -rf "${source_root}" "${stage_root}"
 mkdir -p "${stage_root}"
@@ -21,6 +24,10 @@ curl --fail --silent --show-error --location --proto "${https_protocol}" \
 printf '%s  %s\n' "${expected_sha256}" "${archive}" | sha256sum --check --strict
 mkdir -p "${source_root}"
 tar -xzf "${archive}" --strip-components=1 -C "${source_root}"
+[[ -f "${lock_artifact}" ]]
+printf '%s  %s\n' "${lock_sha256}" "${lock_artifact}" | sha256sum --check --strict
+cp "${lock_artifact}" "${source_root}/Cargo.lock"
+printf '%s  %s\n' "${lock_sha256}" "${source_root}/Cargo.lock" | sha256sum --check --strict
 
 if ! command -v rustup >/dev/null 2>&1; then
   curl --fail --silent --show-error --location --proto "${https_protocol}" \

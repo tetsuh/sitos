@@ -23,9 +23,23 @@ Linux wheel builds will use the pinned
 builder, whose GCC 14 toolchain supports the core library's C++20 `std::format` use. They compile
 pinned zenoh-c sources with the upstream Rust 1.93.0 toolchain and stage the result through the
 explicit `SITOS_ZENOHC_ROOT` CMake cache path; Windows wheels will stage the pinned official MSVC
-standalone archive. Linux CI prints the compiler and auditwheel versions, then verifies the repaired
-wheel with `auditwheel show` against the `manylinux_2_28_x86_64` policy. Repaired wheels explicitly
-contain the zenoh-c runtime and do not contain RocksDB or C++ SDK/build artifacts.
+standalone archive.
+
+The Linux build replaces the stale upstream `Cargo.lock` from the zenoh-c 1.9.0 archive with the
+repository-owned artifact `third_party/zenoh-c/1.9.0/Cargo.lock` before running
+`cargo +1.93.0 build --locked`. The artifact SHA-256 is
+`a33695f093ad94cc745d9e5eb9b85a76f5abd63c5c35b66c8c514b0212e1b5a3` and resolves all Zenoh
+packages, including root `zenoh-c`, to 1.9.0 from
+`release/1.9.0#81c6c933b6e41d72a05f04c4442ef57717ddc72b`. This compensates for upstream release
+commit `499de93`, which updated the 1.9.0 manifests but left the archive's lock entries at 1.8.0
+and `main#91c230a8...`. The lock was regenerated with Cargo 1.93.0 from the SHA-256-verified
+1.9.0 source archive. Updating zenoh-c requires regenerating the artifact with the pinned release
+source and toolchain, reviewing the lock diff and dependency provenance, updating its SHA-256,
+and updating this ADR before changing the build script.
+
+Linux CI prints the compiler and auditwheel versions, then verifies the repaired wheel with
+`auditwheel show` against the `manylinux_2_28_x86_64` policy. Repaired wheels explicitly contain
+the zenoh-c runtime and do not contain RocksDB or C++ SDK/build artifacts.
 
 ## Consequences
 
