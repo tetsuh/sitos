@@ -260,16 +260,18 @@ TEST_F(SessionViewFixture, ListMergesRawPrefixAndSorts) {
 }
 
 TEST_F(SessionViewFixture, MalformedOverlayDoesNotFallbackAndListDoesNotPartiallyCallback) {
-  ASSERT_TRUE(engine->Put("bad", ParamValue(std::int64_t{1}).Encode()));
+  ASSERT_TRUE(engine->Put("hidden", std::vector<std::byte>{std::byte{0xff}}));
   node->Stop();
   ASSERT_TRUE(node->Start(engine, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
   ASSERT_TRUE(node->CreateSession("s1").IsOk());
   const std::vector<std::byte> malformed{std::byte{0xff}};
-  transport.Publish("sitos/session/s1/bad", malformed,
+  PublishValue("aaa-valid", ParamValue(std::int64_t{1}));
+  PublishValue("hidden", ParamValue(std::int64_t{2}));
+  transport.Publish("sitos/session/s1/zzz-malformed", malformed,
                     Encoding{std::string(Encoding::kSitosV1)});
   auto view = SessionView::Open(*node, "s1");
   ASSERT_TRUE(view.IsOk());
-  EXPECT_EQ(view.Value().Get("bad").StatusCode(), Status::Error);
+  EXPECT_EQ(view.Value().Get<std::int64_t>("hidden").Value(), 2);
   int callbacks = 0;
   EXPECT_EQ(view.Value().List("", [&](std::string_view, const ParamValue&) {
     ++callbacks;
@@ -348,6 +350,26 @@ TEST(SessionViewTest, MalformedSnapshotIsErrorAndHiddenSnapshotIsNotDecoded) {
   transport.Publish("sitos/session/s1/hidden", ParamValue(std::int64_t{3}).Encode(),
                     Encoding{std::string(Encoding::kSitosV1)});
   EXPECT_EQ(view.Value().Get<std::int64_t>("hidden").Value(), 3);
+}
+
+TEST(SessionViewTest, ValidOverlayHidesMalformedSnapshotDuringList) {
+  TestTransport transport;
+  auto engine = std::make_shared<InMemoryEngine>();
+  ASSERT_TRUE(engine->Put("shared", std::vector<std::byte>{std::byte{0xff}}));
+  StorageNode node(transport);
+  ASSERT_TRUE(node.Start(engine, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  const auto overlay = ParamValue(std::int64_t{7}).Encode();
+  transport.Publish("sitos/session/s1/shared", overlay, Encoding{std::string(Encoding::kSitosV1)});
+  auto view = SessionView::Open(node, "s1");
+  ASSERT_TRUE(view.IsOk());
+  std::vector<std::string> keys;
+  EXPECT_TRUE(view.Value().List("", [&](std::string_view key, const ParamValue& value) {
+    keys.emplace_back(key);
+    EXPECT_EQ(value.As<std::int64_t>(), std::optional<std::int64_t>{7});
+    return true;
+  }).IsOk());
+  EXPECT_EQ(keys, (std::vector<std::string>{"shared"}));
 }
 
 TEST(SessionViewTest, MoveAndInvalidArgumentsAreDeterministic) {
@@ -463,17 +485,21 @@ TEST(SessionViewTest, StopWaitsForCapturedReadAndClosesAdmission) {
   std::thread reader([&] { EXPECT_TRUE(view.Value().Get("key").IsOk()); });
   control->WaitUntilEntered();
   std::atomic<bool> stop_started = false;
+  std::atomic<bool> stop_returned = false;
   std::thread stopper([&] {
     stop_started = true;
     node.Stop();
+    stop_returned = true;
   });
   while (!stop_started.load()) std::this_thread::yield();
   while (view.Value().Get("quick").StatusCode() != Status::Disconnected) {
     std::this_thread::yield();
   }
+  EXPECT_FALSE(stop_returned.load());
   control->Release();
   reader.join();
   stopper.join();
+  EXPECT_TRUE(stop_returned.load());
 }
 
 TEST(SessionViewTest, ConcurrentReadsAndOverlayWritesAreSynchronized) {
@@ -511,8 +537,8 @@ TEST(SessionViewTest, ConcurrentReadsAndOverlayWritesAreSynchronized) {
 TEST(SessionViewTest, ListRejectsMalformedNonShadowedSnapshot) {
   TestTransport transport;
   auto engine = std::make_shared<InMemoryEngine>();
-  ASSERT_TRUE(engine->Put("valid", ParamValue(std::int64_t{1}).Encode()));
-  ASSERT_TRUE(engine->Put("bad", std::vector<std::byte>{std::byte{0xff}}));
+  ASSERT_TRUE(engine->Put("aaa-valid", ParamValue(std::int64_t{1}).Encode()));
+  ASSERT_TRUE(engine->Put("zzz-malformed", std::vector<std::byte>{std::byte{0xff}}));
   StorageNode node(transport);
   ASSERT_TRUE(node.Start(engine, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
   ASSERT_TRUE(node.CreateSession("s1").IsOk());
@@ -525,6 +551,142 @@ TEST(SessionViewTest, ListRejectsMalformedNonShadowedSnapshot) {
   });
   EXPECT_EQ(listed.StatusCode(), Status::Error);
   EXPECT_EQ(callbacks, 0);
+}
+
+TEST_F(SessionViewFixture, ListRawPrefixMatrixUsesOverlayPriorityAndLexicalOrder) {
+  ASSERT_TRUE(engine->Put("foo", ParamValue(std::int64_t{1}).Encode()));
+  ASSERT_TRUE(engine->Put("foo/bar", ParamValue(std::int64_t{2}).Encode()));
+  ASSERT_TRUE(engine->Put("foo/bar/baz", ParamValue(std::int64_t{3}).Encode()));
+  ASSERT_TRUE(engine->Put("foobar", ParamValue(std::int64_t{4}).Encode()));
+  ASSERT_TRUE(engine->Put("unrelated", ParamValue(std::int64_t{5}).Encode()));
+  node->Stop();
+  ASSERT_TRUE(node->Start(engine, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
+  ASSERT_TRUE(node->CreateSession("s1").IsOk());
+  PublishValue("foo", ParamValue(std::int64_t{10}));
+  PublishValue("foo/bar", ParamValue(std::int64_t{20}));
+  PublishValue("foo/qux", ParamValue(std::int64_t{30}));
+  auto view = SessionView::Open(*node, "s1");
+  ASSERT_TRUE(view.IsOk());
+
+  const auto collect = [&](std::string_view prefix) {
+    std::vector<std::pair<std::string, std::int64_t>> entries;
+    auto listed = view.Value().List(prefix, [&](std::string_view key, const ParamValue& value) {
+      const auto number = value.As<std::int64_t>();
+      EXPECT_TRUE(number.has_value());
+      entries.emplace_back(key, *number);
+      return true;
+    });
+    EXPECT_TRUE(listed.IsOk());
+    return entries;
+  };
+
+  EXPECT_EQ(collect(""), (std::vector<std::pair<std::string, std::int64_t>>{
+                             {"foo", 10}, {"foo/bar", 20}, {"foo/bar/baz", 3},
+                             {"foo/qux", 30}, {"foobar", 4}, {"unrelated", 5}}));
+  EXPECT_EQ(collect("foo"), (std::vector<std::pair<std::string, std::int64_t>>{
+                                {"foo", 10}, {"foo/bar", 20}, {"foo/bar/baz", 3},
+                                {"foo/qux", 30}, {"foobar", 4}}));
+  EXPECT_EQ(collect("foo/"), (std::vector<std::pair<std::string, std::int64_t>>{
+                                 {"foo/bar", 20}, {"foo/bar/baz", 3}, {"foo/qux", 30}}));
+  EXPECT_EQ(collect("foo/bar"), (std::vector<std::pair<std::string, std::int64_t>>{
+                                    {"foo/bar", 20}, {"foo/bar/baz", 3}}));
+  EXPECT_EQ(collect("foobar"),
+            (std::vector<std::pair<std::string, std::int64_t>>{{"foobar", 4}}));
+
+  int callbacks = 0;
+  EXPECT_TRUE(view.Value().List("foo", [&](std::string_view key, const ParamValue&) {
+    ++callbacks;
+    EXPECT_EQ(key, "foo");
+    return false;
+  }).IsOk());
+  EXPECT_EQ(callbacks, 1);
+}
+
+TEST_F(SessionViewFixture, ContainsPreservesSessionLifecycleNotFound) {
+  auto view = SessionView::Open(*node, "s1");
+  ASSERT_TRUE(view.IsOk());
+  EXPECT_FALSE(view.Value().Contains("missing").Value());
+  ASSERT_TRUE(node->CloseSession("s1").IsOk());
+  EXPECT_EQ(view.Value().Contains("missing").StatusCode(), Status::NotFound);
+  ASSERT_TRUE(node->CreateSession("s1").IsOk());
+  EXPECT_EQ(view.Value().Contains("missing").StatusCode(), Status::NotFound);
+}
+
+TEST_F(SessionViewFixture, NullSinkAndMovedFromOperationsHaveInvalidArgumentPrecedence) {
+  auto opened = SessionView::Open(*node, "s1");
+  ASSERT_TRUE(opened.IsOk());
+  SessionView source = std::move(opened).Value();
+  SessionView moved(std::move(source));
+
+  EXPECT_EQ(source.Get("bad/key").StatusCode(), Status::InvalidArgument);
+  EXPECT_EQ(source.Get<std::int64_t>("bad/key").StatusCode(), Status::InvalidArgument);
+  EXPECT_EQ(source.GetOr<std::int64_t>("bad/key", 1).StatusCode(), Status::InvalidArgument);
+  EXPECT_EQ(source.Contains("bad/key").StatusCode(), Status::InvalidArgument);
+  EXPECT_EQ(source.List("bad//prefix", {}).StatusCode(), Status::InvalidArgument);
+  EXPECT_EQ(moved.List("", {}).StatusCode(), Status::InvalidArgument);
+
+  auto destination_result = SessionView::Open(*node, "s1");
+  ASSERT_TRUE(destination_result.IsOk());
+  SessionView destination = std::move(destination_result).Value();
+  destination = std::move(moved);
+  EXPECT_EQ(moved.Get("key").StatusCode(), Status::InvalidArgument);
+  EXPECT_EQ(destination.Get("missing").StatusCode(), Status::NotFound);
+  AssignToSelf(destination);
+  EXPECT_EQ(destination.Get("missing").StatusCode(), Status::NotFound);
+}
+
+TEST(SessionViewTest, OpenRacingStopHasOnlyAdmissibleOutcomes) {
+  TestTransport transport;
+  auto engine = std::make_shared<InMemoryEngine>();
+  StorageNode node(transport);
+  ASSERT_TRUE(node.Start(engine, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  std::barrier start(3);
+  Result<SessionView> opened = Result<SessionView>::Err(Status::Error, "not started");
+  std::thread opener([&] {
+    start.arrive_and_wait();
+    opened = SessionView::Open(node, "s1");
+  });
+  std::thread stopper([&] {
+    start.arrive_and_wait();
+    node.Stop();
+  });
+  start.arrive_and_wait();
+  opener.join();
+  stopper.join();
+  EXPECT_TRUE(opened.IsOk() || opened.StatusCode() == Status::Disconnected);
+  if (opened.IsOk()) {
+    EXPECT_EQ(opened.Value().Get("key").StatusCode(), Status::Disconnected);
+  }
+}
+
+TEST(SessionViewTest, ConcurrentReaderAndSessionReplacementHaveSafeOutcomes) {
+  TestTransport transport;
+  auto engine = std::make_shared<InMemoryEngine>();
+  StorageNode node(transport);
+  ASSERT_TRUE(node.Start(engine, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  auto view = SessionView::Open(node, "s1");
+  ASSERT_TRUE(view.IsOk());
+  std::barrier start(2);
+  std::atomic<bool> failed = false;
+  std::thread reader([&] {
+    start.arrive_and_wait();
+    for (int i = 0; i < 200; ++i) {
+      const auto get = view.Value().Get("key");
+      if (!get.IsOk() && get.StatusCode() != Status::NotFound) failed = true;
+      const auto list = view.Value().List("", [](std::string_view, const ParamValue&) {
+        return true;
+      });
+      if (!list.IsOk() && list.StatusCode() != Status::NotFound) failed = true;
+    }
+  });
+  start.arrive_and_wait();
+  ASSERT_TRUE(node.CloseSession("s1").IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  reader.join();
+  EXPECT_FALSE(failed.load());
+  EXPECT_EQ(view.Value().Get("key").StatusCode(), Status::NotFound);
 }
 
 }  // namespace

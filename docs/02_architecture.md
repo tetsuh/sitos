@@ -316,11 +316,12 @@ active session overlay before its immutable snapshot. A snapshot value is used o
 overlay does not contain the key; malformed selected payloads fail with `Status::Error` rather than
 falling back.
 
-Each operation captures the node State under `lifecycle_mutex_`, enters the existing callback gate,
-and copies the session reader pair under `session_mutex`. The view stores only weak State and weak
-overlay-owner identities, so Stop, CloseSession, and same-id recreation cannot leave a dangling or
-resource-pinning view. C++ shared-owner identity, not raw pointer addresses, distinguishes session
-generations.
+`Open` captures the node State under `lifecycle_mutex_`, releases that mutex, and enters the
+captured State's existing callback gate before inspecting session tables. Each later operation locks
+its weak State, enters that gate, and copies the session reader pair under `session_mutex`. The view
+stores only weak State and weak overlay-owner identities, so Stop, CloseSession, and same-id
+recreation cannot leave a dangling or resource-pinning view. C++ shared-owner identity, not raw
+pointer addresses, distinguishes session generations.
 
 `Get` returns an owned `ParamValue`; typed `Get`, `GetOr`, `Contains`, and `List` follow the same
 Result/Status conventions as the client APIs. `List` materializes and validates the complete merged
