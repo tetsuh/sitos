@@ -46,7 +46,8 @@ std::vector<std::byte> ParamValue::EncodeBody() const {
     case 2: {  // DP (normalize NaN to canonical pattern)
       double d = std::get<double>(value_);
       if (std::isnan(d)) {
-        body.insert(body.end(), kCanonicalNanBody.begin(), kCanonicalNanBody.end());
+        body.resize(kCanonicalNanBody.size());
+        std::memcpy(body.data(), kCanonicalNanBody.data(), body.size());
       } else {
         std::uint64_t u = 0;
         std::memcpy(&u, &d, sizeof(u));
