@@ -100,7 +100,13 @@ jobs:
       - name: Validate contents, native dependencies, and clean installation
         shell: pwsh
         run: |
-          $dumpbin = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Microsoft Visual Studio" -Filter dumpbin.exe -Recurse | Select-Object -First 1
+          $vsRoots = @(
+            "${env:ProgramFiles(x86)}\Microsoft Visual Studio",
+            "$env:ProgramFiles\Microsoft Visual Studio"
+          )
+          $dumpbin = $vsRoots | Where-Object { Test-Path $_ } | ForEach-Object {
+            Get-ChildItem -Path $_ -Filter dumpbin.exe -Recurse
+          } | Select-Object -First 1
           if ($null -eq $dumpbin) { throw "dumpbin.exe was not found" }
           $env:Path = "$($dumpbin.DirectoryName);$env:Path"
           Get-ChildItem wheelhouse\*.whl | ForEach-Object {

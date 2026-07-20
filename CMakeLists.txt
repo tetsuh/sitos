@@ -124,7 +124,10 @@ endif()
 if(SITOS_BUILD_PYTHON)
   nanobind_add_module(_sitos MODULE python/bindings/module.cpp)
   target_link_libraries(_sitos PRIVATE sitos::sitos)
-  target_compile_definitions(_sitos PRIVATE SITOS_PYTHON_VERSION="${PROJECT_VERSION}")
+  target_include_directories(_sitos PRIVATE src)
+  target_compile_definitions(_sitos PRIVATE
+    SITOS_PYTHON_VERSION="${PROJECT_VERSION}"
+    SITOS_PYTHON_WITH_ZENOH=$<BOOL:${SITOS_WITH_ZENOH}>)
   install(TARGETS _sitos
     LIBRARY DESTINATION sitos COMPONENT python
     RUNTIME DESTINATION sitos COMPONENT python

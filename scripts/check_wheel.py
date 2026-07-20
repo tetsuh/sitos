@@ -76,7 +76,7 @@ def validate_windows_native_dependencies(root: Path, extension: Path, runtime: P
     output = subprocess.run(
         [dumpbin, "/DEPENDENTS", str(extension)], check=True, capture_output=True, text=True
     ).stdout
-    if "zenohc.dll" not in output.lower():
+    if not re.search(r"zenohc(?:-[0-9a-f]+)?\.dll", output, re.I):
         raise RuntimeError("sitos._sitos does not declare a zenoh-c native dependency")
     if not runtime.is_file():
         raise RuntimeError("the wheel zenoh-c runtime is missing")
@@ -117,16 +117,17 @@ def main() -> None:
         runtimes = runtime_members(names)
         if len(runtimes) != 1:
             raise RuntimeError("wheel must contain exactly one zenoh-c runtime")
-        require_member(
-            names,
-            ".dist-info/licenses/license-zenoh-c",
-            "wheel does not contain the zenoh-c license metadata",
-        )
-        require_member(
-            names,
-            ".dist-info/licenses/notice-zenoh-c.md",
-            "wheel does not contain the zenoh-c notice metadata",
-        )
+        lowered_names = [name.lower() for name in names]
+        if not any(
+            ".dist-info/licenses/" in name and name.endswith("license-zenoh-c")
+            for name in lowered_names
+        ):
+            raise RuntimeError("wheel does not contain the zenoh-c license metadata")
+        if not any(
+            ".dist-info/licenses/" in name and name.endswith("notice-zenoh-c.md")
+            for name in lowered_names
+        ):
+            raise RuntimeError("wheel does not contain the zenoh-c notice metadata")
         metadata = require_member(names, ".dist-info/metadata", "wheel does not contain .dist-info/METADATA")
         metadata_text = wheel.read(metadata).decode("utf-8")
         if f"Version: {version}" not in metadata_text:

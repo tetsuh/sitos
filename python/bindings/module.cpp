@@ -15,6 +15,10 @@
 
 #include "sitos/param_value.hpp"
 
+#if SITOS_PYTHON_WITH_ZENOH
+#include "transport/zenoh_runtime_anchor.hpp"
+#endif
+
 namespace nb = nanobind;
 using namespace nb::literals;
 
@@ -92,6 +96,10 @@ nb::object DecodeValue(const nb::bytes& payload) {
 }  // namespace
 
 NB_MODULE(_sitos, module) {
+#if SITOS_PYTHON_WITH_ZENOH
+  // Retain the deliberate Zenoh-enabled wheel runtime edge without exposing its C API here.
+  [[maybe_unused]] const volatile auto runtime_anchor = sitos::detail::ZenohRuntimeAnchor();
+#endif
   module.doc() = "sitos payload-v1 conversion helpers";
   module.attr("__version__") = SITOS_PYTHON_VERSION;
   module.def("encode_value", &EncodeValue, "value"_a);
