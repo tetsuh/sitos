@@ -3,7 +3,8 @@ set -euo pipefail
 
 stage_root="${1:?usage: build_manylinux_zenohc.sh <stage-root>}"
 version="1.9.0"
-rust_toolchain="1.97.1"
+rust_toolchain="1.93.0"
+https_protocol="=https"
 rustup_version="1.28.2"
 rustup_archive="/tmp/rustup-init-${rustup_version}"
 rustup_url="https://static.rust-lang.org/rustup/archive/${rustup_version}/x86_64-unknown-linux-gnu/rustup-init"
@@ -15,15 +16,15 @@ source_root="/tmp/zenoh-c-${version}"
 
 rm -rf "${source_root}" "${stage_root}"
 mkdir -p "${stage_root}"
-curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-  "${url}" --output "${archive}"
+curl --fail --silent --show-error --location --proto "${https_protocol}" \
+  --proto-redir "${https_protocol}" "${url}" --output "${archive}"
 printf '%s  %s\n' "${expected_sha256}" "${archive}" | sha256sum --check --strict
 mkdir -p "${source_root}"
 tar -xzf "${archive}" --strip-components=1 -C "${source_root}"
 
 if ! command -v rustup >/dev/null 2>&1; then
-  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-    "${rustup_url}" --output "${rustup_archive}"
+  curl --fail --silent --show-error --location --proto "${https_protocol}" \
+    --proto-redir "${https_protocol}" "${rustup_url}" --output "${rustup_archive}"
   printf '%s  %s\n' "${rustup_sha256}" "${rustup_archive}" | sha256sum --check --strict
   chmod +x "${rustup_archive}"
   "${rustup_archive}" -y --profile minimal --default-toolchain none
