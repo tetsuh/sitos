@@ -19,8 +19,24 @@ jobs:
     env:
       CIBW_BUILD: cp310-manylinux_x86_64 cp311-manylinux_x86_64 cp312-manylinux_x86_64 cp313-manylinux_x86_64
       CIBW_ARCHS_LINUX: x86_64
-      CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
-      CIBW_BEFORE_ALL_LINUX: bash /project/scripts/build_manylinux_zenohc.sh /opt/zenohc-stage
+      # GCC 14 image pinned by immutable digest. This retains the manylinux_2_28 ABI policy while
+      # providing the C++20 std::format implementation required by the core library.
+      CIBW_MANYLINUX_X86_64_IMAGE: quay.io/pypa/manylinux_2_28_x86_64@sha256:a61875a2f84cab7df8de222ff12cabc08ff86eb4ad402ac90ba7bdaed9600cca
+      CIBW_BEFORE_ALL_LINUX: >-
+        bash -c 'set -eu;
+        echo "=== compiler ===";
+        gcc --version;
+        g++ --version;
+        g++ -dM -E -x c++ /dev/null | grep -E "__GNUC__|__GNUC_MINOR__|__GNUC_PATCHLEVEL__";
+        echo "=== glibc ===";
+        getconf GNU_LIBC_VERSION;
+        echo "=== libstdc++ ===";
+        libstdcxx="$(g++ -print-file-name=libstdc++.so.6)";
+        echo "libstdc++=${libstdcxx}";
+        strings "${libstdcxx}" | grep -E "^GLIBCXX_[0-9]" | sort -V | tail -n 1;
+        echo "=== auditwheel ===";
+        auditwheel --version'
+        && bash /project/scripts/build_manylinux_zenohc.sh /opt/zenohc-stage
       CIBW_ENVIRONMENT_LINUX: >-
         CMAKE_ARGS="-DSITOS_ZENOHC_ROOT=/opt/zenohc-stage"
         LD_LIBRARY_PATH=/opt/zenohc-stage/lib
@@ -35,11 +51,13 @@ jobs:
         run: python -m pip install cibuildwheel==2.21.3 build==1.2.2 auditwheel==6.1.0
       - name: Build and test repaired wheels
         run: python -m cibuildwheel --output-dir wheelhouse python
-      - name: Validate wheel contents
+      - name: Validate wheel contents and manylinux policy
         run: |
           set -eu
           for wheel in wheelhouse/*.whl; do
             python scripts/check_wheel.py "$wheel"
+            auditwheel show "$wheel" | tee "${wheel}.auditwheel.txt"
+            grep --fixed-strings "manylinux_2_28_x86_64" "${wheel}.auditwheel.txt"
           done
       - name: Upload wheels
         uses: actions/upload-artifact@v4

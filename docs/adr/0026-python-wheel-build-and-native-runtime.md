@@ -18,11 +18,14 @@ edge to the zenoh-c runtime.
 We will build wheels through the repository root CMake project, derive Python metadata and
 `sitos.__version__` from the CMake project version, install only a Python CMake component, and run
 non-publishing cibuildwheel validation for the CPython 3.10–3.13 Windows and manylinux 2.28 matrix.
-Linux wheel builds will compile pinned zenoh-c sources in the manylinux builder with the pinned
-Rust 1.88.0 toolchain and stage the result through the explicit `SITOS_ZENOHC_ROOT` CMake cache path;
-Windows wheels will stage the pinned
-official MSVC standalone archive. Repaired wheels explicitly contain the zenoh-c runtime and do not
-contain RocksDB or C++ SDK/build artifacts.
+Linux wheel builds will use the pinned
+`quay.io/pypa/manylinux_2_28_x86_64@sha256:a61875a2f84cab7df8de222ff12cabc08ff86eb4ad402ac90ba7bdaed9600cca`
+builder, whose GCC 14 toolchain supports the core library's C++20 `std::format` use. They compile
+pinned zenoh-c sources with the pinned Rust 1.88.0 toolchain and stage the result through the
+explicit `SITOS_ZENOHC_ROOT` CMake cache path; Windows wheels will stage the pinned official MSVC
+standalone archive. Linux CI prints the compiler and auditwheel versions, then verifies the repaired
+wheel with `auditwheel show` against the `manylinux_2_28_x86_64` policy. Repaired wheels explicitly
+contain the zenoh-c runtime and do not contain RocksDB or C++ SDK/build artifacts.
 
 ## Consequences
 
