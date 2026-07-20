@@ -8,8 +8,9 @@
 
 #include <chrono>
 #include <ctime>
-#include <format>
+#include <iomanip>
 #include <optional>
+#include <sstream>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
@@ -82,8 +83,12 @@ std::string NowIso8601() {
 #else
   gmtime_r(&seconds, &tm);
 #endif
-  return std::format("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", tm.tm_year + 1900, tm.tm_mon + 1,
-                     tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+  std::ostringstream result;
+  result << std::setfill('0') << std::setw(4) << tm.tm_year + 1900 << '-' << std::setw(2)
+         << tm.tm_mon + 1 << '-' << std::setw(2) << tm.tm_mday << 'T' << std::setw(2)
+         << tm.tm_hour << ':' << std::setw(2) << tm.tm_min << ':' << std::setw(2) << tm.tm_sec
+         << 'Z';
+  return result.str();
 }
 
 // Parses a scope-relative selector (the part after base/, session/<sid>/, or
@@ -497,7 +502,9 @@ void StorageNode::ReplyMetaQuery(const std::shared_ptr<State>& state, TransportQ
     std::shared_lock lock(state->session_mutex);
     auto it = state->sessions.find(parsed->sid);
     if (it == state->sessions.end()) return;  // Unknown sid: 0 replies.
-    json = std::format(R"({{"state":"active","created_at":"{}"}})", it->second.created_at);
+    json = R"({"state":"active","created_at":")";
+    json += it->second.created_at;
+    json += R"("})";
   }
   const auto payload = ParamValue(json).Encode();
   query.Reply(query.keyexpr, payload, SitosEncoding());
