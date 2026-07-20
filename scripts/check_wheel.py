@@ -31,7 +31,7 @@ def main() -> None:
                 raise RuntimeError(f"forbidden wheel entry: {name}")
         if not any(name.startswith("sitos/_sitos") for name in names):
             raise RuntimeError("wheel does not contain sitos._sitos")
-        if not any(name.startswith("sitos/zenohc") for name in names):
+        if not any("libzenohc" in name.lower() or name.lower().endswith("/zenohc.dll") for name in names):
             raise RuntimeError("wheel does not contain the zenoh-c runtime")
         if not any(name.lower().endswith("sitos/licenses/license") for name in names):
             raise RuntimeError("wheel does not contain the zenoh-c license")
