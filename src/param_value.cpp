@@ -64,7 +64,9 @@ std::vector<std::byte> ParamValue::EncodeBody() const {
     }
     case 4: {  // Bytes
       const auto& b = std::get<std::vector<std::byte>>(value_);
-      body.insert(body.end(), b.begin(), b.end());
+      if (!b.empty()) {
+        body.insert(body.end(), b.begin(), b.end());
+      }
       break;
     }
     default:
