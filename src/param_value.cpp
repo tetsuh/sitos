@@ -56,8 +56,10 @@ std::vector<std::byte> ParamValue::EncodeBody() const {
     }
     case 3: {  // Str
       const auto& s = std::get<std::string>(value_);
-      const auto* p = reinterpret_cast<const std::byte*>(s.data());
-      body.insert(body.end(), p, p + s.size());
+      if (!s.empty()) {
+        const auto* p = reinterpret_cast<const std::byte*>(s.data());
+        body.insert(body.end(), p, p + s.size());
+      }
       break;
     }
     case 4: {  // Bytes
