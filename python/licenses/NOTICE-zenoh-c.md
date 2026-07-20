@@ -37,4 +37,3 @@ The project maintains the following source code repositories:
 ## Third-party Content
 
  *To be completed...*
-
