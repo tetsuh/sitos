@@ -35,12 +35,15 @@ def cmake_version() -> str:
     return match.group(1)
 
 
+def is_runtime_member(name: str) -> bool:
+    base = name.rsplit("/", maxsplit=1)[-1].lower()
+    return (base.startswith("libzenohc") and ".so" in base) or (
+        base.startswith("zenohc") and base.endswith(".dll")
+    )
+
+
 def runtime_members(names: list[str]) -> list[str]:
-    return [
-        name
-        for name in names
-        if re.search(r"(?:^|/)(?:lib)?zenohc(?:-[^/]*)?\.(?:so(?:\.[^/]*)?|dll)$", name, re.I)
-    ]
+    return [name for name in names if is_runtime_member(name)]
 
 
 def require_member(names: list[str], suffix: str, message: str) -> str:
@@ -50,7 +53,7 @@ def require_member(names: list[str], suffix: str, message: str) -> str:
     return matches[0]
 
 
-def validate_linux_native_dependencies(root: Path, extension: Path, runtime: Path) -> None:
+def validate_linux_native_dependencies(extension: Path, runtime: Path) -> None:
     readelf = shutil.which("readelf")
     ldd = shutil.which("ldd")
     if readelf is None or ldd is None:
@@ -69,7 +72,7 @@ def validate_linux_native_dependencies(root: Path, extension: Path, runtime: Pat
         raise RuntimeError("sitos._sitos does not resolve zenoh-c from the wheel runtime directory")
 
 
-def validate_windows_native_dependencies(root: Path, extension: Path, runtime: Path) -> None:
+def validate_windows_native_dependencies(extension: Path, runtime: Path) -> None:
     dumpbin = shutil.which("dumpbin")
     if dumpbin is None:
         raise RuntimeError("dumpbin is required for Windows wheel validation")
@@ -86,9 +89,9 @@ def validate_native_dependencies(root: Path, extension_name: str, runtime_name: 
     extension = root / extension_name
     runtime = root / runtime_name
     if platform == "linux":
-        validate_linux_native_dependencies(root, extension, runtime)
+        validate_linux_native_dependencies(extension, runtime)
     elif platform == "windows":
-        validate_windows_native_dependencies(root, extension, runtime)
+        validate_windows_native_dependencies(extension, runtime)
     else:
         raise RuntimeError(f"unsupported platform: {platform}")
 
