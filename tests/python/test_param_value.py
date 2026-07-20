@@ -1,4 +1,5 @@
 from pathlib import Path
+import math
 import struct
 
 import pytest
@@ -39,6 +40,12 @@ def test_nan_encoding_matches_golden_fixture() -> None:
     assert sitos.encode_value(float("nan")) == fixture("dp_nan")
 
 
+def test_nan_decode_and_round_trip_are_canonical() -> None:
+    decoded = sitos.decode_value(fixture("dp_nan"))
+    assert math.isnan(decoded)
+    assert sitos.encode_value(decoded) == fixture("dp_nan")
+
+
 @pytest.mark.parametrize("value", [-(2**63), 2**63 - 1])
 def test_int64_boundaries_are_accepted(value: int) -> None:
     assert sitos.decode_value(sitos.encode_value(value)) == value
@@ -62,13 +69,35 @@ def test_special_floating_values_round_trip() -> None:
         assert struct.pack("<d", decoded) == struct.pack("<d", value)
 
 
-def test_unsupported_input_is_rejected() -> None:
+@pytest.mark.parametrize("value", [bytearray(b"bytes"), memoryview(b"bytes"), [1], object()])
+def test_encode_unsupported_input_is_rejected(value: object) -> None:
     with pytest.raises(TypeError):
-        sitos.encode_value(bytearray(b"bytes"))
+        sitos.encode_value(value)
+
+
+@pytest.mark.parametrize("payload", [bytearray(b"\x00"), memoryview(b"\x00"), [0], object()])
+def test_decode_non_bytes_input_is_rejected(payload: object) -> None:
+    with pytest.raises(TypeError):
+        sitos.decode_value(payload)  # type: ignore[arg-type]
+
+
+def test_decode_numpy_input_is_rejected() -> None:
+    numpy = pytest.importorskip("numpy")
+    with pytest.raises(TypeError):
+        sitos.decode_value(numpy.array([0], dtype=numpy.uint8))
 
 
 def test_malformed_payloads_are_rejected() -> None:
-    for payload in (b"", b"\xff", b"\x00", b"\x01\x00", b"\x02\x00"):
+    for payload in (
+        b"",
+        b"\xff",
+        b"\x00",
+        b"\x00\x00",
+        b"\x01\x00",
+        b"\x01" + b"\x00" * 9,
+        b"\x02\x00",
+        b"\x02" + b"\x00" * 9,
+    ):
         with pytest.raises(ValueError):
             sitos.decode_value(payload)
 

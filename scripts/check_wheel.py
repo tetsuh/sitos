@@ -1,46 +1,140 @@
 #!/usr/bin/env python3
-"""Validate the contents and metadata of a repaired sitos wheel."""
+"""Validate the contents and native dependencies of a repaired sitos wheel."""
 
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import zipfile
 from pathlib import Path
+
+
+FORBIDDEN_TOKENS = (
+    "rocksdb",
+    "gtest",
+    "gmock",
+    "cmake",
+    "include/",
+    "/include/",
+    "benchmark",
+    "build/",
+    "/build/",
+)
+FORBIDDEN_SUFFIXES = (".a", ".lib", ".h", ".hh", ".hpp", ".cmake")
+
+
+def cmake_version() -> str:
+    cmake = Path(__file__).parents[1] / "CMakeLists.txt"
+    match = re.search(r"project\(sitos VERSION ([0-9]+\.[0-9]+\.[0-9]+)", cmake.read_text())
+    if match is None:
+        raise RuntimeError("could not determine the CMake project version")
+    return match.group(1)
+
+
+def runtime_members(names: list[str]) -> list[str]:
+    return [
+        name
+        for name in names
+        if re.search(r"(?:^|/)(?:lib)?zenohc(?:-[^/]*)?\.(?:so(?:\.[^/]*)?|dll)$", name, re.I)
+    ]
+
+
+def require_member(names: list[str], suffix: str, message: str) -> str:
+    matches = [name for name in names if name.lower().endswith(suffix.lower())]
+    if len(matches) != 1:
+        raise RuntimeError(message)
+    return matches[0]
+
+
+def validate_linux_native_dependencies(root: Path, extension: Path, runtime: Path) -> None:
+    readelf = shutil.which("readelf")
+    ldd = shutil.which("ldd")
+    if readelf is None or ldd is None:
+        raise RuntimeError("readelf and ldd are required for Linux wheel validation")
+    dynamic = subprocess.run(
+        [readelf, "-d", str(extension)], check=True, capture_output=True, text=True
+    ).stdout
+    if "libzenohc" not in dynamic:
+        raise RuntimeError("sitos._sitos does not declare a zenoh-c native dependency")
+    environment = {"PATH": os.environ["PATH"], "LD_LIBRARY_PATH": str(runtime.parent)}
+    resolved = subprocess.run(
+        [ldd, str(extension)], check=True, capture_output=True, text=True, env=environment
+    ).stdout
+    runtime_line = next((line for line in resolved.splitlines() if "libzenohc" in line), None)
+    if runtime_line is None or str(runtime.parent) not in runtime_line:
+        raise RuntimeError("sitos._sitos does not resolve zenoh-c from the wheel runtime directory")
+
+
+def validate_windows_native_dependencies(root: Path, extension: Path, runtime: Path) -> None:
+    dumpbin = shutil.which("dumpbin")
+    if dumpbin is None:
+        raise RuntimeError("dumpbin is required for Windows wheel validation")
+    output = subprocess.run(
+        [dumpbin, "/DEPENDENTS", str(extension)], check=True, capture_output=True, text=True
+    ).stdout
+    if "zenohc.dll" not in output.lower():
+        raise RuntimeError("sitos._sitos does not declare a zenoh-c native dependency")
+    if not runtime.is_file():
+        raise RuntimeError("the wheel zenoh-c runtime is missing")
+
+
+def validate_native_dependencies(root: Path, extension_name: str, runtime_name: str, platform: str) -> None:
+    extension = root / extension_name
+    runtime = root / runtime_name
+    if platform == "linux":
+        validate_linux_native_dependencies(root, extension, runtime)
+    elif platform == "windows":
+        validate_windows_native_dependencies(root, extension, runtime)
+    else:
+        raise RuntimeError(f"unsupported platform: {platform}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("wheel", type=Path)
-    parser.add_argument("version", nargs="?")
+    parser.add_argument("--platform", choices=("linux", "windows"), required=True)
+    parser.add_argument("--version")
     args = parser.parse_args()
-    version = args.version
-    if version is None:
-        cmake = Path(__file__).parents[1] / "CMakeLists.txt"
-        match = re.search(r"project\(sitos VERSION ([0-9]+\.[0-9]+\.[0-9]+)", cmake.read_text())
-        if match is None:
-            raise RuntimeError("could not determine the CMake project version")
-        version = match.group(1)
+    version = args.version or cmake_version()
 
     with zipfile.ZipFile(args.wheel) as wheel:
         names = wheel.namelist()
-        forbidden = ("rocksdb", "gtest", "gmock", "sitosTargets.cmake", "CMakeLists.txt")
         for name in names:
             lowered = name.lower()
-            if any(token.lower() in lowered for token in forbidden):
+            if any(token in lowered for token in FORBIDDEN_TOKENS) or lowered.endswith(FORBIDDEN_SUFFIXES):
                 raise RuntimeError(f"forbidden wheel entry: {name}")
-        if not any(name.startswith("sitos/_sitos") for name in names):
-            raise RuntimeError("wheel does not contain sitos._sitos")
-        if not any("libzenohc" in name.lower() or name.lower().endswith("/zenohc.dll") for name in names):
-            raise RuntimeError("wheel does not contain the zenoh-c runtime")
-        if not any(name.lower().endswith("sitos/licenses/license") for name in names):
-            raise RuntimeError("wheel does not contain the zenoh-c license")
-        metadata_candidates = [name for name in names if name.endswith(".dist-info/METADATA")]
-        if not metadata_candidates:
-            raise RuntimeError("wheel does not contain .dist-info/METADATA")
-        metadata_text = wheel.read(metadata_candidates[0]).decode("utf-8")
+        extension_suffix = ".pyd" if args.platform == "windows" else ".so"
+        extensions = [
+            name for name in names if name.startswith("sitos/_sitos") and name.lower().endswith(extension_suffix)
+        ]
+        if len(extensions) != 1:
+            raise RuntimeError("wheel does not contain exactly one sitos._sitos extension")
+        extension = extensions[0]
+        runtimes = runtime_members(names)
+        if len(runtimes) != 1:
+            raise RuntimeError("wheel must contain exactly one zenoh-c runtime")
+        require_member(
+            names,
+            ".dist-info/licenses/license-zenoh-c",
+            "wheel does not contain the zenoh-c license metadata",
+        )
+        require_member(
+            names,
+            ".dist-info/licenses/notice-zenoh-c.md",
+            "wheel does not contain the zenoh-c notice metadata",
+        )
+        metadata = require_member(names, ".dist-info/metadata", "wheel does not contain .dist-info/METADATA")
+        metadata_text = wheel.read(metadata).decode("utf-8")
         if f"Version: {version}" not in metadata_text:
             raise RuntimeError("wheel metadata version does not match CMake version")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wheel.extractall(root)
+            validate_native_dependencies(root, extension, runtimes[0], args.platform)
 
     print(f"validated wheel {args.wheel.name}")
 
