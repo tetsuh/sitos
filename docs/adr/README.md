@@ -30,3 +30,5 @@ See [docs/10_adr_process.md](../10_adr_process.md) for the process.
 | [0023](0023-param-cache-consistency-and-lifetime.md) | Define ParamCache consistency and lifetime boundary |
 | [0024](0024-opt-in-google-benchmark-build-boundary.md) | Keep Google Benchmark opt-in and outside installed packages |
 | [0025](0025-session-view-lifetime-and-composite-read-consistency.md) | Define SessionView lifetime and composite-read consistency |
+| [0026](0026-python-wheel-build-and-native-runtime.md) | Define the Python wheel build and bundled native-runtime boundary |
+| [0027](0027-keep-http-control-planes-in-host-applications.md) | Keep HTTP control planes in host applications |
