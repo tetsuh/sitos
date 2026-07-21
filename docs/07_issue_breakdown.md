@@ -517,7 +517,7 @@ so it is not a v0.2 blocker. Include it by v0.5.
 
 ## Recommended implementation order (parallel lanes)
 
-```
+```text
 Lane A (core):       #1 → #4 → #6 → #7 → #8 → #105
 Lane B (zenoh):      #2 → #3 → #9 → #10 → #11 → #12 → #18 → #19/#20
                                              ├→ #13 → #15/#16

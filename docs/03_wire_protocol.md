@@ -203,15 +203,17 @@ Repeated N times thereafter:
 
 ## 6. ack protocol (Put completion confirmation)
 
-> **Planned, not yet normative:** Issues #14 and #17 own this protocol. Before implementation,
-> #14 must define the canonical token attachment API and representation, UUID grammar, batch
-> outcome, and the ambiguous-timeout contract. No implementation may infer those details from this
+> **Planned, not yet normative:** `PutOptions::ack` and `TransportSample::ack_token` already
+> provide the Transport-level acknowledgement surface. Before implementation, Issue #14 must
+> finalize how that surface creates and attaches a caller-visible token, together with its
+> representation, UUID grammar, batch outcome, and ambiguous-timeout contract. Issue #17 owns the
+> ParamStore policy layered on that contract. No implementation may infer missing details from this
 > outline or introduce a second acknowledgement format.
 
 The planned behavior is one data submission followed by bounded polling:
 
-1. The client generates one acknowledgement token and attaches it through the canonical Transport
-   API selected by #14.
+1. The client requests acknowledgement through `PutOptions::ack`; the finalized #14 semantics
+   generate one caller-visible token and attach it through the Transport adapter.
 2. After completing the apply, StorageNode keeps a completion record in a ring buffer containing
    the most recent 4096 entries, so it can answer `<prefix>/meta/ack/<uuid>` queries.
 3. The client polls `<prefix>/meta/ack/<uuid>` with a 1-second query window for up to three

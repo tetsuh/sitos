@@ -187,9 +187,10 @@ so `CloseSession` never invalidates an in-flight reply.
 
 ### 4.4 Transport Integration Pseudocode
 
-The `MetaAck` and `ack_token` lines below are planned Issue #14 branches, not current Transport
-APIs. Their token attachment and timeout semantics remain blocked on the decisions recorded in
-`docs/03_wire_protocol.md` §6; implementers must not treat the pseudocode as a finalized wire API.
+`PutOptions::ack` and `TransportSample::ack_token` already exist in the Transport API. The
+`MetaAck` route and their end-to-end attachment, token, batch-outcome, UUID, and timeout semantics
+remain planned Issue #14 work, as recorded in `docs/03_wire_protocol.md` §6. Implementers must not
+treat the pseudocode as finalized acknowledgement behavior.
 
 Pseudocode for implementers. StorageNode does not use the raw zenoh-c API directly;
 it goes through the `Transport` abstraction ([09_dependency_policy.md](09_dependency_policy.md) §3).

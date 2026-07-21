@@ -17,7 +17,8 @@ without an identified production consumer.
 
 We will not ship `sitos-gateway` or the `SITOS_BUILD_GATEWAY` build option.
 Host applications and orchestrators will provide HTTP control planes by calling
-the native sitos APIs; sitometron is the initial host implementation. Any future
+the native sitos APIs; sitometron, the external host orchestrator application,
+is the initial host implementation. Any future
 standalone gateway requires concrete demand and a new ADR and may be delivered
 as a separate package or repository.
 
@@ -51,5 +52,5 @@ as a separate package or repository.
 * Issue #109
 * Issue #57 and its
   [architecture-decision timeline comment](https://github.com/tetsuh/sitos/issues/57#issuecomment-5024834430)
-* Supersedes: ADR-0015
+* Proposed replacement for: ADR-0015
 * Related: ADR-0014
