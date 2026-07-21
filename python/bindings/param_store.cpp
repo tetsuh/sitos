@@ -83,27 +83,28 @@ std::int64_t GetTimeout(const nb::handle& value) {
 
 sitos::ParamValue ConvertTyped(const sitos::ParamValue& value, const nb::object& type) {
   if (type.is_none()) return value;
-  if (type.equal(nb::type<bool>())) {
+  const auto builtins = nb::module_::import_("builtins");
+  if (type.equal(builtins.attr("bool"))) {
     auto converted = value.As<bool>();
     if (!converted) ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
     return sitos::ParamValue(*converted);
   }
-  if (type.equal(nb::type<int>())) {
+  if (type.equal(builtins.attr("int"))) {
     auto converted = value.As<std::int64_t>();
     if (!converted) ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
     return sitos::ParamValue(*converted);
   }
-  if (type.equal(nb::type<float>())) {
+  if (type.equal(builtins.attr("float"))) {
     auto converted = value.As<double>();
     if (!converted) ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
     return sitos::ParamValue(*converted);
   }
-  if (type.equal(nb::type<nb::str>())) {
+  if (type.equal(builtins.attr("str"))) {
     auto converted = value.As<std::string>();
     if (!converted) ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
     return sitos::ParamValue(std::move(*converted));
   }
-  if (type.equal(nb::type<nb::bytes>())) {
+  if (type.equal(builtins.attr("bytes"))) {
     auto converted = value.As<std::vector<std::byte>>();
     if (!converted) ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
     return sitos::ParamValue(std::move(*converted));
@@ -283,10 +284,10 @@ void BindParamStore(nb::module_& module) {
       .def("put_batch", &PyParamStore::PutBatch, "scope"_a, "entries"_a)
       .def("delete", &PyParamStore::Delete, "scope"_a, "key"_a)
       .def("get", [missing](PyParamStore& self, const std::string& scope, const std::string& key,
-                             const nb::object& default_value, const nb::object& type) {
+                             nb::object default_value, nb::object type) {
         return self.Get(scope, key, default_value, missing, type);
       },
-           "scope"_a, "key"_a, "default"_a = missing, "type"_a = nb::none())
+           "scope"_a, "key"_a, "default"_a.none() = missing, "type"_a.none() = nb::none())
       .def("contains", &PyParamStore::Contains, "scope"_a, "key"_a)
       .def("list", &PyParamStore::List, "scope"_a, "prefix"_a);
 }

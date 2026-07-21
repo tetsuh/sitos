@@ -1,14 +1,14 @@
-"""ParamStore public Python facade."""
+"""ParamStore is provided by the nanobind extension."""
 
-from . import _sitos
-
-ParamStore = _sitos.ParamStore
-SitosError = _sitos.SitosError
-NotFoundError = _sitos.NotFoundError
-TypeMismatchError = _sitos.TypeMismatchError
-TimeoutError = _sitos.TimeoutError
-DisconnectedError = _sitos.DisconnectedError
-ReadOnlyError = _sitos.ReadOnlyError
+from ._sitos import (
+    DisconnectedError,
+    NotFoundError,
+    ParamStore,
+    ReadOnlyError,
+    SitosError,
+    TimeoutError,
+    TypeMismatchError,
+)
 
 __all__ = [
     "ParamStore",
