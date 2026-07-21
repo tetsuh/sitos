@@ -275,8 +275,9 @@ void BindParamStore(nb::module_& module) {
   nb::object missing = nb::dict();
   module.attr("_PARAM_STORE_MISSING") = missing;
   nb::class_<PyParamStore>(module, "ParamStore")
-      .def(nb::init<const std::string&, const nb::object&, const nb::handle&>(), "prefix"_a = "sitos",
-           "zenoh_config_json"_a = nb::none(), "query_timeout_ms"_a = 5000)
+      .def(nb::init<const std::string&, const nb::object&, const nb::handle&>(),
+           "prefix"_a = "sitos", "zenoh_config_json"_a = nb::none(),
+           "query_timeout_ms"_a = 5000)
       .def("close", &PyParamStore::Close)
       .def("__enter__", &PyParamStore::Enter, nb::rv_policy::reference_internal)
       .def("__exit__", &PyParamStore::Exit)
