@@ -12,7 +12,13 @@ from pathlib import Path
 
 import pytest
 
+from scripts import check_wheel
 import sitos
+
+
+def test_wheel_validator_rejects_param_store_fixture_member() -> None:
+    with pytest.raises(RuntimeError, match="forbidden wheel entry"):
+        check_wheel.validate_wheel_members(["sitos/sitos_python_param_store_fixture.exe"])
 
 
 def test_public_param_store_is_exported() -> None:
@@ -53,6 +59,21 @@ def test_context_manager_methods_are_bound() -> None:
     assert callable(sitos.ParamStore.__enter__)
     assert callable(sitos.ParamStore.__exit__)
     assert callable(sitos.ParamStore.close)
+
+
+def test_closed_store_precedes_put_conversion_and_batch_iteration() -> None:
+    store = sitos.ParamStore(query_timeout_ms=5000)
+    store.close()
+
+    class ExplodingEntries:
+        def __iter__(self):
+            raise AssertionError("closed store must not iterate entries")
+
+    with pytest.raises(ValueError, match="ParamStore is closed"):
+        store.put("base", "key", object())
+    with pytest.raises(ValueError, match="ParamStore is closed"):
+        store.put_batch("base", ExplodingEntries())
+    store.close()
 
 
 def test_public_exception_hierarchy() -> None:
@@ -161,14 +182,80 @@ def test_live_round_trip_and_raw_prefix_list(live_store) -> None:
 
 
 def test_live_typed_get_default_and_batch(live_store) -> None:
-    store, _, _ = live_store
+    store, process, _ = live_store
+    assert process.stdout is not None
     store.put("base", "number", 3.5)
     assert _eventually(store, "base", "number") == 3.5
     assert store.get("base", "number", type=int) == 3
     assert store.get("base", "missing", default=None) is None
-    store.put_batch("base", [("dup", 1), ("dup", 2), ("text", "ok")])
+    store.put_batch("base", [("dup", 1), ("dup", 2)])
+    assert _readline_with_timeout(process.stdout) == "BATCH 2 1 2"
     assert _eventually(store, "base", "dup") == 2
-    assert _eventually(store, "base", "text") == "ok"
+
+
+def test_live_value_domain_mapping_empty_batch_and_type_mismatch(live_store) -> None:
+    store, _, _ = live_store
+    values = {
+        "bool": True,
+        "s64": -7,
+        "dp": 3.5,
+        "str": "text",
+        "bytes": b"bytes",
+    }
+    store.put_batch("base", values)
+    for key, expected in values.items():
+        assert _eventually(store, "base", key) == expected
+    store.put_batch("base", {})
+    with pytest.raises(OverflowError):
+        store.put("base", "overflow", 2**63)
+    with pytest.raises(sitos.TypeMismatchError):
+        store.get("base", "str", default=b"fallback", type=bytes)
+
+
+def test_read_only_scope_maps_to_public_exception() -> None:
+    with sitos.ParamStore(query_timeout_ms=5000) as store:
+        with pytest.raises(sitos.ReadOnlyError):
+            store.put("snap/snapshot", "key", 1)
+
+
+def test_live_conversion_failure_performs_no_mutation(live_store) -> None:
+    store, _, _ = live_store
+    with pytest.raises(TypeError):
+        store.put("base", "unsupported", object())
+    with pytest.raises(sitos.NotFoundError):
+        store.get("base", "unsupported")
+
+
+def test_live_get_type_is_keyword_only_and_exact_builtin(live_store) -> None:
+    store, _, _ = live_store
+    store.put("base", "typed", 3.5)
+    assert _eventually(store, "base", "typed") == 3.5
+    with pytest.raises(TypeError):
+        store.get("base", "typed", None, int)
+
+    class SpoofType:
+        def __eq__(self, other: object) -> bool:
+            return other in (bool, int, float, str, bytes)
+
+    with pytest.raises(TypeError, match="type must be None"):
+        store.get("base", "typed", type=SpoofType())
+
+
+def test_list_snapshot_survives_close(live_store) -> None:
+    _, process, prefix = live_store
+    port = int(process.args[2])
+    config = json.dumps({"mode": "client", "connect": {
+        "endpoints": [f"tcp/127.0.0.1:{port}"]
+    }})
+    sibling = sitos.ParamStore(prefix=prefix, zenoh_config_json=config, query_timeout_ms=5000)
+    try:
+        sibling.put("base", "snapshot/a", True)
+        assert _eventually(sibling, "base", "snapshot/a") is True
+        rows = sibling.list("base", "snapshot/")
+        sibling.close()
+        assert list(rows) == [("snapshot/a", True)]
+    finally:
+        sibling.close()
 
 
 def test_live_delayed_reply_allows_other_python_threads(live_store) -> None:
@@ -189,4 +276,26 @@ def test_live_delayed_reply_allows_other_python_threads(live_store) -> None:
     process.stdin.flush()
     thread.join(timeout=5)
     assert not thread.is_alive()
+    assert result == [7]
+
+
+def test_close_returns_during_admitted_delayed_operation(live_store) -> None:
+    store, process, _ = live_store
+    assert process.stdout is not None and process.stdin is not None
+    result: list[object] = []
+    get_thread = threading.Thread(
+        target=lambda: result.append(store.get("base", "__python_gil_delay__")), daemon=True
+    )
+    get_thread.start()
+    assert _readline_with_timeout(process.stdout) == "DELAYED"
+    close_thread = threading.Thread(target=store.close)
+    close_thread.start()
+    close_thread.join(timeout=2)
+    assert not close_thread.is_alive()
+    with pytest.raises(ValueError, match="ParamStore is closed"):
+        store.contains("base", "key")
+    process.stdin.write("REPLY\n")
+    process.stdin.flush()
+    get_thread.join(timeout=5)
+    assert not get_thread.is_alive()
     assert result == [7]

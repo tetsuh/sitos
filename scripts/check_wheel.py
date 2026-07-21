@@ -25,6 +25,19 @@ FORBIDDEN_TOKENS = (
     "/build/",
 )
 FORBIDDEN_SUFFIXES = (".a", ".lib", ".h", ".hh", ".hpp", ".cmake")
+FORBIDDEN_BASENAMES = ("sitos_python_param_store_fixture.exe",)
+
+
+def validate_wheel_members(names: list[str]) -> None:
+    for name in names:
+        lowered = name.lower()
+        base = name.rsplit("/", maxsplit=1)[-1].lower()
+        if (
+            any(token in lowered for token in FORBIDDEN_TOKENS)
+            or lowered.endswith(FORBIDDEN_SUFFIXES)
+            or base in FORBIDDEN_BASENAMES
+        ):
+            raise RuntimeError(f"forbidden wheel entry: {name}")
 
 
 def cmake_version() -> str:
@@ -109,10 +122,7 @@ def main() -> None:
 
     with zipfile.ZipFile(args.wheel) as wheel:
         names = wheel.namelist()
-        for name in names:
-            lowered = name.lower()
-            if any(token in lowered for token in FORBIDDEN_TOKENS) or lowered.endswith(FORBIDDEN_SUFFIXES):
-                raise RuntimeError(f"forbidden wheel entry: {name}")
+        validate_wheel_members(names)
         extension_suffix = ".pyd" if args.platform == "windows" else ".so"
         extensions = [
             name for name in names if name.startswith("sitos/_sitos") and name.lower().endswith(extension_suffix)

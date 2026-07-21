@@ -1,6 +1,7 @@
 // Copyright 2026 sitos contributors
 // SPDX-License-Identifier: Apache-2.0
 
+#include "sitos/batch.hpp"
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/param_value.hpp"
 #include "sitos/storage_node.hpp"
@@ -8,6 +9,7 @@
 
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -48,6 +50,27 @@ int main(int argc, char** argv) {
     node.Stop();
     return 4;
   }
+  auto batch_result = transport->DeclareSubscriber(
+      prefix + "/base/:batch", [&](const sitos::TransportSample& sample) {
+        if (sample.kind != sitos::TransportSample::Kind::Put) return;
+        const auto entries = sitos::DecodeBatch(sample.payload);
+        if (!entries.has_value() || entries->size() != 2 || (*entries)[0].key != "dup" ||
+            (*entries)[1].key != "dup") {
+          return;
+        }
+        std::lock_guard lock(mutex);
+        std::cout << "BATCH " << entries->size();
+        for (const auto& entry : *entries) {
+          const auto value = entry.value.As<std::int64_t>();
+          std::cout << " " << value.value_or(-1);
+        }
+        std::cout << std::endl;
+      });
+  if (!batch_result.IsOk()) {
+    node.Stop();
+    return 5;
+  }
+  auto batch_subscription = std::move(batch_result).Value();
   std::cout << "READY " << prefix << " " << port << std::endl;
   std::string command;
   while (std::getline(std::cin, command)) {
