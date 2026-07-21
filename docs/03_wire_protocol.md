@@ -203,16 +203,23 @@ Repeated N times thereafter:
 
 ## 6. ack protocol (Put completion confirmation)
 
-A Put with `PutOptions::ack = true` follows this procedure:
+> **Planned, not yet normative:** Issues #14 and #17 own this protocol. Before implementation,
+> #14 must define the canonical token attachment API and representation, UUID grammar, batch
+> outcome, and the ambiguous-timeout contract. No implementation may infer those details from this
+> outline or introduce a second acknowledgement format.
 
-1. The client generates an ack token (UUID) corresponding to the beginning of the put payload and
-   attaches `ack=<uuid>` to the zenoh put `attachment`
-2. After completing the apply, StorageNode keeps a completion record in a ring buffer (most recent
-   4096 entries) so it can respond to get on `<prefix>/meta/ack/<uuid>`
-3. After the put, the client performs `get("<prefix>/meta/ack/<uuid>")`; if there is a reply,
-   completion is confirmed. On timeout (default 1 s), it retries up to 3 times
+The planned behavior is one data submission followed by bounded polling:
 
-Clients that do not support attachment are treated as ack-less put clients (compatible behavior).
+1. The client generates one acknowledgement token and attaches it through the canonical Transport
+   API selected by #14.
+2. After completing the apply, StorageNode keeps a completion record in a ring buffer containing
+   the most recent 4096 entries, so it can answer `<prefix>/meta/ack/<uuid>` queries.
+3. The client polls `<prefix>/meta/ack/<uuid>` with a 1-second query window for up to three
+   attempts. It retries only the acknowledgement query and never resubmits the data write.
+
+Clients that do not attach a token remain ack-less. Exhausted polling reports Timeout, which may
+mean that the write was applied but its bounded acknowledgement record was absent or evicted; #14
+must finalize how callers observe that ambiguity.
 
 ## 7. meta keys
 
