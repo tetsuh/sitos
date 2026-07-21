@@ -86,27 +86,37 @@ sitos::ParamValue ConvertTyped(const sitos::ParamValue& value, const nb::object&
   const auto builtins = nb::module_::import_("builtins");
   if (type.ptr() == builtins.attr("bool").ptr()) {
     auto converted = value.As<bool>();
-    if (!converted) ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
+    if (!converted.has_value()) {
+      ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
+    }
     return sitos::ParamValue(*converted);
   }
   if (type.ptr() == builtins.attr("int").ptr()) {
     auto converted = value.As<std::int64_t>();
-    if (!converted) ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
+    if (!converted.has_value()) {
+      ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
+    }
     return sitos::ParamValue(*converted);
   }
   if (type.ptr() == builtins.attr("float").ptr()) {
     auto converted = value.As<double>();
-    if (!converted) ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
+    if (!converted.has_value()) {
+      ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
+    }
     return sitos::ParamValue(*converted);
   }
   if (type.ptr() == builtins.attr("str").ptr()) {
     auto converted = value.As<std::string>();
-    if (!converted) ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
+    if (!converted.has_value()) {
+      ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
+    }
     return sitos::ParamValue(std::move(*converted));
   }
   if (type.ptr() == builtins.attr("bytes").ptr()) {
     auto converted = value.As<std::vector<std::byte>>();
-    if (!converted) ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
+    if (!converted.has_value()) {
+      ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
+    }
     return sitos::ParamValue(std::move(*converted));
   }
   throw nb::type_error("type must be None, bool, int, float, str, or bytes");
@@ -120,7 +130,7 @@ class PyParamStore {
     config.prefix = prefix;
     config.query_timeout = std::chrono::milliseconds(GetTimeout(timeout));
     if (!json.is_none()) config.zenoh_config_json = nb::cast<std::string>(json);
-    auto result = [&] {
+    auto result = [&config] {
       nb::gil_scoped_release release;
       return sitos::ParamStore::Open(std::move(config));
     }();
@@ -164,9 +174,10 @@ class PyParamStore {
     auto native = Acquire();
     try {
       auto converted = ParamValueFromPython(value);
-      auto result = InvokeNative(std::move(native), [&](sitos::ParamStore& store) {
-        return store.Put(scope, key, converted);
-      });
+      auto result = InvokeNative(
+          std::move(native), [&scope, &key, &converted](sitos::ParamStore& store) {
+            return store.Put(scope, key, converted);
+          });
       Take(std::move(result));
     } catch (...) {
       ReleaseNative(std::move(native));
@@ -194,9 +205,10 @@ class PyParamStore {
       } else {
         for (nb::handle item : nb::iter(entries)) append_pair(item);
       }
-      auto result = InvokeNative(std::move(native), [&](sitos::ParamStore& store) {
-        return store.PutBatch(scope, materialized);
-      });
+      auto result = InvokeNative(
+          std::move(native), [&scope, &materialized](sitos::ParamStore& store) {
+            return store.PutBatch(scope, materialized);
+          });
       Take(std::move(result));
     } catch (...) {
       ReleaseNative(std::move(native));
@@ -205,7 +217,7 @@ class PyParamStore {
   }
 
   void Delete(const std::string& scope, const std::string& key) {
-    auto result = InvokeNative(Acquire(), [&](sitos::ParamStore& store) {
+    auto result = InvokeNative(Acquire(), [&scope, &key](sitos::ParamStore& store) {
       return store.Delete(scope, key);
     });
     Take(std::move(result));
@@ -213,7 +225,7 @@ class PyParamStore {
 
   nb::object Get(const std::string& scope, const std::string& key, const nb::object& default_value,
                  const nb::object& missing, const nb::object& type) {
-    auto result = InvokeNative(Acquire(), [&](sitos::ParamStore& store) {
+    auto result = InvokeNative(Acquire(), [&scope, &key](sitos::ParamStore& store) {
       return store.Get(scope, key);
     });
     if (!result.IsOk()) {
@@ -227,7 +239,7 @@ class PyParamStore {
   }
 
   bool Contains(const std::string& scope, const std::string& key) {
-    auto result = InvokeNative(Acquire(), [&](sitos::ParamStore& store) {
+    auto result = InvokeNative(Acquire(), [&scope, &key](sitos::ParamStore& store) {
       return store.Contains(scope, key);
     });
     return Take(std::move(result));
@@ -235,17 +247,18 @@ class PyParamStore {
 
   nb::object List(const std::string& scope, const std::string& prefix) {
     std::vector<std::pair<std::string, sitos::ParamValue>> values;
-    auto native_result = InvokeNative(Acquire(), [&](sitos::ParamStore& store) {
-      return store.List(scope, prefix, [&](std::string_view key,
-                                           const sitos::ParamValue& value) {
-        values.emplace_back(key, value);
-        return true;
-      });
-    });
+    auto native_result = InvokeNative(
+        Acquire(), [&scope, &prefix, &values](sitos::ParamStore& store) {
+          return store.List(scope, prefix,
+                            [&values](std::string_view key, const sitos::ParamValue& value) {
+                              values.emplace_back(key, value);
+                              return true;
+                            });
+        });
     Take(std::move(native_result));
     nb::list result;
-    for (auto& entry : values) {
-      result.append(nb::make_tuple(entry.first, ParamValueToPython(entry.second)));
+    for (auto& [key, value] : values) {
+      result.append(nb::make_tuple(key, ParamValueToPython(value)));
     }
     return result.attr("__iter__")();
   }
@@ -286,24 +299,24 @@ class PyParamStore {
 
 }  // namespace sitos::python::detail
 
-void BindParamStore(nb::module_& module) {
+void BindParamStore(nb::module_& python_module) {
   using namespace sitos::python::detail;
-  static nb::exception<SitosError> base(module, "SitosError", PyExc_RuntimeError);
-  static nb::exception<NotFoundError> not_found(module, "NotFoundError", base);
-  static nb::exception<TypeMismatchError> mismatch(module, "TypeMismatchError", base);
-  static nb::exception<TimeoutError> timeout(module, "TimeoutError", base);
-  static nb::exception<DisconnectedError> disconnected(module, "DisconnectedError", base);
-  static nb::exception<ReadOnlyError> readonly(module, "ReadOnlyError", base);
-  module.attr("SitosError") = base;
-  module.attr("NotFoundError") = not_found;
-  module.attr("TypeMismatchError") = mismatch;
-  module.attr("TimeoutError") = timeout;
-  module.attr("DisconnectedError") = disconnected;
-  module.attr("ReadOnlyError") = readonly;
+  static nb::exception<SitosError> base(python_module, "SitosError", PyExc_RuntimeError);
+  static nb::exception<NotFoundError> not_found(python_module, "NotFoundError", base);
+  static nb::exception<TypeMismatchError> mismatch(python_module, "TypeMismatchError", base);
+  static nb::exception<TimeoutError> timeout(python_module, "TimeoutError", base);
+  static nb::exception<DisconnectedError> disconnected(python_module, "DisconnectedError", base);
+  static nb::exception<ReadOnlyError> readonly(python_module, "ReadOnlyError", base);
+  python_module.attr("SitosError") = base;
+  python_module.attr("NotFoundError") = not_found;
+  python_module.attr("TypeMismatchError") = mismatch;
+  python_module.attr("TimeoutError") = timeout;
+  python_module.attr("DisconnectedError") = disconnected;
+  python_module.attr("ReadOnlyError") = readonly;
 
   nb::object missing = nb::dict();
-  module.attr("_PARAM_STORE_MISSING") = missing;
-  nb::class_<PyParamStore>(module, "ParamStore")
+  python_module.attr("_PARAM_STORE_MISSING") = missing;
+  nb::class_<PyParamStore>(python_module, "ParamStore")
       .def(nb::init<const std::string&, const nb::object&, const nb::handle>(), nb::kw_only(),
            "prefix"_a = "sitos", "zenoh_config_json"_a = nb::none(),
            "query_timeout_ms"_a = 5000)

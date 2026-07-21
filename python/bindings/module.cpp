@@ -6,12 +6,11 @@
 #include <nanobind/nanobind.h>
 
 #include "param_value_conversion.hpp"
-
-void BindParamStore(nanobind::module_& module);
-
 #if SITOS_PYTHON_WITH_ZENOH
 #include "transport/zenoh_runtime_anchor.hpp"
 #endif
+
+void BindParamStore(nanobind::module_& python_module);
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -34,14 +33,14 @@ nb::object DecodeValue(const nb::bytes& payload) {
 
 }  // namespace
 
-NB_MODULE(_sitos, module) {
+NB_MODULE(_sitos, python_module) {
 #if SITOS_PYTHON_WITH_ZENOH
   // Retain the deliberate Zenoh-enabled wheel runtime edge without exposing its C API here.
   static_cast<void>(sitos::detail::ZenohRuntimeAnchor());
 #endif
-  module.doc() = "sitos payload-v1 conversion helpers";
-  module.attr("__version__") = SITOS_PYTHON_VERSION;
-  module.def("encode_value", &EncodeValue, "value"_a);
-  module.def("decode_value", &DecodeValue, "payload"_a);
-  BindParamStore(module);
+  python_module.doc() = "sitos payload-v1 conversion helpers";
+  python_module.attr("__version__") = SITOS_PYTHON_VERSION;
+  python_module.def("encode_value", &EncodeValue, "value"_a);
+  python_module.def("decode_value", &DecodeValue, "payload"_a);
+  BindParamStore(python_module);
 }
