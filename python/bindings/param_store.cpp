@@ -128,6 +128,8 @@ class PyParamStore {
     state_->native = std::make_shared<sitos::ParamStore>(std::move(native));
   }
 
+  ~PyParamStore() { Close(); }
+
   void Close() noexcept {
     std::shared_ptr<sitos::ParamStore> native;
     {
@@ -275,7 +277,7 @@ void BindParamStore(nb::module_& module) {
   nb::object missing = nb::dict();
   module.attr("_PARAM_STORE_MISSING") = missing;
   nb::class_<PyParamStore>(module, "ParamStore")
-      .def(nb::init<const std::string&, const nb::object&, const nb::handle&>(),
+      .def(nb::init<const std::string&, const nb::object&, const nb::handle>(), nb::kw_only(),
            "prefix"_a = "sitos", "zenoh_config_json"_a = nb::none(),
            "query_timeout_ms"_a = 5000)
       .def("close", &PyParamStore::Close)

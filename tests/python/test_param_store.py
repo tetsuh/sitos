@@ -20,6 +20,11 @@ def test_public_param_store_is_exported() -> None:
     assert hasattr(sitos, "TypeMismatchError")
 
 
+def test_constructor_rejects_positional_arguments() -> None:
+    with pytest.raises(TypeError):
+        sitos.ParamStore("sitos", "")
+
+
 def test_constructor_rejects_bool_timeout() -> None:
     with pytest.raises(TypeError):
         sitos.ParamStore(query_timeout_ms=True)
