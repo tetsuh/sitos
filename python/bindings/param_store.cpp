@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -257,7 +258,8 @@ class PyParamStore {
   }
 
   template <typename Operation>
-  static auto InvokeNative(std::shared_ptr<sitos::ParamStore> native, Operation&& operation) {
+  static auto InvokeNative(std::shared_ptr<sitos::ParamStore> native, Operation&& operation)
+      -> std::invoke_result_t<Operation, sitos::ParamStore&> {
     nb::gil_scoped_release release;
     try {
       auto result = std::forward<Operation>(operation)(*native);
