@@ -28,7 +28,16 @@
 #include "config_failure.hpp"
 #include "declaration_handle_lifecycle.hpp"
 #include "get_completion.hpp"
+#include "zenoh_runtime_anchor.hpp"
 #include "zenoh_transport_test_access.hpp"
+
+namespace sitos::detail {
+
+std::uintptr_t ZenohRuntimeAnchor() noexcept {
+  return reinterpret_cast<std::uintptr_t>(&z_open);
+}
+
+}  // namespace sitos::detail
 
 namespace sitos {
 

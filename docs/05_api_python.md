@@ -1,7 +1,10 @@
 # sitos — Python API Specification
 
-Package name: `sitos`. Python 3.10+ [P05].
-nanobind wrapper for the C++ core + a thin pythonic layer [P01].
+Package name: `sitos`. Issue #22 validates CPython 3.12 wheels: the
+`manylinux_2_28_x86_64` production target on Ubuntu 24.04/Rocky Linux 10 and
+non-publishing `win_amd64` development coverage. Other Python versions and formal Windows
+publication are deferred. The package is a nanobind wrapper for the C++ core plus a thin
+pythonic layer [P01].
 
 ## 1. Value Type Mapping
 
@@ -18,6 +21,25 @@ nanobind wrapper for the C++ core + a thin pythonic layer [P01].
   The reader specifies the dtype
 
 ## 2. API
+
+### 2.0 Payload conversion foundation (Issue #22)
+
+The initial Python wheel exposes only the payload-v1 conversion helpers. They are intentionally
+small and form the shared foundation for later ParamStore, ParamCache, and SessionView bindings.
+
+```python
+import sitos
+
+payload = sitos.encode_value(240.0)  # type tag + little-endian payload-v1 body
+value = sitos.decode_value(payload)  # -> 240.0
+```
+
+`encode_value` accepts only `bool`, signed-64-bit-range `int`, `float`, `str`, and `bytes`.
+Integers outside the signed 64-bit range raise `OverflowError`; unsupported input raises
+`TypeError`. `decode_value` accepts only `bytes` and raises `ValueError` for malformed, truncated,
+overlong fixed-width, unknown-tag, or invalid UTF-8 payloads. Existing codec behavior is preserved,
+including canonical NaN encoding and nonzero BOOL decoding. Buffer-protocol and NumPy conversion
+remain Issue #27 scope.
 
 ### 2.1 ParamStore
 

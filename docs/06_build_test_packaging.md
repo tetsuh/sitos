@@ -80,12 +80,53 @@ deploy `zenohc.dll` or `libzenohc.so` at runtime.
 
 ## 4. Build (Python wheel)
 
-* scikit-build-core + nanobind. Generate wheels with `python -m build`
-* CI build with cibuildwheel: `cp310–cp313 × {win_amd64, manylinux_2_28_x86_64}` [P03]
-* Standard wheels bundle zenoh-c and do not include RocksDB
-  (Linux: auditwheel repair, Windows: delvewheel).
-  RocksDBEngine is separated as a `sitos-rocksdb` wheel or a future optional extra.
-* Runtime dependency: `numpy>=1.24`
+Issue #22 owns non-publishing wheel build and validation. Issue #35 owns PyPI/TestPyPI
+publication. The wheel build uses the repository root CMake project through the `python/`
+`pyproject.toml`:
+
+```sh
+python -m build --wheel python --outdir dist
+```
+
+scikit-build-core installs only the `python` CMake component into the wheel. Build directories are
+specific to the wheel tag (`../build/python-wheel/{wheel_tag}`), so CPython builds cannot reuse one
+another's CMake cache. The CMake project version is the single source for wheel metadata and
+`sitos.__version__`.
+
+The production target is `cp312-manylinux_2_28_x86_64`, validated on Ubuntu 24.04 and Rocky Linux
+10. `cp312-win_amd64` receives non-publishing build/test coverage only; other Python versions and
+formal Windows publication are deferred. Standard wheels bundle exactly one zenoh-c runtime and do
+not include RocksDB (Linux: auditwheel repair, Windows: delvewheel). Linux wheels build the pinned
+zenoh-c source in the manylinux_2_28 builder with the pinned Rust 1.93.0 toolchain; the build script
+replaces the archive's stale Cargo.lock with the versioned repository-owned lock artifact and runs
+`cargo --locked`. The result is staged in the standalone layout and passed to CMake as
+`-DSITOS_ZENOHC_ROOT=/opt/zenohc-stage`. Windows stages the pinned official standalone archive with
+the same cache variable. When the variable is empty, normal C++ builds retain the existing pinned
+FetchContent path. CMake validates staged headers and native runtime files before configuring.
+
+To test a repaired wheel without a compiler or source-tree import, select its exact filename and use
+an isolated environment. CI first hash-installs fetched test/runtime dependencies from
+`.github/wheel-tools-requirements.txt`, records the generated wheel SHA-256, and installs that local
+artifact with `--no-deps`; a generated artifact cannot have a pre-build hash.
+
+```sh
+project_root="$(pwd)"
+python -m venv /tmp/sitos-wheel-test
+/tmp/sitos-wheel-test/bin/python -m pip install --only-binary=:all: --require-hashes \
+  -r .github/wheel-tools-requirements.txt
+sha256sum dist/<exact-wheel>.whl
+/tmp/sitos-wheel-test/bin/python -m pip install --no-deps --only-binary=:all: dist/<exact-wheel>.whl
+(cd /tmp && /tmp/sitos-wheel-test/bin/python -m pytest "$project_root/tests/python")
+```
+
+On Windows, use `C:\\path\\to\\sitos-wheel-test\\Scripts\\python.exe` instead. Inspect the wheel
+with `python scripts/check_wheel.py --platform linux dist/<exact-wheel>.whl` (or `--platform windows`);
+the check derives the CMake version and rejects RocksDB, GoogleTest, GoogleMock, SDK/CMake exports,
+and build-tree artifacts and requires `_sitos` plus exactly one zenoh-c runtime. The installed wheel
+does not require Rust, CMake, Ninja, or a C++ compiler.
+
+RocksDBEngine is separated as a `sitos-rocksdb` wheel or a future optional extra. Runtime dependency:
+`numpy>=1.24`.
 
 ## 5. Test strategy
 
@@ -155,7 +196,7 @@ zenoh runtime internals.
 | workflow | Trigger | Contents |
 |---|---|---|
 | `ci.yml` | PR/push | Windows (MSVC) + Linux (gcc, clang) builds; unit + integration + python + interop; clang-format/clang-tidy; mypy |
-| `wheels.yml` | tag / nightly | cibuildwheel → PyPI (on tag) / TestPyPI (nightly) |
+| `wheels.yml` | PR / push / manual | cibuildwheel build and repaired-wheel validation; publication is Issue #35 |
 | `bench.yml` | nightly / label | Run benchmarks and comment baseline comparisons |
 | `dependency-upgrade.yml` | nightly / manual | Build and interop tests with the minimum supported and latest stable zenoh versions. Details: [09_dependency_policy.md](09_dependency_policy.md) |
 | `docs.yml` | push main | Doxygen + Sphinx → GitHub Pages |

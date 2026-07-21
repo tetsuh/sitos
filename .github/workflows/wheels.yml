@@ -1,0 +1,207 @@
+name: Python wheels
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+    inputs:
+      latest_compatible:
+        description: Run the non-publishing latest-compatible toolchain lane.
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux CPython 3.12 wheel
+    runs-on: ubuntu-24.04
+    env:
+      CIBW_BUILD: cp312-manylinux_x86_64
+      CIBW_ARCHS_LINUX: x86_64
+      # GCC 14 image pinned by immutable digest. This retains the manylinux_2_28 ABI policy.
+      CIBW_MANYLINUX_X86_64_IMAGE: quay.io/pypa/manylinux_2_28_x86_64@sha256:a61875a2f84cab7df8de222ff12cabc08ff86eb4ad402ac90ba7bdaed9600cca
+      CIBW_BEFORE_ALL_LINUX: >-
+        bash -c 'set -eu;
+        echo "=== compiler ===";
+        gcc --version;
+        g++ --version;
+        echo "=== glibc ===";
+        getconf GNU_LIBC_VERSION;
+        echo "=== libstdc++ ===";
+        libstdcxx="$(g++ -print-file-name=libstdc++.so.6)";
+        strings "${libstdcxx}" | grep -E "^GLIBCXX_[0-9]" | sort -V | tail -n 1;
+        echo "=== auditwheel (owned by the cibuildwheel manylinux image) ===";
+        auditwheel --version'
+        && bash /project/scripts/build_manylinux_zenohc.sh /opt/zenohc-stage
+        && cp /project/.github/wheel-tools-requirements.txt /opt/zenohc-stage/
+      # This is cibuildwheel's own build/repair/test-tool constraint input.
+      CIBW_DEPENDENCY_VERSIONS: .github/wheel-tools-requirements.txt
+      # cibuildwheel forwards these to its build-isolation and test environments.
+      CIBW_ENVIRONMENT_LINUX: >-
+        CMAKE_ARGS="-DSITOS_ZENOHC_ROOT=/opt/zenohc-stage"
+        PIP_CONSTRAINT=/opt/zenohc-stage/wheel-tools-requirements.txt
+        PIP_REQUIRE_HASHES=1
+        PIP_ONLY_BINARY=:all:
+      CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
+        LD_LIBRARY_PATH=/opt/zenohc-stage/lib auditwheel repair -w {dest_dir} {wheel}
+    steps:
+      # actions/checkout v5.0.0
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
+      - name: Install hash-locked wheel tools
+        run: 'python -m pip install --only-binary=:all: --require-hashes -r .github/wheel-tools-requirements.txt'
+      - name: Build and repair wheel
+        run: python -m cibuildwheel --output-dir wheelhouse python
+      - name: Validate contents, native dependencies, and clean installation
+        run: |
+          set -eu
+          tests_dir="$PWD/tests/python"
+          for wheel in wheelhouse/*.whl; do
+            python scripts/check_wheel.py "$wheel" --platform linux
+            docker run --rm -v "$PWD:/project" -w /project "$CIBW_MANYLINUX_X86_64_IMAGE" \
+              auditwheel show "$wheel" | tee "${wheel}.auditwheel.txt"
+            grep --fixed-strings "manylinux_2_28_x86_64" "${wheel}.auditwheel.txt"
+            sha256sum "$wheel" | tee "${wheel}.sha256"
+            venv="$(mktemp -d)"
+            python -m venv "$venv"
+            env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" -m pip install \
+              --only-binary=:all: --require-hashes -r .github/wheel-tools-requirements.txt
+            # This generated local wheel has no pre-build hash. Its SHA-256 is recorded above;
+            # --no-deps keeps every fetched dependency under the reviewed hash lock.
+            env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" -m pip install \
+              --no-deps --only-binary=:all: "$wheel"
+            (cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" \
+              -m pytest "$tests_dir" -q)
+            docker run --rm -v "$PWD:/project:ro" -w /tmp \
+              rockylinux/rockylinux@sha256:e372170ca8630f0f03e9b70fdd0bf4a3ce3426b0de7cdba615f06337389de176 \
+              bash -ceu 'dnf -y install python3.12 python3.12-pip; python3.12 -m venv /tmp/sitos-wheel; /tmp/sitos-wheel/bin/python -m pip install --only-binary=:all: --require-hashes -r /project/.github/wheel-tools-requirements.txt; sha256sum /project/'"${wheel}"'; /tmp/sitos-wheel/bin/python -m pip install --no-deps --only-binary=:all: /project/'"${wheel}"'; cd /tmp; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python -m pytest /project/tests/python -q'
+          done
+      # actions/upload-artifact v6.0.0
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: sitos-wheel-linux-cp312
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  windows:
+    name: Windows CPython 3.12 wheel
+    runs-on: windows-latest
+    env:
+      CIBW_BUILD: cp312-win_amd64
+      CIBW_ARCHS_WINDOWS: AMD64
+      CIBW_BEFORE_ALL_WINDOWS: >-
+        python {project}/scripts/stage_zenohc.py C:/sitos-zenohc-stage --platform windows
+        && copy {project}\\.github\\wheel-tools-requirements.txt C:\\sitos-zenohc-stage\\wheel-tools-requirements.txt
+      # This is cibuildwheel's own build/repair/test-tool constraint input.
+      CIBW_DEPENDENCY_VERSIONS: .github/wheel-tools-requirements.txt
+      # cibuildwheel forwards these to its build-isolation and test environments.
+      CIBW_ENVIRONMENT_WINDOWS: >-
+        CMAKE_ARGS="-DSITOS_ZENOHC_ROOT=C:/sitos-zenohc-stage"
+        PIP_CONSTRAINT=C:/sitos-zenohc-stage/wheel-tools-requirements.txt
+        PIP_REQUIRE_HASHES=1
+        PIP_ONLY_BINARY=:all:
+      CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >-
+        delvewheel repair --add-path C:/sitos-zenohc-stage/bin -w {dest_dir} {wheel}
+    steps:
+      # actions/checkout v5.0.0
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
+      - name: Install hash-locked wheel tools
+        shell: pwsh
+        run: 'python -m pip install --only-binary=:all: --require-hashes -r .github/wheel-tools-requirements.txt'
+      - name: Build and repair wheel
+        shell: pwsh
+        run: python -m cibuildwheel --output-dir wheelhouse python
+      - name: Validate contents, native dependencies, and clean installation
+        shell: pwsh
+        run: |
+          $vsRoots = @(
+            "${env:ProgramFiles(x86)}\Microsoft Visual Studio",
+            "$env:ProgramFiles\Microsoft Visual Studio"
+          )
+          $dumpbin = $vsRoots | Where-Object { Test-Path $_ } | ForEach-Object {
+            Get-ChildItem -Path $_ -Filter dumpbin.exe -Recurse
+          } | Select-Object -First 1
+          if ($null -eq $dumpbin) { throw "dumpbin.exe was not found" }
+          $env:Path = "$($dumpbin.DirectoryName);$env:Path"
+          $tests = (Resolve-Path tests\python).Path
+          Get-ChildItem wheelhouse\*.whl | ForEach-Object {
+            python scripts/check_wheel.py $_.FullName --platform windows
+            delvewheel show $_.FullName | Tee-Object -FilePath "$($_.FullName).delvewheel.txt"
+            Get-FileHash -Algorithm SHA256 $_.FullName | Format-List | Out-File "$($_.FullName).sha256"
+            $venv = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())
+            python -m venv $venv
+            Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+            & "$venv\Scripts\python.exe" -m pip install --only-binary=:all: --require-hashes -r .github\wheel-tools-requirements.txt
+            # This generated local wheel has no pre-build hash. Its SHA-256 is recorded above;
+            # --no-deps keeps every fetched dependency under the reviewed hash lock.
+            & "$venv\Scripts\python.exe" -m pip install --no-deps --only-binary=:all: $_.FullName
+            Push-Location $env:RUNNER_TEMP
+            try {
+              & "$venv\Scripts\python.exe" -m pytest $tests -q
+            } finally {
+              Pop-Location
+            }
+          }
+      # actions/upload-artifact v6.0.0
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: sitos-wheel-windows-cp312
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  latest-compatible:
+    name: Latest compatible Python and Rust (non-publishing)
+    # A maintainer adds the run-latest-compatible label to a PR to request this
+    # expensive non-publishing check. Scheduled and default-branch dispatch runs
+    # use the same path.
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.latest_compatible) ||
+      (github.event_name == 'pull_request' && github.event.action == 'labeled' &&
+       github.event.label.name == 'run-latest-compatible')
+    runs-on: ubuntu-24.04
+    env:
+      CIBW_BUILD: cp312-manylinux_x86_64
+      CIBW_ARCHS_LINUX: x86_64
+      CIBW_MANYLINUX_X86_64_IMAGE: quay.io/pypa/manylinux_2_28_x86_64@sha256:a61875a2f84cab7df8de222ff12cabc08ff86eb4ad402ac90ba7bdaed9600cca
+      CIBW_BEFORE_ALL_LINUX: >-
+        SITOS_RUST_TOOLCHAIN=stable bash /project/scripts/build_manylinux_zenohc.sh /opt/zenohc-stage
+      CIBW_ENVIRONMENT_LINUX: CMAKE_ARGS="-DSITOS_ZENOHC_ROOT=/opt/zenohc-stage"
+      CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
+        LD_LIBRARY_PATH=/opt/zenohc-stage/lib auditwheel repair -w {dest_dir} {wheel}
+    steps:
+      # actions/checkout v5.0.0
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
+      - name: Install and report latest compatible Python wheel tooling
+        run: |
+          python -m pip install --upgrade --only-binary=:all: \
+            build cibuildwheel scikit-build-core nanobind delvewheel
+          python -m pip freeze | grep -E '^(build|cibuildwheel|delvewheel|nanobind|scikit-build-core)=='
+      - name: Build with latest compatible Python tooling and Rust stable
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("python/pyproject.toml")
+          text = path.read_text()
+          text = text.replace("scikit-build-core==0.10.7", "scikit-build-core>=0.10.7")
+          text = text.replace("nanobind==2.9.2", "nanobind>=2.9.2")
+          path.write_text(text)
+          PY
+          python -m cibuildwheel --output-dir latest-wheelhouse python
+          git diff -- python/pyproject.toml
+          git checkout -- python/pyproject.toml
+      - name: Confirm no artifact publication
+        run: test -n "$(find latest-wheelhouse -name '*.whl' -print -quit)"

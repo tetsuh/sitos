@@ -44,6 +44,11 @@ if(SITOS_WITH_ZENOH)
   include(cmake/zenohc.cmake)
 endif()
 
+if(SITOS_BUILD_PYTHON)
+  find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
+  find_package(nanobind CONFIG REQUIRED)
+endif()
+
 if(SITOS_BUILD_BENCHMARKS)
   # CMP0135 is unavailable at the declared CMake 3.20 minimum.
   # Set it only where available so newer CMake versions avoid stale archive timestamps.
@@ -94,13 +99,43 @@ target_include_directories(sitos PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 target_compile_features(sitos PUBLIC cxx_std_20)
+if(SITOS_BUILD_PYTHON)
+  set_target_properties(sitos PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
 sitos_enable_warnings(sitos)
+
+# GCC PR115016: GCC 14/15 can report a false-positive -Wfree-nonheap-object
+# when optimizing std::vector operations. Limit the workaround to the affected
+# compiler versions and source file so genuine diagnostics remain enabled.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+   AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 14
+   AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16)
+  set_property(SOURCE src/param_value.cpp APPEND PROPERTY
+    COMPILE_OPTIONS -Wno-free-nonheap-object)
+endif()
 
 if(SITOS_WITH_ZENOH)
   target_sources(sitos PRIVATE src/transport/zenoh_transport.cpp)
   target_link_libraries(sitos PRIVATE zenohc::zenohc)
 else()
   target_sources(sitos PRIVATE src/transport_stub.cpp)
+endif()
+
+if(SITOS_BUILD_PYTHON)
+  nanobind_add_module(_sitos MODULE
+    python/bindings/module.cpp
+    python/bindings/param_value_conversion.cpp)
+  target_link_libraries(_sitos PRIVATE sitos::sitos)
+  target_include_directories(_sitos PRIVATE src)
+  target_compile_definitions(_sitos PRIVATE
+    SITOS_PYTHON_VERSION="${PROJECT_VERSION}"
+    SITOS_PYTHON_WITH_ZENOH=$<BOOL:${SITOS_WITH_ZENOH}>)
+  install(TARGETS _sitos
+    LIBRARY DESTINATION sitos COMPONENT python
+    RUNTIME DESTINATION sitos COMPONENT python
+    ARCHIVE DESTINATION sitos COMPONENT python)
+  install(FILES python/sitos/__init__.py
+    DESTINATION sitos COMPONENT python)
 endif()
 
 if(SITOS_BUILD_TESTS)
