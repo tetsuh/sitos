@@ -10,7 +10,7 @@ def test_public_param_store_is_exported():
 
 
 def test_constructor_rejects_bool_timeout():
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         sitos.ParamStore(query_timeout_ms=True)
 
 

@@ -7,6 +7,8 @@
 
 #include "param_value_conversion.hpp"
 
+void BindParamStore(nanobind::module_& module);
+
 #if SITOS_PYTHON_WITH_ZENOH
 #include "transport/zenoh_runtime_anchor.hpp"
 #endif
@@ -41,4 +43,5 @@ NB_MODULE(_sitos, module) {
   module.attr("__version__") = SITOS_PYTHON_VERSION;
   module.def("encode_value", &EncodeValue, "value"_a);
   module.def("decode_value", &DecodeValue, "payload"_a);
+  BindParamStore(module);
 }

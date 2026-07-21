@@ -124,6 +124,7 @@ endif()
 if(SITOS_BUILD_PYTHON)
   nanobind_add_module(_sitos MODULE
     python/bindings/module.cpp
+    python/bindings/param_store.cpp
     python/bindings/param_value_conversion.cpp)
   target_link_libraries(_sitos PRIVATE sitos::sitos)
   target_include_directories(_sitos PRIVATE src)
@@ -134,7 +135,9 @@ if(SITOS_BUILD_PYTHON)
     LIBRARY DESTINATION sitos COMPONENT python
     RUNTIME DESTINATION sitos COMPONENT python
     ARCHIVE DESTINATION sitos COMPONENT python)
-  install(FILES python/sitos/__init__.py
+  install(FILES
+    python/sitos/__init__.py
+    python/sitos/store.py
     DESTINATION sitos COMPONENT python)
 endif()
 
