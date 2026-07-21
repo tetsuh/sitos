@@ -9,6 +9,7 @@ import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -16,9 +17,16 @@ from scripts import check_wheel
 import sitos
 
 
-def test_wheel_validator_rejects_param_store_fixture_member() -> None:
+@pytest.mark.parametrize(
+    "member",
+    [
+        "sitos/sitos_python_param_store_fixture.exe",
+        "sitos/sitos_python_param_store_fixture",
+    ],
+)
+def test_wheel_validator_rejects_param_store_fixture_member(member: str) -> None:
     with pytest.raises(RuntimeError, match="forbidden wheel entry"):
-        check_wheel.validate_wheel_members(["sitos/sitos_python_param_store_fixture.exe"])
+        check_wheel.validate_wheel_members([member])
 
 
 def test_public_param_store_is_exported() -> None:
@@ -85,11 +93,17 @@ def test_public_exception_hierarchy() -> None:
 
 
 def test_batch_rejects_malformed_pairs_before_submission() -> None:
+    class MalformedMapping:
+        def items(self):
+            return [("a", 1, "extra")]
+
     with sitos.ParamStore(query_timeout_ms=5000) as store:
         with pytest.raises(ValueError, match="two items"):
             store.put_batch("base", [("a",)])
         with pytest.raises(TypeError, match="two-item pairs"):
             store.put_batch("base", ["not-a-pair"])
+        with pytest.raises(ValueError, match="two items"):
+            store.put_batch("base", MalformedMapping())
 
 
 def _readline_with_timeout(stream, timeout: float = 10.0) -> str:
@@ -104,6 +118,44 @@ def _readline_with_timeout(stream, timeout: float = 10.0) -> str:
     if reader.is_alive():
         raise AssertionError(f"fixture did not produce a line within {timeout:g} seconds")
     return lines.get_nowait().strip()
+
+
+def test_stop_fixture_does_not_write_to_exited_process() -> None:
+    process = Mock()
+    process.poll.return_value = 1
+
+    _stop_fixture_process(process)
+
+    process.stdin.write.assert_not_called()
+    process.wait.assert_called_once_with(timeout=10)
+
+
+def test_stop_fixture_preserves_failure_when_stop_pipe_is_broken() -> None:
+    process = Mock()
+    process.poll.return_value = None
+    process.stdin.write.side_effect = BrokenPipeError
+
+    _stop_fixture_process(process)
+
+    process.wait.assert_called_once_with(timeout=10)
+
+
+def _stop_fixture_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is None and process.stdin is not None:
+        try:
+            process.stdin.write("STOP\n")
+            process.stdin.flush()
+        except BrokenPipeError:
+            pass
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
 
 
 def _fixture_path() -> str | None:
@@ -143,14 +195,7 @@ def live_store() -> Iterator[tuple[sitos.ParamStore, subprocess.Popen[str], str]
     finally:
         if store is not None:
             store.close()
-        if process.stdin is not None:
-            process.stdin.write("STOP\n")
-            process.stdin.flush()
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.terminate()
-            process.wait(timeout=10)
+        _stop_fixture_process(process)
 
 
 def _eventually(store: sitos.ParamStore, scope: str, key: str) -> object:

@@ -25,7 +25,10 @@ FORBIDDEN_TOKENS = (
     "/build/",
 )
 FORBIDDEN_SUFFIXES = (".a", ".lib", ".h", ".hh", ".hpp", ".cmake")
-FORBIDDEN_BASENAMES = ("sitos_python_param_store_fixture.exe",)
+FORBIDDEN_BASENAMES = (
+    "sitos_python_param_store_fixture",
+    "sitos_python_param_store_fixture.exe",
+)
 
 
 def validate_wheel_members(names: list[str]) -> None:

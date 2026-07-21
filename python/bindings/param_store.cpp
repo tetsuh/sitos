@@ -177,24 +177,21 @@ class PyParamStore {
     auto native = Acquire();
     try {
       std::vector<sitos::BatchEntry> materialized;
+      const auto append_pair = [&materialized](const nb::handle& item) {
+        if (!nb::isinstance<nb::tuple>(item) && !nb::isinstance<nb::list>(item)) {
+          throw nb::type_error("put_batch entries must be two-item pairs");
+        }
+        if (nb::len(item) != 2) {
+          throw nb::value_error("put_batch entries must have two items");
+        }
+        materialized.push_back({nb::cast<std::string>(item[0]),
+                                ParamValueFromPython(item[1])});
+      };
       if (nb::hasattr(entries, "items")) {
         nb::object items = entries.attr("items")();
-        for (nb::handle item : nb::iter(items)) {
-          nb::tuple pair = nb::borrow<nb::tuple>(item);
-          materialized.push_back({nb::cast<std::string>(pair[0]),
-                                  ParamValueFromPython(pair[1])});
-        }
+        for (nb::handle item : nb::iter(items)) append_pair(item);
       } else {
-        for (auto item : nb::iter(entries)) {
-          if (!nb::isinstance<nb::tuple>(item) && !nb::isinstance<nb::list>(item)) {
-            throw nb::type_error("put_batch entries must be two-item pairs");
-          }
-          if (nb::len(item) != 2) {
-            throw nb::value_error("put_batch entries must have two items");
-          }
-          materialized.push_back({nb::cast<std::string>(item[0]),
-                                  ParamValueFromPython(item[1])});
-        }
+        for (nb::handle item : nb::iter(entries)) append_pair(item);
       }
       auto result = InvokeNative(std::move(native), [&](sitos::ParamStore& store) {
         return store.PutBatch(scope, materialized);
