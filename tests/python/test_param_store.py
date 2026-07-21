@@ -1,5 +1,6 @@
 """Acceptance tests for the Python ParamStore binding."""
 
+import importlib.util
 import json
 import os
 import queue
@@ -13,8 +14,17 @@ from unittest.mock import Mock
 
 import pytest
 
-from scripts import check_wheel
 import sitos
+
+
+def _load_check_wheel():
+    script = Path(__file__).resolve().parents[2] / "scripts" / "check_wheel.py"
+    spec = importlib.util.spec_from_file_location("sitos_check_wheel", script)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load the wheel validator")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.mark.parametrize(
@@ -26,7 +36,7 @@ import sitos
 )
 def test_wheel_validator_rejects_param_store_fixture_member(member: str) -> None:
     with pytest.raises(RuntimeError, match="forbidden wheel entry"):
-        check_wheel.validate_wheel_members([member])
+        _load_check_wheel().validate_wheel_members([member])
 
 
 def test_public_param_store_is_exported() -> None:
