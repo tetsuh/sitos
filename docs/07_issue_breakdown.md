@@ -281,9 +281,13 @@ so it is not a v0.2 blocker. Include it by v0.5.
 * Implementation targets: StorageNode durable-session catalog, startup recovery, and
   crash/restart integration tests
 * Scope: retain and recover durable buffer sessions without making ephemeral sessions restartable.
-  Retention is not a storage-wide write barrier; host applications enforce external write policy
+  Retention is not a storage-wide write barrier; host applications enforce external write policy.
+  Catalog corruption fails closed: sitos returns a typed catalog-unavailable error and refuses
+  catalog-dependent reads and mutations; v0.5 provides no partial service and performs no
+  automatic or in-process repair or recovery. The host latches readiness false; recovery requires
+  offline maintenance and restart
 * Acceptance criteria: durable recovery, ephemeral exclusion, explicit close non-resurrection,
-  missing/corrupt storage handling, and concurrent startup/close safety
+  degraded fail-closed handling of missing or corrupt storage, and concurrent startup/close safety
 * Depends on: #8, #12, #56, #105; requires an Accepted ADR before merge
 
 ---
