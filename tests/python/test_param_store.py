@@ -2,6 +2,7 @@
 
 import json
 import os
+import queue
 import socket
 import subprocess
 import threading
@@ -41,6 +42,13 @@ def test_constructor_rejects_empty_json() -> None:
         sitos.ParamStore(zenoh_config_json="")
 
 
+def test_context_manager_closes_store() -> None:
+    with sitos.ParamStore(query_timeout_ms=5000) as store:
+        assert isinstance(store, sitos.ParamStore)
+    with pytest.raises(ValueError, match="ParamStore is closed"):
+        store.contains("base", "key")
+
+
 def test_context_manager_methods_are_bound() -> None:
     assert callable(sitos.ParamStore.__enter__)
     assert callable(sitos.ParamStore.__exit__)
@@ -55,9 +63,26 @@ def test_public_exception_hierarchy() -> None:
     assert issubclass(sitos.ReadOnlyError, sitos.SitosError)
 
 
-def test_batch_accepts_duplicate_pairs_without_mapping_loss() -> None:
-    assert callable(sitos.ParamStore.put_batch)
-    assert [pair for pair in [("a", 1), ("a", 2)]] == [("a", 1), ("a", 2)]
+def test_batch_rejects_malformed_pairs_before_submission() -> None:
+    with sitos.ParamStore(query_timeout_ms=5000) as store:
+        with pytest.raises(ValueError, match="two items"):
+            store.put_batch("base", [("a",)])
+        with pytest.raises(TypeError, match="two-item pairs"):
+            store.put_batch("base", ["not-a-pair"])
+
+
+def _readline_with_timeout(stream, timeout: float = 10.0) -> str:
+    lines: queue.Queue[str] = queue.Queue(maxsize=1)
+
+    def read() -> None:
+        lines.put(stream.readline())
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    reader.join(timeout)
+    if reader.is_alive():
+        raise AssertionError(f"fixture did not produce a line within {timeout:g} seconds")
+    return lines.get_nowait().strip()
 
 
 def _fixture_path() -> str | None:
@@ -84,21 +109,27 @@ def live_store() -> Iterator[tuple[sitos.ParamStore, subprocess.Popen[str], str]
         text=True,
         bufsize=1,
     )
-    assert process.stdout is not None
-    ready = process.stdout.readline().strip()
-    assert ready == f"READY {prefix} {port}"
-    config = json.dumps({"mode": "client", "connect": {
-        "endpoints": [f"tcp/127.0.0.1:{port}"]
-    }})
-    store = sitos.ParamStore(prefix=prefix, zenoh_config_json=config, query_timeout_ms=5000)
+    store = None
     try:
+        assert process.stdout is not None
+        ready = _readline_with_timeout(process.stdout)
+        assert ready == f"READY {prefix} {port}"
+        config = json.dumps({"mode": "client", "connect": {
+            "endpoints": [f"tcp/127.0.0.1:{port}"]
+        }})
+        store = sitos.ParamStore(prefix=prefix, zenoh_config_json=config, query_timeout_ms=5000)
         yield store, process, prefix
     finally:
-        store.close()
+        if store is not None:
+            store.close()
         if process.stdin is not None:
             process.stdin.write("STOP\n")
             process.stdin.flush()
-        process.wait(timeout=10)
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            process.wait(timeout=10)
 
 
 def _eventually(store: sitos.ParamStore, scope: str, key: str) -> object:
@@ -148,7 +179,7 @@ def test_live_delayed_reply_allows_other_python_threads(live_store) -> None:
         target=lambda: result.append(store.get("base", "__python_gil_delay__")), daemon=True
     )
     thread.start()
-    assert process.stdout.readline().strip() == "DELAYED"
+    assert _readline_with_timeout(process.stdout) == "DELAYED"
     progress = []
     worker = threading.Thread(target=lambda: progress.append(True))
     worker.start()

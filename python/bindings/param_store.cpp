@@ -282,7 +282,8 @@ void BindParamStore(nb::module_& module) {
            "query_timeout_ms"_a = 5000)
       .def("close", &PyParamStore::Close)
       .def("__enter__", &PyParamStore::Enter, nb::rv_policy::reference_internal)
-      .def("__exit__", &PyParamStore::Exit)
+      .def("__exit__", &PyParamStore::Exit, "exc_type"_a.none(), "exc_value"_a.none(),
+           "traceback"_a.none())
       .def("put", &PyParamStore::Put, "scope"_a, "key"_a, "value"_a)
       .def("put_batch", &PyParamStore::PutBatch, "scope"_a, "entries"_a)
       .def("delete", &PyParamStore::Delete, "scope"_a, "key"_a)
