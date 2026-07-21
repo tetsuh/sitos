@@ -68,12 +68,14 @@ all entries are validated before one wire submission. Writes are submission-only
 queries, validates, sorts, and materializes owned `(relative_key, value)` pairs before returning
 an iterator.
 
-Missing values raise `sitos.NotFoundError`, unless an explicit `default` is supplied; the default
-is returned unchanged only for NotFound. Type conversion failures raise `sitos.TypeMismatchError`.
-Invalid keys and arguments raise built-in `ValueError`; timeout and communication failures raise
-`sitos.TimeoutError` and `sitos.DisconnectedError`. `close` is idempotent, rejects later calls, and
-allows already-admitted native operations to finish safely. Subscriptions and acknowledgements
-remain outside Issue #23.
+ParamStore exports `sitos.SitosError` and its `NotFoundError`, `TypeMismatchError`,
+`TimeoutError`, `DisconnectedError`, and `ReadOnlyError` subclasses. Missing values raise
+`sitos.NotFoundError`, unless an explicit `default` is supplied; the default is returned unchanged
+only for NotFound. Type conversion failures raise `sitos.TypeMismatchError`; timeout,
+disconnection, and read-only failures raise their corresponding subclasses. `Status::Error` raises
+`sitos.SitosError`, while invalid keys and arguments raise built-in `ValueError`. `close` is
+idempotent, rejects later calls, and allows already-admitted native operations to finish safely.
+Subscriptions and acknowledgements remain outside Issue #23.
 
 ### 2.2 ParamCache
 
