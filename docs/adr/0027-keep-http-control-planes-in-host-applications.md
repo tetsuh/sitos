@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 2026-07-21
+Accepted — 2026-07-21
 
 ## Context
 
@@ -52,5 +52,5 @@ as a separate package or repository.
 * Issue #109
 * Issue #57 and its
   [architecture-decision timeline comment](https://github.com/tetsuh/sitos/issues/57#issuecomment-5024834430)
-* Proposed replacement for: ADR-0015
+* Supersedes: ADR-0015
 * Related: ADR-0014

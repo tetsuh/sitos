@@ -5,7 +5,7 @@
 Accepted — 2026-07-09
 
 > **Current HTTP boundary proposal:** Issue #57 closed the planned sitos-owned gateway as
-> not planned. ADR-0027 proposes that host applications provide any HTTP facade over the native
+> not planned. ADR-0027 assigns any HTTP facade over the native
 > sitos APIs; the gateway reference below is retained as historical context.
 
 ## Context

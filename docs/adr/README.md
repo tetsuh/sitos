@@ -19,7 +19,7 @@ See [docs/10_adr_process.md](../10_adr_process.md) for the process.
 | [0012](0012-google-cpp-style-with-100-column-limit.md) | Google C++ style with 100-column limit |
 | [0013](0013-default-to-zenoh-scouting-with-explicit-endpoint-override.md) | Default to zenoh scouting with explicit endpoint override |
 | [0014](0014-session-scoped-buffers.md) | Add a session-scoped, disk-backed buffers key space |
-| [0015](0015-optional-http-gateway-component.md) | Ship an optional HTTP gateway component on cpp-httplib |
+| [0015](0015-optional-http-gateway-component.md) | Ship an optional HTTP gateway component on cpp-httplib *(superseded by ADR-0027)* |
 | [0016](0016-use-canonical-zenoh-bytes-encodings.md) | Use canonical zenoh bytes encodings |
 | [0017](0017-atomic-storage-node-lifecycle.md) | Use atomic, quiescent StorageNode lifecycle transitions |
 | [0018](0018-use-zenoh-valid-batch-key-segment.md) | Use a zenoh-valid batch key segment |
