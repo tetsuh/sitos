@@ -66,6 +66,14 @@ target_link_libraries(sitos_result_test PRIVATE GTest::gtest_main sitos::sitos)
 sitos_enable_warnings(sitos_result_test)
 gtest_add_tests(TARGET sitos_result_test SOURCES unit/result_test.cpp)
 
+add_executable(sitos_python_status_translation_test unit/python_status_translation_test.cpp)
+target_link_libraries(sitos_python_status_translation_test PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_python_status_translation_test PRIVATE ${PROJECT_SOURCE_DIR})
+sitos_enable_warnings(sitos_python_status_translation_test)
+gtest_add_tests(
+  TARGET sitos_python_status_translation_test
+  SOURCES unit/python_status_translation_test.cpp)
+
 add_executable(sitos_client_config_test unit/client_config_test.cpp)
 target_link_libraries(sitos_client_config_test PRIVATE GTest::gtest_main sitos::sitos)
 sitos_enable_warnings(sitos_client_config_test)

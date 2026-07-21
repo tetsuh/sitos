@@ -16,6 +16,7 @@
 #include <nanobind/stl/string.h>
 
 #include "param_value_conversion.hpp"
+#include "status_translation.hpp"
 #include "sitos/param_store.hpp"
 
 namespace nb = nanobind;
@@ -36,22 +37,20 @@ class ReadOnlyError : public SitosError { using SitosError::SitosError; };
 [[noreturn]] void ThrowStatus(sitos::Status status, std::string_view message) {
   const std::string fallback = sitos::MakeErrorCode(status).message();
   const std::string text = message.empty() ? fallback : std::string(message);
-  switch (status) {
-    case sitos::Status::InvalidKey:
-    case sitos::Status::InvalidArgument:
+  switch (StatusToPythonError(status)) {
+    case PythonErrorKind::kValueError:
       throw nb::value_error(text.c_str());
-    case sitos::Status::NotFound:
+    case PythonErrorKind::kNotFound:
       throw NotFoundError(text);
-    case sitos::Status::TypeMismatch:
+    case PythonErrorKind::kTypeMismatch:
       throw TypeMismatchError(text);
-    case sitos::Status::Timeout:
+    case PythonErrorKind::kTimeout:
       throw TimeoutError(text);
-    case sitos::Status::Disconnected:
+    case PythonErrorKind::kDisconnected:
       throw DisconnectedError(text);
-    case sitos::Status::ReadOnly:
+    case PythonErrorKind::kReadOnly:
       throw ReadOnlyError(text);
-    case sitos::Status::Error:
-    case sitos::Status::Ok:
+    case PythonErrorKind::kSitosError:
       throw SitosError(text);
   }
   throw SitosError(text);
@@ -84,27 +83,27 @@ std::int64_t GetTimeout(const nb::handle& value) {
 sitos::ParamValue ConvertTyped(const sitos::ParamValue& value, const nb::object& type) {
   if (type.is_none()) return value;
   const auto builtins = nb::module_::import_("builtins");
-  if (type.equal(builtins.attr("bool"))) {
+  if (type.ptr() == builtins.attr("bool").ptr()) {
     auto converted = value.As<bool>();
     if (!converted) ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
     return sitos::ParamValue(*converted);
   }
-  if (type.equal(builtins.attr("int"))) {
+  if (type.ptr() == builtins.attr("int").ptr()) {
     auto converted = value.As<std::int64_t>();
     if (!converted) ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
     return sitos::ParamValue(*converted);
   }
-  if (type.equal(builtins.attr("float"))) {
+  if (type.ptr() == builtins.attr("float").ptr()) {
     auto converted = value.As<double>();
     if (!converted) ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
     return sitos::ParamValue(*converted);
   }
-  if (type.equal(builtins.attr("str"))) {
+  if (type.ptr() == builtins.attr("str").ptr()) {
     auto converted = value.As<std::string>();
     if (!converted) ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
     return sitos::ParamValue(std::move(*converted));
   }
-  if (type.equal(builtins.attr("bytes"))) {
+  if (type.ptr() == builtins.attr("bytes").ptr()) {
     auto converted = value.As<std::vector<std::byte>>();
     if (!converted) ThrowStatus(sitos::Status::TypeMismatch, "parameter value type mismatch");
     return sitos::ParamValue(std::move(*converted));
@@ -124,8 +123,16 @@ class PyParamStore {
       nb::gil_scoped_release release;
       return sitos::ParamStore::Open(std::move(config));
     }();
-    auto native = Take(std::move(result));
-    state_->native = std::make_shared<sitos::ParamStore>(std::move(native));
+    std::optional<sitos::ParamStore> native{Take(std::move(result))};
+    try {
+      state_->native = std::make_shared<sitos::ParamStore>(std::move(*native));
+    } catch (...) {
+      nb::gil_scoped_release release;
+      native.reset();
+      throw;
+    }
+    nb::gil_scoped_release release;
+    native.reset();
   }
 
   ~PyParamStore() { Close(); }
@@ -143,7 +150,7 @@ class PyParamStore {
   }
 
   PyParamStore& Enter() {
-    static_cast<void>(Acquire());
+    ReleaseNative(Acquire());
     return *this;
   }
 
@@ -153,58 +160,64 @@ class PyParamStore {
   }
 
   void Put(const std::string& scope, const std::string& key, const nb::handle& value) {
-    auto converted = ParamValueFromPython(value);
     auto native = Acquire();
-    auto result = [&] {
-      nb::gil_scoped_release release;
-      return native->Put(scope, key, converted);
-    }();
-    Take(std::move(result));
+    try {
+      auto converted = ParamValueFromPython(value);
+      auto result = InvokeNative(std::move(native), [&](sitos::ParamStore& store) {
+        return store.Put(scope, key, converted);
+      });
+      Take(std::move(result));
+    } catch (...) {
+      ReleaseNative(std::move(native));
+      throw;
+    }
   }
 
   void PutBatch(const std::string& scope, const nb::handle& entries) {
-    std::vector<sitos::BatchEntry> materialized;
-    if (nb::hasattr(entries, "items")) {
-      nb::object items = entries.attr("items")();
-      for (nb::handle item : nb::iter(items)) {
-        nb::tuple pair = nb::borrow<nb::tuple>(item);
-        materialized.push_back({nb::cast<std::string>(pair[0]),
-                                ParamValueFromPython(pair[1])});
-      }
-    } else {
-      for (auto item : nb::iter(entries)) {
-        if (!nb::isinstance<nb::tuple>(item) && !nb::isinstance<nb::list>(item)) {
-          throw nb::type_error("put_batch entries must be two-item pairs");
-        }
-        if (nb::len(item) != 2) throw nb::value_error("put_batch entries must have two items");
-        materialized.push_back({nb::cast<std::string>(item[0]),
-                                ParamValueFromPython(item[1])});
-      }
-    }
     auto native = Acquire();
-    auto result = [&] {
-      nb::gil_scoped_release release;
-      return native->PutBatch(scope, materialized);
-    }();
-    Take(std::move(result));
+    try {
+      std::vector<sitos::BatchEntry> materialized;
+      if (nb::hasattr(entries, "items")) {
+        nb::object items = entries.attr("items")();
+        for (nb::handle item : nb::iter(items)) {
+          nb::tuple pair = nb::borrow<nb::tuple>(item);
+          materialized.push_back({nb::cast<std::string>(pair[0]),
+                                  ParamValueFromPython(pair[1])});
+        }
+      } else {
+        for (auto item : nb::iter(entries)) {
+          if (!nb::isinstance<nb::tuple>(item) && !nb::isinstance<nb::list>(item)) {
+            throw nb::type_error("put_batch entries must be two-item pairs");
+          }
+          if (nb::len(item) != 2) {
+            throw nb::value_error("put_batch entries must have two items");
+          }
+          materialized.push_back({nb::cast<std::string>(item[0]),
+                                  ParamValueFromPython(item[1])});
+        }
+      }
+      auto result = InvokeNative(std::move(native), [&](sitos::ParamStore& store) {
+        return store.PutBatch(scope, materialized);
+      });
+      Take(std::move(result));
+    } catch (...) {
+      ReleaseNative(std::move(native));
+      throw;
+    }
   }
 
   void Delete(const std::string& scope, const std::string& key) {
-    auto native = Acquire();
-    auto result = [&] {
-      nb::gil_scoped_release release;
-      return native->Delete(scope, key);
-    }();
+    auto result = InvokeNative(Acquire(), [&](sitos::ParamStore& store) {
+      return store.Delete(scope, key);
+    });
     Take(std::move(result));
   }
 
   nb::object Get(const std::string& scope, const std::string& key, const nb::object& default_value,
                  const nb::object& missing, const nb::object& type) {
-    auto result = [&] {
-      auto native = Acquire();
-      nb::gil_scoped_release release;
-      return native->Get(scope, key);
-    }();
+    auto result = InvokeNative(Acquire(), [&](sitos::ParamStore& store) {
+      return store.Get(scope, key);
+    });
     if (!result.IsOk()) {
       if (result.StatusCode() == sitos::Status::NotFound && default_value.ptr() != missing.ptr()) {
         return default_value;
@@ -216,25 +229,21 @@ class PyParamStore {
   }
 
   bool Contains(const std::string& scope, const std::string& key) {
-    auto native = Acquire();
-    auto result = [&] {
-      nb::gil_scoped_release release;
-      return native->Contains(scope, key);
-    }();
+    auto result = InvokeNative(Acquire(), [&](sitos::ParamStore& store) {
+      return store.Contains(scope, key);
+    });
     return Take(std::move(result));
   }
 
   nb::object List(const std::string& scope, const std::string& prefix) {
-    auto native = Acquire();
     std::vector<std::pair<std::string, sitos::ParamValue>> values;
-    auto native_result = [&] {
-      nb::gil_scoped_release release;
-      return native->List(scope, prefix, [&](std::string_view key,
-                                             const sitos::ParamValue& value) {
+    auto native_result = InvokeNative(Acquire(), [&](sitos::ParamStore& store) {
+      return store.List(scope, prefix, [&](std::string_view key,
+                                           const sitos::ParamValue& value) {
         values.emplace_back(key, value);
         return true;
       });
-    }();
+    });
     Take(std::move(native_result));
     nb::list result;
     for (auto& entry : values) {
@@ -244,6 +253,25 @@ class PyParamStore {
   }
 
  private:
+  static void ReleaseNative(std::shared_ptr<sitos::ParamStore> native) noexcept {
+    if (!native) return;
+    nb::gil_scoped_release release;
+    native.reset();
+  }
+
+  template <typename Operation>
+  static auto InvokeNative(std::shared_ptr<sitos::ParamStore> native, Operation&& operation) {
+    nb::gil_scoped_release release;
+    try {
+      auto result = std::forward<Operation>(operation)(*native);
+      native.reset();
+      return result;
+    } catch (...) {
+      native.reset();
+      throw;
+    }
+  }
+
   std::shared_ptr<sitos::ParamStore> Acquire() const {
     std::lock_guard lock(state_->mutex);
     if (!state_->native) throw nb::value_error("ParamStore is closed");
@@ -291,7 +319,8 @@ void BindParamStore(nb::module_& module) {
                              nb::object default_value, nb::object type) {
         return self.Get(scope, key, default_value, missing, type);
       },
-           "scope"_a, "key"_a, "default"_a.none() = missing, "type"_a.none() = nb::none())
+           "scope"_a, "key"_a, "default"_a.none() = missing, nb::kw_only(),
+           "type"_a.none() = nb::none())
       .def("contains", &PyParamStore::Contains, "scope"_a, "key"_a)
       .def("list", &PyParamStore::List, "scope"_a, "prefix"_a);
 }
