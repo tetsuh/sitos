@@ -265,14 +265,15 @@ so it is not a v0.2 blocker. Include it by v0.5.
 ### #107 BufferPublisher applied and synchronized fences
 * Milestone: v0.5
 * References: ADR-0014, [02] §8, [04]
-* Implementation targets: C++ BufferPublisher API and deterministic/integration tests over
-  `buffers/<sid>/**`; Python binding remains pending the Issue's owner decision
+* Implementation targets: C++ and Python BufferPublisher APIs plus deterministic/integration tests
+  over `buffers/<sid>/**`
 * Scope: explicit application-controlled `Push` plus applied or synchronized `Fence`; no automatic
-  per-value fence or application-specific manifest policy; Python parity remains an owner decision
-  because advanced Python extension surfaces are assigned to v1.0
+  per-value fence or application-specific manifest policy; Python parity is mandatory v0.5 scope
+  because Python Holoscan/CuPy Workers require the same terminal manifest-and-fence sequence
 * Acceptance criteria: applied and synchronized receipts, failure and timeout propagation,
-  publisher isolation, restart behavior, and C++ coverage; add Python coverage only if retained
-* Depends on: #56, #105, #106
+  publisher isolation, restart behavior, C++/Python API parity, contiguous NumPy input, and payload
+  lifetime safety
+* Depends on: #27, #56, #105, #106
 
 ### #108 Restart-safe retained-session catalog
 * Milestone: v0.5
