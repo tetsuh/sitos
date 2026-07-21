@@ -65,17 +65,18 @@ exists = store.contains("base", "recon/fov")
 for key, value in store.list("base", "recon"):   # generator
     ...
 
-sub = store.subscribe("base", "recon/**", callback=lambda key, value: ...)
-sub.close()          # Or: with store.subscribe(...) as sub:
 store.close()        # Supports context manager (__enter__/__exit__)
 ```
 
 * Errors: misses do not return `None`; they raise `sitos.NotFoundError`, or
   `get(..., default=...)` returns the default value. Communication loss raises `sitos.DisconnectedError`
-* callback is called from a dedicated dispatch thread ([02] §8).
-  Long-running work inside the callback delays other notifications (warn about this in the documentation)
+* Python ParamStore subscriptions are deferred to Issue #26, which owns the dedicated
+  callback-dispatch thread and GIL/lifecycle contract. Issue #23 exposes no provisional callback path
 
 ### 2.2 ParamCache
+
+ParamCache is session-only under ADR-0022. It has no `attach_base` API. The initial Python binding
+in Issue #24 also omits stale/reconnect state, which remains Issue #20 scope.
 
 ```python
 cache = sitos.ParamCache(prefix="sitos")
@@ -90,7 +91,6 @@ assert lut.flags.writeable is False
 cache.put("recon/progress", 0.5)      # Write to overlay + distribute
 cache.contains("recon/fov")
 dict(cache.items("recon"))            # Enumerate within cache (no communication)
-cache.stale                           # True while disconnected
 cache.detach(); cache.close()
 ```
 

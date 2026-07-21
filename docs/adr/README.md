@@ -19,7 +19,7 @@ See [docs/10_adr_process.md](../10_adr_process.md) for the process.
 | [0012](0012-google-cpp-style-with-100-column-limit.md) | Google C++ style with 100-column limit |
 | [0013](0013-default-to-zenoh-scouting-with-explicit-endpoint-override.md) | Default to zenoh scouting with explicit endpoint override |
 | [0014](0014-session-scoped-buffers.md) | Add a session-scoped, disk-backed buffers key space |
-| [0015](0015-optional-http-gateway-component.md) | Ship an optional HTTP gateway component on cpp-httplib |
+| [0015](0015-optional-http-gateway-component.md) | Ship an optional HTTP gateway component on cpp-httplib *(superseded by ADR-0027)* |
 | [0016](0016-use-canonical-zenoh-bytes-encodings.md) | Use canonical zenoh bytes encodings |
 | [0017](0017-atomic-storage-node-lifecycle.md) | Use atomic, quiescent StorageNode lifecycle transitions |
 | [0018](0018-use-zenoh-valid-batch-key-segment.md) | Use a zenoh-valid batch key segment |
@@ -30,3 +30,5 @@ See [docs/10_adr_process.md](../10_adr_process.md) for the process.
 | [0023](0023-param-cache-consistency-and-lifetime.md) | Define ParamCache consistency and lifetime boundary |
 | [0024](0024-opt-in-google-benchmark-build-boundary.md) | Keep Google Benchmark opt-in and outside installed packages |
 | [0025](0025-session-view-lifetime-and-composite-read-consistency.md) | Define SessionView lifetime and composite-read consistency |
+| [0026](0026-python-wheel-build-and-native-runtime.md) | Define the Python wheel build and bundled native-runtime boundary |
+| [0027](0027-keep-http-control-planes-in-host-applications.md) | Keep HTTP control planes in host applications |

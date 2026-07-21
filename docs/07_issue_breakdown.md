@@ -19,10 +19,11 @@ Milestone = release boundary).
 | **v0.2** | StorageNode/ParamStore/ParamCache work in C++ through same-process zenoh sessions | #2, #3, #9–#13, #15, #18, #19, #21 |
 | **v0.3** | Basic Python APIs work (InMemory, ParamStore, ParamCache, NumPy read) | #16, #22, #23, #24, #25, #27 |
 | **v0.4** | RocksDB, single-value interop, bench, examples, and session-scoped buffers are in place | #8, #29, #31, #32, #33, #56 |
-| **v1.0** | Public OSS quality. docs/release/wheels/ack/batch interop/GIL/custom engine and the optional HTTP gateway completed | #14, #17, #20, #26, #28, #30, #34, #35, #57 |
+| **v0.5** | Reliable and durable session-buffer delivery is ready for downstream application integration | #14, #17, #99, #105–#109 |
+| **v1.0** | Public OSS quality, reconnect recovery, advanced Python extensions, raw batch/ack interop, documentation, and publication readiness are complete | #20, #26, #28, #30, #34, #35 |
 
 `ack`-related work (#14, #17) is useful, but implementation is heavy relative to initial value,
-so it is not a v0.2 blocker. Include it by v1.0.
+so it is not a v0.2 blocker. Include it by v0.5.
 
 ---
 
@@ -124,6 +125,17 @@ so it is not a v0.2 blocker. Include it by v1.0.
   TakeSnapshot execution time does not depend on data size (bench)
 * Depends on: #6
 
+### #105 StorageEngine durability barrier
+* Milestone: v0.5
+* References: [02] §3, [04] §3, [10] §6
+* Implementation targets: `include/sitos/storage_engine.hpp`, InMemory/RocksDB engine sources,
+  reusable contract tests, and RocksDB integration tests
+* Scope: define an explicit storage synchronization boundary for writes completed before its
+  linearization point; keep ordinary Put operations unsynchronized
+* Acceptance criteria: InMemory no-op, RocksDB durability and injected-failure tests, concurrent
+  linearization coverage, and clear applied/persisted/synchronized documentation
+* Depends on: #8; requires an Accepted ADR before merge
+
 ---
 
 ## M2: StorageNode and zenoh integration (critical path)
@@ -185,14 +197,15 @@ so it is not a v0.2 blocker. Include it by v1.0.
 * Depends on: #11, #12
 
 ### #14 ack protocol
-* Milestone: v1.0
+* Milestone: v0.5
 * References: [03] §6, [02] §6.2
 * Implementation targets: `include/sitos/ack.hpp`, `src/ack.cpp`, `src/storage_node.cpp`,
   `tests/integration/ack_test.cpp`
-* Scope: ack ring buffer and `meta/ack/<uuid>` queryable, client retry
-* Acceptance criteria: integration tests — ack round-trip, retry on ack timeout,
-  put without attachment is treated as ack-less
-* Depends on: #11
+* Scope: ack ring buffer and `meta/ack/<uuid>` queryable plus one-submit/multiple-poll helper;
+  implementation is blocked until token attachment, batch outcome, and ambiguous Timeout are defined
+* Acceptance criteria: integration tests — ack round-trip, query-only retry, ring eviction, malformed
+  token rejection, and ack-less compatibility
+* Depends on: #11, #85, #86
 
 ### #15 ParamStore: Put/Get/List/Delete
 * Milestone: v0.2
@@ -215,13 +228,24 @@ so it is not a v0.2 blocker. Include it by v1.0.
 * Depends on: #15
 
 ### #17 ParamStore: ack/error mapping
-* Milestone: v1.0
+* Milestone: v0.5
 * References: [03] §6, [04] §2
 * Implementation targets: `include/sitos/status.hpp`, `src/param_store.cpp`,
   `tests/integration/param_store_ack_test.cpp`
 * Scope: PutOptions::ack, ack timeout/retry, detailed Status mapping
 * Acceptance criteria: integration tests — ack success/failure/timeout, Disconnected/Timeout when StorageNode is stopped
 * Depends on: #14, #15
+
+### #106 Shared same-publisher fence primitive
+* Milestone: v0.5
+* References: [02] §8, [03] §6, [10] §6
+* Implementation targets: Transport/StorageNode internal control routing and deterministic
+  fake-Transport plus Zenoh integration tests
+* Scope: define one reusable in-band token and publisher-identity ordering primitive shared by
+  ParamCache local-delivery waits and buffer-application fences
+* Acceptance criteria: prior/later write ordering, publisher isolation, duplicate/late marker
+  handling, timeout, error preservation, and callback-quiescent lifecycle tests
+* Depends on: #14; requires an Accepted ADR before merge
 
 ### #56 Session-scoped buffers
 * Milestone: v0.4
@@ -237,6 +261,30 @@ so it is not a v0.2 blocker. Include it by v1.0.
   `kEphemeral` no-store/no-get; `CloseSession` purge → not-found; ParamCache scope isolation
   (`session/**` never receives `buffers/**`); raw-zenoh interop
 * Depends on: #12 (session management), #8 (RocksDBEngine, disk-backed `kDurable`)
+
+### #107 BufferPublisher applied and synchronized fences
+* Milestone: v0.5
+* References: ADR-0014, [02] §8, [04]
+* Implementation targets: C++ and Python BufferPublisher APIs plus deterministic/integration tests
+  over `buffers/<sid>/**`
+* Scope: explicit application-controlled `Push` plus applied or synchronized `Fence`; no automatic
+  per-value fence or application-specific manifest policy; Python parity is mandatory v0.5 scope
+  because Python Holoscan/CuPy Workers require the same terminal manifest-and-fence sequence
+* Acceptance criteria: applied and synchronized receipts, failure and timeout propagation,
+  publisher isolation, restart behavior, C++/Python API parity, contiguous NumPy input, and payload
+  lifetime safety
+* Depends on: #27, #56, #105, #106
+
+### #108 Restart-safe retained-session catalog
+* Milestone: v0.5
+* References: ADR-0014, [02] §7, [10] §6
+* Implementation targets: StorageNode durable-session catalog, startup recovery, and
+  crash/restart integration tests
+* Scope: retain and recover durable buffer sessions without making ephemeral sessions restartable.
+  Retention is not a storage-wide write barrier; host applications enforce external write policy
+* Acceptance criteria: durable recovery, ephemeral exclusion, explicit close non-resurrection,
+  missing/corrupt storage handling, and concurrent startup/close safety
+* Depends on: #8, #12, #56, #105; requires an Accepted ADR before merge
 
 ---
 
@@ -287,9 +335,21 @@ so it is not a v0.2 blocker. Include it by v1.0.
 * References: [02] §9, [01] N10
 * Implementation targets: `src/param_cache.cpp`,
   `tests/integration/reconnect_test.cpp`
-* Scope: stale flag, zenoh reconnect detection, automatic refetch
-* Acceptance criteria: integration — ParamCache recovers across StorageNode restart
-* Depends on: #18
+* Scope: stale flag, approved liveness detection, and automatic refetch; the Issue remains blocked
+  until its failure model and Transport signal are defined
+* Acceptance criteria: integration — ParamCache recovers across the approved restart/failure model
+* Depends on: #19
+
+### #99 ParamCache local-delivery fence
+* Milestone: v0.5
+* References: [02] §5, [04] §4
+* Implementation targets: `include/sitos/param_cache.hpp`, `src/param_cache.cpp`, and deterministic
+  fake-Transport plus Zenoh integration tests
+* Scope: expose `WaitForLocalDelivery(timeout)` using the shared same-publisher fence primitive;
+  wait only for the initiating cache subscriber, not peers or StorageNode acknowledgements
+* Acceptance criteria: prior local writes observed, later writes excluded, timeout/error mapping,
+  concurrent waiter isolation, and Detach/move/destruction quiescence
+* Depends on: #19, #106
 
 ### #21 SessionView (host-process facade)
 * Milestone: v0.2
@@ -324,27 +384,32 @@ so it is not a v0.2 blocker. Include it by v1.0.
 * References: [05] §2.1
 * Implementation targets: `python/bindings/param_store.cpp`, `python/sitos/store.py`,
   `tests/python/test_param_store.py`
-* Scope: Python binding for ParamStore, context manager, exception mapping
-* Acceptance criteria: pytest — Put/Get/List/Delete/Subscribe round-trip
-* Depends on: #15, #16, #22
+* Scope: non-callback Python binding for ParamStore, context manager, and exception mapping;
+  Subscribe belongs to #26 and acknowledgement options belong to #17
+* Acceptance criteria: pytest — Put/Get/List/Delete/Contains round-trip and deterministic close
+* Depends on: #15, #22
 
 ### #24 Python ParamCache
 * Milestone: v0.3
-* References: [05] §2.2
+* References: [05] §2.2, ADR-0022, ADR-0023
 * Implementation targets: `python/bindings/param_cache.cpp`, `python/sitos/cache.py`,
   `tests/python/test_param_cache.py`
-* Scope: Python binding for ParamCache, attach/detach, stale, items
-* Acceptance criteria: pytest — attach/delta-subscription scenarios equivalent to C++ ParamCache
-* Depends on: #18, #22
+* Scope: session-only Python binding for ParamCache reads/writes and attach/detach; no AttachBase or
+  stale/reconnect surface
+* Acceptance criteria: pytest — attach/concurrent-delta and peer-propagation scenarios equivalent
+  to the C++ ParamCache contract
+* Depends on: #19, #22
 
 ### #25 Python StorageNode / SessionView
 * Milestone: v0.3
-* References: [05] §2.3–2.4
+* References: [05] §2.3–2.4, ADR-0025
 * Implementation targets: `python/bindings/storage_node.cpp`, `python/bindings/session_view.cpp`,
   `python/sitos/node.py`, `tests/python/test_storage_node.py`
-* Scope: Python bindings for StorageNode, InMemoryEngine, SessionView
-* Acceptance criteria: pytest — create_session/close_session, session_view overlay→snapshot resolution
-* Depends on: #12, #21, #22
+* Scope: Python bindings for StorageNode, InMemoryEngine, and read-only SessionView; implementation
+  is blocked until a supported pure-Python process/session topology is selected
+* Acceptance criteria: pytest — create_session/close_session, read-only SessionView
+  overlay-over-snapshot resolution, and deterministic cross-component synchronization
+* Depends on: #21, #22, #23, #24
 
 ### #26 Python callback / GIL dispatch
 * Milestone: v1.0
@@ -363,7 +428,7 @@ so it is not a v0.2 blocker. Include it by v1.0.
 * Scope: `get_array(dtype)` (buffer protocol, writeable=False, keepalive),
   ndarray put, `.pyi` stubs
 * Acceptance criteria: pytest — verify base-buffer identity (no copy), mypy green
-* Depends on: #24
+* Depends on: #23, #24, #25
 
 ### #28 Python custom engine
 * Milestone: v1.0
@@ -439,36 +504,31 @@ so it is not a v0.2 blocker. Include it by v1.0.
 * Acceptance criteria: All checklist items completed, dry-run publish to TestPyPI succeeds
 * Depends on: M4 completed, #34
 
----
-
-## M6: Optional HTTP gateway (optional component)
-
-### #57 Optional HTTP gateway component
-* Milestone: v1.0 (earliest v0.4)
-* References: ADR-0015, ADR-0003, ADR-0007, ADR-0014, [09]
-* Implementation targets: `sitos-gateway` library + thin binary (cpp-httplib),
-  CMake option `SITOS_BUILD_GATEWAY` (default OFF)
-* Scope: params/sessions/buffers routes typed over `sitos.v1`; SSE session deltas;
-  loopback-default bind + pluggable auth; `Router` extension point for host routes.
-  Core build unaffected when the option is OFF (cpp-httplib not fetched)
-* Acceptance criteria: OFF build unaffected; typed param round-trip; prefix List;
-  buffer GET (durable) / not-found (ephemeral); SSE observable with `curl -N`;
-  host route served on the same port; loopback-default + auth hook invoked
-* Depends on: #15/#16 (ParamStore), #18/#19 (ParamCache), #12 (sessions), #56 (buffers)
+### #109 Align the roadmap and retire the optional HTTP gateway
+* Milestone: v0.5
+* References: ADR-0015, ADR-0027, [06], [10]
+* Implementation targets: ADR index and release/build/issue-breakdown documentation
+* Scope: record host ownership of HTTP control planes, supersede ADR-0015 without rewriting its
+  history, remove the planned gateway build surface, and align the v0.5 roadmap with GitHub
+* Acceptance criteria: ADR-0027 is Accepted, live documentation has no planned sitos gateway, and
+  the release boundaries and dependencies match the GitHub issues and milestones
+* Depends on: none
 
 ---
 
 ## Recommended implementation order (parallel lanes)
 
-```
-Lane A (core):      #1 → #4 → #6 → #7 → #8
-Lane B (zenoh):     #2 → #3 → #9 → #10 → #11 → #12 → #18 → #19/#20
-                                            ├→ #13 → #15/#16
-                                            ├→ #14 → #17 (also needs #15)
-                                            └→ #56 (also needs #8 from Lane A)
-Lane C (Python):    #22 (any time after #4) → #23/#24/#25 → #26 → #27/#28
-Lane D (quality):   #29/#30, #31/#32, #33, #34/#35 (as dependencies complete)
-Lane E (optional):  #57 HTTP gateway (after #56, #16, #19; see M6)
+```text
+Lane A (core):       #1 → #4 → #6 → #7 → #8 → #105
+Lane B (zenoh):      #2 → #3 → #9 → #10 → #11 → #12 → #18 → #19/#20
+                                             ├→ #13 → #15/#16
+                                             ├→ #14 → #17
+                                             │       └→ #106 → #99
+                                             └→ #56 → #107/#108
+Lane C (Python):     #22 (any time after #4) → #23/#24/#25 → #27
+                     Advanced callbacks/engines: #26/#28 (v1.0)
+Lane D (quality):    #29/#30, #31/#32, #33, #34/#35 (as dependencies complete)
+Lane E (roadmap):    #109 first; host applications own HTTP control planes under ADR-0027
 ```
 
 Each Issue is assumed to correspond to one PR. The PR must describe the corresponding requirement IDs
