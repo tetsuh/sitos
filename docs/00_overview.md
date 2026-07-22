@@ -82,7 +82,7 @@ repository as a general-purpose library not limited to CT reconstruction.
 | [10_adr_process.md](10_adr_process.md) | Public | ADR writing and operation rules (to be moved to docs/adr/README.md) |
 | [development_workflow.md](development_workflow.md) | Public | Branching strategy, TiDD, and TDD operation rules (to be moved to CONTRIBUTING) |
 
-Public documents (00–08) are maintained under `docs/` in the sitos repository.
+All documents listed above are public and maintained under `docs/` in the sitos repository.
 Public documents must not contain references to non-public documents.
 
 ## 6. Record of Major Decisions (ADR Summary)
