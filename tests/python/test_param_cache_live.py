@@ -166,7 +166,13 @@ def test_values_typed_get_default_batch_and_owned_items(live_cache_fixture) -> N
             "value/str": "text",
             "value/bytes": b"bytes",
         }
+        _send(process, "BATCH_STATUS")
+        initial_batch_count = int(_readline_with_timeout(process.stdout).split()[1])
         cache.put_batch(values)
+        _send(process, f"WAIT_BATCH {initial_batch_count}")
+        first_status = _readline_with_timeout(process.stdout)
+        assert int(first_status.split()[1]) == initial_batch_count + 1
+        assert first_status.split()[2] == "5"
         for key, expected in values.items():
             assert cache.get(key) == expected
         assert cache.get("value/dp", type=int) == 3
@@ -178,9 +184,11 @@ def test_values_typed_get_default_batch_and_owned_items(live_cache_fixture) -> N
         with pytest.raises(ValueError):
             cache.get("bad key", default=sentinel)
 
+        _send(process, "BATCH_STATUS")
+        before_count = int(_readline_with_timeout(process.stdout).split()[1])
         cache.put_batch([("value/dup", 1), ("value/dup", 2)])
         assert cache.get("value/dup") == 2
-        _send(process, "BATCH_STATUS")
+        _send(process, f"WAIT_BATCH {before_count}")
         status = _readline_with_timeout(process.stdout)
         assert status.endswith(" 2 1 2")
         before_count = int(status.split()[1])
@@ -242,7 +250,8 @@ def test_terminal_close_waits_for_admitted_attach_and_releases_gil(live_cache_fi
     assert process.stdout is not None
     cache = _new_cache(config)
     attach_result: list[object] = []
-    close_done = threading.Event()
+    first_close_done = threading.Event()
+    second_close_done = threading.Event()
 
     _send(process, "ARM_SNAPSHOT")
     assert _readline_with_timeout(process.stdout) == "ARMED"
@@ -250,8 +259,13 @@ def test_terminal_close_waits_for_admitted_attach_and_releases_gil(live_cache_fi
     attach.start()
     assert _readline_with_timeout(process.stdout) == "SNAPSHOT_ENTERED"
 
-    closer = threading.Thread(target=lambda: (cache.close(), close_done.set()), daemon=True)
-    closer.start()
+    first_closer = threading.Thread(
+        target=lambda: (cache.close(), first_close_done.set()), daemon=True
+    )
+    second_closer = threading.Thread(
+        target=lambda: (cache.close(), second_close_done.set()), daemon=True
+    )
+    first_closer.start()
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         try:
@@ -263,7 +277,9 @@ def test_terminal_close_waits_for_admitted_attach_and_releases_gil(live_cache_fi
     else:
         raise AssertionError("close did not close operation admission")
 
-    assert not close_done.is_set()
+    second_closer.start()
+    assert not first_close_done.is_set()
+    assert not second_close_done.is_set()
     progress: list[bool] = []
     worker = threading.Thread(target=lambda: progress.append(True))
     worker.start()
@@ -273,10 +289,13 @@ def test_terminal_close_waits_for_admitted_attach_and_releases_gil(live_cache_fi
     _send(process, "RELEASE_SNAPSHOT")
     assert _readline_with_timeout(process.stdout) == "SNAPSHOT_RELEASED"
     attach.join(timeout=5)
-    closer.join(timeout=5)
+    first_closer.join(timeout=5)
+    second_closer.join(timeout=5)
     assert not attach.is_alive()
-    assert not closer.is_alive()
-    assert close_done.is_set()
+    assert not first_closer.is_alive()
+    assert not second_closer.is_alive()
+    assert first_close_done.is_set()
+    assert second_close_done.is_set()
     assert len(attach_result) == 1
     with pytest.raises(ValueError, match="ParamCache is closed"):
         cache.attach("s1")
