@@ -249,9 +249,11 @@ def test_write_reaches_cpp_peer_without_base_or_other_session_mutation(
     cache = _new_cache(config)
     try:
         cache.attach("s1")
+        _send(process, "PEER_COUNT")
+        previous_callback_count = int(_readline_with_timeout(process.stdout).split()[1])
         cache.put("peer_value", 41)
         assert cache.get("peer_value") == 41
-        _send(process, "WAIT_PEER peer_value 41")
+        _send(process, f"WAIT_PEER {previous_callback_count} peer_value 41")
         assert _readline_with_timeout(process.stdout) == "PEER_OBSERVED peer_value 41"
         _send(process, "CHECK_ISOLATION peer_value")
         assert _readline_with_timeout(process.stdout) == "ISOLATED peer_value"

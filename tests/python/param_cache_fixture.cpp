@@ -202,9 +202,16 @@ class PeerTrackingTransport final : public sitos::Transport {
     return inner_->DeclareQueryable(keyexpr, std::move(callback));
   }
 
-  bool WaitForValue(sitos::ParamCache& cache, std::string_view key, std::int64_t expected) {
+  std::size_t CallbackCount() {
+    std::lock_guard lock(mutex_);
+    return callback_count_;
+  }
+
+  bool WaitForValue(sitos::ParamCache& cache, std::size_t previous_callback_count,
+                    std::string_view key, std::int64_t expected) {
     std::unique_lock lock(mutex_);
-    return condition_.wait_for(lock, 5s, [&cache, key, expected] {
+    return condition_.wait_for(lock, 5s, [&cache, this, previous_callback_count, key, expected] {
+      if (callback_count_ <= previous_callback_count) return false;
       const auto value = cache.Get<std::int64_t>(key);
       return value.IsOk() && value.Value() == expected;
     });
@@ -297,13 +304,16 @@ int main(int argc, char** argv) {
       const auto previous =
           static_cast<std::size_t>(std::stoull(command.substr(std::string("WAIT_BATCH ").size())));
       protocol.Write(node_transport.WaitForBatchAfter(previous));
+    } else if (command == "PEER_COUNT") {
+      protocol.Write("PEER_COUNT " + std::to_string(peer_transport->CallbackCount()));
     } else if (command.starts_with("WAIT_PEER ")) {
       std::istringstream fields(command);
       std::string name;
+      std::size_t previous_callback_count = 0;
       std::string key;
       std::int64_t expected = 0;
-      fields >> name >> key >> expected;
-      if (fields && peer_transport->WaitForValue(peer, key, expected)) {
+      fields >> name >> previous_callback_count >> key >> expected;
+      if (fields && peer_transport->WaitForValue(peer, previous_callback_count, key, expected)) {
         protocol.Write("PEER_OBSERVED " + key + " " + std::to_string(expected));
       } else {
         protocol.Write("ERROR peer timeout");
