@@ -1,7 +1,6 @@
-"""Python bindings for the sitos parameter store."""
+"""ParamStore is provided by the nanobind extension."""
 
-from . import _sitos
-from .store import (
+from ._sitos import (
     DisconnectedError,
     NotFoundError,
     ParamStore,
@@ -11,14 +10,7 @@ from .store import (
     TypeMismatchError,
 )
 
-__version__ = _sitos.__version__
-encode_value = _sitos.encode_value
-decode_value = _sitos.decode_value
-
 __all__ = [
-    "__version__",
-    "decode_value",
-    "encode_value",
     "ParamStore",
     "SitosError",
     "NotFoundError",

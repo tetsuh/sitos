@@ -43,35 +43,39 @@ remain Issue #27 scope.
 
 ### 2.1 ParamStore
 
-The Python ParamStore API is planned for the v0.3 Python lane and is not implemented by
-Issue #15. Its future configuration must not imply acknowledged writes; acknowledgement
-and retry policy belong to Issues #14 and #17.
+Issue #23 provides a non-callback, ack-less Python facade over the synchronous C++ ParamStore.
+Each instance opens and owns its own Transport/session from `zenoh_config_json`; raw session or
+Transport sharing is not part of this API. `query_timeout_ms` is a positive integer in the same
+milliseconds unit as C++ `ClientConfig`.
 
 ```python
-# Planned v0.3 API (not currently available)
 import sitos
 
-store = sitos.ParamStore(prefix="sitos", zenoh_config=None)
-# Or share an existing transport/session when the Python facade is implemented.
+with sitos.ParamStore(prefix="sitos", zenoh_config_json=None,
+                      query_timeout_ms=5000) as store:
+    store.put("base", "recon/fov", 240.0)
+    store.put_batch("base", [("recon/fov", 240.0), ("recon/kernel", "sharp")])
+    store.delete("base", "recon/tmp")
 
-store.put("base", "recon/fov", 240.0)
-store.put_batch("base", {"recon/fov": 240.0, "recon/kernel": "sharp"})
-store.delete("base", "recon/tmp")
-
-value = store.get("base", "recon/fov")           # -> 240.0 (type is automatic)
-value = store.get("base", "recon/fov", type=int) # Arithmetic cast. TypeError if impossible
-exists = store.contains("base", "recon/fov")
-
-for key, value in store.list("base", "recon"):   # generator
-    ...
-
-store.close()        # Supports context manager (__enter__/__exit__)
+    value = store.get("base", "recon/fov")           # automatic Python type
+    value = store.get("base", "recon/fov", type=int) # C05 numeric conversion
+    exists = store.contains("base", "recon/fov")
+    rows = list(store.list("base", "recon"))         # eager owned snapshot
 ```
 
-* Errors: misses do not return `None`; they raise `sitos.NotFoundError`, or
-  `get(..., default=...)` returns the default value. Communication loss raises `sitos.DisconnectedError`
-* Python ParamStore subscriptions are deferred to Issue #26, which owns the dedicated
-  callback-dispatch thread and GIL/lifecycle contract. Issue #23 exposes no provisional callback path
+`put_batch` also accepts a Mapping. Pair iterables preserve caller order and duplicate keys;
+all entries are validated before one wire submission. Writes are submission-only. `list` eagerly
+queries, validates, sorts, and materializes owned `(relative_key, value)` pairs before returning
+an iterator.
+
+ParamStore exports `sitos.SitosError` and its `NotFoundError`, `TypeMismatchError`,
+`TimeoutError`, `DisconnectedError`, and `ReadOnlyError` subclasses. Missing values raise
+`sitos.NotFoundError`, unless an explicit `default` is supplied; the default is returned unchanged
+only for NotFound. Type conversion failures raise `sitos.TypeMismatchError`; timeout,
+disconnection, and read-only failures raise their corresponding subclasses. `Status::Error` raises
+`sitos.SitosError`, while invalid keys and arguments raise built-in `ValueError`. `close` is
+idempotent, rejects later calls, and allows already-admitted native operations to finish safely.
+Subscriptions and acknowledgements remain outside Issue #23.
 
 ### 2.2 ParamCache
 
