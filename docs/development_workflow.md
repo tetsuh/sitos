@@ -132,8 +132,8 @@ Rules:
   - Corresponding requirement IDs ([01] F/N/C/P/X)
   - AC verification results (test execution logs)
   - RED-phase failure confirmation (§3)
-  - Judgment on whether an ADR is needed (whether [10] §6 **or** contract-registry
-    Rule 2 applies)
+  - Judgment on whether an ADR is needed (whether [10] §6 applies; §6 now includes
+    the contract-registry Rule 2 overlap trigger)
   - Affected contract-registry row(s) advanced ([08]), or `N/A`
 * CI (build + all tests + clang-format + clang-tidy) must be green
 * Merge to main by squash merge (keep history grouped by issue)

@@ -67,7 +67,7 @@ Values that must remain stable across releases because callers persist, compare,
 | Python exception hierarchy (`sitos.SitosError` and current subclasses, Status mapping) | Normative | Implemented | [05](05_api_python.md) §2.1 | — | One registered class per name; mapping extends only when `Status` extends |
 | Planned Python exception: `OutcomeUnknownError` | Planned | Planned | — | #114 → ADR | |
 | Session-id grammar (`<sid>`) | Normative | Implemented | [03](03_wire_protocol.md) §1 | — | `src/key.cpp` `IsValidSessionId`; grammar is never narrowed |
-| `meta/ack/<uuid>` route id grammar (lenient parser, `IsValidAckUuid`) | Planned | Implemented | not yet documented in [03](03_wire_protocol.md) §1 | #14/#114 → ADR | parser-accepted de-facto grammar; to be documented normatively |
+| `meta/ack/<uuid>` route id grammar (lenient parser, `IsValidAckUuid`) | Planned | Implemented | not yet documented in [03](03_wire_protocol.md) §1 | #114 → ADR | parser-accepted de-facto grammar; to be documented normatively; current owner #14 |
 | Generated correlation-id format (canonical UUIDv4) | Planned | Planned | — | #114 → ADR | |
 | Fence result identifiers (`FenceDurability`, `FenceReceipt` fields) | Planned | Planned | — | #107 → ADR | reuses the #106/#114 result protocol |
 | Session state-lost read result (overlay/snapshot lost after restart) | Planned | Planned | — | #108 → ADR | |

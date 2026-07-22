@@ -20,8 +20,8 @@ Paste the failure output from the initial RED tests:
 
 ## ADR Needed?
 
-An ADR is required if docs/10_adr_process.md §6 applies **or** contract-registry Rule 2 does
-(a second surface overlapping an existing registry row).
+An ADR is required when docs/10_adr_process.md §6 applies. §6 includes introducing a second
+surface that overlaps an existing contract-registry row (registry Rule 2).
 
 - [ ] No
 - [ ] Yes — ADR PR: #
