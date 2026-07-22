@@ -80,7 +80,7 @@ class PyParamStore {
           InvokeNative(std::move(native), [&scope, &key, &converted](sitos::ParamStore& store) {
             return store.Put(scope, key, converted);
           });
-      Take(std::move(result));
+      Take(result);
     } catch (...) {
       ReleaseNative(std::move(native));
       throw;
@@ -95,7 +95,7 @@ class PyParamStore {
           InvokeNative(std::move(native), [&scope, &materialized](sitos::ParamStore& store) {
             return store.PutBatch(scope, materialized);
           });
-      Take(std::move(result));
+      Take(result);
     } catch (...) {
       ReleaseNative(std::move(native));
       throw;
@@ -105,7 +105,7 @@ class PyParamStore {
   void Delete(const std::string& scope, const std::string& key) {
     auto result = InvokeNative(
         Acquire(), [&scope, &key](sitos::ParamStore& store) { return store.Delete(scope, key); });
-    Take(std::move(result));
+    Take(result);
   }
 
   nb::object Get(const std::string& scope, const std::string& key, const nb::object& default_value,
@@ -138,7 +138,7 @@ class PyParamStore {
                               return true;
                             });
         });
-    Take(std::move(native_result));
+    Take(native_result);
     nb::list result;
     for (auto& [key, value] : values) {
       result.append(nb::make_tuple(key, ParamValueToPython(value)));

@@ -96,7 +96,7 @@ class PyParamCache {
     const auto sid = nb::cast<std::string>(sid_input);
     auto result =
         InvokeNative(std::move(lease), [&sid](ParamCache& cache) { return cache.Attach(sid); });
-    Take(std::move(result));
+    Take(result);
   }
 
   void Detach() noexcept {
@@ -113,7 +113,7 @@ class PyParamCache {
     auto result = InvokeNative(std::move(lease), [&key, &converted](ParamCache& cache) {
       return cache.Put(key, converted);
     });
-    Take(std::move(result));
+    Take(result);
   }
 
   void PutBatch(const nb::handle& entries) {
@@ -122,7 +122,7 @@ class PyParamCache {
     auto result = InvokeNative(std::move(lease), [&materialized](ParamCache& cache) {
       return cache.PutBatch(materialized);
     });
-    Take(std::move(result));
+    Take(result);
   }
 
   nb::object Get(const nb::handle& key_input, const nb::object& default_value,
@@ -156,7 +156,7 @@ class PyParamCache {
           values.emplace_back(key, value);
           return true;
         });
-    Take(std::move(result));
+    Take(result);
     nb::list rows;
     for (auto& [key, value] : values) {
       rows.append(nb::make_tuple(key, ParamValueToPython(value)));
