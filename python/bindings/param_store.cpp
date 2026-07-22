@@ -90,22 +90,7 @@ class PyParamStore {
   void PutBatch(const std::string& scope, const nb::handle& entries) {
     auto native = Acquire();
     try {
-      std::vector<sitos::BatchEntry> materialized;
-      const auto append_pair = [&materialized](const nb::handle& item) {
-        if (!nb::isinstance<nb::tuple>(item) && !nb::isinstance<nb::list>(item)) {
-          throw nb::type_error("put_batch entries must be two-item pairs");
-        }
-        if (nb::len(item) != 2) {
-          throw nb::value_error("put_batch entries must have two items");
-        }
-        materialized.push_back({nb::cast<std::string>(item[0]), ParamValueFromPython(item[1])});
-      };
-      if (nb::hasattr(entries, "items")) {
-        nb::object items = entries.attr("items")();
-        for (nb::handle item : nb::iter(items)) append_pair(item);
-      } else {
-        for (nb::handle item : nb::iter(entries)) append_pair(item);
-      }
+      auto materialized = MaterializeBatchEntries(entries);
       auto result =
           InvokeNative(std::move(native), [&scope, &materialized](sitos::ParamStore& store) {
             return store.PutBatch(scope, materialized);

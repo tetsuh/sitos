@@ -6,16 +6,16 @@ from ._sitos import (
     ParamCache,
     ReadOnlyError,
     SitosError,
-    TimeoutError,
+    TimeoutError as TimeoutError,
     TypeMismatchError,
 )
 
 __all__ = [
-    "ParamCache",
-    "SitosError",
-    "NotFoundError",
-    "TypeMismatchError",
-    "TimeoutError",
     "DisconnectedError",
+    "NotFoundError",
+    "ParamCache",
     "ReadOnlyError",
+    "SitosError",
+    "TimeoutError",
+    "TypeMismatchError",
 ]

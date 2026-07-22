@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -39,10 +40,10 @@ class Protocol {
 
 class SnapshotBarrierTransport final : public sitos::Transport {
  public:
-  SnapshotBarrierTransport(std::shared_ptr<sitos::Transport> inner, std::string snapshot_query,
+  SnapshotBarrierTransport(std::shared_ptr<sitos::Transport> inner, std::string barrier_query,
                            std::string batch_key, Protocol& protocol)
       : inner_(std::move(inner)),
-        snapshot_query_(std::move(snapshot_query)),
+        barrier_query_(std::move(barrier_query)),
         batch_key_(std::move(batch_key)),
         protocol_(protocol) {}
 
@@ -91,18 +92,20 @@ class SnapshotBarrierTransport final : public sitos::Transport {
       bool should_block = false;
       {
         std::lock_guard lock(mutex_);
-        if (armed_ && query.keyexpr == snapshot_query_) {
+        if (armed_ && query.keyexpr == barrier_query_) {
           armed_ = false;
           entered_ = true;
           should_block = true;
         }
       }
+      callback(query);
       if (should_block) {
         protocol_.Write("SNAPSHOT_ENTERED");
         std::unique_lock lock(mutex_);
-        condition_.wait(lock, [this] { return released_; });
+        const bool released = condition_.wait_for(lock, 5s, [this] { return released_; });
+        lock.unlock();
+        if (!released) protocol_.Write("ERROR snapshot release timeout");
       }
-      callback(query);
     };
     return inner_->DeclareQueryable(keyexpr, std::move(wrapped));
   }
@@ -147,7 +150,7 @@ class SnapshotBarrierTransport final : public sitos::Transport {
   }
 
   std::shared_ptr<sitos::Transport> inner_;
-  const std::string snapshot_query_;
+  const std::string barrier_query_;
   const std::string batch_key_;
   Protocol& protocol_;
   mutable std::mutex mutex_;
@@ -219,6 +222,17 @@ bool IsAbsent(sitos::ParamStore& store, std::string_view scope, std::string_view
   return result.IsOk() && !result.Value();
 }
 
+bool WaitForStoreValue(sitos::ParamStore& store, std::string_view scope, std::string_view key,
+                       std::int64_t expected) {
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  do {
+    const auto value = store.Get<std::int64_t>(scope, key);
+    if (value.IsOk() && value.Value() == expected) return true;
+    std::this_thread::yield();
+  } while (std::chrono::steady_clock::now() < deadline);
+  return false;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -232,9 +246,9 @@ int main(int argc, char** argv) {
   std::shared_ptr<sitos::Transport> raw(std::move(opened).Value());
 
   Protocol protocol;
-  const std::string snapshot_query = prefix + "/snap/" + sid + "/**";
+  const std::string overlay_query = prefix + "/session/" + sid + "/**";
   const std::string batch_key = prefix + "/session/" + sid + "/:batch";
-  SnapshotBarrierTransport node_transport(raw, snapshot_query, batch_key, protocol);
+  SnapshotBarrierTransport node_transport(raw, overlay_query, batch_key, protocol);
   auto peer_transport = std::make_shared<PeerTrackingTransport>(raw);
   auto engine = std::make_shared<sitos::InMemoryEngine>();
   sitos::StorageNode node(node_transport);
@@ -270,8 +284,10 @@ int main(int argc, char** argv) {
     if (command == "ARM_SNAPSHOT") {
       protocol.Write(node_transport.Arm() ? "ARMED" : "ERROR barrier active");
     } else if (command == "PUT_DURING_ATTACH") {
-      const auto result = store.Put("session/" + sid, "during_attach", std::int64_t{7});
-      protocol.Write(result.IsOk() ? "DELTA_SUBMITTED" : "ERROR delta submission");
+      const std::string scope = "session/" + sid;
+      const auto result = store.Put(scope, "during_attach", std::int64_t{7});
+      const bool observed = result.IsOk() && WaitForStoreValue(store, scope, "during_attach", 7);
+      protocol.Write(observed ? "DELTA_SUBMITTED" : "ERROR delta submission");
     } else if (command == "RELEASE_SNAPSHOT") {
       node_transport.Release();
       protocol.Write("SNAPSHOT_RELEASED");

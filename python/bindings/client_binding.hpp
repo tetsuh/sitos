@@ -10,7 +10,9 @@
 #include <stdexcept>
 #include <string_view>
 #include <utility>
+#include <vector>
 
+#include "sitos/batch.hpp"
 #include "sitos/param_value.hpp"
 #include "sitos/result.hpp"
 
@@ -56,6 +58,7 @@ inline void Take(Result<void>&& result) {
 
 std::int64_t GetTimeout(const nanobind::handle& value);
 ParamValue ConvertTyped(const ParamValue& value, const nanobind::object& type);
+std::vector<BatchEntry> MaterializeBatchEntries(const nanobind::handle& entries);
 
 }  // namespace sitos::python::detail
 

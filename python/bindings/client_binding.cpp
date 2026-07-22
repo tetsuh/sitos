@@ -4,6 +4,7 @@
 #include "client_binding.hpp"
 
 #include <nanobind/nanobind.h>
+#include <nanobind/stl/string.h>
 
 #include <cstdint>
 #include <exception>
@@ -11,6 +12,7 @@
 #include <string_view>
 #include <vector>
 
+#include "param_value_conversion.hpp"
 #include "sitos/status.hpp"
 #include "status_translation.hpp"
 
@@ -67,6 +69,26 @@ std::int64_t GetTimeout(const nb::handle& value) {
   }
   if (converted <= 0) throw nb::value_error("query_timeout_ms must be positive");
   return converted;
+}
+
+std::vector<BatchEntry> MaterializeBatchEntries(const nb::handle& entries) {
+  std::vector<BatchEntry> materialized;
+  const auto append_pair = [&materialized](const nb::handle& item) {
+    if (!nb::isinstance<nb::tuple>(item) && !nb::isinstance<nb::list>(item)) {
+      throw nb::type_error("put_batch entries must be two-item pairs");
+    }
+    if (nb::len(item) != 2) {
+      throw nb::value_error("put_batch entries must have two items");
+    }
+    materialized.push_back({nb::cast<std::string>(item[0]), ParamValueFromPython(item[1])});
+  };
+  if (nb::hasattr(entries, "items")) {
+    nb::object items = entries.attr("items")();
+    for (nb::handle item : nb::iter(items)) append_pair(item);
+  } else {
+    for (nb::handle item : nb::iter(entries)) append_pair(item);
+  }
+  return materialized;
 }
 
 ParamValue ConvertTyped(const ParamValue& value, const nb::object& type) {

@@ -91,8 +91,11 @@ class PyParamCache {
     return false;
   }
 
-  void Attach(const std::string& sid) {
-    auto result = InvokeNative(Acquire(), [&sid](ParamCache& cache) { return cache.Attach(sid); });
+  void Attach(const nb::handle& sid_input) {
+    auto lease = Acquire();
+    const auto sid = nb::cast<std::string>(sid_input);
+    auto result =
+        InvokeNative(std::move(lease), [&sid](ParamCache& cache) { return cache.Attach(sid); });
     Take(std::move(result));
   }
 
@@ -103,8 +106,9 @@ class PyParamCache {
     lease->Native().Detach();
   }
 
-  void Put(const std::string& key, const nb::handle& value) {
+  void Put(const nb::handle& key_input, const nb::handle& value) {
     auto lease = Acquire();
+    const auto key = nb::cast<std::string>(key_input);
     const auto converted = ParamValueFromPython(value);
     auto result = InvokeNative(std::move(lease), [&key, &converted](ParamCache& cache) {
       return cache.Put(key, converted);
@@ -114,31 +118,17 @@ class PyParamCache {
 
   void PutBatch(const nb::handle& entries) {
     auto lease = Acquire();
-    std::vector<BatchEntry> materialized;
-    const auto append_pair = [&materialized](const nb::handle& item) {
-      if (!nb::isinstance<nb::tuple>(item) && !nb::isinstance<nb::list>(item)) {
-        throw nb::type_error("put_batch entries must be two-item pairs");
-      }
-      if (nb::len(item) != 2) {
-        throw nb::value_error("put_batch entries must have two items");
-      }
-      materialized.push_back({nb::cast<std::string>(item[0]), ParamValueFromPython(item[1])});
-    };
-    if (nb::hasattr(entries, "items")) {
-      nb::object items = entries.attr("items")();
-      for (nb::handle item : nb::iter(items)) append_pair(item);
-    } else {
-      for (nb::handle item : nb::iter(entries)) append_pair(item);
-    }
+    auto materialized = MaterializeBatchEntries(entries);
     auto result = InvokeNative(std::move(lease), [&materialized](ParamCache& cache) {
       return cache.PutBatch(materialized);
     });
     Take(std::move(result));
   }
 
-  nb::object Get(const std::string& key, const nb::object& default_value, const nb::object& missing,
-                 const nb::object& type) {
+  nb::object Get(const nb::handle& key_input, const nb::object& default_value,
+                 const nb::object& missing, const nb::object& type) {
     auto lease = Acquire();
+    const auto key = nb::cast<std::string>(key_input);
     auto result = lease.Native().GetShared(key);
     if (!result.IsOk()) {
       if (result.StatusCode() == Status::NotFound && default_value.ptr() != missing.ptr()) {
@@ -151,13 +141,15 @@ class PyParamCache {
     return ParamValueToPython(ConvertTyped(*shared, type));
   }
 
-  bool Contains(const std::string& key) {
+  bool Contains(const nb::handle& key_input) {
     auto lease = Acquire();
+    const auto key = nb::cast<std::string>(key_input);
     return Take(lease.Native().Contains(key));
   }
 
-  nb::object Items(const std::string& prefix) {
+  nb::object Items(const nb::handle& prefix_input) {
     auto lease = Acquire();
+    const auto prefix = nb::cast<std::string>(prefix_input);
     std::vector<std::pair<std::string, ParamValue>> values;
     auto result =
         lease.Native().List(prefix, [&values](std::string_view key, const ParamValue& value) {
@@ -267,9 +259,10 @@ void BindParamCache(nb::module_& python_module) {
       .def("put_batch", &PyParamCache::PutBatch, "entries"_a)
       .def(
           "get",
-          [missing](PyParamCache& self, const std::string& key, nb::object default_value,
+          [missing](PyParamCache& self, const nb::handle& key, nb::object default_value,
                     nb::object type) { return self.Get(key, default_value, missing, type); },
-          "key"_a, "default"_a.none() = missing, nb::kw_only(), "type"_a.none() = nb::none())
+          "key"_a, "default"_a.none() = missing, nb::kw_only(),
+          "type"_a.none() = nb::none())
       .def("contains", &PyParamCache::Contains, "key"_a)
       .def("items", &PyParamCache::Items, "prefix"_a = "");
 }

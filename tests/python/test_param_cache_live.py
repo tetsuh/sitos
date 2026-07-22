@@ -94,25 +94,27 @@ def _new_cache(config: dict[str, object]):
     return sitos.ParamCache(**config)
 
 
-def _eventually_get(cache, key: str, timeout: float = 5.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            return cache.get(key)
-        except sitos.NotFoundError:
-            threading.Event().wait(0.01)
-    raise AssertionError(f"timed out waiting for cache key {key}")
-
-
 def test_attach_validation_detach_and_reattach(live_cache_fixture) -> None:
     _, config = live_cache_fixture
     cache = _new_cache(config)
     try:
         cache.detach()
+        detached_operations = [
+            lambda: cache.get("missing"),
+            lambda: cache.contains("missing"),
+            lambda: list(cache.items()),
+            lambda: cache.put("detached", 1),
+            lambda: cache.put_batch([]),
+        ]
+        for operation in detached_operations:
+            with pytest.raises(ValueError, match="detached"):
+                operation()
+
         with pytest.raises(ValueError):
             cache.attach("bad/session")
         cache.attach("unknown_but_valid")
         assert cache.contains("missing") is False
+        assert cache.get("missing", default=None) is None
         with pytest.raises(ValueError):
             cache.attach("s1")
         cache.detach()
@@ -123,11 +125,12 @@ def test_attach_validation_detach_and_reattach(live_cache_fixture) -> None:
         cache.close()
 
 
-def test_attach_buffers_controlled_concurrent_delta(live_cache_fixture) -> None:
+def test_attach_observes_controlled_concurrent_delta(live_cache_fixture) -> None:
     process, config = live_cache_fixture
     assert process.stdout is not None
     cache = _new_cache(config)
     result: list[object] = []
+    released = False
     try:
         _send(process, "ARM_SNAPSHOT")
         assert _readline_with_timeout(process.stdout) == "ARMED"
@@ -144,12 +147,16 @@ def test_attach_buffers_controlled_concurrent_delta(live_cache_fixture) -> None:
         _send(process, "PUT_DURING_ATTACH")
         assert _readline_with_timeout(process.stdout) == "DELTA_SUBMITTED"
         _send(process, "RELEASE_SNAPSHOT")
+        released = True
         assert _readline_with_timeout(process.stdout) == "SNAPSHOT_RELEASED"
         attach.join(timeout=5)
         assert not attach.is_alive()
         assert result == [None]
-        assert _eventually_get(cache, "during_attach") == 7
+        assert cache.get("during_attach") == 7
     finally:
+        if not released:
+            _send(process, "RELEASE_SNAPSHOT")
+            _readline_with_timeout(process.stdout)
         cache.close()
 
 
@@ -179,8 +186,15 @@ def test_values_typed_get_default_batch_and_owned_items(live_cache_fixture) -> N
         with pytest.raises(sitos.TypeMismatchError):
             cache.get("value/str", type=bytes)
 
+        class IntSubclass(int):
+            pass
+
+        with pytest.raises(TypeError, match="type must be"):
+            cache.get("value/s64", type=IntSubclass)
+
         sentinel = object()
         assert cache.get("value/missing", default=sentinel) is sentinel
+        assert cache.get("value/missing", default=None) is None
         with pytest.raises(ValueError):
             cache.get("bad key", default=sentinel)
 
@@ -242,6 +256,50 @@ def test_write_reaches_cpp_peer_without_base_or_other_session_mutation(
         _send(process, "CHECK_ISOLATION peer_value")
         assert _readline_with_timeout(process.stdout) == "ISOLATED peer_value"
     finally:
+        cache.close()
+
+
+def test_detach_waits_for_admitted_attach_and_releases_gil(live_cache_fixture) -> None:
+    process, config = live_cache_fixture
+    assert process.stdout is not None
+    cache = _new_cache(config)
+    attach_result: list[object] = []
+    detach_done = threading.Event()
+    released = False
+
+    try:
+        _send(process, "ARM_SNAPSHOT")
+        assert _readline_with_timeout(process.stdout) == "ARMED"
+        attach = threading.Thread(
+            target=lambda: attach_result.append(cache.attach("s1")), daemon=True
+        )
+        attach.start()
+        assert _readline_with_timeout(process.stdout) == "SNAPSHOT_ENTERED"
+
+        detacher = threading.Thread(target=lambda: (cache.detach(), detach_done.set()), daemon=True)
+        detacher.start()
+        progress: list[bool] = []
+        worker = threading.Thread(target=lambda: progress.append(True))
+        worker.start()
+        worker.join(timeout=2)
+        assert progress == [True]
+        assert not detach_done.is_set()
+
+        _send(process, "RELEASE_SNAPSHOT")
+        released = True
+        assert _readline_with_timeout(process.stdout) == "SNAPSHOT_RELEASED"
+        attach.join(timeout=5)
+        detacher.join(timeout=5)
+        assert not attach.is_alive()
+        assert not detacher.is_alive()
+        assert attach_result == [None]
+        assert detach_done.is_set()
+        with pytest.raises(ValueError, match="detached"):
+            cache.get("during_attach")
+    finally:
+        if not released:
+            _send(process, "RELEASE_SNAPSHOT")
+            _readline_with_timeout(process.stdout)
         cache.close()
 
 

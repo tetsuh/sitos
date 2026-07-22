@@ -69,16 +69,17 @@ def test_close_precedes_conversion_and_batch_iteration() -> None:
         def __iter__(self):
             raise AssertionError("closed cache must not iterate entries")
 
-    with pytest.raises(ValueError, match="ParamCache is closed"):
-        cache.put("key", object())
-    with pytest.raises(ValueError, match="ParamCache is closed"):
-        cache.put_batch(ExplodingEntries())
-    with pytest.raises(ValueError, match="ParamCache is closed"):
-        cache.attach("s1")
-    with pytest.raises(ValueError, match="ParamCache is closed"):
-        cache.get("key")
-    with pytest.raises(ValueError, match="ParamCache is closed"):
-        cache.items()
+    closed_operations = [
+        lambda: cache.attach(object()),
+        lambda: cache.put(object(), object()),
+        lambda: cache.put_batch(ExplodingEntries()),
+        lambda: cache.get(object()),
+        lambda: cache.contains(object()),
+        lambda: cache.items(object()),
+    ]
+    for operation in closed_operations:
+        with pytest.raises(ValueError, match="ParamCache is closed"):
+            operation()
 
 
 def test_public_exception_types_are_shared_with_param_store() -> None:

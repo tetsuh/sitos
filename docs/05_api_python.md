@@ -101,8 +101,10 @@ with sitos.ParamCache(prefix="sitos", zenoh_config_json=None,
 `put_batch` accepts either a Mapping in iteration order or an iterable of two-item pairs. Pair
 iterables preserve order and duplicate keys; every entry is materialized and validated before one
 canonical `:batch` submission. Successful non-empty writes submit first and then immediately apply
-to the initiating cache. Peer delivery is asynchronous, and success is not an Issue #99 delivery
-barrier. Empty batches succeed without submission.
+to the initiating cache. For duplicate keys, the last value serialized through each cache's local
+sequencing path wins independently in the initiating cache and asynchronously updated peers. There
+is no global publisher order or self-echo deduplication. Peer delivery is asynchronous, and success
+is not an Issue #99 delivery barrier. Empty batches succeed without submission.
 
 Reads and `items` are cache-local and perform no wire request. `items` uses raw-prefix matching,
 lexical ordering, and returns an iterator over an eager owned snapshot that remains usable after
@@ -172,9 +174,10 @@ class MyEngine(sitos.StorageEngine):
 * In a StorageNode that uses a Python engine (§2.3), zenoh threads call into Python,
   so GIL acquisition occurs. State explicitly that C++ engines are recommended for production use
 
-## 4. Type Stubs and Documentation
+## 4. Future Type Stubs and Documentation
 
-* Include type stubs under `sitos/*.pyi` and verify them with mypy/pyright
+* Issue #27 will add type stubs under `sitos/*.pyi` and verify them with mypy/pyright; type stubs are
+  not part of the current Issue #24 release
 * docstrings must match the content of the C++ Doxygen comments
 * Include an interoperability example in README for “talking to sitos with zenoh-python only” [C03]:
 
