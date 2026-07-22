@@ -234,7 +234,7 @@ The same-publisher marker layout, ordering lane, per-Publisher failure aggregati
 ephemeral publisher behavior, and ParamCache local-delivery waiter lifecycle are defined by
 ADR-0029 under #106 ownership. ADR-0029 must reuse this result protocol, and both ADRs must be
 Accepted before #99 or #107 implementation begins. Synced Fence additionally remains blocked on
-#105's accepted StorageEngine durability contract.
+issue #105's accepted StorageEngine durability contract.
 
 ### Qualification requirements
 
