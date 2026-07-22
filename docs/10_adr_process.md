@@ -104,6 +104,8 @@ An ADR is required for changes that fall under any of the following:
 * Changes touching the invariants in [09_dependency_policy.md](09_dependency_policy.md) §6
 * Changes to the thread model, consistency model, or snapshot semantics
 * Changes to the build system or supported platforms
+* Introducing a second surface that overlaps an existing contract-registry row
+  (registry Rule 2, [08_contract_registry.md](08_contract_registry.md) §1)
 
 ADRs are not needed for implementation details that do not fall under these
 categories (internal refactoring, bug fixes, performance improvements).
