@@ -21,7 +21,9 @@ main ─────●───────●───────●───
 * Working branches are **short-lived** (guideline: 1 issue = 1 branch = 1 PR,
   within a few days)
 * Branch name: `feat/<number>-<short-kebab-description>`
-  (example: `feat/3-param-value-codec`)
+  (example: `feat/3-param-value-codec`). The prefix is always `feat/` regardless
+  of change type; the change type lives on the issue label and the commit
+  message (§2.1), so the branch does not repeat it
 * Releases are tags on main (`v0.1.0`, etc.). Do not create release branches
   until a hotfix is needed
 * Do not create long-lived develop / feature branches
