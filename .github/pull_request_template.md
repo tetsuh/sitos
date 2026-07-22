@@ -8,7 +8,8 @@ Reference requirement IDs from docs/01_requirements.md (F/N/C/P/X):
 
 ## Contract Registry
 
-Affected contract-registry row(s) (docs/08_contract_registry.md) advanced, or `N/A`:
+Affected contract-registry row(s) (docs/08_contract_registry.md) with their status transition
+(`Contract` / `Implementation` / `none`), or `N/A` if no contract is touched:
 
 ## Acceptance Criteria Verification
 

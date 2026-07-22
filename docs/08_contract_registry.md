@@ -52,9 +52,9 @@ open decision (`—` when settled); implementers and consumers are listed separa
 | zenoh Encoding identifiers and normalization (`kSitosV1`, `kSitosV1Batch`, legacy spelling, absent/unknown fallback) | Normative | Implemented | [03](03_wire_protocol.md) §2.2 | — | `include/sitos/transport.hpp` |
 | Batch v1 (`:batch` multi-entry payload) | Normative | Implemented | [03](03_wire_protocol.md) §5 | — | batch codec |
 | `meta/session/<sid>` reply (session metadata JSON) | Normative | Implemented | [03](03_wire_protocol.md) §7.1 | — | StorageNode meta route |
-| `meta/ack/<uuid>` **route behavior** (token recording, AckResult payload, query semantics) | Planned | Planned | [03](03_wire_protocol.md) §6 (outline) | #114 → ADR | implementers #14 (transport ack), #17 (ParamStore policy) |
+| `meta/ack/<uuid>` **route behavior** (token recording, AckResult payload, query semantics) | Planned | Planned | [03](03_wire_protocol.md) §6 (outline) | #14 → ADR | #17 (ParamStore policy); #114 pending consolidation |
 | Same-publisher in-band fence marker | Planned | Planned | — (added on ADR acceptance) | #106 → ADR | consumers #99, #107 |
-| `buffers/<sid>/**` value scope (opaque binary values) | Normative | Planned | [ADR-0014](adr/0014-session-scoped-buffers.md) | ADR-0014 | #56; fences via #107 |
+| `buffers/<sid>/**` value scope (opaque binary values) | Normative | Planned | [ADR-0014](adr/0014-session-scoped-buffers.md) | — | #56; fences via #107 |
 
 ## 3. Stable identifiers
 
@@ -67,7 +67,7 @@ Values that must remain stable across releases because callers persist, compare,
 | Python exception hierarchy (`sitos.SitosError` and current subclasses, Status mapping) | Normative | Implemented | [05](05_api_python.md) §2.1 | — | One registered class per name; mapping extends only when `Status` extends |
 | Planned Python exception: `OutcomeUnknownError` | Planned | Planned | — | #114 → ADR | |
 | Session-id grammar (`<sid>`) | Normative | Implemented | [03](03_wire_protocol.md) §1 | — | `src/key.cpp` `IsValidSessionId`; grammar is never narrowed |
-| `meta/ack/<uuid>` route id grammar (lenient parser, `IsValidAckUuid`) | Planned | Implemented | not yet documented in [03](03_wire_protocol.md) §1 | #114 → ADR | parser-accepted de-facto grammar; to be documented normatively; current owner #14 |
+| `meta/ack/<uuid>` route id grammar (lenient parser, `IsValidAckUuid`) | Planned | Implemented | not yet documented in [03](03_wire_protocol.md) §1 | #14 → ADR | parser-accepted de-facto grammar; to be documented normatively; #114 pending consolidation |
 | Generated correlation-id format (canonical UUIDv4) | Planned | Planned | — | #114 → ADR | |
 | Fence result identifiers (`FenceDurability`, `FenceReceipt` fields) | Planned | Planned | — | #107 → ADR | reuses the #106/#114 result protocol |
 | Session state-lost read result (overlay/snapshot lost after restart) | Planned | Planned | — | #108 → ADR | |

@@ -95,7 +95,9 @@ Each issue must include at minimum the following (following the format in [07]):
 * Target implementation files
 * Acceptance criteria (AC) — in a verifiable form
 * Dependent issues
-* Affected contract-registry row(s) ([08_contract_registry.md](08_contract_registry.md)), or `N/A`
+* Affected contract-registry row(s) with their status transition (`Contract` /
+  `Implementation` / `none`), or `N/A` if no contract is touched
+  ([08_contract_registry.md](08_contract_registry.md))
 
 ## 3. Test-Driven Development (TDD): Red-Green-Refactor
 
@@ -134,7 +136,8 @@ Rules:
   - RED-phase failure confirmation (§3)
   - Judgment on whether an ADR is needed (whether [10] §6 applies; §6 now includes
     the contract-registry Rule 2 overlap trigger)
-  - Affected contract-registry row(s) advanced ([08]), or `N/A`
+  - Affected contract-registry row(s) with their status transition (`Contract` /
+    `Implementation` / `none`), or `N/A` if no contract is touched ([08])
 * CI (build + all tests + clang-format + clang-tidy) must be green
 * Merge to main by squash merge (keep history grouped by issue)
 
