@@ -77,11 +77,12 @@ repository as a general-purpose library not limited to CT reconstruction.
 | [05_api_python.md](05_api_python.md) | Public | Python API specification |
 | [06_build_test_packaging.md](06_build_test_packaging.md) | Public | Build, testing, and packaging |
 | [07_issue_breakdown.md](07_issue_breakdown.md) | Public | Milestones and proposed issue breakdown |
+| [08_contract_registry.md](08_contract_registry.md) | Public | Public contract registry: index of wire surfaces and stable identifiers |
 | [09_dependency_policy.md](09_dependency_policy.md) | Public | Dependency and zenoh compatibility policy |
 | [10_adr_process.md](10_adr_process.md) | Public | ADR writing and operation rules (to be moved to docs/adr/README.md) |
 | [development_workflow.md](development_workflow.md) | Public | Branching strategy, TiDD, and TDD operation rules (to be moved to CONTRIBUTING) |
 
-Public documents (00–07) are maintained under `docs/` in the sitos repository.
+All documents listed above are public and maintained under `docs/` in the sitos repository.
 Public documents must not contain references to non-public documents.
 
 ## 6. Record of Major Decisions (ADR Summary)

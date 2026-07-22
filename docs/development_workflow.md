@@ -21,7 +21,9 @@ main ─────●───────●───────●───
 * Working branches are **short-lived** (guideline: 1 issue = 1 branch = 1 PR,
   within a few days)
 * Branch name: `feat/<number>-<short-kebab-description>`
-  (example: `feat/3-param-value-codec`)
+  (example: `feat/3-param-value-codec`). The prefix is always `feat/` regardless
+  of change type; the change type lives on the issue label and the commit
+  message (§2.1), so the branch does not repeat it
 * Releases are tags on main (`v0.1.0`, etc.). Do not create release branches
   until a hotfix is needed
 * Do not create long-lived develop / feature branches
@@ -93,6 +95,9 @@ Each issue must include at minimum the following (following the format in [07]):
 * Target implementation files
 * Acceptance criteria (AC) — in a verifiable form
 * Dependent issues
+* Affected contract-registry row(s) with their status transition (`Contract` /
+  `Implementation` / `none`), or `N/A` if no contract is touched
+  ([08_contract_registry.md](08_contract_registry.md))
 
 ## 3. Test-Driven Development (TDD): Red-Green-Refactor
 
@@ -129,7 +134,10 @@ Rules:
   - Corresponding requirement IDs ([01] F/N/C/P/X)
   - AC verification results (test execution logs)
   - RED-phase failure confirmation (§3)
-  - Judgment on whether an ADR is needed (whether [10] §6 applies)
+  - Judgment on whether an ADR is needed (whether [10] §6 applies; §6 now includes
+    the contract-registry Rule 2 overlap trigger)
+  - Affected contract-registry row(s) with their status transition (`Contract` /
+    `Implementation` / `none`), or `N/A` if no contract is touched ([08])
 * CI (build + all tests + clang-format + clang-tidy) must be green
 * Merge to main by squash merge (keep history grouped by issue)
 
@@ -159,5 +167,58 @@ merged (checkboxes on the issue side may remain unchecked when closed).
    [07]) are closed
 2. release-please generates the CHANGELOG and version PR from Conventional Commits
 3. Merge the version PR → tag → `wheels.yml` publishes to PyPI
+
+## 7. Milestone Design Review (horizontal pass)
+
+Per-issue reviews are depth-first; assembling a milestone additionally requires one breadth-first
+pass (motivated by the Issue #114 retrospective: the ack and fence lanes were each reviewed
+individually, and their shared substrate was found only after the milestone was assembled).
+
+**Gate**: when a milestone is assembled or materially re-scoped, post one milestone design review
+(a timeline comment on the milestone-defining issue, or a dedicated issue) covering §7.1–§7.4
+before implementation of the milestone's issues begins. Guideline effort: half a day.
+
+The gate **completes** only when its findings are recorded, each finding has a named follow-up
+owner, and the milestone owner accepts the outcome — not merely when the artifact is posted. For a
+**material re-scope**, rerun the gate before the added or changed scope begins and pause only the
+affected work, not the whole milestone.
+
+### 7.1 Shared-Mechanism Inventory
+
+List the mechanisms each issue in the milestone needs (examples: tokens, correlation identifiers,
+result reporting, polling/retry, ring buffers, ordering fences, catalogs). A **new, unresolved, or
+materially changed** cross-component mechanism used by **two or more issues** and **lacking an
+existing contract owner** gets a unifying design issue created at assembly time — a shared substrate
+is a planned artifact, not a later discovery. If an existing owner or Accepted ADR already governs
+the mechanism (for example the shared Result/Status model or logging), reference it instead of
+creating a redundant issue.
+
+### 7.2 Contract-Surface Check
+
+List every wire surface or stable identifier the milestone adds or changes, and check each against
+the [contract registry](08_contract_registry.md). Any surface that has no row yet is added as a
+Planned row during this gate (registry Rule 1), so first registration happens here rather than in a
+later implementation PR. An addition whose purpose overlaps an existing row requires an ADR
+recording why the existing surface cannot be reused.
+
+### 7.3 Dependency and Intake Annotations
+
+* For each cross-issue dependency inside the milestone, record in one line **which shared
+  substrate the dependency encodes** (before asking whether it can be cut).
+* When a new downstream consumer motivates the milestone, pair the new issues with a re-read of
+  existing backlog issues touching the same layers, and record the updates each needs.
+
+### 7.4 “Planned, Not Normative” Banner
+
+A specification section written before its mechanism is decided must open with a banner naming the
+deciding authority, in the form:
+
+> **Planned, not yet normative:** Issue/ADR #NN owns this mechanism. Implementers must not treat
+> this outline as a finalized contract.
+
+Load-bearing contracts (wire payload layouts, key grammar, stable enum values) are decided early
+and written normatively; mechanism details (retry counts, cache policies, marker representations)
+default to this banner and are finalized in the owning pre-implementation ADR. Existing documents
+are converted opportunistically when next edited.
 
 (END OF DOCUMENT)
