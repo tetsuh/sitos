@@ -6,7 +6,7 @@ from ._sitos import (
     ParamCache,
     ReadOnlyError,
     SitosError,
-    TimeoutError as TimeoutError,
+    TimeoutError,  # noqa: A004 - re-export the public sitos exception.
     TypeMismatchError,
 )
 

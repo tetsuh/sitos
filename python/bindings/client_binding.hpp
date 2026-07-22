@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -47,12 +48,13 @@ void RegisterClientExceptions(nanobind::module_& python_module);
 [[noreturn]] void ThrowStatus(Status status, std::string_view message);
 
 template <typename T>
+  requires(!std::is_void_v<T>)
 T Take(Result<T>&& result) {
   if (!result.IsOk()) ThrowStatus(result.StatusCode(), result.Message());
   return std::move(result).Value();
 }
 
-inline void Take(Result<void>&& result) {
+inline void Take(const Result<void>& result) {
   if (!result.IsOk()) ThrowStatus(result.StatusCode(), result.Message());
 }
 

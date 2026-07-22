@@ -64,7 +64,7 @@ std::int64_t GetTimeout(const nb::handle& value) {
   std::int64_t converted = 0;
   try {
     converted = nb::cast<std::int64_t>(value);
-  } catch (const std::exception&) {
+  } catch (const nb::cast_error&) {
     throw nb::value_error("query_timeout_ms is outside the C++ millisecond range");
   }
   if (converted <= 0) throw nb::value_error("query_timeout_ms must be positive");
