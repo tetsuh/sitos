@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 2026-07-22
+Accepted — 2026-07-23
 
 ## Context
 
@@ -72,10 +72,15 @@ For each serialized application lane, StorageNode uses one bounded token state m
 * Eviction removes both the completed result and fingerprint. After eviction, queries receive zero
   replies and StorageNode no longer promises duplicate suppression for that token. Clients must
   never use eviction or timeout as a reason to resubmit data.
-* An exception or unexpected internal failure after claim is contained at the callback boundary and
-  transitions the token exactly once to immutable `Completed(Status::Error)`; an RAII completion
-  guard prevents a permanently occupied Processing slot. No token-registry lock is held while
-  calling a StorageEngine, Transport callback, or synchronization primitive.
+* An exception or unexpected internal failure after claim is contained at the callback boundary,
+  and an RAII completion guard transitions the token exactly once to an immutable `Completed`
+  result. Before any StorageEngine mutation or synchronization call is invoked, such a failure is
+  `Status::Error`. Once a mutation or synchronization call has been invoked, an exception is
+  `Status::OutcomeUnknown` unless the callee's contract proves the requested effect did not occur.
+  A normally returned result retains its ordinary success or failure semantics; later bookkeeping
+  must not weaken a result whose effect is already proven. For a batch, the completion preserves
+  the confirmed prefix and identifies the entry whose engine invocation threw. No token-registry
+  lock is held while calling a StorageEngine, Transport callback, or synchronization primitive.
 * StorageNode Stop first rejects new callbacks, quiesces admitted callbacks under ADR-0017, then
   clears Processing and Completed state. A later Start does not recover old results.
 
@@ -115,8 +120,16 @@ Operation-specific invariants are:
 | Put success | applied | 1 | none | not applicable |
 | Put failure/unknown | applied | 0 | 0 | not applicable |
 | Batch success | applied | entry count | none | not applicable |
-| Batch failure/unknown | applied | confirmed prefix count | first failed index | not applicable |
+| Batch envelope/global validation failure | applied | 0 | none | not applicable |
+| Batch entry validation failure | applied | 0 | first invalid entry | not applicable |
+| Batch application failure/unknown | applied | confirmed prefix count | first failed entry | not applicable |
 | Fence | applied or synced | 0 | none | `through_sequence`; optional first `failed_sequence` |
+
+For a batch envelope or other whole-message validation failure that cannot be attributed to one
+entry, `failed_index` is `UINT32_MAX`. If a fully decoded entry fails validation, `failed_index`
+names that entry even though complete prevalidation keeps `applied_count` at zero. During engine
+application, `failed_index` names the first entry that returned failure or threw, and
+`applied_count` contains only the preceding confirmed prefix.
 
 Fence sequence zero represents an empty covered prefix. A non-sentinel `failed_sequence` must be
 nonzero and no greater than `through_sequence`.
@@ -136,7 +149,9 @@ tokens return zero replies. A wrong reply key/Encoding or malformed result is a 
 
 StorageNode decodes and validates the complete operation before its first engine mutation. With a
 valid token, a definite validation rejection creates a completed typed failure result without
-mutating storage.
+mutating storage. A batch envelope or whole-message rejection uses `applied_count = 0` and
+`failed_index = UINT32_MAX`; an entry-specific rejection uses `applied_count = 0` and the invalid
+entry's index.
 
 PutBatch remains one canonical wire message and is not transactional:
 
@@ -148,8 +163,11 @@ PutBatch remains one canonical wire message and is not transactional:
 5. do not attempt later entries.
 
 The current boolean StorageEngine write result cannot prove whether a `false` operation had no
-effect. StorageNode therefore reports `OutcomeUnknown` for that entry. A future typed engine result
-may tighten a known rejection to a definite non-OK Status without changing AckResult v1.
+effect. StorageNode therefore reports `OutcomeUnknown` for that entry. The same conservative result
+applies when `StorageEngine::Put` throws after invocation because its current contract cannot prove
+whether mutation occurred. Failures before invoking the engine are definite `Error` or validation
+statuses. A future typed, exception-safe engine result may tighten a known rejection to a definite
+non-OK Status without changing AckResult v1.
 
 The same stop-first application rule applies to acknowledged and acknowledgement-free batches.
 ParamCaches still receive and locally apply the complete pub/sub batch, so entries at or after the
