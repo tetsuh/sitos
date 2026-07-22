@@ -86,15 +86,20 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug
           cmake --build build/python --parallel 2
 
-      - name: Run Python ParamStore tests
+      - name: Run Python client tests
         run: |
           extension="$(find build/python -maxdepth 1 -name '_sitos*.so' -print -quit)"
           test -n "$extension"
           cp "$extension" python/sitos/
           export LD_LIBRARY_PATH="$PWD/build/python/_deps/zenohc-src/lib:${LD_LIBRARY_PATH:-}"
           export PYTHONPATH="$PWD/python"
+          export SITOS_PYTHON_CACHE_FIXTURE="$PWD/build/python/tests/sitos_python_param_cache_fixture"
           export SITOS_PYTHON_FIXTURE="$PWD/build/python/tests/sitos_python_param_store_fixture"
-          python3 -m pytest tests/python/test_param_store.py -q
+          python3 -m pytest \
+            tests/python/test_param_value.py \
+            tests/python/test_param_store.py \
+            tests/python/test_param_cache.py \
+            tests/python/test_param_cache_live.py -q
           rm -f python/sitos/_sitos*.so
 
   lifecycle-sanitizers:

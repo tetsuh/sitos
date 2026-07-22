@@ -14,11 +14,12 @@ pythonic layer [P01].
 | S64 | `int` | `int` (`OverflowError` if outside the 64-bit range) |
 | DP | `float` | `float` |
 | STR | `str` | `str` |
-| BYTES | `bytes` / `numpy.ndarray` (when dtype is specified) | `bytes`, `bytearray`, `memoryview`, C-contiguous `numpy.ndarray` |
+| BYTES | `bytes` | `bytes` |
 
-* Put of `numpy.ndarray` performs one copy through the buffer protocol (during encoding)
-* dtype/shape metadata is not included in the v1 payload ([03] §2.1).
-  The reader specifies the dtype
+Issue #27 will add buffer-protocol and NumPy conversion, zero-copy array reads, and type stubs.
+Until then, the public conversion, ParamStore, and ParamCache APIs reject `bytearray`, `memoryview`,
+NumPy arrays, general buffer objects, sequences, and arbitrary conversion protocols. Payload v1 does
+not carry dtype or shape metadata ([03] §2.1); the future reader API will supply that information.
 
 ## 2. API
 
@@ -79,24 +80,44 @@ Subscriptions and acknowledgements remain outside Issue #23.
 
 ### 2.2 ParamCache
 
-ParamCache is session-only under ADR-0022. It has no `attach_base` API. The initial Python binding
-in Issue #24 also omits stale/reconnect state, which remains Issue #20 scope.
+Issue #24 provides a non-callback, session-only Python facade over C++ ParamCache under ADR-0022 and
+ADR-0023. Each instance opens and owns its Transport/session from `zenoh_config_json`; it has no
+`attach_base` or raw Transport-injection API. `query_timeout_ms` is a positive integer used by the
+initial snapshot and overlay fetches.
 
 ```python
-cache = sitos.ParamCache(prefix="sitos")
-cache.attach(sid)                     # Fetch snapshot + overlay
-
-fov  = cache.get("recon/fov", default=240.0)
-lut  = cache.get_array("recon/bhc/lut", dtype="float32")   # -> numpy.ndarray
-# get_array is zero-copy [P02]: a read-only ndarray pointing to the internal buffer.
-# While the ndarray is alive, the underlying buffer is not released (keepalive).
-assert lut.flags.writeable is False
-
-cache.put("recon/progress", 0.5)      # Write to overlay + distribute
-cache.contains("recon/fov")
-dict(cache.items("recon"))            # Enumerate within cache (no communication)
-cache.detach(); cache.close()
+with sitos.ParamCache(prefix="sitos", zenoh_config_json=None,
+                      query_timeout_ms=5000) as cache:
+    cache.attach(sid)                              # Fetch snapshot + overlay
+    fov = cache.get("recon/fov", default=240.0)
+    count = cache.get("recon/count", type=int)    # C05 numeric conversion
+    cache.put("recon/progress", 0.5)
+    cache.put_batch([("recon/a", 1), ("recon/a", 2)])
+    exists = cache.contains("recon/fov")
+    rows = list(cache.items("recon"))             # Eager owned local snapshot
+    cache.detach()                                 # Re-attach remains possible
 ```
+
+`put_batch` accepts either a Mapping in iteration order or an iterable of two-item pairs. Pair
+iterables preserve order and duplicate keys; every entry is materialized and validated before one
+canonical `:batch` submission. Successful non-empty writes submit first and then immediately apply
+to the initiating cache. For duplicate keys, the last value serialized through each cache's local
+sequencing path wins independently in the initiating cache and asynchronously updated peers. There
+is no global publisher order or self-echo deduplication. Peer delivery is asynchronous, and success
+is not an Issue #99 delivery barrier. Empty batches succeed without submission.
+
+Reads and `items` are cache-local and perform no wire request. `items` uses raw-prefix matching,
+lexical ordering, and returns an iterator over an eager owned snapshot that remains usable after
+detach or close. Missing values, typed conversion, and Status exceptions use the same contract and
+exception classes as ParamStore.
+
+`detach` is idempotent and native-quiescent while leaving the object reusable. `close` is idempotent,
+terminal, stops new operation admission, waits for already-admitted binding operations, and returns
+only after owned native resources are released. Operations after close raise
+`ValueError("ParamCache is closed")`; a harmless repeated `detach` is permitted.
+
+Stale/reconnect state, Python callbacks, `get_array`, buffer-protocol or NumPy inputs, type stubs, and
+`WaitForLocalDelivery` remain deferred to Issues #20, #26, #27, and #99.
 
 ### 2.3 StorageNode / Engines
 
@@ -145,14 +166,18 @@ class MyEngine(sitos.StorageEngine):
 * zenoh threads in the C++ core do not acquire the GIL
 * Notifications to Python callbacks are one-way: “C++-side queue → dedicated Python dispatch
   thread (acquires the GIL)”. zenoh threads never block waiting for the GIL
-* `get`/`get_array` use only a C++-side shared lock. They keep holding the GIL
-  (because there is no I/O, it is not released)
+* ParamCache `get`, `contains`, and `items` are local C++ reads and keep the GIL. `items`
+  materializes into C++-owned storage before constructing Python tuples
+* Client Open, Attach, Detach, terminal Close/destruction, Put, and PutBatch release the GIL while
+  native work may block. Python input conversion and result construction occur with the GIL held
+* Future zero-copy `get_array` ownership and GIL behavior belong to Issue #27
 * In a StorageNode that uses a Python engine (§2.3), zenoh threads call into Python,
   so GIL acquisition occurs. State explicitly that C++ engines are recommended for production use
 
-## 4. Type Stubs and Documentation
+## 4. Future Type Stubs and Documentation
 
-* Include type stubs under `sitos/*.pyi` and verify them with mypy/pyright
+* Issue #27 will add type stubs under `sitos/*.pyi` and verify them with mypy/pyright; type stubs are
+  not part of the current Issue #24 release
 * docstrings must match the content of the C++ Doxygen comments
 * Include an interoperability example in README for “talking to sitos with zenoh-python only” [C03]:
 

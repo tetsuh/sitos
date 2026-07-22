@@ -1,6 +1,7 @@
 """Python bindings for the sitos parameter store."""
 
 from . import _sitos
+from .cache import ParamCache
 from .store import (
     DisconnectedError,
     NotFoundError,
@@ -19,6 +20,7 @@ __all__ = [
     "__version__",
     "decode_value",
     "encode_value",
+    "ParamCache",
     "ParamStore",
     "SitosError",
     "NotFoundError",

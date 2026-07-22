@@ -273,6 +273,12 @@ if(SITOS_WITH_ZENOH)
     SOURCES integration/session_view_test.cpp)
 
   if(SITOS_BUILD_PYTHON)
+    add_executable(sitos_python_param_cache_fixture
+      python/param_cache_fixture.cpp)
+    target_link_libraries(sitos_python_param_cache_fixture PRIVATE sitos::sitos)
+    sitos_enable_warnings(sitos_python_param_cache_fixture)
+    sitos_copy_zenohc(sitos_python_param_cache_fixture)
+
     add_executable(sitos_python_param_store_fixture
       python/param_store_fixture.cpp)
     target_link_libraries(sitos_python_param_store_fixture PRIVATE sitos::sitos)

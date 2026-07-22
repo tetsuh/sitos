@@ -397,12 +397,14 @@ so it is not a v0.2 blocker. Include it by v0.5.
 * Milestone: v0.3
 * References: [05] §2.2, ADR-0022, ADR-0023
 * Implementation targets: `python/bindings/param_cache.cpp`, `python/sitos/cache.py`,
-  `tests/python/test_param_cache.py`
-* Scope: session-only Python binding for ParamCache reads/writes and attach/detach; no AttachBase or
-  stale/reconnect surface
-* Acceptance criteria: pytest — attach/concurrent-delta and peer-propagation scenarios equivalent
-  to the C++ ParamCache contract
-* Depends on: #19, #22
+  `tests/python/test_param_cache.py`, `tests/python/test_param_cache_live.py`
+* Scope: session-only Python binding for ParamCache reads/writes, attach/detach, terminal quiescent
+  close, and the shared Issue #23 exception/conversion boundary; no AttachBase, stale/reconnect,
+  callback, NumPy, buffer-protocol, or delivery-barrier surface
+* Acceptance criteria: fixture-free repaired-wheel pytest plus source-only deterministic
+  attach/concurrent-delta, peer-propagation, GIL-progress, and close-quiescence scenarios using one
+  non-installed C++ fixture process
+* Depends on: #19, #22, #23
 
 ### #25 Python StorageNode / SessionView
 * Milestone: v0.3

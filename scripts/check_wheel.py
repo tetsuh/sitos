@@ -26,6 +26,8 @@ FORBIDDEN_TOKENS = (
 )
 FORBIDDEN_SUFFIXES = (".a", ".lib", ".h", ".hh", ".hpp", ".cmake")
 FORBIDDEN_BASENAMES = (
+    "sitos_python_param_cache_fixture",
+    "sitos_python_param_cache_fixture.exe",
     "sitos_python_param_store_fixture",
     "sitos_python_param_store_fixture.exe",
 )
