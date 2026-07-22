@@ -93,6 +93,7 @@ Each issue must include at minimum the following (following the format in [07]):
 * Target implementation files
 * Acceptance criteria (AC) — in a verifiable form
 * Dependent issues
+* Affected contract-registry row(s) ([08_contract_registry.md](08_contract_registry.md)), or `N/A`
 
 ## 3. Test-Driven Development (TDD): Red-Green-Refactor
 
@@ -130,6 +131,7 @@ Rules:
   - AC verification results (test execution logs)
   - RED-phase failure confirmation (§3)
   - Judgment on whether an ADR is needed (whether [10] §6 applies)
+  - Affected contract-registry row(s) advanced ([08]), or `N/A`
 * CI (build + all tests + clang-format + clang-tidy) must be green
 * Merge to main by squash merge (keep history grouped by issue)
 
@@ -167,21 +169,31 @@ pass (motivated by the Issue #114 retrospective: the ack and fence lanes were ea
 individually, and their shared substrate was found only after the milestone was assembled).
 
 **Gate**: when a milestone is assembled or materially re-scoped, post one milestone design review
-(a timeline comment on the milestone-defining issue, or a dedicated issue) covering §7.1–§7.3
+(a timeline comment on the milestone-defining issue, or a dedicated issue) covering §7.1–§7.4
 before implementation of the milestone's issues begins. Guideline effort: half a day.
+
+The gate **completes** only when its findings are recorded, each finding has a named follow-up
+owner, and the milestone owner accepts the outcome — not merely when the artifact is posted. For a
+**material re-scope**, rerun the gate before the added or changed scope begins and pause only the
+affected work, not the whole milestone.
 
 ### 7.1 Shared-Mechanism Inventory
 
 List the mechanisms each issue in the milestone needs (examples: tokens, correlation identifiers,
-result reporting, polling/retry, ring buffers, ordering fences, catalogs). Any mechanism appearing
-in **two or more issues** gets a unifying design issue created at assembly time — a shared
-substrate is a planned artifact, not a later discovery.
+result reporting, polling/retry, ring buffers, ordering fences, catalogs). A **new, unresolved, or
+materially changed** cross-component mechanism used by **two or more issues** and **lacking an
+existing contract owner** gets a unifying design issue created at assembly time — a shared substrate
+is a planned artifact, not a later discovery. If an existing owner or Accepted ADR already governs
+the mechanism (for example the shared Result/Status model or logging), reference it instead of
+creating a redundant issue.
 
 ### 7.2 Contract-Surface Check
 
 List every wire surface or stable identifier the milestone adds or changes, and check each against
-the [contract registry](08_contract_registry.md). An addition whose purpose overlaps an existing
-row requires an ADR recording why the existing surface cannot be reused.
+the [contract registry](08_contract_registry.md). Any surface that has no row yet is added as a
+Planned row during this gate (registry Rule 1), so first registration happens here rather than in a
+later implementation PR. An addition whose purpose overlaps an existing row requires an ADR
+recording why the existing surface cannot be reused.
 
 ### 7.3 Dependency and Intake Annotations
 
