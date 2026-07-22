@@ -1,16 +1,18 @@
 // Copyright 2026 sitos contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include <span>
-
 #include <nanobind/nanobind.h>
 
+#include <span>
+
+#include "client_binding.hpp"
 #include "param_value_conversion.hpp"
 #if SITOS_PYTHON_WITH_ZENOH
 #include "transport/zenoh_runtime_anchor.hpp"
 #endif
 
 void BindParamStore(nanobind::module_& python_module);
+void BindParamCache(nanobind::module_& python_module);
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -42,5 +44,7 @@ NB_MODULE(_sitos, python_module) {
   python_module.attr("__version__") = SITOS_PYTHON_VERSION;
   python_module.def("encode_value", &EncodeValue, "value"_a);
   python_module.def("decode_value", &DecodeValue, "payload"_a);
+  sitos::python::detail::RegisterClientExceptions(python_module);
   BindParamStore(python_module);
+  BindParamCache(python_module);
 }
