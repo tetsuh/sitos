@@ -160,4 +160,47 @@ merged (checkboxes on the issue side may remain unchecked when closed).
 2. release-please generates the CHANGELOG and version PR from Conventional Commits
 3. Merge the version PR → tag → `wheels.yml` publishes to PyPI
 
+## 7. Milestone Design Review (horizontal pass)
+
+Per-issue reviews are depth-first; assembling a milestone additionally requires one breadth-first
+pass (motivated by the Issue #114 retrospective: the ack and fence lanes were each reviewed
+individually, and their shared substrate was found only after the milestone was assembled).
+
+**Gate**: when a milestone is assembled or materially re-scoped, post one milestone design review
+(a timeline comment on the milestone-defining issue, or a dedicated issue) covering §7.1–§7.3
+before implementation of the milestone's issues begins. Guideline effort: half a day.
+
+### 7.1 Shared-Mechanism Inventory
+
+List the mechanisms each issue in the milestone needs (examples: tokens, correlation identifiers,
+result reporting, polling/retry, ring buffers, ordering fences, catalogs). Any mechanism appearing
+in **two or more issues** gets a unifying design issue created at assembly time — a shared
+substrate is a planned artifact, not a later discovery.
+
+### 7.2 Contract-Surface Check
+
+List every wire surface or stable identifier the milestone adds or changes, and check each against
+the [contract registry](08_contract_registry.md). An addition whose purpose overlaps an existing
+row requires an ADR recording why the existing surface cannot be reused.
+
+### 7.3 Dependency and Intake Annotations
+
+* For each cross-issue dependency inside the milestone, record in one line **which shared
+  substrate the dependency encodes** (before asking whether it can be cut).
+* When a new downstream consumer motivates the milestone, pair the new issues with a re-read of
+  existing backlog issues touching the same layers, and record the updates each needs.
+
+### 7.4 “Planned, Not Normative” Banner
+
+A specification section written before its mechanism is decided must open with a banner naming the
+deciding authority, in the form:
+
+> **Planned, not yet normative:** Issue/ADR #NN owns this mechanism. Implementers must not treat
+> this outline as a finalized contract.
+
+Load-bearing contracts (wire payload layouts, key grammar, stable enum values) are decided early
+and written normatively; mechanism details (retry counts, cache policies, marker representations)
+default to this banner and are finalized in the owning pre-implementation ADR. Existing documents
+are converted opportunistically when next edited.
+
 (END OF DOCUMENT)
