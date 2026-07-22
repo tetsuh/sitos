@@ -32,3 +32,4 @@ See [docs/10_adr_process.md](../10_adr_process.md) for the process.
 | [0025](0025-session-view-lifetime-and-composite-read-consistency.md) | Define SessionView lifetime and composite-read consistency |
 | [0026](0026-python-wheel-build-and-native-runtime.md) | Define the Python wheel build and bundled native-runtime boundary |
 | [0027](0027-keep-http-control-planes-in-host-applications.md) | Keep HTTP control planes in host applications |
+| [0028](0028-unify-acknowledged-operation-results.md) | Unify acknowledged operation results |

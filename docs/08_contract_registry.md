@@ -52,8 +52,10 @@ open decision (`—` when settled); implementers and consumers are listed separa
 | zenoh Encoding identifiers and normalization (`kSitosV1`, `kSitosV1Batch`, legacy spelling, absent/unknown fallback) | Normative | Implemented | [03](03_wire_protocol.md) §2.2 | — | `include/sitos/transport.hpp` |
 | Batch v1 (`:batch` multi-entry payload) | Normative | Implemented | [03](03_wire_protocol.md) §5 | — | batch codec |
 | `meta/session/<sid>` reply (session metadata JSON) | Normative | Implemented | [03](03_wire_protocol.md) §7.1 | — | StorageNode meta route |
-| `meta/ack/<uuid>` **route behavior** (token recording, AckResult payload, query semantics) | Planned | Planned | [03](03_wire_protocol.md) §6 (outline) | #14 → ADR | #17 (ParamStore policy); #114 pending consolidation |
-| Same-publisher in-band fence marker | Planned | Planned | — (added on ADR acceptance) | #106 → ADR | consumers #99, #107 |
+| `meta/ack/<uuid>` **route behavior** (token lifecycle, AckResult payload, query semantics) | Normative | Planned | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | #14, #17; Fence reuse by #106, #107 |
+| `AckAttachmentV1` (17-byte acknowledged-operation UUIDv4 attachment) | Normative | Planned | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | #14, #17; Fence reuse by #106, #107 |
+| Acknowledgement result Encoding (`sitos.v1.ack`, canonical `zenoh/bytes;sitos.v1.ack`) | Normative | Planned | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | #14, #17; Fence reuse by #106, #107 |
+| Same-publisher in-band fence marker | Planned | Planned | — (pending Accepted #106 ADR; row registered by #115 / PR #116) | #106 → ADR | consumers #99, #107 |
 | `buffers/<sid>/**` value scope (opaque binary values) | Normative | Planned | [ADR-0014](adr/0014-session-scoped-buffers.md) | — | #56; fences via #107 |
 
 ## 3. Stable identifiers
@@ -63,12 +65,12 @@ Values that must remain stable across releases because callers persist, compare,
 | Identifier set | Contract | Implementation | Normative spec | Design authority | Stability rule / notes |
 |---|---|---|---|---|---|
 | `Status` enum numeric values (`Ok`..`Error`) | Normative | Implemented | [04](04_api_cpp.md) §1.1 | — | Append-only; existing values are never renumbered |
-| Planned `Status` append: `OutcomeUnknown` | Planned | Planned | — | #114 → ADR | |
+| `Status` append: `OutcomeUnknown = 9` | Normative | Planned | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | Client-only `Timeout = 3` is excluded from AckResult v1 wire values |
 | Python exception hierarchy (`sitos.SitosError` and current subclasses, Status mapping) | Normative | Implemented | [05](05_api_python.md) §2.1 | — | One registered class per name; mapping extends only when `Status` extends |
-| Planned Python exception: `OutcomeUnknownError` | Planned | Planned | — | #114 → ADR | |
+| Python exception: `OutcomeUnknownError` | Normative | Planned | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | Maps `Status::OutcomeUnknown` for C++/Python parity |
 | Session-id grammar (`<sid>`) | Normative | Implemented | [03](03_wire_protocol.md) §1 | — | `src/key.cpp` `IsValidSessionId`; grammar is never narrowed |
 | `meta/ack/<uuid>` route id grammar (lenient parser, `IsValidAckUuid`) | Planned | Implemented | not yet documented in [03](03_wire_protocol.md) §1 | #14 → ADR | parser-accepted de-facto grammar; to be documented normatively; #114 pending consolidation |
-| Generated correlation-id format (canonical UUIDv4) | Planned | Planned | — | #114 → ADR | |
+| Generated correlation-id format (canonical UUIDv4) | Normative | Planned | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | Internally generated; callers cannot provide tokens |
 | Fence result identifiers (`FenceDurability`, `FenceReceipt` fields) | Planned | Planned | — | #107 → ADR | reuses the #106/#114 result protocol |
 | Session state-lost read result (overlay/snapshot lost after restart) | Planned | Planned | — | #108 → ADR | |
 | Typed catalog-unavailable result (catalog corruption fail-closed) | Planned | Planned | — | #108 → ADR | |
