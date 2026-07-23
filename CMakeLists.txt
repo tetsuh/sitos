@@ -160,6 +160,7 @@ if(SITOS_BUILD_PYTHON)
     python/sitos/cache.py
     python/sitos/store.py
     python/sitos/__init__.pyi
+    python/sitos/_sitos.pyi
     python/sitos/cache.pyi
     python/sitos/store.pyi
     python/sitos/py.typed

@@ -51,6 +51,7 @@ def validate_wheel_members(names: list[str]) -> None:
 def validate_public_typing_members(names: list[str]) -> None:
     required = {
         "sitos/__init__.pyi",
+        "sitos/_sitos.pyi",
         "sitos/cache.pyi",
         "sitos/store.pyi",
         "sitos/py.typed",
