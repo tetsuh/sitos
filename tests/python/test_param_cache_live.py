@@ -10,6 +10,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import sitos
@@ -216,6 +217,34 @@ def test_values_typed_get_default_batch_and_owned_items(live_cache_fixture) -> N
         rows = cache.items("foo/")
         cache.detach()
         assert list(rows) == [("foo/bar", 7)]
+    finally:
+        cache.close()
+
+
+def test_numpy_get_array_is_zero_copy_and_owned_after_overwrite(live_cache_fixture) -> None:
+    _, config = live_cache_fixture
+    cache = _new_cache(config)
+    try:
+        cache.attach("s1")
+        source = np.array([1, 2, 3, 4], dtype=np.int16)
+        cache.put("array", source)
+        first = cache.get_array("array", dtype=np.int16)
+        second = cache.get_array("array", dtype=np.int16)
+        assert first.dtype == np.dtype(np.int16)
+        assert first.shape == (4,)
+        assert not first.flags.writeable
+        assert first.__array_interface__["data"][0] == second.__array_interface__["data"][0]
+        assert np.shares_memory(first, second)
+        with pytest.raises(ValueError):
+            first[0] = 99
+
+        replacement = np.array([5, 6, 7, 8], dtype=np.int16)
+        cache.put("array", replacement)
+        updated = cache.get_array("array", dtype=np.int16)
+        assert first.tolist() == [1, 2, 3, 4]
+        assert updated.tolist() == [5, 6, 7, 8]
+        cache.detach()
+        assert first.tolist() == [1, 2, 3, 4]
     finally:
         cache.close()
 
