@@ -81,13 +81,9 @@ jobs:
               --no-deps --only-binary=:all: "$wheel"
             (cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" \
               -m pytest "$tests_dir" -q)
-            env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" -m mypy \
-              --strict --no-incremental "$tests_dir/typing_consumer_valid.py"
-            if env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" -m mypy \
-              --strict --no-incremental "$tests_dir/typing_consumer_invalid.py"; then
-              echo "invalid typing consumer unexpectedly passed"
-              exit 1
-            fi
+            env -u LD_LIBRARY_PATH -u PYTHONPATH -u MYPYPATH python \
+              scripts/validate_mypy_consumers.py \
+              --python "$venv/bin/python" --tests-dir "$tests_dir"
             docker run --rm -v "$PWD:/project:ro" -w /tmp \
               rockylinux/rockylinux@sha256:e372170ca8630f0f03e9b70fdd0bf4a3ce3426b0de7cdba615f06337389de176 \
               bash -ceu 'dnf -y install python3.12 python3.12-pip; python3.12 -m venv /tmp/sitos-wheel; /tmp/sitos-wheel/bin/python -m pip install --only-binary=:all: --require-hashes -r /project/.github/wheel-tools-requirements.txt; sha256sum /project/'"${wheel}"'; /tmp/sitos-wheel/bin/python -m pip install --no-deps --only-binary=:all: /project/'"${wheel}"'; cd /tmp; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python -m pytest /project/tests/python -q'
@@ -142,6 +138,7 @@ jobs:
           if ($null -eq $dumpbin) { throw "dumpbin.exe was not found" }
           $env:Path = "$($dumpbin.DirectoryName);$env:Path"
           $tests = (Resolve-Path tests\python).Path
+          $typingValidator = (Resolve-Path scripts\validate_mypy_consumers.py).Path
           Get-ChildItem wheelhouse\*.whl | ForEach-Object {
             python scripts/check_wheel.py $_.FullName --platform windows
             delvewheel show $_.FullName | Tee-Object -FilePath "$($_.FullName).delvewheel.txt"
@@ -158,14 +155,8 @@ jobs:
               & "$venv\Scripts\python.exe" -m pytest $tests -q
               $env:PYTHONPATH = $null
               $env:MYPYPATH = $null
-              & "$venv\Scripts\python.exe" -m mypy --strict --no-incremental `
-                (Join-Path $tests "typing_consumer_valid.py")
-              if ($LASTEXITCODE -eq 0) {
-                & "$venv\Scripts\python.exe" -m mypy --strict --no-incremental `
-                  (Join-Path $tests "typing_consumer_invalid.py")
-                if ($LASTEXITCODE -eq 0) { throw "invalid typing consumer unexpectedly passed" }
-                $global:LASTEXITCODE = 0
-              } else { throw "valid typing consumer failed" }
+              python $typingValidator `
+                --python "$venv\Scripts\python.exe" --tests-dir $tests
             } finally {
               Pop-Location
             }
