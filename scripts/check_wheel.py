@@ -45,6 +45,18 @@ def validate_wheel_members(names: list[str]) -> None:
             raise RuntimeError(f"forbidden wheel entry: {name}")
 
 
+def validate_public_typing_members(names: list[str]) -> None:
+    required = {
+        "sitos/__init__.pyi",
+        "sitos/cache.pyi",
+        "sitos/store.pyi",
+        "sitos/py.typed",
+    }
+    missing = sorted(required.difference(names))
+    if missing:
+        raise RuntimeError(f"wheel is missing public typing files: {', '.join(missing)}")
+
+
 def cmake_version() -> str:
     cmake = Path(__file__).parents[1] / "CMakeLists.txt"
     match = re.search(r"project\(sitos VERSION ([0-9]+\.[0-9]+\.[0-9]+)", cmake.read_text())
@@ -128,6 +140,7 @@ def main() -> None:
     with zipfile.ZipFile(args.wheel) as wheel:
         names = wheel.namelist()
         validate_wheel_members(names)
+        validate_public_typing_members(names)
         extension_suffix = ".pyd" if args.platform == "windows" else ".so"
         extensions = [
             name for name in names if name.startswith("sitos/_sitos") and name.lower().endswith(extension_suffix)

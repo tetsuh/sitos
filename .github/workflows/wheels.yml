@@ -81,6 +81,13 @@ jobs:
               --no-deps --only-binary=:all: "$wheel"
             (cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" \
               -m pytest "$tests_dir" -q)
+            env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" -m mypy \
+              --strict --no-incremental "$tests_dir/typing_consumer_valid.py"
+            if env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" -m mypy \
+              --strict --no-incremental "$tests_dir/typing_consumer_invalid.py"; then
+              echo "invalid typing consumer unexpectedly passed"
+              exit 1
+            fi
             docker run --rm -v "$PWD:/project:ro" -w /tmp \
               rockylinux/rockylinux@sha256:e372170ca8630f0f03e9b70fdd0bf4a3ce3426b0de7cdba615f06337389de176 \
               bash -ceu 'dnf -y install python3.12 python3.12-pip; python3.12 -m venv /tmp/sitos-wheel; /tmp/sitos-wheel/bin/python -m pip install --only-binary=:all: --require-hashes -r /project/.github/wheel-tools-requirements.txt; sha256sum /project/'"${wheel}"'; /tmp/sitos-wheel/bin/python -m pip install --no-deps --only-binary=:all: /project/'"${wheel}"'; cd /tmp; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python -m pytest /project/tests/python -q'
@@ -149,6 +156,15 @@ jobs:
             Push-Location $env:RUNNER_TEMP
             try {
               & "$venv\Scripts\python.exe" -m pytest $tests -q
+              $env:PYTHONPATH = $null
+              $env:MYPYPATH = $null
+              & "$venv\Scripts\python.exe" -m mypy --strict --no-incremental `
+                (Join-Path $tests "typing_consumer_valid.py")
+              if ($LASTEXITCODE -eq 0) {
+                & "$venv\Scripts\python.exe" -m mypy --strict --no-incremental `
+                  (Join-Path $tests "typing_consumer_invalid.py")
+                if ($LASTEXITCODE -eq 0) { throw "invalid typing consumer unexpectedly passed" }
+              } else { throw "valid typing consumer failed" }
             } finally {
               Pop-Location
             }
