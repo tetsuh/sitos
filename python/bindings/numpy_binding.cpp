@@ -54,7 +54,8 @@ void DestroyOwner(void* pointer) noexcept {
 }
 
 nb::object MakeArray(std::span<const std::byte> bytes, std::shared_ptr<const ParamValue> owner,
-                     PyArray_Descr* descr) {
+                     nb::object descriptor) {
+  auto* descr = reinterpret_cast<PyArray_Descr*>(descriptor.ptr());
   const auto element_size = static_cast<std::size_t>(PyDataType_ELSIZE(descr));
   const auto element_count = bytes.size() / element_size;
   std::array<npy_intp, 1> dimensions{static_cast<npy_intp>(element_count)};
@@ -63,8 +64,9 @@ nb::object MakeArray(std::span<const std::byte> bytes, std::shared_ptr<const Par
   owner_holder.release();
   void* data = bytes.empty() ? static_cast<void*>(&kEmptyArraySentinel)
                              : const_cast<std::byte*>(bytes.data());
-  PyObject* raw =
-      PyArray_NewFromDescr(&PyArray_Type, descr, 1, dimensions.data(), nullptr, data, 0, nullptr);
+  PyObject* raw = PyArray_NewFromDescr(
+      &PyArray_Type, reinterpret_cast<PyArray_Descr*>(descriptor.release().ptr()), 1,
+      dimensions.data(), nullptr, data, 0, nullptr);
   if (raw == nullptr) {
     throw nb::python_error();
   }
@@ -100,16 +102,16 @@ nb::object MakeReadonlyNumpyArray(const SpanHandle<std::byte>& value, const nb::
   if (!PyArray_DescrConverter(dtype.ptr(), &descr)) {
     throw nb::python_error();
   }
+  nb::object descriptor =
+      nb::steal<nb::object>(nb::handle(reinterpret_cast<PyObject*>(descr)));
   if (!IsSupportedDtype(*descr)) {
-    Py_DECREF(descr);
     ThrowNumpyTypeError("NumPy dtype is unsupported");
   }
   const auto bytes = std::span<const std::byte>(value.span.data(), value.span.size());
   if (bytes.size() % static_cast<std::size_t>(PyDataType_ELSIZE(descr)) != 0) {
-    Py_DECREF(descr);
     ThrowStatus(Status::TypeMismatch, "byte payload size is not divisible by dtype item size");
   }
-  return MakeArray(bytes, value.keepalive, descr);
+  return MakeArray(bytes, value.keepalive, std::move(descriptor));
 }
 
 }  // namespace sitos::python::detail
