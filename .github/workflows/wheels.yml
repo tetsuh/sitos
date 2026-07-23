@@ -164,6 +164,7 @@ jobs:
                 & "$venv\Scripts\python.exe" -m mypy --strict --no-incremental `
                   (Join-Path $tests "typing_consumer_invalid.py")
                 if ($LASTEXITCODE -eq 0) { throw "invalid typing consumer unexpectedly passed" }
+                $global:LASTEXITCODE = 0
               } else { throw "valid typing consumer failed" }
             } finally {
               Pop-Location
