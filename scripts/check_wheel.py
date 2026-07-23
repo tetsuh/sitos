@@ -10,7 +10,10 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
+from email.parser import Parser
 from pathlib import Path
+
+from packaging.requirements import Requirement
 
 
 FORBIDDEN_TOKENS = (
@@ -55,6 +58,22 @@ def validate_public_typing_members(names: list[str]) -> None:
     missing = sorted(required.difference(names))
     if missing:
         raise RuntimeError(f"wheel is missing public typing files: {', '.join(missing)}")
+
+
+def validate_python_runtime_metadata(metadata_text: str) -> None:
+    requirements = [
+        Requirement(value)
+        for value in Parser().parsestr(metadata_text).get_all("Requires-Dist", [])
+    ]
+    numpy_requirements = [
+        requirement for requirement in requirements if requirement.name.lower() == "numpy"
+    ]
+    if len(numpy_requirements) != 1 or ">=2.0" not in {
+        str(specifier) for specifier in numpy_requirements[0].specifier
+    }:
+        raise RuntimeError("wheel metadata must require NumPy 2 with numpy>=2.0")
+    if any(requirement.name.lower() == "mypy" for requirement in requirements):
+        raise RuntimeError("wheel metadata must not declare mypy as a runtime dependency")
 
 
 def cmake_version() -> str:
@@ -166,6 +185,7 @@ def main() -> None:
         metadata_text = wheel.read(metadata).decode("utf-8")
         if f"Version: {version}" not in metadata_text:
             raise RuntimeError("wheel metadata version does not match CMake version")
+        validate_python_runtime_metadata(metadata_text)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             wheel.extractall(root)

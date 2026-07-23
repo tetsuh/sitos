@@ -16,10 +16,11 @@ pythonic layer [P01].
 | STR | `str` | `str` |
 | BYTES | `bytes` | `bytes` or supported NumPy arrays |
 
-Issue #27 adds exact NumPy ndarray conversion and zero-copy `ParamCache.get_array`. NumPy inputs must
-be C-contiguous, object-free, fixed-width numeric or boolean arrays and are copied once into owned
-BYTES; shape and dtype are not serialized. General buffer objects, `bytearray`, and `memoryview`
-remain rejected. Payload v1 does not carry dtype or shape metadata ([03] §2.1).
+Issue #27 adds exact NumPy ndarray conversion and zero-copy `ParamCache.get_array`. NumPy 2.x is
+required; NumPy 1.x is not supported. NumPy inputs must be C-contiguous, object-free, fixed-width
+numeric or boolean arrays and are copied once into owned BYTES; shape and dtype are not serialized.
+General buffer objects, `bytearray`, and `memoryview` remain rejected. Payload v1 does not carry
+dtype or shape metadata ([03] §2.1).
 
 ## 2. API
 

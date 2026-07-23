@@ -2,7 +2,7 @@
 requires = [
   "scikit-build-core==0.10.7",
   "nanobind==2.9.2",
-  "numpy>=1.24",
+  "numpy>=2.0",
 ]
 build-backend = "scikit_build_core.build"
 
@@ -14,7 +14,7 @@ readme = "../README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.12"
 dependencies = [
-  "numpy>=1.24",
+  "numpy>=2.0",
 ]
 
 [project.urls]
