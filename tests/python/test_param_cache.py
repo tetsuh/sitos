@@ -32,9 +32,16 @@ def test_wheel_validator_rejects_param_cache_fixture_member(member: str) -> None
 
 def test_public_param_cache_is_exported_without_deferred_apis() -> None:
     assert hasattr(sitos, "ParamCache")
+    assert hasattr(sitos.ParamCache, "get_array")
     assert not hasattr(sitos.ParamCache, "attach_base")
     assert not hasattr(sitos.ParamCache, "stale")
-    assert not hasattr(sitos.ParamCache, "get_array")
+
+
+def test_closed_get_array_rejects_before_key_and_dtype_conversion() -> None:
+    cache = sitos.ParamCache(query_timeout_ms=5000)
+    cache.close()
+    with pytest.raises(ValueError, match="ParamCache is closed"):
+        cache.get_array(object(), dtype=object())
 
 
 def test_constructor_is_keyword_only_and_validates_timeout() -> None:
