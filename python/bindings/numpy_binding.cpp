@@ -4,6 +4,7 @@
 #include "numpy_binding.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -46,33 +47,28 @@ void ValidateInputArray(const PyArrayObject& array) {
   }
 }
 
-void DestroyOwner(PyObject* capsule) {
-  auto* owner =
-      static_cast<std::shared_ptr<const ParamValue>*>(PyCapsule_GetPointer(capsule, nullptr));
-  delete owner;
+using ArrayOwner = std::shared_ptr<const ParamValue>;
+
+void DestroyOwner(void* pointer) noexcept {
+  std::default_delete<ArrayOwner>{}(static_cast<ArrayOwner*>(pointer));
 }
 
 nb::object MakeArray(std::span<const std::byte> bytes, std::shared_ptr<const ParamValue> owner,
                      PyArray_Descr* descr) {
   const auto element_size = static_cast<std::size_t>(PyDataType_ELSIZE(descr));
   const auto element_count = bytes.size() / element_size;
-  npy_intp dimensions[1] = {static_cast<npy_intp>(element_count)};
-  auto owner_holder = std::make_unique<std::shared_ptr<const ParamValue>>(std::move(owner));
-  PyObject* capsule = PyCapsule_New(owner_holder.get(), nullptr, DestroyOwner);
-  if (capsule == nullptr) {
-    Py_DECREF(descr);
-    throw nb::python_error();
-  }
+  std::array<npy_intp, 1> dimensions{static_cast<npy_intp>(element_count)};
+  auto owner_holder = std::make_unique<ArrayOwner>(std::move(owner));
+  nb::capsule capsule(owner_holder.get(), DestroyOwner);
   owner_holder.release();
   void* data = bytes.empty() ? static_cast<void*>(&kEmptyArraySentinel)
                              : const_cast<std::byte*>(bytes.data());
   PyObject* raw =
-      PyArray_NewFromDescr(&PyArray_Type, descr, 1, dimensions, nullptr, data, 0, nullptr);
+      PyArray_NewFromDescr(&PyArray_Type, descr, 1, dimensions.data(), nullptr, data, 0, nullptr);
   if (raw == nullptr) {
-    Py_DECREF(capsule);
     throw nb::python_error();
   }
-  if (PyArray_SetBaseObject(reinterpret_cast<PyArrayObject*>(raw), capsule) < 0) {
+  if (PyArray_SetBaseObject(reinterpret_cast<PyArrayObject*>(raw), capsule.release().ptr()) < 0) {
     Py_DECREF(raw);
     throw nb::python_error();
   }
