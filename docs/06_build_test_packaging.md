@@ -88,7 +88,10 @@ python -m build --wheel python --outdir dist
 scikit-build-core installs only the `python` CMake component into the wheel. Build directories are
 specific to the wheel tag (`../build/python-wheel/{wheel_tag}`), so CPython builds cannot reuse one
 another's CMake cache. The CMake project version is the single source for wheel metadata and
-`sitos.__version__`.
+`sitos.__version__`. Python build isolation installs NumPy from `python/pyproject.toml` so CMake
+can locate the NumPy C headers; NumPy remains a runtime dependency. Public `py.typed` and `.pyi`
+files are installed into the wheel, and the wheel jobs run a strict mypy consumer outside the
+checkout while keeping mypy out of runtime metadata.
 
 The production target is `cp312-manylinux_2_28_x86_64`, validated on Ubuntu 24.04 and Rocky Linux
 10. `cp312-win_amd64` receives non-publishing build/test coverage only; other Python versions and
