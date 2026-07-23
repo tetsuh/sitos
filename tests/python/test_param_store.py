@@ -259,8 +259,12 @@ def test_live_value_domain_mapping_empty_batch_and_type_mismatch(live_store) -> 
         "bytes": b"bytes",
     }
     store.put_batch("base", values)
-    store.put("base", "array", numpy.array([1, 2], dtype=numpy.uint16))
-    store.put_batch("base", [("array-batch", numpy.array([3, 4], dtype=numpy.uint16))])
+    put_source = numpy.array([1, 2], dtype=numpy.uint16)
+    batch_source = numpy.array([3, 4], dtype=numpy.uint16)
+    store.put("base", "array", put_source)
+    store.put_batch("base", [("array-batch", batch_source)])
+    put_source[0] = 99
+    batch_source[0] = 99
     for key, expected in values.items():
         assert _eventually(store, "base", key) == expected
     store.put_batch("base", {})

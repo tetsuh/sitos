@@ -326,7 +326,19 @@ def test_invalid_inputs_leave_existing_local_state_unchanged(live_cache_fixture)
             cache.put("stable", 2**63)
         with pytest.raises(ValueError):
             cache.items("bad prefix")
+        with pytest.raises(TypeError):
+            cache.put_batch(
+                [
+                    ("stable", np.array([12], dtype=np.int16)),
+                    ("invalid", np.array([object()], dtype=object)),
+                ]
+            )
         assert cache.get("stable") == 11
+
+        source = np.array([1, 2], dtype=np.int16)
+        cache.put_batch([("copied-array", source)])
+        source[0] = 99
+        assert cache.get("copied-array") == b"\x01\x00\x02\x00"
     finally:
         cache.close()
 

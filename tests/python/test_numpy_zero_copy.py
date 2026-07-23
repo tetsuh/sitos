@@ -1,5 +1,6 @@
 """Fixture-free NumPy API and conversion contract tests."""
 
+import gc
 import importlib.util
 from pathlib import Path
 
@@ -79,3 +80,24 @@ def test_get_array_dtype_and_default_validation_contract() -> None:
     for dtype in (np.dtype("O"), np.dtype("V4"), np.dtype("datetime64[D]")):
         with pytest.raises(ValueError, match="ParamCache is closed"):
             cache.get_array("key", dtype=dtype)
+
+
+def test_get_array_fixture_free_lifetime_dtype_and_alignment_contract() -> None:
+    cache = sitos.ParamCache(query_timeout_ms=5000)
+    cache.attach("numpy-zero-copy")
+    source = np.array([0x0102, 0x0304], dtype=np.dtype(">u2"))
+    cache.put("array", source)
+    array = cache.get_array("array", dtype=np.dtype(">u2"))
+
+    assert array.tolist() == [0x0102, 0x0304]
+    assert array.dtype == np.dtype(">u2")
+    assert array.flags.writeable is False
+    assert array.flags.aligned is False
+    for dtype in (np.dtype("V4"), np.dtype("datetime64[D]")):
+        with pytest.raises(TypeError):
+            cache.get_array("array", dtype=dtype)
+
+    cache.close()
+    del cache
+    gc.collect()
+    assert array.tolist() == [0x0102, 0x0304]
