@@ -97,6 +97,17 @@ def test_get_array_fixture_free_lifetime_dtype_and_alignment_contract() -> None:
         with pytest.raises(TypeError):
             cache.get_array("array", dtype=dtype)
 
+    with pytest.raises(sitos.NotFoundError):
+        cache.get_array("missing", dtype=object())
+    cache.put("number", 7)
+    with pytest.raises(sitos.TypeMismatchError):
+        cache.get_array("number", dtype=object())
+    with pytest.raises(ValueError):
+        cache.get_array("bad key", dtype=object())
+    cache.detach()
+    with pytest.raises(ValueError, match="detached"):
+        cache.get_array("array", dtype=object())
+
     cache.close()
     del cache
     gc.collect()
