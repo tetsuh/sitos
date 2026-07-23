@@ -1,11 +1,31 @@
 """Fixture-free NumPy API and conversion contract tests."""
 
+import importlib.util
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 import sitos
+
+
+def _load_check_wheel():
+    script = Path(__file__).resolve().parents[2] / "scripts" / "check_wheel.py"
+    spec = importlib.util.spec_from_file_location("sitos_check_wheel_numpy", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_wheel_metadata_requires_numpy_2_without_mypy_runtime_dependency() -> None:
+    validator = _load_check_wheel().validate_python_runtime_metadata
+    validator("Requires-Dist: numpy>=2.0\n")
+
+    with pytest.raises(RuntimeError, match="NumPy 2"):
+        validator("Requires-Dist: numpy>=1.24\n")
+    with pytest.raises(RuntimeError, match="mypy"):
+        validator("Requires-Dist: numpy>=2.0\nRequires-Dist: mypy>=1.0\n")
 
 
 def test_get_array_is_exported_only_on_param_cache() -> None:
