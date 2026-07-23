@@ -25,6 +25,8 @@ def test_wheel_metadata_requires_numpy_2_without_mypy_runtime_dependency() -> No
 
     with pytest.raises(RuntimeError, match="NumPy 2"):
         validator("Requires-Dist: numpy>=1.24\n")
+    with pytest.raises(RuntimeError, match="NumPy 2"):
+        validator('Requires-Dist: numpy>=2.0; python_version < "0"\n')
     with pytest.raises(RuntimeError, match="mypy"):
         validator("Requires-Dist: numpy>=2.0\nRequires-Dist: mypy>=1.0\n")
 

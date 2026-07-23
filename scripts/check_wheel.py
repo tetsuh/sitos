@@ -69,9 +69,11 @@ def validate_python_runtime_metadata(metadata_text: str) -> None:
     numpy_requirements = [
         requirement for requirement in requirements if requirement.name.lower() == "numpy"
     ]
-    if len(numpy_requirements) != 1 or ">=2.0" not in {
-        str(specifier) for specifier in numpy_requirements[0].specifier
-    }:
+    if (
+        len(numpy_requirements) != 1
+        or numpy_requirements[0].marker is not None
+        or ">=2.0" not in {str(specifier) for specifier in numpy_requirements[0].specifier}
+    ):
         raise RuntimeError("wheel metadata must require NumPy 2 with numpy>=2.0")
     if any(requirement.name.lower() == "mypy" for requirement in requirements):
         raise RuntimeError("wheel metadata must not declare mypy as a runtime dependency")
