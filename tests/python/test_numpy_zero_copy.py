@@ -1,5 +1,7 @@
 """Fixture-free NumPy API and conversion contract tests."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -9,6 +11,10 @@ import sitos
 def test_get_array_is_exported_only_on_param_cache() -> None:
     assert hasattr(sitos.ParamCache, "get_array")
     assert not hasattr(sitos.ParamStore, "get_array")
+
+
+def test_public_typing_artifact_is_installed() -> None:
+    assert (Path(sitos.__file__).parent / "py.typed").is_file()
 
 
 def test_encode_value_accepts_exact_supported_ndarrays() -> None:

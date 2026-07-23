@@ -14,12 +14,12 @@ pythonic layer [P01].
 | S64 | `int` | `int` (`OverflowError` if outside the 64-bit range) |
 | DP | `float` | `float` |
 | STR | `str` | `str` |
-| BYTES | `bytes` | `bytes` |
+| BYTES | `bytes` | `bytes` or supported NumPy arrays |
 
-Issue #27 will add buffer-protocol and NumPy conversion, zero-copy array reads, and type stubs.
-Until then, the public conversion, ParamStore, and ParamCache APIs reject `bytearray`, `memoryview`,
-NumPy arrays, general buffer objects, sequences, and arbitrary conversion protocols. Payload v1 does
-not carry dtype or shape metadata ([03] §2.1); the future reader API will supply that information.
+Issue #27 adds exact NumPy ndarray conversion and zero-copy `ParamCache.get_array`. NumPy inputs must
+be C-contiguous, object-free, fixed-width numeric or boolean arrays and are copied once into owned
+BYTES; shape and dtype are not serialized. General buffer objects, `bytearray`, and `memoryview`
+remain rejected. Payload v1 does not carry dtype or shape metadata ([03] §2.1).
 
 ## 2. API
 
@@ -116,8 +116,11 @@ terminal, stops new operation admission, waits for already-admitted binding oper
 only after owned native resources are released. Operations after close raise
 `ValueError("ParamCache is closed")`; a harmless repeated `detach` is permitted.
 
-Stale/reconnect state, Python callbacks, `get_array`, buffer-protocol or NumPy inputs, type stubs, and
-`WaitForLocalDelivery` remain deferred to Issues #20, #26, #27, and #99.
+Stale/reconnect state, Python callbacks, and `WaitForLocalDelivery` remain deferred to Issues
+#20, #26, and #99. Issue #27 provides `ParamCache.get_array(key, *, dtype=...)` as a one-dimensional,
+read-only zero-copy view over immutable cached BYTES. It accepts fixed-width numeric and boolean
+NumPy dtypes, preserves explicit byte order without conversion, and does not infer or serialize shape.
+The array keeps the exact cached value alive across overwrite, detach, close, and cache destruction.
 
 ### 2.3 StorageNode / Engines
 
@@ -170,14 +173,15 @@ class MyEngine(sitos.StorageEngine):
   materializes into C++-owned storage before constructing Python tuples
 * Client Open, Attach, Detach, terminal Close/destruction, Put, and PutBatch release the GIL while
   native work may block. Python input conversion and result construction occur with the GIL held
-* Future zero-copy `get_array` ownership and GIL behavior belong to Issue #27
+* `ParamCache.get_array` retains the GIL while validating dtype and constructing the NumPy view;
+  its ndarray owner releases only a C++ shared owner and never calls Python from a native callback
 * In a StorageNode that uses a Python engine (§2.3), zenoh threads call into Python,
   so GIL acquisition occurs. State explicitly that C++ engines are recommended for production use
 
 ## 4. Future Type Stubs and Documentation
 
-* Issue #27 will add type stubs under `sitos/*.pyi` and verify them with mypy/pyright; type stubs are
-  not part of the current Issue #24 release
+* Issue #27 installs `py.typed` and public `sitos/*.pyi` stubs and verifies them with blocking mypy;
+  pyright remains nonblocking/deferred
 * docstrings must match the content of the C++ Doxygen comments
 * Include an interoperability example in README for “talking to sitos with zenoh-python only” [C03]:
 
