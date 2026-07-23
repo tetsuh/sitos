@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "client_binding.hpp"
+#include "numpy_binding.hpp"
 #include "param_value_conversion.hpp"
 #include "sitos/batch.hpp"
 
@@ -28,7 +29,6 @@ namespace nb = nanobind;
 using namespace nb::literals;
 
 namespace sitos::python::detail {
-
 class PyParamCache {
  public:
   explicit PyParamCache(const std::string& prefix, const nb::object& json,
@@ -123,6 +123,14 @@ class PyParamCache {
       return cache.PutBatch(materialized);
     });
     Take(result);
+  }
+
+  nb::object GetArray(const nb::handle& key_input, const nb::handle& dtype_input) {
+    auto lease = Acquire();
+    const auto key = nb::cast<std::string>(key_input);
+    auto result = lease.Native().GetSpan<std::byte>(key);
+    if (!result.IsOk()) Take(std::move(result));
+    return MakeReadonlyNumpyArray(result.Value(), nb::borrow<nb::object>(dtype_input));
   }
 
   nb::object Get(const nb::handle& key_input, const nb::object& default_value,
@@ -261,8 +269,8 @@ void BindParamCache(nb::module_& python_module) {
           "get",
           [missing](PyParamCache& self, const nb::handle& key, nb::object default_value,
                     nb::object type) { return self.Get(key, default_value, missing, type); },
-          "key"_a, "default"_a.none() = missing, nb::kw_only(),
-          "type"_a.none() = nb::none())
+          "key"_a, "default"_a.none() = missing, nb::kw_only(), "type"_a.none() = nb::none())
       .def("contains", &PyParamCache::Contains, "key"_a)
-      .def("items", &PyParamCache::Items, "prefix"_a = "");
+      .def("items", &PyParamCache::Items, "prefix"_a = "")
+      .def("get_array", &PyParamCache::GetArray, "key"_a, nb::kw_only(), "dtype"_a);
 }

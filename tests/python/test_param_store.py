@@ -249,6 +249,7 @@ def test_live_typed_get_default_and_batch(live_store) -> None:
 
 
 def test_live_value_domain_mapping_empty_batch_and_type_mismatch(live_store) -> None:
+    numpy = pytest.importorskip("numpy")
     store, _, _ = live_store
     values = {
         "bool": True,
@@ -258,11 +259,19 @@ def test_live_value_domain_mapping_empty_batch_and_type_mismatch(live_store) -> 
         "bytes": b"bytes",
     }
     store.put_batch("base", values)
+    put_source = numpy.array([1, 2], dtype=numpy.uint16)
+    batch_source = numpy.array([3, 4], dtype=numpy.uint16)
+    store.put("base", "array", put_source)
+    store.put_batch("base", [("array-batch", batch_source)])
+    put_source[0] = 99
+    batch_source[0] = 99
     for key, expected in values.items():
         assert _eventually(store, "base", key) == expected
     store.put_batch("base", {})
     with pytest.raises(OverflowError):
         store.put("base", "overflow", 2**63)
+    assert _eventually(store, "base", "array") == b"\x01\x00\x02\x00"
+    assert _eventually(store, "base", "array-batch") == b"\x03\x00\x04\x00"
     with pytest.raises(sitos.TypeMismatchError):
         store.get("base", "str", default=b"fallback", type=bytes)
 

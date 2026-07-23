@@ -10,6 +10,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import sitos
@@ -220,6 +221,95 @@ def test_values_typed_get_default_batch_and_owned_items(live_cache_fixture) -> N
         cache.close()
 
 
+def test_numpy_get_array_is_zero_copy_and_owned_after_overwrite(live_cache_fixture) -> None:
+    _, config = live_cache_fixture
+    cache = _new_cache(config)
+    try:
+        cache.attach("s1")
+        source = np.array([1, 2, 3, 4], dtype=np.int16)
+        cache.put("array", source)
+        first = cache.get_array("array", dtype=np.int16)
+        second = cache.get_array("array", dtype=np.int16)
+        assert first.dtype == np.dtype(np.int16)
+        assert first.shape == (4,)
+        assert not first.flags.writeable
+        assert first.__array_interface__["data"][0] == second.__array_interface__["data"][0]
+        assert np.shares_memory(first, second)
+        with pytest.raises(ValueError):
+            first[0] = 99
+
+        replacement = np.array([5, 6, 7, 8], dtype=np.int16)
+        cache.put("array", replacement)
+        updated = cache.get_array("array", dtype=np.int16)
+        assert first.tolist() == [1, 2, 3, 4]
+        assert updated.tolist() == [5, 6, 7, 8]
+        cache.detach()
+        assert first.tolist() == [1, 2, 3, 4]
+        cache.attach("s1")
+        cache.put("empty", np.array([], dtype=np.uint8))
+        empty = cache.get_array("empty", dtype=np.uint8)
+        assert empty.size == 0
+        assert empty.__array_interface__["data"][0] != 0
+        assert empty.flags.writeable is False
+    finally:
+        cache.close()
+
+
+def test_get_array_is_read_only_zero_copy_and_survives_overwrite(live_cache_fixture) -> None:
+    numpy = pytest.importorskip("numpy")
+    _, config = live_cache_fixture
+    cache = _new_cache(config)
+    try:
+        cache.attach("s1")
+        source = numpy.array([1, 2, 3, 4], dtype=numpy.uint16)
+        cache.put("array", source)
+        source[0] = 99
+        first = cache.get_array("array", dtype=numpy.dtype("<u2"))
+        second = cache.get_array("array", dtype=numpy.dtype("<u2"))
+        assert first.shape == (4,)
+        assert first.dtype == numpy.dtype("<u2")
+        assert first.flags.writeable is False
+        assert first.__array_interface__["data"][0] == second.__array_interface__["data"][0]
+        assert numpy.shares_memory(first, second)
+        assert first.tolist() == [1, 2, 3, 4]
+        with pytest.raises(ValueError):
+            first[0] = 9
+
+        cache.put("array", numpy.array([5, 6], dtype=numpy.uint16))
+        replacement = cache.get_array("array", dtype=numpy.dtype("<u2"))
+        assert first.tolist() == [1, 2, 3, 4]
+        assert replacement.tolist() == [5, 6]
+        assert replacement.__array_interface__["data"][0] != first.__array_interface__["data"][0]
+        cache.put("empty", numpy.array([], dtype=numpy.uint8))
+        empty = cache.get_array("empty", dtype=numpy.uint8)
+        assert empty.shape == (0,)
+        assert empty.flags.writeable is False
+        cache.detach()
+        assert first.tolist() == [1, 2, 3, 4]
+        cache.close()
+        assert first.tolist() == [1, 2, 3, 4]
+    finally:
+        cache.close()
+
+
+def test_get_array_rejects_dtype_and_size_mismatches(live_cache_fixture) -> None:
+    numpy = pytest.importorskip("numpy")
+    _, config = live_cache_fixture
+    cache = _new_cache(config)
+    try:
+        cache.attach("s1")
+        cache.put("bytes", b"abc")
+        with pytest.raises(sitos.TypeMismatchError):
+            cache.get_array("bytes", dtype=numpy.uint16)
+        with pytest.raises(TypeError):
+            cache.get_array("bytes", dtype=object)
+        cache.put("number", 7)
+        with pytest.raises(sitos.TypeMismatchError):
+            cache.get_array("number", dtype=numpy.uint8)
+    finally:
+        cache.close()
+
+
 def test_invalid_inputs_leave_existing_local_state_unchanged(live_cache_fixture) -> None:
     _, config = live_cache_fixture
     cache = _new_cache(config)
@@ -236,7 +326,19 @@ def test_invalid_inputs_leave_existing_local_state_unchanged(live_cache_fixture)
             cache.put("stable", 2**63)
         with pytest.raises(ValueError):
             cache.items("bad prefix")
+        with pytest.raises(TypeError):
+            cache.put_batch(
+                [
+                    ("stable", np.array([12], dtype=np.int16)),
+                    ("invalid", np.array([object()], dtype=object)),
+                ]
+            )
         assert cache.get("stable") == 11
+
+        source = np.array([1, 2], dtype=np.int16)
+        cache.put_batch([("copied-array", source)])
+        source[0] = 99
+        assert cache.get("copied-array") == b"\x01\x00\x02\x00"
     finally:
         cache.close()
 

@@ -47,6 +47,15 @@ endif()
 if(SITOS_BUILD_PYTHON)
   find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
   find_package(nanobind CONFIG REQUIRED)
+  execute_process(
+    COMMAND "${Python_EXECUTABLE}" -c "import numpy; print(numpy.get_include())"
+    RESULT_VARIABLE SITOS_NUMPY_RESULT
+    OUTPUT_VARIABLE SITOS_NUMPY_INCLUDE_DIR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_VARIABLE SITOS_NUMPY_ERROR)
+  if(NOT SITOS_NUMPY_RESULT EQUAL 0 OR NOT IS_DIRECTORY "${SITOS_NUMPY_INCLUDE_DIR}")
+    message(FATAL_ERROR "NumPy headers are required to build Python bindings: ${SITOS_NUMPY_ERROR}")
+  endif()
 endif()
 
 if(SITOS_BUILD_BENCHMARKS)
@@ -125,14 +134,23 @@ if(SITOS_BUILD_PYTHON)
   nanobind_add_module(_sitos MODULE
     python/bindings/client_binding.cpp
     python/bindings/module.cpp
+    python/bindings/numpy_binding.cpp
     python/bindings/param_cache.cpp
     python/bindings/param_store.cpp
     python/bindings/param_value_conversion.cpp)
   target_link_libraries(_sitos PRIVATE sitos::sitos)
-  target_include_directories(_sitos PRIVATE src)
+  target_include_directories(_sitos PRIVATE src "${SITOS_NUMPY_INCLUDE_DIR}")
   target_compile_definitions(_sitos PRIVATE
     SITOS_PYTHON_VERSION="${PROJECT_VERSION}"
     SITOS_PYTHON_WITH_ZENOH=$<BOOL:${SITOS_WITH_ZENOH}>)
+  if(MSVC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    # The local Python 3.14 headers expose debug refcount macros under MSVC
+    # Debug builds, while the installed interpreter exports the release ABI.
+    set_property(SOURCE
+      python/bindings/numpy_binding.cpp
+      python/bindings/param_value_conversion.cpp
+      APPEND PROPERTY COMPILE_OPTIONS /U_DEBUG /MDd /D_ITERATOR_DEBUG_LEVEL=2)
+  endif()
   install(TARGETS _sitos
     LIBRARY DESTINATION sitos COMPONENT python
     RUNTIME DESTINATION sitos COMPONENT python
@@ -141,6 +159,11 @@ if(SITOS_BUILD_PYTHON)
     python/sitos/__init__.py
     python/sitos/cache.py
     python/sitos/store.py
+    python/sitos/__init__.pyi
+    python/sitos/_sitos.pyi
+    python/sitos/cache.pyi
+    python/sitos/store.pyi
+    python/sitos/py.typed
     DESTINATION sitos COMPONENT python)
 endif()
 

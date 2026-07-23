@@ -5,6 +5,10 @@
 
 #include <span>
 
+#define SITOS_NUMPY_IMPORT
+#include "numpy_api.hpp"
+#undef SITOS_NUMPY_IMPORT
+
 #include "client_binding.hpp"
 #include "param_value_conversion.hpp"
 #if SITOS_PYTHON_WITH_ZENOH
@@ -36,6 +40,7 @@ nb::object DecodeValue(const nb::bytes& payload) {
 }  // namespace
 
 NB_MODULE(_sitos, python_module) {
+  if (_import_array() < 0) throw nb::python_error();
 #if SITOS_PYTHON_WITH_ZENOH
   // Retain the deliberate Zenoh-enabled wheel runtime edge without exposing its C API here.
   static_cast<void>(sitos::detail::ZenohRuntimeAnchor());

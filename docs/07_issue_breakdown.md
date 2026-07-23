@@ -415,7 +415,7 @@ so it is not a v0.2 blocker. Include it by v0.5.
   is blocked until a supported pure-Python process/session topology is selected
 * Acceptance criteria: pytest — create_session/close_session, read-only SessionView
   overlay-over-snapshot resolution, and deterministic cross-component synchronization
-* Depends on: #21, #22, #23, #24
+* Depends on: #21, #22, #23, #24, #27
 
 ### #26 Python callback / GIL dispatch
 * Milestone: v1.0
@@ -429,12 +429,13 @@ so it is not a v0.2 blocker. Include it by v0.5.
 ### #27 NumPy zero-copy and type stubs
 * Milestone: v0.3
 * References: [05] §1–2, §4
-* Implementation targets: `python/bindings/numpy.cpp`, `python/sitos/py.typed`,
+* Implementation targets: `python/bindings/numpy_binding.cpp`, `python/sitos/py.typed`,
   `python/sitos/*.pyi`, `tests/python/test_numpy_zero_copy.py`
-* Scope: `get_array(dtype)` (buffer protocol, writeable=False, keepalive),
-  ndarray put, `.pyi` stubs
-* Acceptance criteria: pytest — verify base-buffer identity (no copy), mypy green
-* Depends on: #23, #24, #25
+* Scope: exact-ndarray input conversion, `ParamCache.get_array(key, *, dtype=...)`
+  (writeable=False, keepalive), and public `.pyi` stubs; no general buffer protocol
+* Acceptance criteria: fixture-free repaired-wheel NumPy tests, source-only zero-copy and
+  keepalive tests, and strict installed-wheel mypy consumer validation
+* Depends on: #24
 
 ### #28 Python custom engine
 * Milestone: v1.0

@@ -81,6 +81,20 @@ def test_decode_non_bytes_input_is_rejected(payload: object) -> None:
         sitos.decode_value(payload)  # type: ignore[arg-type]
 
 
+def test_encode_numpy_array_copies_c_order_bytes() -> None:
+    numpy = pytest.importorskip("numpy")
+    value = numpy.array([[1, 2], [3, 4]], dtype=numpy.uint16)
+    assert sitos.encode_value(value) == b"\x04\x01\x00\x02\x00\x03\x00\x04\x00"
+
+
+def test_encode_numpy_rejects_non_contiguous_and_object_arrays() -> None:
+    numpy = pytest.importorskip("numpy")
+    with pytest.raises(ValueError):
+        sitos.encode_value(numpy.arange(8, dtype=numpy.uint8)[::2])
+    with pytest.raises(TypeError):
+        sitos.encode_value(numpy.array([object()], dtype=object))
+
+
 def test_decode_numpy_input_is_rejected() -> None:
     numpy = pytest.importorskip("numpy")
     with pytest.raises(TypeError):

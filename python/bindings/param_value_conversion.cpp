@@ -4,19 +4,22 @@
 #include "param_value_conversion.hpp"
 
 #include <Python.h>
+#include <nanobind/stl/string.h>
 
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
 
-#include <nanobind/stl/string.h>
+#include "numpy_api.hpp"
+#include "numpy_binding.hpp"
 
 namespace nb = nanobind;
 
 namespace sitos::python::detail {
 
 ParamValue ParamValueFromPython(const nb::handle& value) {
+  if (PyArray_Check(value.ptr())) return ParamValueFromNumpy(value);
   if (nb::isinstance<nb::bool_>(value)) {
     return ParamValue(nb::cast<bool>(value));
   }
@@ -45,7 +48,8 @@ ParamValue ParamValueFromPython(const nb::handle& value) {
     std::memcpy(body.data(), data, bytes.size());
     return ParamValue(std::move(body));
   }
-  throw nb::type_error("encode_value accepts only bool, int, float, str, or bytes");
+  throw nb::type_error(
+      "encode_value accepts only bool, int, float, str, bytes, or supported numpy.ndarray");
 }
 
 nb::object ParamValueToPython(const ParamValue& value) {
@@ -58,8 +62,8 @@ nb::object ParamValueToPython(const ParamValue& value) {
       return nb::cast(value.As<double>().value());
     case ValueType::Str: {
       const auto string = value.As<std::string>().value();
-      PyObject* unicode = PyUnicode_DecodeUTF8(
-          string.data(), static_cast<Py_ssize_t>(string.size()), nullptr);
+      PyObject* unicode =
+          PyUnicode_DecodeUTF8(string.data(), static_cast<Py_ssize_t>(string.size()), nullptr);
       if (unicode == nullptr) {
         throw nb::python_error();
       }
