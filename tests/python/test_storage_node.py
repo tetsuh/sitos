@@ -157,4 +157,3 @@ def test_wheel_validator_rejects_private_gil_support_members() -> None:
     spec.loader.exec_module(validator)
     with pytest.raises(RuntimeError, match="private Python test support"):
         validator.validate_private_test_support_absent(["sitos/_gil_test_control.pyd"])
-
