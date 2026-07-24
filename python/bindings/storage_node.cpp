@@ -145,12 +145,9 @@ class PyStorageNode {
   }
 
   std::vector<std::string> ActiveSessions() const {
-    {
-      std::lock_guard lock(state_->mutex);
-      if (state_->phase != Phase::Open) return {};
-    }
-    auto lease = Acquire();
-    auto sessions = lease.Native().ActiveSessions();
+    auto lease = TryAcquire();
+    if (!lease.has_value()) return {};
+    auto sessions = lease->Native().ActiveSessions();
     std::ranges::sort(sessions);
     return sessions;
   }
@@ -230,6 +227,14 @@ class PyStorageNode {
 
     std::shared_ptr<State> state_;
   };
+
+  std::optional<OperationLease> TryAcquire() const {
+    auto state = state_;
+    std::lock_guard lock(state->mutex);
+    if (state->phase != Phase::Open) return std::nullopt;
+    ++state->in_flight;
+    return std::optional<OperationLease>(std::in_place, std::move(state));
+  }
 
   OperationLease Acquire() const {
     return AcquireWithError("StorageNode is stopped");
