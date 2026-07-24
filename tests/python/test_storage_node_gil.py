@@ -83,7 +83,6 @@ def test_terminal_cleanup_releases_gil_at_source_boundary(gil_control, operation
 
         def invoke() -> None:
             node.__exit__(None, None, None)
-
     else:
         nodes = [node]
         del node
@@ -106,11 +105,10 @@ def test_stop_waits_for_admitted_create_session(gil_control) -> None:
         stopped.set()
 
     create_thread = threading.Thread(target=create)
-    stop_thread: threading.Thread | None = None
+    stop_thread = threading.Thread(target=stop)
     try:
         create_thread.start()
         assert gil_control._gil_test_wait("create_session", 5000)
-        stop_thread = threading.Thread(target=stop)
         stop_thread.start()
         assert gil_control._gil_test_wait("stop_quiescence", 5000)
         assert not stopped.is_set()
@@ -118,9 +116,9 @@ def test_stop_waits_for_admitted_create_session(gil_control) -> None:
     finally:
         gil_control._gil_test_reset()
         create_thread.join(timeout=5)
-        if stop_thread is not None:
+        if stop_thread.ident is not None:
             stop_thread.join(timeout=5)
     assert not create_thread.is_alive()
-    assert stop_thread is not None and not stop_thread.is_alive()
+    assert not stop_thread.is_alive()
     assert created.is_set()
     assert stopped.is_set()
