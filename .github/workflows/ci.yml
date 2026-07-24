@@ -83,7 +83,7 @@ jobs:
           cmake -S . -B build/python -G Ninja \
             -DCMAKE_PREFIX_PATH="$nanobind_dir" \
             -DSITOS_BUILD_PYTHON=ON -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=ON \
-            -DCMAKE_BUILD_TYPE=Debug
+            -DSITOS_PYTHON_TEST_SUPPORT=ON -DCMAKE_BUILD_TYPE=Debug
           cmake --build build/python --parallel 2
 
       - name: Run Python client tests
@@ -95,12 +95,16 @@ jobs:
           export PYTHONPATH="$PWD/python"
           export SITOS_PYTHON_CACHE_FIXTURE="$PWD/build/python/tests/sitos_python_param_cache_fixture"
           export SITOS_PYTHON_FIXTURE="$PWD/build/python/tests/sitos_python_param_store_fixture"
+          export SITOS_PYTHON_NODE_LIVE=1
           python3 -m pytest \
             tests/python/test_param_value.py \
             tests/python/test_numpy_zero_copy.py \
             tests/python/test_param_store.py \
             tests/python/test_param_cache.py \
             tests/python/test_param_cache_live.py -q
+          python3 -m pytest \
+            tests/python/test_storage_node.py tests/python/test_storage_node_gil.py -q
+          python3 -m pytest tests/python/test_storage_node_live.py -q
           rm -f python/sitos/_sitos*.so
 
   lifecycle-sanitizers:

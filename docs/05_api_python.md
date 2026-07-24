@@ -128,47 +128,45 @@ NumPy dtypes, preserves explicit byte order without conversion, and does not inf
 shape. The array keeps the exact cached value alive across overwrite, detach, close, and cache
 destruction.
 
-### 2.3 StorageNode / Engines
+### 2.3 StorageNode / Engines (Issue #25)
 
 ```python
-engine = sitos.InMemoryEngine()
-# engine = sitos.RocksDBEngine("/var/lib/myapp/params")  # when the sitos-rocksdb wheel is installed
+engine = sitos.InMemoryEngine()  # opaque StorageNode-owned engine
 
-node = sitos.StorageNode(engine, prefix="sitos")
-node.create_session(sid)
-node.close_session(sid)
-node.active_sessions()                # -> list[str]
-node.stop()
+with sitos.StorageNode(engine, prefix="sitos", zenoh_config_json=None) as node:
+    node.create_session(sid)
+    node.close_session(sid)
+    node.active_sessions()                # -> sorted list[str]
 ```
 
-### 2.4 SessionView
+`StorageNode` starts during construction and `stop()` is terminal, idempotent, and quiescent.
+The binding opens and owns its Zenoh transport; raw Transport/session injection is not public.
+`InMemoryEngine` exposes no direct CRUD methods. RocksDB implementation belongs to Issue #8;
+publication/distribution readiness belongs to Issue #35. Custom Python engines are deferred to
+Issue #28.
 
-The future Python binding will expose the same read-only semantics as C++ `SessionView` for the
-process that owns StorageNode. Python binding work belongs to Issue #25; this section is a plan,
-not an implemented API.
+Independent StorageNode, ParamStore, and ParamCache sessions must run in separate processes while
+using the pinned zenoh-c 1.9.0 runtime. Same-process independently opened sessions are unsupported.
+
+### 2.4 SessionView (Issue #25)
+
+`SessionView` is a read-only, owned view over the StorageNode session overlay and snapshot.
+It exposes exact built-in typed reads, absence-only defaults, `contains`, and eager lexical
+`items` snapshots:
 
 ```python
-view = node.session_view(sid)  # Future Issue #25 binding
-fov = view.get("recon/fov", default=240.0)  # Future read-only composite view
-keys = view.list("recon/")
+view = node.session_view(sid)
+value = view.get("recon/fov", default=240.0)
+count = view.get("recon/count", type=int)
+exists = view.contains("recon/fov")
+rows = list(view.items("recon"))
 ```
 
-The view resolves overlay before snapshot and performs no writes. `put`, `put_batch`, and `delete`
-are intentionally not part of SessionView. Large binary values use the disk-backed buffers API,
-not the session overlay or ParamCache.
-
-Custom engines [X01] can also be defined in Python
-(subclass `sitos.StorageEngine` and implement `put/get/list/delete`.
-However, state explicitly that performance is the user's responsibility):
-
-```python
-class MyEngine(sitos.StorageEngine):
-    def put(self, key: str, value: bytes) -> None: ...
-    def get(self, key: str) -> bytes | None: ...
-    def list(self, prefix: str): ...        # -> Iterable[tuple[str, bytes]]
-    def delete(self, key: str) -> None: ...
-    # If take_snapshot() is not implemented, use the copy fallback [N03]
-```
+`items` uses raw-prefix semantics, resolves overlay before snapshot, validates and sorts all values
+before constructing Python objects, and remains usable after session close or node stop. Existing
+views report the documented lifecycle errors on later reads. `put`, `put_batch`, `delete`,
+callbacks, spans, NumPy, and zero-copy APIs are intentionally not part of SessionView.
+Large binary values use the disk-backed buffers API, not the session overlay or ParamCache.
 
 ## 3. GIL and Thread Design [P04]
 
