@@ -2,6 +2,7 @@
 
 from . import _sitos
 from .cache import ParamCache
+from .node import InMemoryEngine, SessionView, StorageNode
 from .store import (
     DisconnectedError,
     NotFoundError,
@@ -22,6 +23,9 @@ __all__ = [
     "encode_value",
     "ParamCache",
     "ParamStore",
+    "InMemoryEngine",
+    "StorageNode",
+    "SessionView",
     "SitosError",
     "NotFoundError",
     "TypeMismatchError",

@@ -10,6 +10,7 @@ from ._sitos import (
     encode_value as encode_value,
 )
 from .cache import ParamCache as ParamCache
+from .node import InMemoryEngine as InMemoryEngine, SessionView as SessionView, StorageNode as StorageNode
 from .store import ParamStore as ParamStore
 
 __all__ = [
@@ -18,6 +19,9 @@ __all__ = [
     "encode_value",
     "ParamCache",
     "ParamStore",
+    "InMemoryEngine",
+    "StorageNode",
+    "SessionView",
     "SitosError",
     "NotFoundError",
     "TypeMismatchError",

@@ -48,12 +48,20 @@ def validate_wheel_members(names: list[str]) -> None:
             raise RuntimeError(f"forbidden wheel entry: {name}")
 
 
+def validate_private_test_support_absent(names: list[str]) -> None:
+    forbidden = ("_gil_test", "gil_boundary", "python_test_support")
+    leaked = [name for name in names if any(token in name.lower() for token in forbidden)]
+    if leaked:
+        raise RuntimeError(f"private Python test support leaked into wheel: {', '.join(leaked)}")
+
+
 def validate_public_typing_members(names: list[str]) -> None:
     required = {
         "sitos/__init__.pyi",
         "sitos/_sitos.pyi",
         "sitos/cache.pyi",
         "sitos/store.pyi",
+        "sitos/node.pyi",
         "sitos/py.typed",
     }
     missing = sorted(required.difference(names))
@@ -162,6 +170,7 @@ def main() -> None:
     with zipfile.ZipFile(args.wheel) as wheel:
         names = wheel.namelist()
         validate_wheel_members(names)
+        validate_private_test_support_absent(names)
         validate_public_typing_members(names)
         extension_suffix = ".pyd" if args.platform == "windows" else ".so"
         extensions = [
