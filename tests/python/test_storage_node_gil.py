@@ -55,13 +55,17 @@ def test_constructor_releases_gil_at_source_boundary(gil_control) -> None:
     _assert_heartbeat_while_blocked(
         gil_control,
         "constructor",
-        lambda: created.append(sitos.StorageNode(engine)),
+        lambda: created.append(
+            sitos.StorageNode(engine, prefix="sitos/python_node_gil_constructor")
+        ),
     )
     created[0].stop()
 
 
 def test_create_session_releases_gil_at_source_boundary(gil_control) -> None:
-    node = sitos.StorageNode(sitos.InMemoryEngine())
+    node = sitos.StorageNode(
+        sitos.InMemoryEngine(), prefix="sitos/python_node_gil_create"
+    )
     _assert_heartbeat_while_blocked(
         gil_control,
         "create_session",
@@ -71,5 +75,5 @@ def test_create_session_releases_gil_at_source_boundary(gil_control) -> None:
 
 
 def test_stop_releases_gil_at_source_boundary(gil_control) -> None:
-    node = sitos.StorageNode(sitos.InMemoryEngine())
+    node = sitos.StorageNode(sitos.InMemoryEngine(), prefix="sitos/python_node_gil_stop")
     _assert_heartbeat_while_blocked(gil_control, "stop", node.stop)

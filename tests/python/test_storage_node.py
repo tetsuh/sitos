@@ -41,7 +41,7 @@ def test_storage_node_starts_and_session_view_reads_owned_values() -> None:
 
 
 def test_session_view_typed_get_and_default_precedence() -> None:
-    with sitos.StorageNode(sitos.InMemoryEngine()) as node:
+    with sitos.StorageNode(sitos.InMemoryEngine(), prefix="sitos/python_node_typed") as node:
         node.create_session("session_a")
         view = node.session_view("session_a")
         assert view.get("missing", type=int, default=None) is None
@@ -52,7 +52,7 @@ def test_session_view_typed_get_and_default_precedence() -> None:
 
 
 def test_storage_node_lifecycle_precedes_argument_conversion() -> None:
-    node = sitos.StorageNode(sitos.InMemoryEngine())
+    node = sitos.StorageNode(sitos.InMemoryEngine(), prefix="sitos/python_node_lifecycle")
     node.stop()
     node.stop()
     with pytest.raises(ValueError, match="StorageNode is stopped"):
@@ -65,7 +65,7 @@ def test_storage_node_lifecycle_precedes_argument_conversion() -> None:
 
 
 def test_session_view_is_eager_and_survives_node_stop() -> None:
-    with sitos.StorageNode(sitos.InMemoryEngine()) as node:
+    with sitos.StorageNode(sitos.InMemoryEngine(), prefix="sitos/python_node_eager") as node:
         node.create_session("session_a")
         view = node.session_view("session_a")
         rows = view.items()
@@ -76,7 +76,7 @@ def test_session_view_is_eager_and_survives_node_stop() -> None:
 
 
 def test_session_view_close_and_recreate_generation_is_not_reused() -> None:
-    with sitos.StorageNode(sitos.InMemoryEngine()) as node:
+    with sitos.StorageNode(sitos.InMemoryEngine(), prefix="sitos/python_node_generation") as node:
         node.create_session("session_a")
         old_view = node.session_view("session_a")
         node.close_session("session_a")
@@ -88,7 +88,7 @@ def test_session_view_close_and_recreate_generation_is_not_reused() -> None:
 
 
 def test_storage_node_stop_is_safe_for_concurrent_callers() -> None:
-    node = sitos.StorageNode(sitos.InMemoryEngine())
+    node = sitos.StorageNode(sitos.InMemoryEngine(), prefix="sitos/python_node_stop")
     errors: list[BaseException] = []
 
     def stop() -> None:
@@ -107,7 +107,7 @@ def test_storage_node_stop_is_safe_for_concurrent_callers() -> None:
 
 
 def test_session_view_does_not_retain_node_resources() -> None:
-    node = sitos.StorageNode(sitos.InMemoryEngine())
+    node = sitos.StorageNode(sitos.InMemoryEngine(), prefix="sitos/python_node_weak")
     node.create_session("session_a")
     view = node.session_view("session_a")
     del node

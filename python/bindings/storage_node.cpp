@@ -282,7 +282,7 @@ void BindStorageNode(nb::module_& python_module) {
   nb::class_<PyStorageNode>(python_module, "StorageNode")
       .def(nb::init<PyInMemoryEngine&, const std::string&, const nb::object&>(), "engine"_a,
            nb::kw_only(), "prefix"_a = "sitos", "zenoh_config_json"_a = nb::none())
-      .def("__enter__", &PyStorageNode::Enter)
+      .def("__enter__", &PyStorageNode::Enter, nb::rv_policy::reference_internal)
       .def("__exit__", &PyStorageNode::Exit, "exc_type"_a.none(), "exc_value"_a.none(),
            "traceback"_a.none())
       .def("create_session", &PyStorageNode::CreateSession, "sid"_a)
