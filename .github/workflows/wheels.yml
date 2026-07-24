@@ -79,14 +79,20 @@ jobs:
             # --no-deps keeps every fetched dependency under the reviewed hash lock.
             env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" -m pip install \
               --no-deps --only-binary=:all: "$wheel"
+            (cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" \
+              -m pytest "$tests_dir/test_import.py" "$tests_dir/test_param_value.py" \
+              "$tests_dir/test_numpy_zero_copy.py" "$tests_dir/test_param_store.py" \
+              "$tests_dir/test_param_cache.py" "$tests_dir/test_param_cache_live.py" -q)
             (cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH SITOS_PYTHON_NODE_LIVE=1 "$venv/bin/python" \
-              -m pytest "$tests_dir" -q)
+              -m pytest "$tests_dir/test_storage_node.py" "$tests_dir/test_storage_node_gil.py" -q)
+            (cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH SITOS_PYTHON_NODE_LIVE=1 "$venv/bin/python" \
+              -m pytest "$tests_dir/test_storage_node_live.py" -q)
             env -u LD_LIBRARY_PATH -u PYTHONPATH -u MYPYPATH python \
               scripts/validate_mypy_consumers.py \
               --python "$venv/bin/python" --tests-dir "$tests_dir"
             docker run --rm -v "$PWD:/project:ro" -w /tmp \
               rockylinux/rockylinux@sha256:e372170ca8630f0f03e9b70fdd0bf4a3ce3426b0de7cdba615f06337389de176 \
-              bash -ceu 'dnf -y install python3.12 python3.12-pip; python3.12 -m venv /tmp/sitos-wheel; /tmp/sitos-wheel/bin/python -m pip install --only-binary=:all: --require-hashes -r /project/.github/wheel-tools-requirements.txt; sha256sum /project/'"${wheel}"'; /tmp/sitos-wheel/bin/python -m pip install --no-deps --only-binary=:all: /project/'"${wheel}"'; cd /tmp; env -u LD_LIBRARY_PATH -u PYTHONPATH SITOS_PYTHON_NODE_LIVE=1 /tmp/sitos-wheel/bin/python -m pytest /project/tests/python -q'
+              bash -ceu 'dnf -y install python3.12 python3.12-pip; python3.12 -m venv /tmp/sitos-wheel; /tmp/sitos-wheel/bin/python -m pip install --only-binary=:all: --require-hashes -r /project/.github/wheel-tools-requirements.txt; sha256sum /project/'"${wheel}"'; /tmp/sitos-wheel/bin/python -m pip install --no-deps --only-binary=:all: /project/'"${wheel}"'; cd /tmp; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python -m pytest /project/tests/python/test_import.py /project/tests/python/test_param_value.py /project/tests/python/test_numpy_zero_copy.py /project/tests/python/test_param_store.py /project/tests/python/test_param_cache.py /project/tests/python/test_param_cache_live.py -q; env -u LD_LIBRARY_PATH -u PYTHONPATH SITOS_PYTHON_NODE_LIVE=1 /tmp/sitos-wheel/bin/python -m pytest /project/tests/python/test_storage_node.py /project/tests/python/test_storage_node_gil.py -q; env -u LD_LIBRARY_PATH -u PYTHONPATH SITOS_PYTHON_NODE_LIVE=1 /tmp/sitos-wheel/bin/python -m pytest /project/tests/python/test_storage_node_live.py -q'
           done
       # actions/upload-artifact v6.0.0
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
@@ -152,8 +158,18 @@ jobs:
             & "$venv\Scripts\python.exe" -m pip install --no-deps --only-binary=:all: $_.FullName
             Push-Location $env:RUNNER_TEMP
             try {
+              & "$venv\Scripts\python.exe" -m pytest `
+                "$tests\test_import.py" `
+                "$tests\test_param_value.py" `
+                "$tests\test_numpy_zero_copy.py" `
+                "$tests\test_param_store.py" `
+                "$tests\test_param_cache.py" `
+                "$tests\test_param_cache_live.py" -q
               $env:SITOS_PYTHON_NODE_LIVE = "1"
-              & "$venv\Scripts\python.exe" -m pytest $tests -q
+              & "$venv\Scripts\python.exe" -m pytest `
+                "$tests\test_storage_node.py" `
+                "$tests\test_storage_node_gil.py" -q
+              & "$venv\Scripts\python.exe" -m pytest "$tests\test_storage_node_live.py" -q
               $env:PYTHONPATH = $null
               $env:MYPYPATH = $null
               python $typingValidator `

@@ -101,9 +101,10 @@ jobs:
             tests/python/test_numpy_zero_copy.py \
             tests/python/test_param_store.py \
             tests/python/test_param_cache.py \
-            tests/python/test_param_cache_live.py \
-            tests/python/test_storage_node.py tests/python/test_storage_node_gil.py \
-            tests/python/test_storage_node_live.py -q
+            tests/python/test_param_cache_live.py -q
+          python3 -m pytest \
+            tests/python/test_storage_node.py tests/python/test_storage_node_gil.py -q
+          python3 -m pytest tests/python/test_storage_node_live.py -q
           rm -f python/sitos/_sitos*.so
 
   lifecycle-sanitizers:
