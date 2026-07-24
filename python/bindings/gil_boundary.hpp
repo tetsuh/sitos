@@ -21,6 +21,7 @@ void ArmGilBoundary(std::string_view boundary);
 bool WaitForGilBoundary(std::string_view boundary, std::chrono::milliseconds timeout);
 void ReleaseGilBoundary(std::string_view boundary);
 void ResetGilBoundary();
+void NoteGilStopQuiescence();
 
 /// Runs one native operation with the Python GIL released.
 template <typename Function>

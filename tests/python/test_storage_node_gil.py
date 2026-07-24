@@ -74,6 +74,43 @@ def test_create_session_releases_gil_at_source_boundary(gil_control) -> None:
     node.stop()
 
 
-def test_stop_releases_gil_at_source_boundary(gil_control) -> None:
-    node = sitos.StorageNode(sitos.InMemoryEngine(), prefix="sitos/python_node_gil_stop")
-    _assert_heartbeat_while_blocked(gil_control, "stop", node.stop)
+@pytest.mark.parametrize("operation", ("stop", "context_exit", "destruction"))
+def test_terminal_cleanup_releases_gil_at_source_boundary(gil_control, operation: str) -> None:
+    node = sitos.StorageNode(sitos.InMemoryEngine(), prefix=f"sitos/python_node_gil_{operation}")
+    if operation == "stop":
+        invoke = node.stop
+    elif operation == "context_exit":
+        invoke = lambda: node.__exit__(None, None, None)
+    else:
+        nodes = [node]
+        del node
+        invoke = nodes.pop
+    _assert_heartbeat_while_blocked(gil_control, "stop", invoke)
+
+
+def test_stop_waits_for_admitted_create_session(gil_control) -> None:
+    node = sitos.StorageNode(sitos.InMemoryEngine(), prefix="sitos/python_node_gil_quiescence")
+    gil_control._gil_test_arm("create_session")
+    created = threading.Event()
+    stopped = threading.Event()
+
+    def create() -> None:
+        node.create_session("session_a")
+        created.set()
+
+    def stop() -> None:
+        node.stop()
+        stopped.set()
+
+    create_thread = threading.Thread(target=create)
+    create_thread.start()
+    assert gil_control._gil_test_wait("create_session", 5000)
+    stop_thread = threading.Thread(target=stop)
+    stop_thread.start()
+    assert gil_control._gil_test_wait("stop_quiescence", 5000)
+    assert not stopped.is_set()
+    gil_control._gil_test_release("create_session")
+    create_thread.join(timeout=5)
+    stop_thread.join(timeout=5)
+    assert created.is_set()
+    assert stopped.is_set()

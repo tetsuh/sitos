@@ -18,6 +18,7 @@ struct BarrierState {
   bool armed = false;
   bool entered = false;
   bool released = false;
+  bool stop_quiescing = false;
   GilBoundary boundary = GilBoundary::Constructor;
 };
 
@@ -59,6 +60,7 @@ void ArmGilBoundary(std::string_view boundary) {
   state.armed = true;
   state.entered = false;
   state.released = false;
+  state.stop_quiescing = false;
   state.boundary = *parsed;
 #else
   static_cast<void>(boundary);
@@ -68,10 +70,13 @@ void ArmGilBoundary(std::string_view boundary) {
 
 bool WaitForGilBoundary(std::string_view boundary, std::chrono::milliseconds timeout) {
 #if SITOS_PYTHON_TEST_SUPPORT
-  const auto parsed = ParseBoundary(boundary);
-  if (!parsed.has_value()) throw std::invalid_argument("unknown GIL boundary");
   auto& state = State();
   std::unique_lock lock(state.mutex);
+  if (boundary == "stop_quiescence") {
+    return state.condition.wait_for(lock, timeout, [&state] { return state.stop_quiescing; });
+  }
+  const auto parsed = ParseBoundary(boundary);
+  if (!parsed.has_value()) throw std::invalid_argument("unknown GIL boundary");
   return state.condition.wait_for(lock, timeout, [&state, parsed] {
     return state.armed && state.boundary == *parsed && state.entered;
   });
@@ -106,6 +111,16 @@ void ResetGilBoundary() {
   state.armed = false;
   state.entered = false;
   state.released = true;
+  state.stop_quiescing = false;
+  state.condition.notify_all();
+#endif
+}
+
+void NoteGilStopQuiescence() {
+#if SITOS_PYTHON_TEST_SUPPORT
+  auto& state = State();
+  std::lock_guard lock(state.mutex);
+  state.stop_quiescing = true;
   state.condition.notify_all();
 #endif
 }

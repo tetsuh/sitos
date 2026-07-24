@@ -166,26 +166,27 @@ class PyStorageNode {
 
   void Stop() noexcept {
     auto state = state_;
-    nb::gil_scoped_release release;
-    std::unique_lock lock(state->mutex);
-    if (state->phase == Phase::Stopped) return;
-    if (state->phase == Phase::Stopping) {
-      state->condition.wait(lock, [&state] { return state->phase == Phase::Stopped; });
-      return;
-    }
-    state->phase = Phase::Stopping;
-    state->condition.wait(lock, [&state] { return state->in_flight == 0; });
-    lock.unlock();
-    WaitAtGilBoundary(GilBoundary::Stop);
-    state->native->Stop();
-    state->native.reset();
-    state->transport.reset();
-    state->engine.reset();
-    {
-      std::lock_guard complete_lock(state->mutex);
-      state->phase = Phase::Stopped;
-    }
-    state->condition.notify_all();
+    InvokeReleased(GilBoundary::Stop, [&state] {
+      std::unique_lock lock(state->mutex);
+      if (state->phase == Phase::Stopped) return;
+      if (state->phase == Phase::Stopping) {
+        state->condition.wait(lock, [&state] { return state->phase == Phase::Stopped; });
+        return;
+      }
+      state->phase = Phase::Stopping;
+      if (state->in_flight != 0) NoteGilStopQuiescence();
+      state->condition.wait(lock, [&state] { return state->in_flight == 0; });
+      lock.unlock();
+      state->native->Stop();
+      state->native.reset();
+      state->transport.reset();
+      state->engine.reset();
+      {
+        std::lock_guard complete_lock(state->mutex);
+        state->phase = Phase::Stopped;
+      }
+      state->condition.notify_all();
+    });
   }
 
  private:
