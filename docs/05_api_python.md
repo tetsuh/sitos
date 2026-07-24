@@ -163,8 +163,10 @@ rows = list(view.items("recon"))
 ```
 
 `items` uses raw-prefix semantics, resolves overlay before snapshot, validates and sorts all values
-before constructing Python objects, and remains usable after session close or node stop. Existing
-views report the documented lifecycle errors on later reads. `put`, `put_batch`, `delete`,
+before constructing Python objects, and returns an owned iterator. Only an iterator already returned
+by `items` remains usable after session close or node stop; subsequent reads through that
+`SessionView`, including later `items` calls, report the documented lifecycle errors. `put`,
+`put_batch`, `delete`,
 callbacks, spans, NumPy, and zero-copy APIs are intentionally not part of SessionView.
 Large binary values use the disk-backed buffers API, not the session overlay or ParamCache.
 

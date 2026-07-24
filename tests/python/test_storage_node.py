@@ -83,8 +83,29 @@ def test_session_view_close_and_recreate_generation_is_not_reused() -> None:
         with pytest.raises(sitos.NotFoundError):
             old_view.contains("missing")
         node.create_session("session_a")
+        new_view = node.session_view("session_a")
+        assert new_view.contains("missing") is False
         with pytest.raises(sitos.NotFoundError):
             old_view.items()
+
+
+def test_storage_node_session_contracts_are_public_and_sorted() -> None:
+    with sitos.StorageNode(sitos.InMemoryEngine(), prefix="sitos/python_node_sessions") as node:
+        node.create_session("session_b")
+        node.create_session("session_a")
+        assert node.active_sessions() == ["session_a", "session_b"]
+        with pytest.raises(sitos.SitosError):
+            node.create_session("session_a")
+        with pytest.raises(sitos.SitosError):
+            node.close_session("unknown")
+
+
+def test_storage_node_recovers_after_malformed_config() -> None:
+    engine = sitos.InMemoryEngine()
+    with pytest.raises(ValueError):
+        sitos.StorageNode(engine, zenoh_config_json="{")
+    node = sitos.StorageNode(engine, prefix="sitos/python_node_config_retry")
+    node.stop()
 
 
 def test_storage_node_stop_is_safe_for_concurrent_callers() -> None:
@@ -119,6 +140,10 @@ def test_session_view_does_not_retain_node_resources() -> None:
 def test_private_gil_test_support_is_not_public() -> None:
     assert not hasattr(sitos, "_gil_test_arm")
     assert not hasattr(sitos, "GILTestControl")
+    hooks = tuple(name for name in dir(sitos._sitos) if name.startswith("_gil_test_"))
+    if hooks:
+        pytest.skip("source-only GIL test support is enabled")
+    assert hooks == ()
 
 
 def test_wheel_validator_rejects_private_gil_support_members() -> None:

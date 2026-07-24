@@ -63,11 +63,12 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as directory:
         cwd = Path(directory)
         python = args.python.absolute()
-        valid = run_mypy(python, tests_dir / "typing_consumer_valid.py", cwd)
-        print(valid.stdout, end="")
-        print(valid.stderr, end="")
-        if valid.returncode != 0:
-            raise RuntimeError("valid installed-wheel typing consumer failed")
+        for name in ("typing_consumer_valid.py", "typing_consumer_node_valid.py"):
+            valid = run_mypy(python, tests_dir / name, cwd)
+            print(valid.stdout, end="")
+            print(valid.stderr, end="")
+            if valid.returncode != 0:
+                raise RuntimeError(f"valid installed-wheel typing consumer failed: {name}")
 
         invalid = run_mypy(python, tests_dir / "typing_consumer_invalid.py", cwd)
         print(invalid.stdout, end="")
