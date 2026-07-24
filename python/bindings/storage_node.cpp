@@ -119,6 +119,11 @@ class PyStorageNode {
 
   ~PyStorageNode() { Stop(); }
 
+  PyStorageNode(const PyStorageNode&) = delete;
+  PyStorageNode& operator=(const PyStorageNode&) = delete;
+  PyStorageNode(PyStorageNode&&) = delete;
+  PyStorageNode& operator=(PyStorageNode&&) = delete;
+
   PyStorageNode& Enter() {
     static_cast<void>(Acquire());
     return *this;
