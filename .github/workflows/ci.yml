@@ -96,6 +96,7 @@ jobs:
           export SITOS_PYTHON_CACHE_FIXTURE="$PWD/build/python/tests/sitos_python_param_cache_fixture"
           export SITOS_PYTHON_FIXTURE="$PWD/build/python/tests/sitos_python_param_store_fixture"
           export SITOS_PYTHON_NODE_LIVE=1
+          export SITOS_PYTHON_TEST_SUPPORT=1
           python3 -m pytest \
             tests/python/test_param_value.py \
             tests/python/test_numpy_zero_copy.py \

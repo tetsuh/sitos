@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import os
 import threading
 
 import pytest
@@ -86,7 +87,7 @@ def test_session_view_close_and_recreate_generation_is_not_reused() -> None:
         new_view = node.session_view("session_a")
         assert new_view.contains("missing") is False
         with pytest.raises(sitos.NotFoundError):
-            old_view.items()
+            list(old_view.items())
 
 
 def test_storage_node_session_contracts_are_public_and_sorted() -> None:
@@ -144,9 +145,8 @@ def test_private_gil_test_support_is_not_public() -> None:
     assert not hasattr(sitos, "_gil_test_arm")
     assert not hasattr(sitos, "GILTestControl")
     hooks = tuple(name for name in dir(sitos._sitos) if name.startswith("_gil_test_"))
-    if hooks:
-        pytest.skip("source-only GIL test support is enabled")
-    assert hooks == ()
+    source_support = os.environ.get("SITOS_PYTHON_TEST_SUPPORT") == "1"
+    assert bool(hooks) is source_support
 
 
 def test_wheel_validator_rejects_private_gil_support_members() -> None:
