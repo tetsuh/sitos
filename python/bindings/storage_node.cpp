@@ -33,9 +33,9 @@ namespace sitos::python::detail {
 
 class PyInMemoryEngine {
  public:
-  PyInMemoryEngine() : engine(std::make_shared<InMemoryEngine>()) {}
+  PyInMemoryEngine() = default;
 
-  std::shared_ptr<InMemoryEngine> engine;
+  std::shared_ptr<InMemoryEngine> engine = std::make_shared<InMemoryEngine>();
 };
 
 class PyStorageNode;
@@ -83,6 +83,10 @@ class PySessionView {
 };
 
 class PyStorageNode {
+ private:
+  struct State;
+  static void StopState(const std::shared_ptr<State>& state) noexcept;
+
  public:
   PyStorageNode(PyInMemoryEngine& engine, const std::string& prefix, const nb::object& json) {
     ClientConfig config;
@@ -166,27 +170,7 @@ class PyStorageNode {
 
   void Stop() noexcept {
     auto state = state_;
-    InvokeReleased(GilBoundary::Stop, [&state] {
-      std::unique_lock lock(state->mutex);
-      if (state->phase == Phase::Stopped) return;
-      if (state->phase == Phase::Stopping) {
-        state->condition.wait(lock, [&state] { return state->phase == Phase::Stopped; });
-        return;
-      }
-      state->phase = Phase::Stopping;
-      if (state->in_flight != 0) NoteGilStopQuiescence();
-      state->condition.wait(lock, [&state] { return state->in_flight == 0; });
-      lock.unlock();
-      state->native->Stop();
-      state->native.reset();
-      state->transport.reset();
-      state->engine.reset();
-      {
-        std::lock_guard complete_lock(state->mutex);
-        state->phase = Phase::Stopped;
-      }
-      state->condition.notify_all();
-    });
+    InvokeReleased(GilBoundary::Stop, [&state] { StopState(state); });
   }
 
  private:
@@ -263,6 +247,29 @@ class PyStorageNode {
 
   std::shared_ptr<State> state_ = std::make_shared<State>();
 };
+
+void PyStorageNode::StopState(const std::shared_ptr<State>& state) noexcept {
+  {
+    std::unique_lock lock(state->mutex);
+    if (state->phase == Phase::Stopped) return;
+    if (state->phase == Phase::Stopping) {
+      state->condition.wait(lock, [&state] { return state->phase == Phase::Stopped; });
+      return;
+    }
+    state->phase = Phase::Stopping;
+    if (state->in_flight != 0) NoteGilStopQuiescence();
+    state->condition.wait(lock, [&state] { return state->in_flight == 0; });
+  }
+  state->native->Stop();
+  state->native.reset();
+  state->transport.reset();
+  state->engine.reset();
+  {
+    std::lock_guard complete_lock(state->mutex);
+    state->phase = Phase::Stopped;
+  }
+  state->condition.notify_all();
+}
 
 }  // namespace sitos::python::detail
 
