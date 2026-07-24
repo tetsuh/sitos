@@ -45,6 +45,8 @@ def test_session_view_typed_get_and_default_precedence() -> None:
         node.create_session("session_a")
         view = node.session_view("session_a")
         assert view.get("missing", type=int, default=None) is None
+        with pytest.raises(TypeError):
+            view.get("missing", None)
         with pytest.raises(sitos.NotFoundError):
             view.get("missing", type=int)
 
@@ -55,6 +57,8 @@ def test_storage_node_lifecycle_precedes_argument_conversion() -> None:
     node.stop()
     with pytest.raises(ValueError, match="StorageNode is stopped"):
         node.create_session(object())
+    with pytest.raises(ValueError, match="StorageNode is stopped"):
+        node.close_session(object())
     with pytest.raises(sitos.DisconnectedError):
         node.session_view(object())
     assert node.active_sessions() == []
@@ -113,5 +117,19 @@ def test_session_view_does_not_retain_node_resources() -> None:
 
 
 def test_private_gil_test_support_is_not_public() -> None:
-    assert not hasattr(sitos, "_gil_test_control")
+    assert not hasattr(sitos, "_gil_test_arm")
     assert not hasattr(sitos, "GILTestControl")
+
+
+def test_wheel_validator_rejects_private_gil_support_members() -> None:
+    from importlib.util import module_from_spec, spec_from_file_location
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[2] / "scripts" / "check_wheel.py"
+    spec = spec_from_file_location("sitos_check_wheel", script)
+    assert spec is not None and spec.loader is not None
+    validator = module_from_spec(spec)
+    spec.loader.exec_module(validator)
+    with pytest.raises(RuntimeError, match="private Python test support"):
+        validator.validate_private_test_support_absent(["sitos/_gil_test_control.pyd"])
+
