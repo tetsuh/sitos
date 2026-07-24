@@ -13,6 +13,8 @@ import sitos
 
 
 _DEADLINE = 20.0
+_DISCONNECTED = object()
+_TYPE_MISMATCH = object()
 
 
 def _node_worker(connection: Connection, prefix: str) -> None:
@@ -38,8 +40,29 @@ def _node_worker(connection: Connection, prefix: str) -> None:
                         value = views[args[0]].get(args[1])
                     except sitos.NotFoundError:
                         connection.send(("MISSING", ""))
+                    except sitos.DisconnectedError:
+                        connection.send(("DISCONNECTED", ""))
                     else:
                         connection.send(("VALUE", value))
+                elif command == "GET_INT":
+                    connection.send(("VALUE", views[args[0]].get(args[1], type=int)))
+                elif command == "GET_STR":
+                    try:
+                        views[args[0]].get(args[1], type=str)
+                    except sitos.TypeMismatchError:
+                        connection.send(("TYPE_MISMATCH", ""))
+                    else:
+                        raise AssertionError("expected a typed SessionView mismatch")
+                elif command == "ITEMS":
+                    connection.send(("VALUE", list(views[args[0]].items(args[1]))))
+                elif command == "ITEMS_AFTER_CLOSE":
+                    rows = views[args[0]].items(args[1])
+                    node.close_session(args[0])
+                    connection.send(("VALUE", list(rows)))
+                elif command == "ITEMS_AFTER_STOP":
+                    rows = views[args[0]].items(args[1])
+                    node.stop()
+                    connection.send(("VALUE", list(rows)))
                 else:
                     raise RuntimeError(f"unknown node command: {command}")
     except BaseException as error:
@@ -90,6 +113,10 @@ def _request(connection: Connection, command: str, *args: object) -> object:
                 return value
             if status == "MISSING":
                 return None
+            if status == "DISCONNECTED":
+                return _DISCONNECTED
+            if status == "TYPE_MISMATCH":
+                return _TYPE_MISMATCH
             if status == "VALUE":
                 return value
             raise RuntimeError(value)
@@ -123,6 +150,7 @@ def test_storage_node_python_process_topology_and_delivery() -> None:
     base_scope = "base"
     session_scope = f"session/{sid}"
     base_key = "base_snapshot_value"
+    ordered_prefix = "ordered/"
     live_key = "live_delivery_value"
     base_value = os.getpid()
     live_value = os.getpid() + 1
@@ -143,11 +171,17 @@ def test_storage_node_python_process_topology_and_delivery() -> None:
         deadline = time.monotonic() + _DEADLINE
         while time.monotonic() < deadline and not base_ready:
             _request(store_parent, "PUT", base_scope, base_key, base_value)
+            _request(store_parent, "PUT", base_scope, f"{ordered_prefix}z", 2)
+            _request(store_parent, "PUT", base_scope, f"{ordered_prefix}a", 1)
             if session_created:
                 _request(node_parent, "CLOSE", sid)
             _request(node_parent, "CREATE", sid)
             session_created = True
-            base_ready = _request(node_parent, "GET", sid, base_key) == base_value
+            base_ready = (
+                _request(node_parent, "GET", sid, base_key) == base_value
+                and _request(node_parent, "ITEMS", sid, ordered_prefix)
+                == [(f"{ordered_prefix}a", 1), (f"{ordered_prefix}z", 2)]
+            )
         assert base_ready, "base snapshot was not observed by SessionView"
 
         cache_ready = False
@@ -172,6 +206,25 @@ def test_storage_node_python_process_topology_and_delivery() -> None:
             cache_seen = cache.get(live_key, default=None) == live_value
         assert node_seen, "SessionView did not observe the live session value"
         assert cache_seen, "ParamCache did not observe the live session value"
+
+        assert _request(node_parent, "GET_INT", sid, base_key) == base_value
+        assert _request(node_parent, "GET_STR", sid, base_key) is _TYPE_MISMATCH
+        assert _request(node_parent, "ITEMS", sid, ordered_prefix) == [
+            (f"{ordered_prefix}a", 1),
+            (f"{ordered_prefix}z", 2),
+        ]
+        assert _request(node_parent, "ITEMS_AFTER_CLOSE", sid, ordered_prefix) == [
+            (f"{ordered_prefix}a", 1),
+            (f"{ordered_prefix}z", 2),
+        ]
+        assert _request(node_parent, "GET", sid, base_key) is None
+
+        _request(node_parent, "CREATE", sid)
+        assert _request(node_parent, "ITEMS_AFTER_STOP", sid, ordered_prefix) == [
+            (f"{ordered_prefix}a", 1),
+            (f"{ordered_prefix}z", 2),
+        ]
+        assert _request(node_parent, "GET", sid, base_key) is _DISCONNECTED
     finally:
         if cache is not None:
             cache.close()
