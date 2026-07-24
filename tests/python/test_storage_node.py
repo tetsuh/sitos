@@ -111,9 +111,11 @@ def test_storage_node_recovers_after_malformed_config() -> None:
 def test_storage_node_stop_is_safe_for_concurrent_callers() -> None:
     node = sitos.StorageNode(sitos.InMemoryEngine(), prefix="sitos/python_node_stop")
     errors: list[BaseException] = []
+    barrier = threading.Barrier(5)
 
     def stop() -> None:
         try:
+            barrier.wait(timeout=5)
             node.stop()
         except BaseException as error:  # pragma: no cover - diagnostic assertion
             errors.append(error)
@@ -121,6 +123,7 @@ def test_storage_node_stop_is_safe_for_concurrent_callers() -> None:
     threads = [threading.Thread(target=stop) for _ in range(4)]
     for thread in threads:
         thread.start()
+    barrier.wait(timeout=5)
     for thread in threads:
         thread.join(timeout=5)
     assert all(not thread.is_alive() for thread in threads)

@@ -112,5 +112,7 @@ def test_stop_waits_for_admitted_create_session(gil_control) -> None:
     gil_control._gil_test_release("create_session")
     create_thread.join(timeout=5)
     stop_thread.join(timeout=5)
+    assert not create_thread.is_alive()
+    assert not stop_thread.is_alive()
     assert created.is_set()
     assert stopped.is_set()
