@@ -42,7 +42,7 @@ class ParamStoreSubscribeIntegrationTest : public ::testing::Test {
   sitos::Subscription control_;
 };
 
-TEST_F(ParamStoreSubscribeIntegrationTest, ReceivesPutDeleteAndStopsAfterClose) {
+TEST_F(ParamStoreSubscribeIntegrationTest, ReceivesPutUnknownBytesDeleteAndStopsAfterClose) {
   std::mutex mutex;
   std::condition_variable condition;
   int control_count = 0;
@@ -69,10 +69,12 @@ TEST_F(ParamStoreSubscribeIntegrationTest, ReceivesPutDeleteAndStopsAfterClose) 
   });
   ASSERT_TRUE(subscription.IsOk());
 
-  const auto key = sitos::BuildKey(config_.prefix, "base", "value");
-  ASSERT_TRUE(key.has_value());
+  const auto value_key = sitos::BuildKey(config_.prefix, "base", "value");
+  const auto opaque_key = sitos::BuildKey(config_.prefix, "base", "opaque");
+  ASSERT_TRUE(value_key.has_value());
+  ASSERT_TRUE(opaque_key.has_value());
   const auto payload = sitos::ParamValue(true).Encode();
-  ASSERT_TRUE(transport_->Put(*key, payload,
+  ASSERT_TRUE(transport_->Put(*value_key, payload,
                               sitos::Encoding{std::string(sitos::Encoding::kSitosV1)}, {})
                   .IsOk());
   {
@@ -80,20 +82,57 @@ TEST_F(ParamStoreSubscribeIntegrationTest, ReceivesPutDeleteAndStopsAfterClose) 
     ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(5),
                                    [&] { return control_count >= 1 && callback_count >= 1; }));
   }
-  ASSERT_EQ(changes.size(), 1U);
-  EXPECT_EQ(changes.front().kind, sitos::ParamChangeKind::kPut);
-  EXPECT_EQ(changes.front().key, "value");
 
-  const int callback_baseline = callback_count;
-  const int control_baseline = control_count;
+  const std::vector<std::byte> opaque_payload{std::byte{0x11}, std::byte{0x22}, std::byte{0x33}};
+  ASSERT_TRUE(transport_->Put(*opaque_key, opaque_payload,
+                              sitos::Encoding{"application/octet-stream"}, {})
+                  .IsOk());
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(5),
+                                   [&] { return control_count >= 2 && callback_count >= 2; }));
+  }
+
+  ASSERT_TRUE(transport_->Delete(*value_key, {}).IsOk());
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(5),
+                                   [&] { return control_count >= 3 && callback_count >= 3; }));
+  }
+
+  std::vector<sitos::ParamChange> observed;
+  int callback_baseline = 0;
+  int control_baseline = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    observed = changes;
+    callback_baseline = callback_count;
+    control_baseline = control_count;
+  }
+  ASSERT_EQ(observed.size(), 3U);
+  EXPECT_EQ(observed[0].kind, sitos::ParamChangeKind::kPut);
+  EXPECT_EQ(observed[0].key, "value");
+  EXPECT_EQ(observed[1].key, "opaque");
+  ASSERT_TRUE(observed[1].value.has_value());
+  const auto opaque_value = observed[1].value->As<std::vector<std::byte>>();
+  ASSERT_TRUE(opaque_value.has_value());
+  EXPECT_EQ(*opaque_value, opaque_payload);
+  EXPECT_EQ(observed[2].kind, sitos::ParamChangeKind::kDelete);
+  EXPECT_EQ(observed[2].key, "value");
+  EXPECT_FALSE(observed[2].value.has_value());
+
   subscription.Value().Close();
-  ASSERT_TRUE(transport_->Delete(*key, {}).IsOk());
+  const auto post_close_key = sitos::BuildKey(config_.prefix, "base", "post-close");
+  ASSERT_TRUE(post_close_key.has_value());
+  ASSERT_TRUE(transport_->Put(*post_close_key, payload,
+                              sitos::Encoding{std::string(sitos::Encoding::kSitosV1)}, {})
+                  .IsOk());
   {
     std::unique_lock<std::mutex> lock(mutex);
     ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(5),
                                    [&] { return control_count > control_baseline; }));
+    EXPECT_EQ(callback_count, callback_baseline);
   }
-  EXPECT_EQ(callback_count, callback_baseline);
 }
 
 TEST_F(ParamStoreSubscribeIntegrationTest, ExpandsCanonicalBatchInOrder) {
@@ -124,10 +163,15 @@ TEST_F(ParamStoreSubscribeIntegrationTest, ExpandsCanonicalBatchInOrder) {
     ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(5),
                                    [&] { return changes.size() >= entries.size(); }));
   }
-  ASSERT_EQ(changes.size(), entries.size());
-  EXPECT_EQ(changes[0].key, "one");
-  EXPECT_EQ(changes[1].key, "two");
-  EXPECT_EQ(changes[2].key, "one");
+  std::vector<sitos::ParamChange> observed;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    observed = changes;
+  }
+  ASSERT_EQ(observed.size(), entries.size());
+  EXPECT_EQ(observed[0].key, "one");
+  EXPECT_EQ(observed[1].key, "two");
+  EXPECT_EQ(observed[2].key, "one");
 }
 
 }  // namespace
