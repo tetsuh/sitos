@@ -102,6 +102,13 @@ if(SITOS_WITH_ZENOH)
 endif()
 gtest_add_tests(TARGET sitos_param_store_test SOURCES unit/param_store_test.cpp)
 
+add_executable(sitos_param_store_subscribe_test unit/param_store_subscribe_test.cpp)
+target_link_libraries(sitos_param_store_subscribe_test PRIVATE GTest::gtest_main sitos::sitos)
+sitos_enable_warnings(sitos_param_store_subscribe_test)
+gtest_add_tests(
+  TARGET sitos_param_store_subscribe_test
+  SOURCES unit/param_store_subscribe_test.cpp)
+
 add_executable(sitos_client_transport_factory_test unit/client_transport_factory_test.cpp)
 target_link_libraries(sitos_client_transport_factory_test PRIVATE GTest::gtest_main sitos::sitos)
 if(SITOS_WITH_ZENOH)
