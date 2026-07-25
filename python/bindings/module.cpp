@@ -2,14 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <nanobind/nanobind.h>
+#include <nanobind/stl/string.h>
 
+#include <chrono>
+#include <cstdint>
 #include <span>
+#include <string>
 
 #define SITOS_NUMPY_IMPORT
 #include "numpy_api.hpp"
 #undef SITOS_NUMPY_IMPORT
 
 #include "client_binding.hpp"
+#include "gil_boundary.hpp"
 #include "param_value_conversion.hpp"
 #if SITOS_PYTHON_WITH_ZENOH
 #include "transport/zenoh_runtime_anchor.hpp"
@@ -17,6 +22,7 @@
 
 void BindParamStore(nanobind::module_& python_module);
 void BindParamCache(nanobind::module_& python_module);
+void BindStorageNode(nanobind::module_& python_module);
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -52,4 +58,26 @@ NB_MODULE(_sitos, python_module) {
   sitos::python::detail::RegisterClientExceptions(python_module);
   BindParamStore(python_module);
   BindParamCache(python_module);
+  BindStorageNode(python_module);
+#if SITOS_PYTHON_TEST_SUPPORT
+  python_module.def("_gil_test_arm",
+                    [](const std::string& boundary) {
+                      sitos::python::detail::ArmGilBoundary(boundary);
+                    },
+                    "boundary"_a);
+  python_module.def(
+      "_gil_test_wait",
+      [](const std::string& boundary, std::int64_t timeout_ms) {
+        nanobind::gil_scoped_release release;
+        return sitos::python::detail::WaitForGilBoundary(
+            boundary, std::chrono::milliseconds(timeout_ms));
+      },
+      "boundary"_a, "timeout_ms"_a);
+  python_module.def("_gil_test_release",
+                    [](const std::string& boundary) {
+                      sitos::python::detail::ReleaseGilBoundary(boundary);
+                    },
+                    "boundary"_a);
+  python_module.def("_gil_test_reset", &sitos::python::detail::ResetGilBoundary);
+#endif
 }

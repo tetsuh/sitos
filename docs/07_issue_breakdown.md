@@ -411,10 +411,12 @@ so it is not a v0.2 blocker. Include it by v0.5.
 * References: [05] §2.3–2.4, ADR-0025
 * Implementation targets: `python/bindings/storage_node.cpp`, `python/bindings/session_view.cpp`,
   `python/sitos/node.py`, `tests/python/test_storage_node.py`
-* Scope: Python bindings for StorageNode, InMemoryEngine, and read-only SessionView; implementation
-  is blocked until a supported pure-Python process/session topology is selected
-* Acceptance criteria: pytest — create_session/close_session, read-only SessionView
-  overlay-over-snapshot resolution, and deterministic cross-component synchronization
+* Scope: Python bindings for opaque InMemoryEngine, immediately started StorageNode, and read-only
+  SessionView; supported integration uses one independently opened Zenoh session per spawned process
+  for the coordinator ParamCache, StorageNode/SessionView worker, and ParamStore writer
+* Acceptance criteria: pytest — lifecycle/quiescence, exact typed reads and eager `items`,
+  overlay-over-snapshot resolution, deterministic source-only GIL heartbeat barriers, and bounded
+  independently observed cross-component synchronization
 * Depends on: #21, #22, #23, #24, #27
 
 ### #26 Python callback / GIL dispatch
@@ -532,7 +534,7 @@ Lane B (zenoh):      #2 → #3 → #9 → #10 → #11 → #12 → #18 → #19/#2
                                              ├→ #14 → #17
                                              │       └→ #106 → #99
                                              └→ #56 → #107/#108
-Lane C (Python):     #22 (any time after #4) → #23/#24/#25 → #27
+Lane C (Python):     #22 → #23 → #24 → #27 → #25
                      Advanced callbacks/engines: #26/#28 (v1.0)
 Lane D (quality):    #29/#30, #31/#32, #33, #34/#35 (as dependencies complete)
 Lane E (roadmap):    #109 first; host applications own HTTP control planes under ADR-0027

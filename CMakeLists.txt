@@ -18,6 +18,7 @@ option(SITOS_BUILD_EXAMPLES "Build examples" OFF)
 option(SITOS_BUILD_BENCHMARKS "Build optional Google Benchmark targets" OFF)
 option(SITOS_ENABLE_TSAN "Enable ThreadSanitizer for supported compilers" OFF)
 option(SITOS_ENABLE_ASAN_UBSAN "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(SITOS_PYTHON_TEST_SUPPORT "Enable source-only Python binding test controls" OFF)
 
 if(SITOS_ENABLE_TSAN AND SITOS_ENABLE_ASAN_UBSAN)
   message(FATAL_ERROR "SITOS_ENABLE_TSAN and SITOS_ENABLE_ASAN_UBSAN are mutually exclusive")
@@ -133,16 +134,19 @@ endif()
 if(SITOS_BUILD_PYTHON)
   nanobind_add_module(_sitos MODULE
     python/bindings/client_binding.cpp
+    python/bindings/gil_boundary.cpp
     python/bindings/module.cpp
     python/bindings/numpy_binding.cpp
     python/bindings/param_cache.cpp
     python/bindings/param_store.cpp
-    python/bindings/param_value_conversion.cpp)
+    python/bindings/param_value_conversion.cpp
+    python/bindings/storage_node.cpp)
   target_link_libraries(_sitos PRIVATE sitos::sitos)
   target_include_directories(_sitos PRIVATE src "${SITOS_NUMPY_INCLUDE_DIR}")
   target_compile_definitions(_sitos PRIVATE
     SITOS_PYTHON_VERSION="${PROJECT_VERSION}"
-    SITOS_PYTHON_WITH_ZENOH=$<BOOL:${SITOS_WITH_ZENOH}>)
+    SITOS_PYTHON_WITH_ZENOH=$<BOOL:${SITOS_WITH_ZENOH}>
+    SITOS_PYTHON_TEST_SUPPORT=$<BOOL:${SITOS_PYTHON_TEST_SUPPORT}>)
   if(MSVC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
     # The local Python 3.14 headers expose debug refcount macros under MSVC
     # Debug builds, while the installed interpreter exports the release ABI.
@@ -159,10 +163,12 @@ if(SITOS_BUILD_PYTHON)
     python/sitos/__init__.py
     python/sitos/cache.py
     python/sitos/store.py
+    python/sitos/node.py
     python/sitos/__init__.pyi
     python/sitos/_sitos.pyi
     python/sitos/cache.pyi
     python/sitos/store.pyi
+    python/sitos/node.pyi
     python/sitos/py.typed
     DESTINATION sitos COMPONENT python)
 endif()
