@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -27,6 +28,10 @@
 #include "sitos/transport.hpp"
 
 namespace sitos {
+
+namespace param_store_test_access {
+class ParamStoreTestAccess;
+}
 
 /// Move-only, thread-safe synchronous client for base/session parameter data.
 class ParamStore {
@@ -73,9 +78,12 @@ class ParamStore {
   Result<void> List(std::string_view scope, std::string_view prefix, const ListSink& sink);
 
  private:
+  friend class param_store_test_access::ParamStoreTestAccess;
+
   ParamStore(std::shared_ptr<Transport> transport, ClientConfig config);
 
   std::shared_ptr<DeclarationControl> declaration_control_;
+  std::function<void()> subscription_native_entry_hook_;
 
   static Result<Scope> ParseAndValidateScope(std::string_view scope);
   static Result<void> ValidateUserKey(std::string_view key);

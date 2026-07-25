@@ -107,6 +107,7 @@ gtest_add_tests(TARGET sitos_param_store_test SOURCES unit/param_store_test.cpp)
 
 add_executable(sitos_param_store_subscribe_test unit/param_store_subscribe_test.cpp)
 target_link_libraries(sitos_param_store_subscribe_test PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_param_store_subscribe_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 sitos_enable_warnings(sitos_param_store_subscribe_test)
 gtest_add_tests(
   TARGET sitos_param_store_subscribe_test

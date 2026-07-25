@@ -4,6 +4,7 @@
 #include "sitos/param_store.hpp"
 
 #include "list_prefix_validation.hpp"
+#include "param_store_test_access.hpp"
 
 #include <condition_variable>
 #include <deque>
@@ -43,14 +44,16 @@ struct SubscriptionState : std::enable_shared_from_this<SubscriptionState> {
   SubscriptionState(std::shared_ptr<Transport> transport_value,
                     std::shared_ptr<ParamStore::DeclarationControl> control_value,
                     std::string prefix_value, Scope scope_value, std::string list_prefix_value,
-                    ParamCallback callback_value, std::shared_ptr<LogSink> log_sink_value)
+                    ParamCallback callback_value, std::shared_ptr<LogSink> log_sink_value,
+                    std::function<void()> native_entry_hook_value)
       : transport(std::move(transport_value)),
         control(std::move(control_value)),
         prefix(std::move(prefix_value)),
         scope(std::move(scope_value)),
         list_prefix(std::move(list_prefix_value)),
         callback(std::move(callback_value)),
-        log_sink(std::move(log_sink_value)) {}
+        log_sink(std::move(log_sink_value)),
+        native_entry_hook(std::move(native_entry_hook_value)) {}
 
   std::shared_ptr<Transport> transport;
   std::shared_ptr<ParamStore::DeclarationControl> control;
@@ -59,6 +62,7 @@ struct SubscriptionState : std::enable_shared_from_this<SubscriptionState> {
   std::string list_prefix;
   ParamCallback callback;
   std::shared_ptr<LogSink> log_sink;
+  std::function<void()> native_entry_hook;
   Subscription native;
 
   std::mutex mutex;
@@ -213,6 +217,7 @@ void OnSample(const std::shared_ptr<SubscriptionState>& state, const TransportSa
     std::shared_ptr<SubscriptionState> state;
     ~NativeGuard() { CompleteNative(state); }
   } guard{state};
+  if (state->native_entry_hook) state->native_entry_hook();
 
   std::vector<std::byte> payload(sample.payload.begin(), sample.payload.end());
   OwnedSample owned{sample.key, std::move(payload), sample.encoding, sample.kind};
@@ -255,9 +260,10 @@ void ActivateAndDrain(const std::shared_ptr<SubscriptionState>& state) {
 }
 
 void FailStaging(const std::shared_ptr<SubscriptionState>& state) {
-  std::lock_guard<std::mutex> lock(state->mutex);
+  std::unique_lock<std::mutex> lock(state->mutex);
   state->accepting = false;
   state->staging = false;
+  state->condition.wait(lock, [&] { return state->native_in_flight == 0; });
   state->queue.clear();
   state->condition.notify_all();
 }
@@ -296,6 +302,14 @@ struct ParamSubscription::Impl {
   std::shared_ptr<SubscriptionState> state;
 };
 
+namespace param_store_test_access {
+
+void ParamStoreTestAccess::SetNativeEntryHook(ParamStore& store, std::function<void()> hook) {
+  store.subscription_native_entry_hook_ = std::move(hook);
+}
+
+}  // namespace param_store_test_access
+
 ParamSubscription::ParamSubscription(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 
 ParamSubscription::ParamSubscription(ParamSubscription&& other) noexcept = default;
@@ -320,12 +334,14 @@ ParamStore::ParamStore(std::shared_ptr<Transport> transport, ClientConfig config
 
 ParamStore::ParamStore(ParamStore&& other) noexcept
     : declaration_control_(std::move(other.declaration_control_)),
+      subscription_native_entry_hook_(std::move(other.subscription_native_entry_hook_)),
       transport_(std::move(other.transport_)),
       config_(std::move(other.config_)) {}
 
 ParamStore& ParamStore::operator=(ParamStore&& other) noexcept {
   if (this == &other) return *this;
   declaration_control_ = std::move(other.declaration_control_);
+  subscription_native_entry_hook_ = std::move(other.subscription_native_entry_hook_);
   transport_ = std::move(other.transport_);
   config_ = std::move(other.config_);
   return *this;
@@ -348,7 +364,7 @@ Result<ParamSubscription> ParamStore::Subscribe(std::string_view scope, std::str
   const std::string selector = config_.prefix + "/" + ScopePath(parsed_scope.Value()) + "/**";
   auto state = std::make_shared<SubscriptionState>(
       transport_, declaration_control_, config_.prefix, parsed_scope.Value(), std::string(prefix),
-      std::move(callback), config_.log_sink);
+      std::move(callback), config_.log_sink, subscription_native_entry_hook_);
 
   std::optional<Result<Subscription>> declared;
   {
