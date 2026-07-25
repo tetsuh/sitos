@@ -22,6 +22,7 @@
 #include "sitos/param_concepts.hpp"
 #include "sitos/key.hpp"
 #include "sitos/param_value.hpp"
+#include "sitos/param_subscription.hpp"
 #include "sitos/result.hpp"
 #include "sitos/transport.hpp"
 
@@ -30,13 +31,18 @@ namespace sitos {
 /// Move-only, thread-safe synchronous client for base/session parameter data.
 class ParamStore {
  public:
+  struct DeclarationControl;
+
   static Result<ParamStore> Open(ClientConfig config = {});
   static Result<ParamStore> Open(std::shared_ptr<Transport> transport, ClientConfig config = {});
 
   ParamStore(const ParamStore&) = delete;
   ParamStore& operator=(const ParamStore&) = delete;
-  ParamStore(ParamStore&&) noexcept = default;
-  ParamStore& operator=(ParamStore&&) noexcept = default;
+  ParamStore(ParamStore&& other) noexcept;
+  ParamStore& operator=(ParamStore&& other) noexcept;
+
+  Result<ParamSubscription> Subscribe(std::string_view scope, std::string_view prefix,
+                                      ParamCallback callback);
 
   Result<void> Put(std::string_view scope, std::string_view key, const ParamValue& value);
 
@@ -67,8 +73,9 @@ class ParamStore {
   Result<void> List(std::string_view scope, std::string_view prefix, const ListSink& sink);
 
  private:
-  ParamStore(std::shared_ptr<Transport> transport, ClientConfig config)
-      : transport_(std::move(transport)), config_(std::move(config)) {}
+  ParamStore(std::shared_ptr<Transport> transport, ClientConfig config);
+
+  std::shared_ptr<DeclarationControl> declaration_control_;
 
   static Result<Scope> ParseAndValidateScope(std::string_view scope);
   static Result<void> ValidateUserKey(std::string_view key);

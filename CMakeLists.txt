@@ -90,6 +90,7 @@ endfunction()
 add_library(sitos STATIC
   src/client_config.cpp
   src/param_store.cpp
+  src/param_subscription.cpp
   src/param_cache.cpp
   src/status.cpp
   src/param_value.cpp

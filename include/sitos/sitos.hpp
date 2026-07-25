@@ -13,6 +13,7 @@
 #include "sitos/param_cache.hpp"
 #include "sitos/param_concepts.hpp"
 #include "sitos/param_store.hpp"
+#include "sitos/param_subscription.hpp"
 #include "sitos/param_value.hpp"
 #include "sitos/result.hpp"
 #include "sitos/session.hpp"
