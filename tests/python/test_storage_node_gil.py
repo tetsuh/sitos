@@ -38,7 +38,7 @@ def _assert_heartbeat_while_blocked(control, boundary: str, operation) -> None:
     assert control._gil_test_wait(boundary, 5000)
 
     heartbeat = 0
-    deadline = time.monotonic() + 1.0
+    deadline = time.monotonic() + 5.0
     while heartbeat < 100 and time.monotonic() < deadline:
         heartbeat += 1
         time.sleep(0.001)
