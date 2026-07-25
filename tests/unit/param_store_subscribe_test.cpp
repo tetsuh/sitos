@@ -138,6 +138,8 @@ class FakeTransport final : public sitos::Transport {
     if (declaration_thread.joinable()) declaration_thread.join();
   }
 
+  void NotifyDeclarationProgress() { declaration_condition.notify_all(); }
+
   sitos::Result<sitos::Subscription> DeclareSubscriber(
       std::string_view keyexpr,
       std::function<void(const sitos::TransportSample&)> callback) override {
@@ -150,7 +152,12 @@ class FakeTransport final : public sitos::Transport {
     }
     if (sample_during_declaration.has_value()) {
       if (async_declaration_sample) {
-        declaration_thread = std::thread([callback, this] { callback(*sample_during_declaration); });
+        declaration_thread = std::thread(
+            [callback, this] { callback(*sample_during_declaration); });
+        if (declaration_callback_admitted) {
+          std::unique_lock<std::mutex> lock(declaration_mutex);
+          declaration_condition.wait(lock, [&] { return declaration_callback_admitted(); });
+        }
       } else {
         callback(*sample_during_declaration);
       }
@@ -174,6 +181,9 @@ class FakeTransport final : public sitos::Transport {
   std::optional<sitos::Result<sitos::Subscription>> declaration_error;
   bool async_declaration_sample = false;
   std::thread declaration_thread;
+  std::function<bool()> declaration_callback_admitted;
+  std::mutex declaration_mutex;
+  std::condition_variable declaration_condition;
 };
 
 sitos::TransportSample MakePutSample() {
@@ -905,6 +915,7 @@ TEST(ParamStoreSubscribeTest, CallbackExceptionsDoNotStopSubscription) {
 TEST(ParamStoreSubscribeTest, DeclarationFailureWaitsForAdmittedCallbackCopy) {
   auto transport = std::make_shared<FakeTransport>();
   transport->sample_during_declaration = MakePutSample();
+  transport->async_declaration_sample = true;
   transport->declaration_error = sitos::Result<sitos::Subscription>::Err(
       sitos::Status::Disconnected, "declaration failed", std::make_error_code(std::errc::io_error));
   auto store_result = sitos::ParamStore::Open(transport);
@@ -913,14 +924,17 @@ TEST(ParamStoreSubscribeTest, DeclarationFailureWaitsForAdmittedCallbackCopy) {
 
   std::mutex mutex;
   std::condition_variable condition;
-  bool hook_entered = false;
+  std::atomic<bool> hook_entered = false;
   bool release_hook = false;
   bool subscribe_finished = false;
   int callback_count = 0;
+  transport->declaration_callback_admitted =
+      [&] { return hook_entered.load(std::memory_order_acquire); };
   sitos::param_store_test_access::ParamStoreTestAccess::SetNativeEntryHook(store, [&] {
+    hook_entered.store(true, std::memory_order_release);
+    transport->NotifyDeclarationProgress();
     {
       std::lock_guard<std::mutex> lock(mutex);
-      hook_entered = true;
     }
     condition.notify_all();
     std::unique_lock<std::mutex> lock(mutex);
@@ -941,8 +955,9 @@ TEST(ParamStoreSubscribeTest, DeclarationFailureWaitsForAdmittedCallbackCopy) {
   bool hook_entered_in_time = false;
   {
     std::unique_lock<std::mutex> lock(mutex);
-    hook_entered_in_time = condition.wait_for(lock, std::chrono::seconds(3),
-                                               [&] { return hook_entered; });
+    hook_entered_in_time = condition.wait_for(lock, std::chrono::seconds(3), [&] {
+      return hook_entered.load(std::memory_order_acquire);
+    });
   }
   EXPECT_TRUE(hook_entered_in_time);
   {
