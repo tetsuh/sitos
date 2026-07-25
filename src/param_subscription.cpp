@@ -7,6 +7,7 @@
 
 #include <condition_variable>
 #include <deque>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -141,7 +142,8 @@ std::optional<std::vector<ParamChange>> Decode(
     return std::vector<ParamChange>{};
   }
 
-  ParamValue value = ParamValue(std::vector<std::byte>(sample.payload.begin(), sample.payload.end()));
+  std::vector<std::byte> raw(sample.payload.begin(), sample.payload.end());
+  ParamValue value = ParamValue(std::move(raw));
   if (sample.encoding.id == Encoding::kSitosV1) {
     auto decoded = ParamValue::Decode(sample.payload);
     if (!decoded.has_value()) {
@@ -212,8 +214,8 @@ void OnSample(const std::shared_ptr<SubscriptionState>& state, const TransportSa
     ~NativeGuard() { CompleteNative(state); }
   } guard{state};
 
-  OwnedSample owned{sample.key, std::vector<std::byte>(sample.payload.begin(), sample.payload.end()),
-                    sample.encoding, sample.kind};
+  std::vector<std::byte> payload(sample.payload.begin(), sample.payload.end());
+  OwnedSample owned{sample.key, std::move(payload), sample.encoding, sample.kind};
   auto item = std::make_shared<WorkItem>(std::move(owned));
   bool become_drainer = false;
   {

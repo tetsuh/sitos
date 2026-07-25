@@ -33,7 +33,8 @@ class FakeTransport final : public sitos::Transport {
     return sitos::Result<void>::Err(std::make_error_code(std::errc::operation_not_supported));
   }
 
-  sitos::Result<void> Get(std::string_view, const QueryResultSink&, std::chrono::milliseconds) override {
+  sitos::Result<void> Get(std::string_view, const QueryResultSink&,
+                          std::chrono::milliseconds) override {
     return sitos::Result<void>::Err(std::make_error_code(std::errc::operation_not_supported));
   }
 
@@ -149,7 +150,8 @@ TEST(ParamStoreSubscribeTest, BatchPreservesOrderAndDuplicates) {
   entries.push_back({"foo/one", sitos::ParamValue(std::int64_t{3})});
   auto payload = sitos::EncodeBatch(entries);
   transport->Emit(sitos::TransportSample{"sitos/base/:batch", payload,
-                                          sitos::Encoding{std::string(sitos::Encoding::kSitosV1Batch)},
+                                          sitos::Encoding{
+                                              std::string(sitos::Encoding::kSitosV1Batch)},
                                           std::nullopt, sitos::TransportSample::Kind::Put});
 
   ASSERT_EQ(changes.size(), 3U);
