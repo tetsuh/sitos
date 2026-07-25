@@ -6,6 +6,9 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -13,6 +16,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -172,6 +176,79 @@ TEST(ParamStoreSubscribeTest, CloseStopsDelivery) {
   subscription.Value().Close();
   transport->EmitPut("sitos/base/value", sitos::ParamValue(false));
   EXPECT_EQ(callback_count, 1);
+}
+
+TEST(ParamStoreSubscribeTest, CloseWaitsForBlockedCallback) {
+  auto transport = std::make_shared<FakeTransport>();
+  auto store_result = sitos::ParamStore::Open(transport);
+  ASSERT_TRUE(store_result.IsOk());
+  auto store = std::move(store_result).Value();
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool entered = false;
+  bool release = false;
+  bool close_started = false;
+  std::atomic<bool> close_returned = false;
+  auto subscription = store.Subscribe("base", "", [&](const sitos::ParamChange&) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      entered = true;
+    }
+    condition.notify_all();
+    std::unique_lock<std::mutex> lock(mutex);
+    condition.wait(lock, [&] { return release; });
+  });
+  ASSERT_TRUE(subscription.IsOk());
+
+  std::thread emitter([&] { transport->EmitPut("sitos/base/value", sitos::ParamValue(true)); });
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(3), [&] { return entered; }));
+  }
+  std::thread closer([&] {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      close_started = true;
+    }
+    condition.notify_all();
+    subscription.Value().Close();
+    close_returned.store(true, std::memory_order_release);
+  });
+  bool closer_started_in_time = false;
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    closer_started_in_time = condition.wait_for(lock, std::chrono::seconds(3),
+                                                [&] { return close_started; });
+  }
+  EXPECT_TRUE(closer_started_in_time);
+  EXPECT_FALSE(close_returned.load(std::memory_order_acquire));
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    release = true;
+  }
+  condition.notify_all();
+  emitter.join();
+  closer.join();
+  EXPECT_TRUE(close_returned.load(std::memory_order_acquire));
+}
+
+TEST(ParamStoreSubscribeTest, ReentrantEmissionIsQueuedAfterCurrentCallback) {
+  auto transport = std::make_shared<FakeTransport>();
+  auto store_result = sitos::ParamStore::Open(transport);
+  ASSERT_TRUE(store_result.IsOk());
+  auto store = std::move(store_result).Value();
+  std::vector<std::string> keys;
+  auto subscription = store.Subscribe("base", "", [&](const sitos::ParamChange& change) {
+    keys.push_back(change.key);
+    if (keys.size() == 1U) {
+      transport->EmitPut("sitos/base/reentrant", sitos::ParamValue(true));
+    }
+  });
+  ASSERT_TRUE(subscription.IsOk());
+  transport->EmitPut("sitos/base/first", sitos::ParamValue(true));
+  ASSERT_EQ(keys.size(), 2U);
+  EXPECT_EQ(keys[0], "first");
+  EXPECT_EQ(keys[1], "reentrant");
 }
 
 TEST(ParamStoreSubscribeTest, ValidationPrecedesDeclaration) {

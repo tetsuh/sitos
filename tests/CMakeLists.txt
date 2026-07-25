@@ -38,12 +38,15 @@ add_sitos_public_header_compile_test(
 add_sitos_public_header_compile_test(
   sitos_list_sink_header_compile_test consumer/list_sink_header_compile.cpp)
 add_sitos_public_header_compile_test(
+  sitos_param_subscription_header_compile_test consumer/param_subscription_header_compile.cpp)
+add_sitos_public_header_compile_test(
   sitos_session_view_header_compile_test consumer/session_view_header_compile.cpp)
 if(SITOS_WITH_ZENOH)
   sitos_copy_zenohc(sitos_param_store_header_compile_test)
   sitos_copy_zenohc(sitos_param_cache_header_compile_test)
   sitos_copy_zenohc(sitos_param_concepts_header_compile_test)
   sitos_copy_zenohc(sitos_list_sink_header_compile_test)
+  sitos_copy_zenohc(sitos_param_subscription_header_compile_test)
   sitos_copy_zenohc(sitos_session_view_header_compile_test)
 endif()
 

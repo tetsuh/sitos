@@ -220,12 +220,15 @@ so it is not a v0.2 blocker. Include it by v0.5.
 
 ### #16 ParamStore: Subscribe
 * Milestone: v0.3
-* References: [04] §2, [01] F13
-* Implementation targets: `include/sitos/param_store.hpp`, `src/param_store.cpp`,
+* References: [04] §2.1, [01] F13, Proposed ADR-0030
+* Implementation targets: `include/sitos/param_subscription.hpp`, `include/sitos/param_store.hpp`,
+  `src/param_subscription.cpp`, `tests/unit/param_store_subscribe_test.cpp`,
   `tests/integration/param_store_subscribe_test.cpp`
-* Scope: Subscribe/Subscription RAII, callback error handling, unsubscribe
-* Acceptance criteria: integration tests — put notification, expanded batch notifications, no notifications after unsubscribe
-* Depends on: #15
+* Scope: delta-only PUT/DELETE subscription, staging, ordered `:batch` expansion, callback exception
+  containment, injected client logging, synchronous callback-quiescent RAII close
+* Acceptance criteria: deterministic fake-Transport tests for validation/staging/ordering/re-entry/
+  Close and one same-session Zenoh integration test for PUT/DELETE/batch/control-subscriber delivery
+* Depends on: #13, #15, #76, #85, #88, #90; ADR-0030 must be Accepted immediately before merge
 
 ### #17 ParamStore: ack/error mapping
 * Milestone: v0.5

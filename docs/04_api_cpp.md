@@ -83,6 +83,7 @@ struct ClientConfig {
     std::string prefix = "sitos";
     std::optional<std::string> zenoh_config_json;
     std::chrono::milliseconds query_timeout{5000};
+    std::shared_ptr<LogSink> log_sink = DefaultLogSink();
 };
 Result<void> ValidateClientConfig(const ClientConfig& config);
 
@@ -137,8 +138,12 @@ class ParamStore {
 
   ParamStore(const ParamStore&) = delete;
   ParamStore& operator=(const ParamStore&) = delete;
-  ParamStore(ParamStore&&) noexcept = default;
-  ParamStore& operator=(ParamStore&&) noexcept = default;
+  ParamStore(ParamStore&&) noexcept;
+  ParamStore& operator=(ParamStore&&) noexcept;
+
+  Result<ParamSubscription> Subscribe(std::string_view scope,
+                                      std::string_view prefix,
+                                      ParamCallback callback);
 
   Result<void> Put(std::string_view scope, std::string_view key,
                    const ParamValue& value);
@@ -168,6 +173,21 @@ sends no message.
 sorts relative keys lexicographically, then invokes the sink on the caller thread. A false
 sink result is normal early termination; sink exceptions propagate unchanged. Raw prefixes
 are used: `foo` matches `foo`, `foo/bar`, and `foobar`, while `foo/` matches descendants only.
+
+### 2.1 ParamStore subscriptions
+
+`Subscribe` accepts only `base` and syntactically valid `session/<sid>` scopes. It is delta-only:
+it performs no initial Get/List. Matching PUT and DELETE samples produce owned relative-key
+`ParamChange` events. Canonical `:batch` PUTs are fully validated before delivery and expand into
+ordered individual PUT events, preserving duplicates. Unknown ordinary encodings are delivered as
+BYTES; malformed known payloads, invalid batches, and unsupported paths are dropped with diagnostics.
+
+`ParamSubscription` is move-only. Declaration-time samples are staged and drained only after
+successful declaration. `Close()` is synchronous, idempotent, and callback-quiescent. It waits for
+native callbacks, queued work, user callbacks, and diagnostics; no callback or LogSink call starts
+after it returns. Callbacks are serialized per subscription but have no thread affinity. They may
+submit nonblocking Put/PutBatch/Delete, but must not call blocking reads or close/destroy the
+subscription from inside its callback. Python callback dispatch is Issue #26.
 
 ## 3. StorageEngine / StorageNode — Storage Node Side
 
@@ -306,6 +326,6 @@ Large binary values belong to the disk-backed `buffers/<sid>/**` scope described
 | `ParamCache` | Attach/Detach and local write sequencing are synchronized internally. Local reads are cache-only; stale/reconnect behavior is future #20 behavior |
 | `StorageNode` | All methods may be called concurrently |
 | `SessionView` | All methods may be called concurrently. List callbacks run on the caller thread outside internal locks; re-entry and Stop from inside a sink are safe |
-| callback | Called from zenoh threads. Blocking is prohibited. From inside a callback, only Get-style APIs on the same object may be called |
+| ParamSubscription callback | Serialized per subscription with no thread affinity. It may submit nonblocking Put/PutBatch/Delete, but blocking reads, Subscribe, subscription lifecycle, and Transport/session lifecycle operations are forbidden |
 
 (END OF DOCUMENT)
