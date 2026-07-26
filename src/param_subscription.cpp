@@ -45,7 +45,9 @@ struct SubscriptionState : std::enable_shared_from_this<SubscriptionState> {
                     std::shared_ptr<ParamStore::DeclarationControl> control_value,
                     std::string prefix_value, Scope scope_value, std::string list_prefix_value,
                     ParamCallback callback_value, std::shared_ptr<LogSink> log_sink_value,
-                    std::function<void()> native_entry_hook_value)
+                    std::function<void()> native_entry_hook_value,
+                    std::function<void()> fail_staging_hook_value,
+                    std::function<void()> close_admission_hook_value)
       : transport(std::move(transport_value)),
         control(std::move(control_value)),
         prefix(std::move(prefix_value)),
@@ -53,7 +55,9 @@ struct SubscriptionState : std::enable_shared_from_this<SubscriptionState> {
         list_prefix(std::move(list_prefix_value)),
         callback(std::move(callback_value)),
         log_sink(std::move(log_sink_value)),
-        native_entry_hook(std::move(native_entry_hook_value)) {}
+        native_entry_hook(std::move(native_entry_hook_value)),
+        fail_staging_hook(std::move(fail_staging_hook_value)),
+        close_admission_hook(std::move(close_admission_hook_value)) {}
 
   std::shared_ptr<Transport> transport;
   std::shared_ptr<ParamStore::DeclarationControl> control;
@@ -63,6 +67,8 @@ struct SubscriptionState : std::enable_shared_from_this<SubscriptionState> {
   ParamCallback callback;
   std::shared_ptr<LogSink> log_sink;
   std::function<void()> native_entry_hook;
+  std::function<void()> fail_staging_hook;
+  std::function<void()> close_admission_hook;
   Subscription native;
 
   std::mutex mutex;
@@ -225,7 +231,6 @@ void OnSample(const std::shared_ptr<SubscriptionState>& state, const TransportSa
   bool become_drainer = false;
   {
     std::lock_guard<std::mutex> lock(state->mutex);
-    if (!state->accepting) return;
     state->queue.push_back(item);
     if (state->staging) return;
     if (!state->drainer) {
@@ -262,9 +267,15 @@ void ActivateAndDrain(const std::shared_ptr<SubscriptionState>& state) {
 void FailStaging(const std::shared_ptr<SubscriptionState>& state) {
   std::unique_lock<std::mutex> lock(state->mutex);
   state->accepting = false;
-  state->staging = false;
+  if (state->fail_staging_hook) {
+    auto hook = state->fail_staging_hook;
+    lock.unlock();
+    hook();
+    lock.lock();
+  }
   state->condition.wait(lock, [&] { return state->native_in_flight == 0; });
   state->queue.clear();
+  state->staging = false;
   state->condition.notify_all();
 }
 
@@ -280,6 +291,7 @@ void CloseState(const std::shared_ptr<SubscriptionState>& state) noexcept {
     state->accepting = false;
     state->staging = false;
   }
+  if (state->close_admission_hook) state->close_admission_hook();
 
   {
     std::lock_guard<std::mutex> declaration_lock(state->control->mutex);
@@ -290,6 +302,15 @@ void CloseState(const std::shared_ptr<SubscriptionState>& state) noexcept {
   state->condition.wait(lock, [&] {
     return state->native_in_flight == 0 && state->queue.empty() && !state->drainer;
   });
+  state->transport.reset();
+  state->control.reset();
+  state->prefix.clear();
+  state->list_prefix.clear();
+  state->callback = {};
+  state->log_sink.reset();
+  state->native_entry_hook = {};
+  state->fail_staging_hook = {};
+  state->close_admission_hook = {};
   state->close_finished = true;
   lock.unlock();
   state->condition.notify_all();
@@ -306,6 +327,13 @@ namespace param_store_test_access {
 
 void ParamStoreTestAccess::SetNativeEntryHook(ParamStore& store, std::function<void()> hook) {
   store.subscription_native_entry_hook_ = std::move(hook);
+}
+
+void ParamStoreTestAccess::SetLifecycleHooks(ParamStore& store,
+                                             std::function<void()> fail_staging_hook,
+                                             std::function<void()> close_admission_hook) {
+  store.subscription_fail_staging_hook_ = std::move(fail_staging_hook);
+  store.subscription_close_admission_hook_ = std::move(close_admission_hook);
 }
 
 }  // namespace param_store_test_access
@@ -335,6 +363,8 @@ ParamStore::ParamStore(std::shared_ptr<Transport> transport, ClientConfig config
 ParamStore::ParamStore(ParamStore&& other) noexcept
     : declaration_control_(std::move(other.declaration_control_)),
       subscription_native_entry_hook_(std::move(other.subscription_native_entry_hook_)),
+      subscription_fail_staging_hook_(std::move(other.subscription_fail_staging_hook_)),
+      subscription_close_admission_hook_(std::move(other.subscription_close_admission_hook_)),
       transport_(std::move(other.transport_)),
       config_(std::move(other.config_)) {}
 
@@ -342,6 +372,8 @@ ParamStore& ParamStore::operator=(ParamStore&& other) noexcept {
   if (this == &other) return *this;
   declaration_control_ = std::move(other.declaration_control_);
   subscription_native_entry_hook_ = std::move(other.subscription_native_entry_hook_);
+  subscription_fail_staging_hook_ = std::move(other.subscription_fail_staging_hook_);
+  subscription_close_admission_hook_ = std::move(other.subscription_close_admission_hook_);
   transport_ = std::move(other.transport_);
   config_ = std::move(other.config_);
   return *this;
@@ -364,7 +396,8 @@ Result<ParamSubscription> ParamStore::Subscribe(std::string_view scope, std::str
   const std::string selector = config_.prefix + "/" + ScopePath(parsed_scope.Value()) + "/**";
   auto state = std::make_shared<SubscriptionState>(
       transport_, declaration_control_, config_.prefix, parsed_scope.Value(), std::string(prefix),
-      std::move(callback), config_.log_sink, subscription_native_entry_hook_);
+      std::move(callback), config_.log_sink, subscription_native_entry_hook_,
+      subscription_fail_staging_hook_, subscription_close_admission_hook_);
 
   std::optional<Result<Subscription>> declared;
   {

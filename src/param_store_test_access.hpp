@@ -13,6 +13,8 @@ namespace sitos::param_store_test_access {
 class ParamStoreTestAccess {
  public:
   static void SetNativeEntryHook(ParamStore& store, std::function<void()> hook);
+  static void SetLifecycleHooks(ParamStore& store, std::function<void()> fail_staging_hook,
+                                std::function<void()> close_admission_hook);
 };
 
 }  // namespace sitos::param_store_test_access
