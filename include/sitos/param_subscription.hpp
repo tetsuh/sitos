@@ -38,6 +38,9 @@ class ParamSubscription {
   ~ParamSubscription();
 
   /// Stops delivery and waits for all admitted work to finish.
+  ///
+  /// Calling Close, destroying this handle, or move-assigning this handle from its own callback
+  /// is forbidden.
   void Close() noexcept;
 
  private:

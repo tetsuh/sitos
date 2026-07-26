@@ -8,6 +8,8 @@
 int main() {
   static_assert(!std::is_default_constructible_v<sitos::ParamSubscription>);
   static_assert(!std::is_copy_constructible_v<sitos::ParamSubscription>);
+  static_assert(!std::is_copy_assignable_v<sitos::ParamSubscription>);
   static_assert(std::is_move_constructible_v<sitos::ParamSubscription>);
+  static_assert(std::is_move_assignable_v<sitos::ParamSubscription>);
   return 0;
 }

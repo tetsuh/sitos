@@ -206,10 +206,13 @@ TEST_F(SubscriptionTest, ResetPreservesEnteredSubscriberCallbackLifetime) {
     reset_started_in_time = callback_condition.wait_for(
         lock, std::chrono::seconds(3), [&] { return reset_started; });
   }
+  bool reset_returned_before_release = false;
   {
     std::lock_guard<std::mutex> lock(callback_mutex);
+    reset_returned_before_release = reset_returned;
     release_callback = true;
   }
+  EXPECT_FALSE(reset_returned_before_release);
   callback_condition.notify_all();
   reset_thread.join();
   publisher.join();

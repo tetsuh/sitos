@@ -168,10 +168,10 @@ class FakeTransport final : public sitos::Transport {
   sitos::Result<sitos::Subscription> DeclareSubscriber(
       std::string_view keyexpr,
       std::function<void(const sitos::TransportSample&)> callback) override {
-    ++declaration_count;
-    declared_keyexpr = std::string(keyexpr);
     {
       std::lock_guard<std::mutex> lock(mutex);
+      ++declaration_count;
+      declared_keyexpr = std::string(keyexpr);
       subscribers.push_back(callback);
       subscriber_selectors.emplace_back(keyexpr);
       subscriber = callback;
@@ -188,7 +188,9 @@ class FakeTransport final : public sitos::Transport {
         callback(*sample_during_declaration);
       }
     }
-    if (declaration_error.has_value()) return std::move(*declaration_error);
+    if (declaration_error.has_value()) {
+      return sitos::Result<sitos::Subscription>::ErrFrom(*declaration_error);
+    }
     return sitos::Result<sitos::Subscription>::Ok(sitos::Subscription{});
   }
 
@@ -196,6 +198,16 @@ class FakeTransport final : public sitos::Transport {
       std::string_view, std::function<void(sitos::TransportQuery&)>) override {
     return sitos::Result<sitos::Queryable>::Err(
         std::make_error_code(std::errc::operation_not_supported));
+  }
+
+  int DeclarationCount() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return declaration_count;
+  }
+
+  std::string DeclaredKeyexpr() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return declared_keyexpr;
   }
 
   std::string declared_keyexpr;
@@ -1386,7 +1398,7 @@ TEST(ParamStoreSubscribeTest, ValidationPrecedesDeclaration) {
   auto moved_and_malformed = store.Subscribe("bad scope", "bad*prefix", {});
   EXPECT_FALSE(moved_and_malformed.IsOk());
   EXPECT_EQ(moved_and_malformed.StatusCode(), sitos::Status::InvalidArgument);
-  EXPECT_EQ(transport->declaration_count, 0);
+  EXPECT_EQ(transport->DeclarationCount(), 0);
 }
 
 TEST(ParamStoreSubscribeTest, CallbackExceptionsDoNotStopSubscription) {
