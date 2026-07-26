@@ -804,8 +804,10 @@ TEST(ParamStoreSubscribeTest, CloseDrainsPendingBatchAndBlocksPostCloseDiagnosti
   std::mutex mutex;
   std::condition_variable condition;
   bool entered = false;
+  bool final_entered = false;
   bool close_admission = false;
-  bool release = false;
+  bool release_first = false;
+  bool release_final = false;
   std::vector<std::string> keys;
   sitos::param_store_test_access::ParamStoreTestAccess::SetLifecycleHooks(store, {}, [&] {
     {
@@ -819,16 +821,23 @@ TEST(ParamStoreSubscribeTest, CloseDrainsPendingBatchAndBlocksPostCloseDiagnosti
       std::lock_guard<std::mutex> lock(mutex);
       keys.push_back(change.key);
       if (keys.size() == 1U) entered = true;
+      if (keys.size() == 3U) final_entered = true;
     }
     bool first = false;
+    bool final = false;
     {
       std::lock_guard<std::mutex> lock(mutex);
       first = keys.size() == 1U;
+      final = keys.size() == 3U;
     }
     condition.notify_all();
     if (first) {
       std::unique_lock<std::mutex> lock(mutex);
-      condition.wait(lock, [&] { return release; });
+      condition.wait(lock, [&] { return release_first; });
+    }
+    if (final) {
+      std::unique_lock<std::mutex> lock(mutex);
+      condition.wait(lock, [&] { return release_final; });
     }
   });
   ASSERT_TRUE(subscription.IsOk());
@@ -862,7 +871,21 @@ TEST(ParamStoreSubscribeTest, CloseDrainsPendingBatchAndBlocksPostCloseDiagnosti
   EXPECT_FALSE(close_returned.load(std::memory_order_acquire));
   {
     std::lock_guard<std::mutex> lock(mutex);
-    release = true;
+    release_first = true;
+  }
+  condition.notify_all();
+  bool final_entered_in_time = false;
+  if (entered_in_time && close_admission_in_time) {
+    std::unique_lock<std::mutex> lock(mutex);
+    final_entered_in_time =
+        condition.wait_for(lock, std::chrono::seconds(3), [&] { return final_entered; });
+  }
+  EXPECT_TRUE(final_entered_in_time);
+  EXPECT_FALSE(close_returned.load(std::memory_order_acquire));
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    release_first = true;
+    release_final = true;
   }
   condition.notify_all();
   emitter.join();
