@@ -18,12 +18,15 @@ Milestone = release boundary).
 | **v0.1** | The zenoh-independent core works. Payload fixtures and InMemoryEngine contract tests are green | #1, #4, #5, #6, #7 |
 | **v0.2** | StorageNode/ParamStore/ParamCache work in C++ through same-process zenoh sessions | #2, #3, #9–#13, #15, #18, #19, #21 |
 | **v0.3** | Basic Python APIs work (InMemory, ParamStore, ParamCache, NumPy read) | #16, #22, #23, #24, #25, #27 |
-| **v0.4** | RocksDB, single-value interop, bench, examples, and session-scoped buffers are in place | #8, #29, #31, #32, #33, #56 |
+| **v0.4** | Cross-platform vcpkg foundation, RocksDB engine, process-isolated raw-Zenoh interop, session-scoped buffers, benchmarks, and C++/Python examples are in place | #122, #8, #29, #31, #32, #33, #56 |
 | **v0.5** | Reliable and durable session-buffer delivery is ready for downstream application integration | #14, #17, #99, #105–#109 |
 | **v1.0** | Public OSS quality, reconnect recovery, advanced Python extensions, raw batch/ack interop, documentation, and publication readiness are complete | #20, #26, #28, #30, #34, #35 |
 
 `ack`-related work (#14, #17) is useful, but implementation is heavy relative to initial value,
 so it is not a v0.2 blocker. Include it by v0.5.
+
+For v0.4, #122 precedes #8; #8 precedes the RocksDB-dependent #31, #33, and #56; #29 precedes
+raw-Zenoh consumers such as #32 and #56.
 
 ---
 

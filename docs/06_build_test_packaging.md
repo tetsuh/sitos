@@ -41,7 +41,6 @@ sitos/
     `find_package(zenohc)`. CI pins versions with FetchContent.
     Also provide a Corrosion (Rust) path for environments that need source builds
   - **RocksDB** (when `SITOS_WITH_ROCKSDB=ON`): `find_package(RocksDB)`.
-    Supplied by vcpkg / apt / brew
   - **gtest / benchmark**: FetchContent
 * Presets: define `dev-windows`, `dev-linux`, `release`, and `python-wheel` in
   `CMakePresets.json`
@@ -128,8 +127,7 @@ the check derives the CMake version and rejects RocksDB, GoogleTest, GoogleMock,
 and build-tree artifacts and requires `_sitos` plus exactly one zenoh-c runtime. The installed wheel
 does not require Rust, CMake, Ninja, or a C++ compiler.
 
-RocksDBEngine is separated as a `sitos-rocksdb` wheel or a future optional extra. Runtime dependency:
-`numpy>=2.0`.
+The standard wheel runtime dependency is `numpy>=2.0`.
 
 ## 5. Test strategy
 
