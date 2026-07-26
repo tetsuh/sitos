@@ -117,6 +117,31 @@ class FakeTransport final : public sitos::Transport {
     for (const auto& callback : callbacks) callback(sample);
   }
 
+  void EmitToSelector(std::string_view fragment, const sitos::TransportSample& sample) {
+    std::function<void(const sitos::TransportSample&)> callback;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      for (std::size_t index = 0; index < subscribers.size(); ++index) {
+        if (subscriber_selectors[index].find(fragment) != std::string::npos) {
+          callback = subscribers[index];
+          break;
+        }
+      }
+    }
+    ASSERT_TRUE(callback);
+    callback(sample);
+  }
+
+  void EmitTo(std::size_t index, const sitos::TransportSample& sample) {
+    std::function<void(const sitos::TransportSample&)> callback;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      ASSERT_LT(index, subscribers.size());
+      callback = subscribers[index];
+    }
+    callback(sample);
+  }
+
   void EmitPut(std::string key, const sitos::ParamValue& value,
                std::string encoding = std::string(sitos::Encoding::kSitosV1)) {
     auto payload = value.Encode();
@@ -148,6 +173,7 @@ class FakeTransport final : public sitos::Transport {
     {
       std::lock_guard<std::mutex> lock(mutex);
       subscribers.push_back(callback);
+      subscriber_selectors.emplace_back(keyexpr);
       subscriber = callback;
     }
     if (sample_during_declaration.has_value()) {
@@ -176,6 +202,7 @@ class FakeTransport final : public sitos::Transport {
   int declaration_count = 0;
   std::function<void(const sitos::TransportSample&)> subscriber;
   std::vector<std::function<void(const sitos::TransportSample&)>> subscribers;
+  std::vector<std::string> subscriber_selectors;
   std::mutex mutex;
   std::optional<sitos::TransportSample> sample_during_declaration;
   std::optional<sitos::Result<sitos::Subscription>> declaration_error;
@@ -291,8 +318,15 @@ TEST(ParamStoreSubscribeTest, CloseWaitsForBlockedCallback) {
   std::condition_variable condition;
   bool entered = false;
   bool release = false;
-  bool close_started = false;
+  bool close_admission_observed = false;
   std::atomic<bool> close_returned = false;
+  sitos::param_store_test_access::ParamStoreTestAccess::SetLifecycleHooks(store, {}, [&] {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      close_admission_observed = true;
+    }
+    condition.notify_all();
+  });
   auto subscription = store.Subscribe("base", "", [&](const sitos::ParamChange&) {
     {
       std::lock_guard<std::mutex> lock(mutex);
@@ -305,26 +339,24 @@ TEST(ParamStoreSubscribeTest, CloseWaitsForBlockedCallback) {
   ASSERT_TRUE(subscription.IsOk());
 
   std::thread emitter([&] { transport->EmitPut("sitos/base/value", sitos::ParamValue(true)); });
+  bool callback_entered_in_time = false;
   {
     std::unique_lock<std::mutex> lock(mutex);
-    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(3), [&] { return entered; }));
+    callback_entered_in_time =
+        condition.wait_for(lock, std::chrono::seconds(3), [&] { return entered; });
   }
   std::thread closer([&] {
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      close_started = true;
-    }
-    condition.notify_all();
     subscription.Value().Close();
     close_returned.store(true, std::memory_order_release);
   });
-  bool closer_started_in_time = false;
+  bool close_admission_in_time = false;
   {
     std::unique_lock<std::mutex> lock(mutex);
-    closer_started_in_time = condition.wait_for(lock, std::chrono::seconds(3),
-                                                [&] { return close_started; });
+    close_admission_in_time = condition.wait_for(
+        lock, std::chrono::seconds(3), [&] { return close_admission_observed; });
   }
-  EXPECT_TRUE(closer_started_in_time);
+  EXPECT_TRUE(callback_entered_in_time);
+  EXPECT_TRUE(close_admission_in_time);
   EXPECT_FALSE(close_returned.load(std::memory_order_acquire));
   {
     std::lock_guard<std::mutex> lock(mutex);
@@ -334,6 +366,86 @@ TEST(ParamStoreSubscribeTest, CloseWaitsForBlockedCallback) {
   emitter.join();
   closer.join();
   EXPECT_TRUE(close_returned.load(std::memory_order_acquire));
+}
+
+TEST(ParamStoreSubscribeTest, CloseDeliversAdmittedSampleBeforeReturning) {
+  auto transport = std::make_shared<FakeTransport>();
+  auto store_result = sitos::ParamStore::Open(transport);
+  ASSERT_TRUE(store_result.IsOk());
+  auto store = std::move(store_result).Value();
+
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool native_entered = false;
+  bool release_native = false;
+  bool close_admission = false;
+  bool callback_delivered = false;
+  bool close_returned = false;
+  sitos::param_store_test_access::ParamStoreTestAccess::SetNativeEntryHook(store, [&] {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      native_entered = true;
+    }
+    condition.notify_all();
+    std::unique_lock<std::mutex> lock(mutex);
+    condition.wait(lock, [&] { return release_native; });
+  });
+  sitos::param_store_test_access::ParamStoreTestAccess::SetLifecycleHooks(store, {}, [&] {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      close_admission = true;
+    }
+    condition.notify_all();
+  });
+  auto subscription = store.Subscribe("base", "", [&](const sitos::ParamChange&) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      callback_delivered = true;
+    }
+    condition.notify_all();
+  });
+  ASSERT_TRUE(subscription.IsOk());
+
+  std::thread emitter([&] {
+    transport->EmitPut("sitos/base/admitted", sitos::ParamValue(true));
+  });
+  bool native_entered_in_time = false;
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    native_entered_in_time =
+        condition.wait_for(lock, std::chrono::seconds(3), [&] { return native_entered; });
+  }
+  std::thread closer([&] {
+    subscription.Value().Close();
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      close_returned = true;
+    }
+    condition.notify_all();
+  });
+  bool close_admission_in_time = false;
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    close_admission_in_time =
+        condition.wait_for(lock, std::chrono::seconds(3), [&] { return close_admission; });
+  }
+  bool returned_before_release = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    returned_before_release = close_returned;
+  }
+  EXPECT_TRUE(native_entered_in_time);
+  EXPECT_TRUE(close_admission_in_time);
+  EXPECT_FALSE(returned_before_release);
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    release_native = true;
+  }
+  condition.notify_all();
+  emitter.join();
+  closer.join();
+  EXPECT_TRUE(callback_delivered);
+  EXPECT_TRUE(close_returned);
 }
 
 TEST(ParamStoreSubscribeTest, ReentrantEmissionIsQueuedAfterCurrentCallback) {
@@ -399,6 +511,16 @@ TEST(ParamStoreSubscribeTest, CloseWaitsForBlockedLogSink) {
   auto store_result = sitos::ParamStore::Open(transport, config);
   ASSERT_TRUE(store_result.IsOk());
   auto store = std::move(store_result).Value();
+  std::mutex close_mutex;
+  std::condition_variable close_condition;
+  bool close_admission = false;
+  sitos::param_store_test_access::ParamStoreTestAccess::SetLifecycleHooks(store, {}, [&] {
+    {
+      std::lock_guard<std::mutex> lock(close_mutex);
+      close_admission = true;
+    }
+    close_condition.notify_all();
+  });
   auto subscription = store.Subscribe("base", "", [](const sitos::ParamChange&) {});
   ASSERT_TRUE(subscription.IsOk());
 
@@ -412,26 +534,18 @@ TEST(ParamStoreSubscribeTest, CloseWaitsForBlockedLogSink) {
     ADD_FAILURE() << "log sink did not enter";
     return;
   }
-  bool close_started = false;
   std::atomic<bool> close_returned = false;
-  std::mutex close_mutex;
-  std::condition_variable close_condition;
   std::thread closer([&] {
-    {
-      std::lock_guard<std::mutex> lock(close_mutex);
-      close_started = true;
-    }
-    close_condition.notify_all();
     subscription.Value().Close();
     close_returned.store(true, std::memory_order_release);
   });
-  bool close_started_in_time = false;
+  bool close_admission_in_time = false;
   {
     std::unique_lock<std::mutex> lock(close_mutex);
-    close_started_in_time = close_condition.wait_for(
-        lock, std::chrono::seconds(3), [&] { return close_started; });
+    close_admission_in_time = close_condition.wait_for(
+        lock, std::chrono::seconds(3), [&] { return close_admission; });
   }
-  EXPECT_TRUE(close_started_in_time);
+  EXPECT_TRUE(close_admission_in_time);
   EXPECT_FALSE(close_returned.load(std::memory_order_acquire));
   sink->Release();
   emitter.join();
@@ -450,13 +564,15 @@ TEST(ParamStoreSubscribeTest, ThrowingLogSinkIsContained) {
   auto store_result = sitos::ParamStore::Open(transport, config);
   ASSERT_TRUE(store_result.IsOk());
   auto store = std::move(store_result).Value();
-  auto subscription = store.Subscribe("base", "", [](const sitos::ParamChange&) {
+  int callbacks = 0;
+  auto subscription = store.Subscribe("base", "", [&](const sitos::ParamChange&) {
+    ++callbacks;
     throw std::runtime_error("callback failed");
   });
   ASSERT_TRUE(subscription.IsOk());
-  EXPECT_NO_THROW(transport->EmitRaw("sitos/base/malformed", {},
-                                     std::string(sitos::Encoding::kSitosV1)));
-  EXPECT_NO_THROW(transport->EmitPut("sitos/base/value", sitos::ParamValue(true)));
+  EXPECT_NO_THROW(transport->EmitPut("sitos/base/first", sitos::ParamValue(true)));
+  EXPECT_NO_THROW(transport->EmitPut("sitos/base/second", sitos::ParamValue(false)));
+  EXPECT_EQ(callbacks, 2);
 }
 
 TEST(ParamStoreSubscribeTest, SubscriptionSurvivesParamStoreMoveAndDestruction) {
@@ -479,19 +595,116 @@ TEST(ParamStoreSubscribeTest, SubscriptionSurvivesParamStoreMoveAndDestruction) 
   subscription->Close();
 }
 
+TEST(ParamStoreSubscribeTest, ParamSubscriptionOwnsAndReleasesDependencies) {
+  auto transport = std::make_shared<FakeTransport>();
+  auto sink = std::make_shared<CaptureSink>();
+  const std::weak_ptr<FakeTransport> weak_transport = transport;
+  const std::weak_ptr<CaptureSink> weak_sink = sink;
+  std::optional<sitos::ParamSubscription> subscription;
+  {
+    sitos::ClientConfig config;
+    config.log_sink = sink;
+    auto store_result = sitos::ParamStore::Open(transport, config);
+    ASSERT_TRUE(store_result.IsOk());
+    auto store = std::move(store_result).Value();
+    auto result = store.Subscribe("base", "", [](const sitos::ParamChange&) {});
+    ASSERT_TRUE(result.IsOk());
+    subscription.emplace(std::move(result).Value());
+  }
+  transport.reset();
+  sink.reset();
+  EXPECT_FALSE(weak_transport.expired());
+  EXPECT_FALSE(weak_sink.expired());
+  auto held_transport = weak_transport.lock();
+  ASSERT_TRUE(held_transport);
+  held_transport->EmitRaw("sitos/base/malformed", {}, std::string(sitos::Encoding::kSitosV1));
+  held_transport.reset();
+  subscription->Close();
+  EXPECT_TRUE(weak_transport.expired());
+  EXPECT_TRUE(weak_sink.expired());
+}
+
 TEST(ParamStoreSubscribeTest, ConcurrentRepeatedCloseIsSafe) {
   auto transport = std::make_shared<FakeTransport>();
   auto store_result = sitos::ParamStore::Open(transport);
   ASSERT_TRUE(store_result.IsOk());
   auto store = std::move(store_result).Value();
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool native_entered = false;
+  bool release_native = false;
+  bool close_admission = false;
+  int started = 0;
+  int returned = 0;
+  sitos::param_store_test_access::ParamStoreTestAccess::SetNativeEntryHook(store, [&] {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      native_entered = true;
+    }
+    condition.notify_all();
+    std::unique_lock<std::mutex> lock(mutex);
+    condition.wait(lock, [&] { return release_native; });
+  });
+  sitos::param_store_test_access::ParamStoreTestAccess::SetLifecycleHooks(store, {}, [&] {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      close_admission = true;
+    }
+    condition.notify_all();
+  });
   auto subscription = store.Subscribe("base", "", [](const sitos::ParamChange&) {});
   ASSERT_TRUE(subscription.IsOk());
+  std::thread emitter([&] {
+    transport->EmitPut("sitos/base/admitted", sitos::ParamValue(true));
+  });
+  bool native_entered_in_time = false;
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    native_entered_in_time =
+        condition.wait_for(lock, std::chrono::seconds(3), [&] { return native_entered; });
+  }
   std::vector<std::thread> closers;
   for (int i = 0; i < 4; ++i) {
-    closers.emplace_back([&] { subscription.Value().Close(); });
+    closers.emplace_back([&] {
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        ++started;
+      }
+      condition.notify_all();
+      subscription.Value().Close();
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        ++returned;
+      }
+      condition.notify_all();
+    });
   }
+  bool all_started_in_time = false;
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    all_started_in_time = condition.wait_for(
+        lock, std::chrono::seconds(3), [&] { return started == 4; });
+  }
+  bool close_admission_in_time = false;
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    close_admission_in_time = condition.wait_for(
+        lock, std::chrono::seconds(3), [&] { return close_admission; });
+  }
+  bool all_blocked = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    all_blocked = returned == 0;
+    release_native = true;
+  }
+  condition.notify_all();
+  emitter.join();
   for (auto& closer : closers) closer.join();
-  subscription.Value().Close();
+  EXPECT_TRUE(native_entered_in_time);
+  EXPECT_TRUE(all_started_in_time);
+  EXPECT_TRUE(close_admission_in_time);
+  EXPECT_TRUE(all_blocked);
+  EXPECT_EQ(returned, 4);
   EXPECT_NO_THROW(transport->EmitPut("sitos/base/after", sitos::ParamValue(true)));
 }
 
@@ -514,8 +727,8 @@ TEST(ParamStoreSubscribeTest, RejectsMalformedBatchInputsWithoutCallbacks) {
       "sitos/base/:batch", malformed,
       sitos::Encoding{std::string(sitos::Encoding::kSitosV1Batch)}, std::nullopt,
       sitos::TransportSample::Kind::Put});
-  auto invalid_entries =
-      std::vector<sitos::BatchEntry>{{"invalid*key", sitos::ParamValue(true)}};
+  auto invalid_entries = std::vector<sitos::BatchEntry>{{"valid-before-invalid", sitos::ParamValue(true)},
+                                                          {"invalid*key", sitos::ParamValue(true)}};
   const auto invalid_batch = sitos::EncodeBatch(invalid_entries);
   transport->Emit(sitos::TransportSample{
       "sitos/base/:batch", invalid_batch,
@@ -662,12 +875,19 @@ TEST(ParamStoreSubscribeTest, ConcurrentNativeCallbacksAreSerialized) {
   constexpr int kEmitters = 4;
   std::mutex mutex;
   std::condition_variable condition;
-  int started = 0;
+  int admitted = 0;
   int finished = 0;
   int callbacks = 0;
   int active = 0;
   int max_active = 0;
   bool release = false;
+  sitos::param_store_test_access::ParamStoreTestAccess::SetNativeEntryHook(store, [&] {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      ++admitted;
+    }
+    condition.notify_all();
+  });
   auto subscription = store.Subscribe("base", "", [&](const sitos::ParamChange&) {
     {
       std::lock_guard<std::mutex> lock(mutex);
@@ -686,11 +906,6 @@ TEST(ParamStoreSubscribeTest, ConcurrentNativeCallbacksAreSerialized) {
   std::vector<std::thread> emitters;
   for (int i = 0; i < kEmitters; ++i) {
     emitters.emplace_back([&, i] {
-      {
-        std::lock_guard<std::mutex> lock(mutex);
-        ++started;
-      }
-      condition.notify_all();
       transport->EmitPut("sitos/base/value" + std::to_string(i), sitos::ParamValue(true));
       {
         std::lock_guard<std::mutex> lock(mutex);
@@ -699,13 +914,13 @@ TEST(ParamStoreSubscribeTest, ConcurrentNativeCallbacksAreSerialized) {
       condition.notify_all();
     });
   }
-  bool all_started_in_time = false;
+  bool all_admitted_in_time = false;
   {
     std::unique_lock<std::mutex> lock(mutex);
-    all_started_in_time = condition.wait_for(lock, std::chrono::seconds(3),
-                                             [&] { return started == kEmitters; });
+    all_admitted_in_time = condition.wait_for(lock, std::chrono::seconds(3),
+                                              [&] { return admitted == kEmitters; });
   }
-  EXPECT_TRUE(all_started_in_time);
+  EXPECT_TRUE(all_admitted_in_time);
   {
     std::lock_guard<std::mutex> lock(mutex);
     EXPECT_EQ(finished, 0);
@@ -727,32 +942,109 @@ TEST(ParamStoreSubscribeTest, ConcurrentSubscribeHasIndependentQueues) {
   ASSERT_TRUE(store_result.IsOk());
   auto store = std::move(store_result).Value();
   std::mutex mutex;
-  std::vector<std::string> first_keys;
-  std::vector<std::string> second_keys;
+  std::condition_variable condition;
+  int ready = 0;
+  bool start = false;
+  bool first_entered = false;
+  bool release_first = false;
+  bool second_delivered = false;
   std::optional<sitos::Result<sitos::ParamSubscription>> first;
   std::optional<sitos::Result<sitos::ParamSubscription>> second;
   std::thread first_thread([&] {
-    first.emplace(store.Subscribe("base", "first", [&](const sitos::ParamChange& change) {
-      std::lock_guard<std::mutex> lock(mutex);
-      first_keys.push_back(change.key);
+    {
+      std::unique_lock<std::mutex> lock(mutex);
+      ++ready;
+      condition.notify_all();
+      condition.wait(lock, [&] { return start; });
+    }
+    first.emplace(store.Subscribe("base", "first", [&](const sitos::ParamChange&) {
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        first_entered = true;
+      }
+      condition.notify_all();
+      std::unique_lock<std::mutex> lock(mutex);
+      condition.wait(lock, [&] { return release_first; });
     }));
   });
   std::thread second_thread([&] {
-    second.emplace(store.Subscribe("base", "second", [&](const sitos::ParamChange& change) {
-      std::lock_guard<std::mutex> lock(mutex);
-      second_keys.push_back(change.key);
+    {
+      std::unique_lock<std::mutex> lock(mutex);
+      ++ready;
+      condition.notify_all();
+      condition.wait(lock, [&] { return start; });
+    }
+    second.emplace(store.Subscribe("base", "second", [&](const sitos::ParamChange&) {
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        second_delivered = true;
+      }
+      condition.notify_all();
     }));
   });
+  bool ready_in_time = false;
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    ready_in_time = condition.wait_for(lock, std::chrono::seconds(3), [&] { return ready == 2; });
+    start = true;
+  }
+  EXPECT_TRUE(ready_in_time);
+  condition.notify_all();
   first_thread.join();
   second_thread.join();
   ASSERT_TRUE(first.has_value());
   ASSERT_TRUE(second.has_value());
   ASSERT_TRUE(first->IsOk());
   ASSERT_TRUE(second->IsOk());
-  transport->EmitPut("sitos/base/first/value", sitos::ParamValue(true));
-  transport->EmitPut("sitos/base/second/value", sitos::ParamValue(true));
-  EXPECT_EQ(first_keys, std::vector<std::string>{"first/value"});
-  EXPECT_EQ(second_keys, std::vector<std::string>{"second/value"});
+
+  auto first_sample = MakePutSample();
+  first_sample.key = "sitos/base/first/value";
+  auto second_sample = MakePutSample();
+  second_sample.key = "sitos/base/second/value";
+  std::size_t first_index = 0;
+  std::thread first_emitter([&] { transport->EmitTo(0, first_sample); });
+  bool first_entered_in_time = false;
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    first_entered_in_time =
+        condition.wait_for(lock, std::chrono::seconds(3), [&] { return first_entered; });
+  }
+  if (!first_entered_in_time) {
+    first_emitter.join();
+    first_index = 1;
+    first_emitter = std::thread([&] { transport->EmitTo(1, first_sample); });
+    {
+      std::unique_lock<std::mutex> lock(mutex);
+      first_entered_in_time =
+          condition.wait_for(lock, std::chrono::seconds(3), [&] { return first_entered; });
+    }
+  }
+  EXPECT_TRUE(first_entered_in_time);
+  if (!first_entered_in_time) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      release_first = true;
+    }
+    condition.notify_all();
+    first_emitter.join();
+    return;
+  }
+  const std::size_t second_index = first_index == 0 ? 1 : 0;
+  std::thread second_emitter([&] { transport->EmitTo(second_index, second_sample); });
+  bool second_delivered_in_time = false;
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    second_delivered_in_time =
+        condition.wait_for(lock, std::chrono::seconds(3), [&] { return second_delivered; });
+  }
+  EXPECT_TRUE(second_delivered_in_time);
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    release_first = true;
+  }
+  condition.notify_all();
+  first_emitter.join();
+  second_emitter.join();
 }
 
 TEST(ParamStoreSubscribeTest, BatchDoesNotInterleaveConcurrentOrdinarySample) {
@@ -763,8 +1055,21 @@ TEST(ParamStoreSubscribeTest, BatchDoesNotInterleaveConcurrentOrdinarySample) {
   std::mutex mutex;
   std::condition_variable condition;
   bool first_entered = false;
+  bool ordinary_admitted = false;
+  bool ordinary_finished = false;
   bool release = false;
+  bool release_ordinary = false;
+  int native_admitted = 0;
   std::vector<std::string> keys;
+  sitos::param_store_test_access::ParamStoreTestAccess::SetNativeEntryHook(store, [&] {
+    std::unique_lock<std::mutex> lock(mutex);
+    ++native_admitted;
+    if (native_admitted == 2) {
+      ordinary_admitted = true;
+      condition.notify_all();
+      condition.wait(lock, [&] { return release_ordinary; });
+    }
+  });
   auto subscription = store.Subscribe("base", "", [&](const sitos::ParamChange& change) {
     bool first = false;
     {
@@ -796,15 +1101,29 @@ TEST(ParamStoreSubscribeTest, BatchDoesNotInterleaveConcurrentOrdinarySample) {
   }
   std::thread ordinary_thread([&] {
     transport->EmitPut("sitos/base/ordinary", sitos::ParamValue(true));
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      ordinary_finished = true;
+    }
+    condition.notify_all();
   });
+  bool ordinary_admitted_in_time = false;
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    ordinary_admitted_in_time = condition.wait_for(
+        lock, std::chrono::seconds(3), [&] { return ordinary_admitted; });
+  }
+  EXPECT_TRUE(entered_in_time);
+  EXPECT_TRUE(ordinary_admitted_in_time);
   {
     std::lock_guard<std::mutex> lock(mutex);
+    EXPECT_FALSE(ordinary_finished);
     release = true;
+    release_ordinary = true;
   }
   condition.notify_all();
   batch_thread.join();
   ordinary_thread.join();
-  EXPECT_TRUE(entered_in_time);
   std::vector<std::string> observed;
   {
     std::lock_guard<std::mutex> lock(mutex);
@@ -889,10 +1208,21 @@ TEST(ParamStoreSubscribeTest, ValidationPrecedesDeclaration) {
   auto malformed = store.Subscribe("base", "bad*prefix", [](const sitos::ParamChange&) {});
   EXPECT_FALSE(malformed.IsOk());
   EXPECT_EQ(malformed.StatusCode(), sitos::Status::InvalidKey);
+  auto empty_and_malformed = store.Subscribe("bad scope", "bad*prefix", {});
+  EXPECT_FALSE(empty_and_malformed.IsOk());
+  EXPECT_EQ(empty_and_malformed.StatusCode(), sitos::Status::InvalidArgument);
+  auto malformed_scope_and_prefix =
+      store.Subscribe("session", "bad*prefix", [](const sitos::ParamChange&) {});
+  EXPECT_FALSE(malformed_scope_and_prefix.IsOk());
+  EXPECT_EQ(malformed_scope_and_prefix.StatusCode(), sitos::Status::InvalidKey);
+  auto snapshot_and_prefix =
+      store.Subscribe("snap/session", "bad*prefix", [](const sitos::ParamChange&) {});
+  EXPECT_FALSE(snapshot_and_prefix.IsOk());
+  EXPECT_EQ(snapshot_and_prefix.StatusCode(), sitos::Status::InvalidArgument);
   auto moved_store = std::move(store);
-  auto moved_from = store.Subscribe("base", "", [](const sitos::ParamChange&) {});
-  EXPECT_FALSE(moved_from.IsOk());
-  EXPECT_EQ(moved_from.StatusCode(), sitos::Status::InvalidArgument);
+  auto moved_and_malformed = store.Subscribe("bad scope", "bad*prefix", {});
+  EXPECT_FALSE(moved_and_malformed.IsOk());
+  EXPECT_EQ(moved_and_malformed.StatusCode(), sitos::Status::InvalidArgument);
   EXPECT_EQ(transport->declaration_count, 0);
 }
 
@@ -925,9 +1255,17 @@ TEST(ParamStoreSubscribeTest, DeclarationFailureWaitsForAdmittedCallbackCopy) {
   std::mutex mutex;
   std::condition_variable condition;
   std::atomic<bool> hook_entered = false;
+  bool fail_staging_entered = false;
   bool release_hook = false;
   bool subscribe_finished = false;
   int callback_count = 0;
+  sitos::param_store_test_access::ParamStoreTestAccess::SetLifecycleHooks(store, [&] {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      fail_staging_entered = true;
+    }
+    condition.notify_all();
+  }, {});
   transport->declaration_callback_admitted =
       [&] { return hook_entered.load(std::memory_order_acquire); };
   sitos::param_store_test_access::ParamStoreTestAccess::SetNativeEntryHook(store, [&] {
@@ -959,7 +1297,14 @@ TEST(ParamStoreSubscribeTest, DeclarationFailureWaitsForAdmittedCallbackCopy) {
       return hook_entered.load(std::memory_order_acquire);
     });
   }
+  bool fail_staging_in_time = false;
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    fail_staging_in_time = condition.wait_for(
+        lock, std::chrono::seconds(3), [&] { return fail_staging_entered; });
+  }
   EXPECT_TRUE(hook_entered_in_time);
+  EXPECT_TRUE(fail_staging_in_time);
   {
     std::lock_guard<std::mutex> lock(mutex);
     EXPECT_FALSE(subscribe_finished);
