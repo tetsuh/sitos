@@ -110,6 +110,7 @@ jobs:
 
   lifecycle-sanitizers:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
     strategy:
@@ -143,7 +144,7 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1
         run: >-
           ctest --test-dir build/sanitizer-${{ matrix.name }}
-          --output-on-failure -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|TransportGetCompletionTest|ParamStoreSubscribeTest|ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture'
+          --output-on-failure --timeout 60 -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|TransportGetCompletionTest|ParamStoreSubscribeTest|ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture'
 
   build-windows:
     runs-on: windows-latest
