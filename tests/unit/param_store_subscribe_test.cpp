@@ -727,8 +727,9 @@ TEST(ParamStoreSubscribeTest, RejectsMalformedBatchInputsWithoutCallbacks) {
       "sitos/base/:batch", malformed,
       sitos::Encoding{std::string(sitos::Encoding::kSitosV1Batch)}, std::nullopt,
       sitos::TransportSample::Kind::Put});
-  auto invalid_entries = std::vector<sitos::BatchEntry>{{"valid-before-invalid", sitos::ParamValue(true)},
-                                                          {"invalid*key", sitos::ParamValue(true)}};
+  auto invalid_entries = std::vector<sitos::BatchEntry>{
+      {"valid-before-invalid", sitos::ParamValue(true)},
+      {"invalid*key", sitos::ParamValue(true)}};
   const auto invalid_batch = sitos::EncodeBatch(invalid_entries);
   transport->Emit(sitos::TransportSample{
       "sitos/base/:batch", invalid_batch,
