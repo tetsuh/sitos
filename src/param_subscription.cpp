@@ -108,6 +108,69 @@ void Error(const std::shared_ptr<SubscriptionState>& state, std::string_view mes
   EmitLog(state->log_sink, LogLevel::kError, "ParamSubscription", message);
 }
 
+std::vector<ParamChange> DecodeDelete(const std::shared_ptr<SubscriptionState>& state,
+                                      ParsedKey parsed) {
+  if (parsed.is_batch) {
+    Warn(state, "batch DELETE is unsupported");
+    return {};
+  }
+  if (!state->list_prefix.empty() && !parsed.relative_key.starts_with(state->list_prefix)) {
+    return {};
+  }
+  return {ParamChange{ParamChangeKind::kDelete, std::move(parsed.relative_key), std::nullopt}};
+}
+
+std::vector<ParamChange> DecodeBatchSample(const std::shared_ptr<SubscriptionState>& state,
+                                           const OwnedSample& sample) {
+  if (sample.encoding.id != Encoding::kSitosV1Batch) {
+    Warn(state, "batch sample has an unsupported encoding");
+    return {};
+  }
+  auto entries = DecodeBatch(sample.payload);
+  if (!entries.has_value()) {
+    Warn(state, "malformed batch sample");
+    return {};
+  }
+  std::vector<ParamChange> changes;
+  changes.reserve(entries->size());
+  for (auto& entry : *entries) {
+    if (!IsValidKey(entry.key)) {
+      Warn(state, "batch sample contains an invalid key");
+      return {};
+    }
+    if (state->list_prefix.empty() || entry.key.starts_with(state->list_prefix)) {
+      changes.push_back(ParamChange{ParamChangeKind::kPut, std::move(entry.key),
+                                    std::move(entry.value)});
+    }
+  }
+  return changes;
+}
+
+std::vector<ParamChange> DecodeOrdinary(const std::shared_ptr<SubscriptionState>& state,
+                                        const OwnedSample& sample, ParsedKey parsed) {
+  if (!state->list_prefix.empty() && !parsed.relative_key.starts_with(state->list_prefix)) {
+    return {};
+  }
+  if (sample.encoding.id == Encoding::kSitosV1Batch) {
+    Warn(state, "ordinary sample has batch encoding");
+    return {};
+  }
+
+  if (sample.encoding.id == Encoding::kSitosV1) {
+    auto decoded = ParamValue::Decode(sample.payload);
+    if (!decoded.has_value()) {
+      Warn(state, "malformed sitos.v1 sample");
+      return {};
+    }
+    return {ParamChange{ParamChangeKind::kPut, std::move(parsed.relative_key),
+                        std::move(*decoded)}};
+  }
+  std::vector<std::byte> raw(sample.payload.begin(), sample.payload.end());
+  auto value = ParamValue(std::move(raw));
+  Warn(state, "unknown sample encoding; wrapped as bytes");
+  return {ParamChange{ParamChangeKind::kPut, std::move(parsed.relative_key), std::move(value)}};
+}
+
 std::optional<std::vector<ParamChange>> Decode(
     const std::shared_ptr<SubscriptionState>& state, const OwnedSample& sample) {
   auto parsed = ParseKey(state->prefix, sample.key);
@@ -116,81 +179,32 @@ std::optional<std::vector<ParamChange>> Decode(
     return std::vector<ParamChange>{};
   }
   if (!MatchesScope(*parsed, state->scope)) return std::nullopt;
-
   if (sample.kind == TransportSample::Kind::Delete) {
-    if (parsed->is_batch) {
-      Warn(state, "batch DELETE is unsupported");
-      return std::vector<ParamChange>{};
-    }
-    if (!state->list_prefix.empty() && !parsed->relative_key.starts_with(state->list_prefix)) {
-      return std::vector<ParamChange>{};
-    }
-    return std::vector<ParamChange>{
-        ParamChange{ParamChangeKind::kDelete, std::move(parsed->relative_key), std::nullopt}};
+    return DecodeDelete(state, std::move(*parsed));
   }
-
-  if (parsed->is_batch) {
-    if (sample.encoding.id != Encoding::kSitosV1Batch) {
-      Warn(state, "batch sample has an unsupported encoding");
-      return std::vector<ParamChange>{};
-    }
-    auto entries = DecodeBatch(sample.payload);
-    if (!entries.has_value()) {
-      Warn(state, "malformed batch sample");
-      return std::vector<ParamChange>{};
-    }
-    std::vector<ParamChange> changes;
-    changes.reserve(entries->size());
-    for (auto& entry : *entries) {
-      if (!IsValidKey(entry.key)) {
-        Warn(state, "batch sample contains an invalid key");
-        return std::vector<ParamChange>{};
-      }
-      if (state->list_prefix.empty() || entry.key.starts_with(state->list_prefix)) {
-        changes.push_back(ParamChange{ParamChangeKind::kPut, std::move(entry.key),
-                                      std::move(entry.value)});
-      }
-    }
-    return changes;
-  }
-
-  if (!state->list_prefix.empty() && !parsed->relative_key.starts_with(state->list_prefix)) {
-    return std::vector<ParamChange>{};
-  }
-  if (sample.encoding.id == Encoding::kSitosV1Batch) {
-    Warn(state, "ordinary sample has batch encoding");
-    return std::vector<ParamChange>{};
-  }
-
-  std::vector<std::byte> raw(sample.payload.begin(), sample.payload.end());
-  ParamValue value = ParamValue(std::move(raw));
-  if (sample.encoding.id == Encoding::kSitosV1) {
-    auto decoded = ParamValue::Decode(sample.payload);
-    if (!decoded.has_value()) {
-      Warn(state, "malformed sitos.v1 sample");
-      return std::vector<ParamChange>{};
-    }
-    value = std::move(*decoded);
-  } else {
-    Warn(state, "unknown sample encoding; wrapped as bytes");
-  }
-  return std::vector<ParamChange>{
-      ParamChange{ParamChangeKind::kPut, std::move(parsed->relative_key), std::move(value)}};
+  if (parsed->is_batch) return DecodeBatchSample(state, sample);
+  return DecodeOrdinary(state, sample, std::move(*parsed));
 }
+
+struct CompletionGuard {
+  explicit CompletionGuard(const std::shared_ptr<WorkItem>& item_value) : item(item_value) {}
+  CompletionGuard(const CompletionGuard&) = delete;
+  CompletionGuard& operator=(const CompletionGuard&) = delete;
+  CompletionGuard(CompletionGuard&&) = delete;
+  CompletionGuard& operator=(CompletionGuard&&) = delete;
+  ~CompletionGuard() {
+    {
+      std::lock_guard<std::mutex> lock(item->mutex);
+      item->complete = true;
+    }
+    item->condition.notify_all();
+  }
+  std::shared_ptr<WorkItem> item;
+};
 
 void Deliver(const std::shared_ptr<SubscriptionState>& state,
              const std::shared_ptr<WorkItem>& item) {
-  struct CompletionGuard {
-    explicit CompletionGuard(const std::shared_ptr<WorkItem>& item_value) : item(item_value) {}
-    ~CompletionGuard() {
-      {
-        std::lock_guard<std::mutex> lock(item->mutex);
-        item->complete = true;
-      }
-      item->condition.notify_all();
-    }
-    std::shared_ptr<WorkItem> item;
-  } completion(item);
+  CompletionGuard completion(item);
 
   std::optional<std::vector<ParamChange>> changes;
   try {
@@ -252,9 +266,15 @@ void OnSample(const std::shared_ptr<SubscriptionState>& state, const TransportSa
     ++state->native_in_flight;
   }
   struct NativeGuard {
-    std::shared_ptr<SubscriptionState> state;
+    NativeGuard(const std::shared_ptr<SubscriptionState>& state_value) : state(state_value) {}
+    NativeGuard(const NativeGuard&) = delete;
+    NativeGuard& operator=(const NativeGuard&) = delete;
+    NativeGuard(NativeGuard&&) = delete;
+    NativeGuard& operator=(NativeGuard&&) = delete;
     ~NativeGuard() { CompleteNative(state); }
-  } guard{state};
+    std::shared_ptr<SubscriptionState> state;
+  };
+  NativeGuard guard(state);
   if (state->native_entry_hook) state->native_entry_hook();
 
   std::vector<std::byte> payload(sample.payload.begin(), sample.payload.end());
@@ -278,7 +298,7 @@ void OnSample(const std::shared_ptr<SubscriptionState>& state, const TransportSa
     return;
   }
   std::unique_lock<std::mutex> item_lock(item->mutex);
-  item->condition.wait(item_lock, [&] { return item->complete; });
+  item->condition.wait(item_lock, [&item] { return item->complete; });
 }
 
 void ActivateAndDrain(const std::shared_ptr<SubscriptionState>& state) {
@@ -305,7 +325,7 @@ void FailStaging(const std::shared_ptr<SubscriptionState>& state) {
     hook();
     lock.lock();
   }
-  state->condition.wait(lock, [&] { return state->native_in_flight == 0; });
+  state->condition.wait(lock, [&state] { return state->native_in_flight == 0; });
   state->queue.clear();
   state->staging = false;
   state->condition.notify_all();
@@ -316,7 +336,7 @@ void CloseState(const std::shared_ptr<SubscriptionState>& state) noexcept {
     std::unique_lock<std::mutex> lock(state->mutex);
     if (state->close_finished) return;
     if (state->close_started) {
-      state->condition.wait(lock, [&] { return state->close_finished; });
+      state->condition.wait(lock, [&state] { return state->close_finished; });
       return;
     }
     state->close_started = true;
@@ -332,7 +352,7 @@ void CloseState(const std::shared_ptr<SubscriptionState>& state) noexcept {
   }
 
   std::unique_lock<std::mutex> lock(state->mutex);
-  state->condition.wait(lock, [&] {
+  state->condition.wait(lock, [&state] {
     return state->native_in_flight == 0 && state->queue.empty() && !state->drainer;
   });
   state->transport.reset();
@@ -435,8 +455,9 @@ Result<ParamSubscription> ParamStore::Subscribe(std::string_view scope, std::str
   if (parsed_scope.Value().kind == ScopeKind::Snap) {
     return Result<ParamSubscription>::Err(Status::InvalidArgument, "snapshot scope is read-only");
   }
-  auto prefix_result = ValidateListPrefix(prefix);
-  if (!prefix_result.IsOk()) return Result<ParamSubscription>::ErrFrom(prefix_result);
+  if (auto prefix_result = ValidateListPrefix(prefix); !prefix_result.IsOk()) {
+    return Result<ParamSubscription>::ErrFrom(prefix_result);
+  }
 
   const std::string selector = config_.prefix + "/" + ScopePath(parsed_scope.Value()) + "/**";
   auto state = std::make_shared<SubscriptionState>(
