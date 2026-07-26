@@ -159,11 +159,20 @@ class FakeTransport final : public sitos::Transport {
                                 sitos::TransportSample::Kind::Delete});
   }
 
-  ~FakeTransport() {
+  ~FakeTransport() { JoinDeclarationThread(); }
+
+  void JoinDeclarationThread() {
     if (declaration_thread.joinable()) declaration_thread.join();
   }
 
-  void NotifyDeclarationProgress() { declaration_condition.notify_all(); }
+  void MarkDeclarationCallbackAdmitted() {
+    // The predicate update must use the waiter's mutex to prevent a lost notification.
+    {
+      std::lock_guard<std::mutex> lock(declaration_mutex);
+      declaration_callback_admitted = true;
+    }
+    declaration_condition.notify_all();
+  }
 
   sitos::Result<sitos::Subscription> DeclareSubscriber(
       std::string_view keyexpr,
@@ -178,11 +187,15 @@ class FakeTransport final : public sitos::Transport {
     }
     if (sample_during_declaration.has_value()) {
       if (async_declaration_sample) {
+        if (wait_for_declaration_callback_admission) {
+          std::lock_guard<std::mutex> lock(declaration_mutex);
+          declaration_callback_admitted = false;
+        }
         declaration_thread = std::thread(
             [callback, this] { callback(*sample_during_declaration); });
-        if (declaration_callback_admitted) {
+        if (wait_for_declaration_callback_admission) {
           std::unique_lock<std::mutex> lock(declaration_mutex);
-          declaration_condition.wait(lock, [&] { return declaration_callback_admitted(); });
+          declaration_condition.wait(lock, [&] { return declaration_callback_admitted; });
         }
       } else {
         callback(*sample_during_declaration);
@@ -220,7 +233,8 @@ class FakeTransport final : public sitos::Transport {
   std::optional<sitos::Result<sitos::Subscription>> declaration_error;
   bool async_declaration_sample = false;
   std::thread declaration_thread;
-  std::function<bool()> declaration_callback_admitted;
+  bool wait_for_declaration_callback_admission = false;
+  bool declaration_callback_admitted = false;
   std::mutex declaration_mutex;
   std::condition_variable declaration_condition;
 };
@@ -1441,11 +1455,10 @@ TEST(ParamStoreSubscribeTest, DeclarationFailureWaitsForAdmittedCallbackCopy) {
     }
     condition.notify_all();
   }, {}, {});
-  transport->declaration_callback_admitted =
-      [&] { return hook_entered.load(std::memory_order_acquire); };
+  transport->wait_for_declaration_callback_admission = true;
   sitos::param_store_test_access::ParamStoreTestAccess::SetNativeEntryHook(store, [&] {
     hook_entered.store(true, std::memory_order_release);
-    transport->NotifyDeclarationProgress();
+    transport->MarkDeclarationCallbackAdmitted();
     {
       std::lock_guard<std::mutex> lock(mutex);
     }
@@ -1487,6 +1500,7 @@ TEST(ParamStoreSubscribeTest, DeclarationFailureWaitsForAdmittedCallbackCopy) {
   }
   condition.notify_all();
   subscriber_thread.join();
+  transport->JoinDeclarationThread();
 
   ASSERT_TRUE(result.has_value());
   EXPECT_FALSE(result->IsOk());
