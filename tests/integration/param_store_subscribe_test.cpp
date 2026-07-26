@@ -105,12 +105,10 @@ TEST_F(ParamStoreSubscribeIntegrationTest, ReceivesPutUnknownBytesDeleteAndStops
 
   std::vector<sitos::ParamChange> observed;
   int callback_baseline = 0;
-  int control_baseline = 0;
   {
     std::lock_guard<std::mutex> lock(mutex);
     observed = changes;
     callback_baseline = callback_count;
-    control_baseline = control_count;
   }
   ASSERT_EQ(observed.size(), 3U);
   EXPECT_EQ(observed[0].kind, sitos::ParamChangeKind::kPut);
