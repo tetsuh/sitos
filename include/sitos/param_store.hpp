@@ -8,7 +8,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -43,8 +42,8 @@ class ParamStore {
 
   ParamStore(const ParamStore&) = delete;
   ParamStore& operator=(const ParamStore&) = delete;
-  ParamStore(ParamStore&& other) noexcept;
-  ParamStore& operator=(ParamStore&& other) noexcept;
+  ParamStore(ParamStore&& other) noexcept = default;
+  ParamStore& operator=(ParamStore&& other) noexcept = default;
 
   Result<ParamSubscription> Subscribe(std::string_view scope, std::string_view prefix,
                                       ParamCallback callback);
@@ -83,11 +82,6 @@ class ParamStore {
   ParamStore(std::shared_ptr<Transport> transport, ClientConfig config);
 
   std::shared_ptr<DeclarationControl> declaration_control_;
-  std::function<void()> subscription_native_entry_hook_;
-  std::function<void()> subscription_decode_hook_;
-  std::function<void()> subscription_fail_staging_hook_;
-  std::function<void()> subscription_close_admission_hook_;
-  std::function<void()> subscription_close_reset_hook_;
 
   static Result<Scope> ParseAndValidateScope(std::string_view scope);
   static Result<void> ValidateUserKey(std::string_view key);

@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <deque>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -18,8 +19,21 @@
 
 namespace sitos {
 
+namespace {
+
+struct SubscriptionTestHooks {
+  std::function<void()> native_entry;
+  std::function<void()> decode;
+  std::function<void()> fail_staging;
+  std::function<void()> close_admission;
+  std::function<void()> close_reset;
+};
+
+}  // namespace
+
 struct ParamStore::DeclarationControl {
   std::mutex mutex;
+  std::shared_ptr<const SubscriptionTestHooks> hooks;
 };
 
 namespace {
@@ -45,11 +59,7 @@ struct SubscriptionState : std::enable_shared_from_this<SubscriptionState> {
                     std::shared_ptr<ParamStore::DeclarationControl> control_value,
                     std::string prefix_value, Scope scope_value, std::string list_prefix_value,
                     ParamCallback callback_value, std::shared_ptr<LogSink> log_sink_value,
-                    std::function<void()> native_entry_hook_value,
-                    std::function<void()> decode_hook_value,
-                    std::function<void()> fail_staging_hook_value,
-                    std::function<void()> close_admission_hook_value,
-                    std::function<void()> close_reset_hook_value)
+                    std::shared_ptr<const SubscriptionTestHooks> hooks_value)
       : transport(std::move(transport_value)),
         control(std::move(control_value)),
         prefix(std::move(prefix_value)),
@@ -57,11 +67,7 @@ struct SubscriptionState : std::enable_shared_from_this<SubscriptionState> {
         list_prefix(std::move(list_prefix_value)),
         callback(std::move(callback_value)),
         log_sink(std::move(log_sink_value)),
-        native_entry_hook(std::move(native_entry_hook_value)),
-        decode_hook(std::move(decode_hook_value)),
-        fail_staging_hook(std::move(fail_staging_hook_value)),
-        close_admission_hook(std::move(close_admission_hook_value)),
-        close_reset_hook(std::move(close_reset_hook_value)) {}
+        hooks(std::move(hooks_value)) {}
 
   std::shared_ptr<Transport> transport;
   std::shared_ptr<ParamStore::DeclarationControl> control;
@@ -70,11 +76,7 @@ struct SubscriptionState : std::enable_shared_from_this<SubscriptionState> {
   std::string list_prefix;
   ParamCallback callback;
   std::shared_ptr<LogSink> log_sink;
-  std::function<void()> native_entry_hook;
-  std::function<void()> decode_hook;
-  std::function<void()> fail_staging_hook;
-  std::function<void()> close_admission_hook;
-  std::function<void()> close_reset_hook;
+  std::shared_ptr<const SubscriptionTestHooks> hooks;
   Subscription native;
 
   std::mutex mutex;
@@ -106,6 +108,33 @@ void Warn(const std::shared_ptr<SubscriptionState>& state, std::string_view mess
 
 void Error(const std::shared_ptr<SubscriptionState>& state, std::string_view message) {
   EmitLog(state->log_sink, LogLevel::kError, "ParamSubscription", message);
+}
+
+template <typename ErrorHandler>
+bool InvokeTestHook(const std::shared_ptr<const SubscriptionTestHooks>& hooks,
+                    std::function<void()> SubscriptionTestHooks::*member,
+                    ErrorHandler&& on_error) noexcept {
+  if (!hooks || !(hooks.get()->*member)) return true;
+  try {
+    (hooks.get()->*member)();
+    return true;
+  } catch (const std::exception& exception) {
+    try {
+      on_error(exception.what());
+    } catch (...) {
+    }
+  } catch (...) {
+    try {
+      on_error("ParamSubscription internal test hook failed");
+    } catch (...) {
+    }
+  }
+  return false;
+}
+
+bool InvokeTestHook(const std::shared_ptr<const SubscriptionTestHooks>& hooks,
+                    std::function<void()> SubscriptionTestHooks::*member) noexcept {
+  return InvokeTestHook(hooks, member, [](std::string_view) {});
 }
 
 std::vector<ParamChange> DecodeDelete(const std::shared_ptr<SubscriptionState>& state,
@@ -208,7 +237,10 @@ void Deliver(const std::shared_ptr<SubscriptionState>& state,
 
   std::optional<std::vector<ParamChange>> changes;
   try {
-    if (state->decode_hook) state->decode_hook();
+    if (!InvokeTestHook(state->hooks, &SubscriptionTestHooks::decode,
+                        [&state](std::string_view message) { Error(state, message); })) {
+      return;
+    }
     changes = Decode(state, item->sample);
   } catch (const std::exception& exception) {
     Error(state, exception.what());
@@ -275,7 +307,7 @@ void OnSample(const std::shared_ptr<SubscriptionState>& state, const TransportSa
     std::shared_ptr<SubscriptionState> state;
   };
   NativeGuard guard(state);
-  if (state->native_entry_hook) state->native_entry_hook();
+  InvokeTestHook(state->hooks, &SubscriptionTestHooks::native_entry);
 
   std::vector<std::byte> payload(sample.payload.begin(), sample.payload.end());
   OwnedSample owned{sample.key, std::move(payload), sample.encoding, sample.kind};
@@ -319,12 +351,9 @@ void ActivateAndDrain(const std::shared_ptr<SubscriptionState>& state) {
 void FailStaging(const std::shared_ptr<SubscriptionState>& state) {
   std::unique_lock<std::mutex> lock(state->mutex);
   state->accepting = false;
-  if (state->fail_staging_hook) {
-    auto hook = state->fail_staging_hook;
-    lock.unlock();
-    hook();
-    lock.lock();
-  }
+  lock.unlock();
+  InvokeTestHook(state->hooks, &SubscriptionTestHooks::fail_staging);
+  lock.lock();
   state->condition.wait(lock, [&state] { return state->native_in_flight == 0; });
   state->queue.clear();
   state->staging = false;
@@ -343,11 +372,11 @@ void CloseState(const std::shared_ptr<SubscriptionState>& state) noexcept {
     state->accepting = false;
     state->staging = false;
   }
-  if (state->close_admission_hook) state->close_admission_hook();
+  InvokeTestHook(state->hooks, &SubscriptionTestHooks::close_admission);
 
   {
     std::lock_guard<std::mutex> declaration_lock(state->control->mutex);
-    if (state->close_reset_hook) state->close_reset_hook();
+    InvokeTestHook(state->hooks, &SubscriptionTestHooks::close_reset);
     state->native = Subscription{};
   }
 
@@ -361,11 +390,7 @@ void CloseState(const std::shared_ptr<SubscriptionState>& state) noexcept {
   state->list_prefix.clear();
   state->callback = {};
   state->log_sink.reset();
-  state->native_entry_hook = {};
-  state->decode_hook = {};
-  state->fail_staging_hook = {};
-  state->close_admission_hook = {};
-  state->close_reset_hook = {};
+  state->hooks.reset();
   state->close_finished = true;
   lock.unlock();
   state->condition.notify_all();
@@ -380,21 +405,44 @@ struct ParamSubscription::Impl {
 
 namespace param_store_test_access {
 
+template <typename Update>
+void UpdateSubscriptionTestHooks(std::shared_ptr<ParamStore::DeclarationControl> control,
+                                Update&& update) {
+  std::lock_guard<std::mutex> lock(control->mutex);
+  auto hooks = control->hooks;
+  auto updated = hooks ? std::make_shared<SubscriptionTestHooks>(*hooks)
+                       : std::make_shared<SubscriptionTestHooks>();
+  update(*updated);
+  control->hooks = std::move(updated);
+}
+
 void ParamStoreTestAccess::SetNativeEntryHook(ParamStore& store, std::function<void()> hook) {
-  store.subscription_native_entry_hook_ = std::move(hook);
+  UpdateSubscriptionTestHooks(
+      store.declaration_control_, [hook = std::move(hook)](SubscriptionTestHooks& hooks) mutable {
+        hooks.native_entry = std::move(hook);
+      });
 }
 
 void ParamStoreTestAccess::SetDecodeHook(ParamStore& store, std::function<void()> hook) {
-  store.subscription_decode_hook_ = std::move(hook);
+  UpdateSubscriptionTestHooks(
+      store.declaration_control_, [hook = std::move(hook)](SubscriptionTestHooks& hooks) mutable {
+        hooks.decode = std::move(hook);
+      });
 }
 
 void ParamStoreTestAccess::SetLifecycleHooks(ParamStore& store,
                                              std::function<void()> fail_staging_hook,
                                              std::function<void()> close_admission_hook,
                                              std::function<void()> close_reset_hook) {
-  store.subscription_fail_staging_hook_ = std::move(fail_staging_hook);
-  store.subscription_close_admission_hook_ = std::move(close_admission_hook);
-  store.subscription_close_reset_hook_ = std::move(close_reset_hook);
+  UpdateSubscriptionTestHooks(
+      store.declaration_control_, [fail_staging_hook = std::move(fail_staging_hook),
+              close_admission_hook = std::move(close_admission_hook),
+              close_reset_hook = std::move(close_reset_hook)](
+                 SubscriptionTestHooks& hooks) mutable {
+        hooks.fail_staging = std::move(fail_staging_hook);
+        hooks.close_admission = std::move(close_admission_hook);
+        hooks.close_reset = std::move(close_reset_hook);
+      });
 }
 
 }  // namespace param_store_test_access
@@ -421,29 +469,6 @@ ParamStore::ParamStore(std::shared_ptr<Transport> transport, ClientConfig config
       transport_(std::move(transport)),
       config_(std::move(config)) {}
 
-ParamStore::ParamStore(ParamStore&& other) noexcept
-    : declaration_control_(std::move(other.declaration_control_)),
-      subscription_native_entry_hook_(std::move(other.subscription_native_entry_hook_)),
-      subscription_decode_hook_(std::move(other.subscription_decode_hook_)),
-      subscription_fail_staging_hook_(std::move(other.subscription_fail_staging_hook_)),
-      subscription_close_admission_hook_(std::move(other.subscription_close_admission_hook_)),
-      subscription_close_reset_hook_(std::move(other.subscription_close_reset_hook_)),
-      transport_(std::move(other.transport_)),
-      config_(std::move(other.config_)) {}
-
-ParamStore& ParamStore::operator=(ParamStore&& other) noexcept {
-  if (this == &other) return *this;
-  declaration_control_ = std::move(other.declaration_control_);
-  subscription_native_entry_hook_ = std::move(other.subscription_native_entry_hook_);
-  subscription_decode_hook_ = std::move(other.subscription_decode_hook_);
-  subscription_fail_staging_hook_ = std::move(other.subscription_fail_staging_hook_);
-  subscription_close_admission_hook_ = std::move(other.subscription_close_admission_hook_);
-  subscription_close_reset_hook_ = std::move(other.subscription_close_reset_hook_);
-  transport_ = std::move(other.transport_);
-  config_ = std::move(other.config_);
-  return *this;
-}
-
 Result<ParamSubscription> ParamStore::Subscribe(std::string_view scope, std::string_view prefix,
                                                 ParamCallback callback) {
   if (!transport_) return Result<ParamSubscription>::Err(Status::InvalidArgument,
@@ -460,16 +485,14 @@ Result<ParamSubscription> ParamStore::Subscribe(std::string_view scope, std::str
   }
 
   const std::string selector = config_.prefix + "/" + ScopePath(parsed_scope.Value()) + "/**";
-  auto state = std::make_shared<SubscriptionState>(
-      transport_, declaration_control_, config_.prefix, parsed_scope.Value(), std::string(prefix),
-      std::move(callback), config_.log_sink, subscription_native_entry_hook_,
-      subscription_decode_hook_, subscription_fail_staging_hook_,
-      subscription_close_admission_hook_,
-      subscription_close_reset_hook_);
-
+  std::shared_ptr<SubscriptionState> state;
   std::optional<Result<Subscription>> declared;
   {
     std::lock_guard<std::mutex> declaration_lock(declaration_control_->mutex);
+    state = std::make_shared<SubscriptionState>(
+        transport_, declaration_control_, config_.prefix, parsed_scope.Value(),
+        std::string(prefix), std::move(callback), config_.log_sink,
+        declaration_control_->hooks);
     std::weak_ptr<SubscriptionState> weak_state = state;
     declared.emplace(transport_->DeclareSubscriber(
         selector, [weak_state](const TransportSample& sample) {
