@@ -86,6 +86,7 @@ class ParamStore {
   std::function<void()> subscription_native_entry_hook_;
   std::function<void()> subscription_fail_staging_hook_;
   std::function<void()> subscription_close_admission_hook_;
+  std::function<void()> subscription_close_reset_hook_;
 
   static Result<Scope> ParseAndValidateScope(std::string_view scope);
   static Result<void> ValidateUserKey(std::string_view key);

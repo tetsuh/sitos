@@ -326,7 +326,7 @@ TEST(ParamStoreSubscribeTest, CloseWaitsForBlockedCallback) {
       close_admission_observed = true;
     }
     condition.notify_all();
-  });
+  }, {});
   auto subscription = store.Subscribe("base", "", [&](const sitos::ParamChange&) {
     {
       std::lock_guard<std::mutex> lock(mutex);
@@ -379,6 +379,7 @@ TEST(ParamStoreSubscribeTest, CloseDeliversAdmittedSampleBeforeReturning) {
   bool native_entered = false;
   bool release_native = false;
   bool close_admission = false;
+  bool close_reset_started = false;
   bool callback_delivered = false;
   bool close_returned = false;
   sitos::param_store_test_access::ParamStoreTestAccess::SetNativeEntryHook(store, [&] {
@@ -394,6 +395,12 @@ TEST(ParamStoreSubscribeTest, CloseDeliversAdmittedSampleBeforeReturning) {
     {
       std::lock_guard<std::mutex> lock(mutex);
       close_admission = true;
+    }
+    condition.notify_all();
+  }, [&] {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      close_reset_started = true;
     }
     condition.notify_all();
   });
@@ -429,6 +436,12 @@ TEST(ParamStoreSubscribeTest, CloseDeliversAdmittedSampleBeforeReturning) {
     close_admission_in_time =
         condition.wait_for(lock, std::chrono::seconds(3), [&] { return close_admission; });
   }
+  bool close_reset_in_time = false;
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    close_reset_in_time = condition.wait_for(
+        lock, std::chrono::seconds(3), [&] { return close_reset_started; });
+  }
   bool returned_before_release = false;
   {
     std::lock_guard<std::mutex> lock(mutex);
@@ -436,6 +449,7 @@ TEST(ParamStoreSubscribeTest, CloseDeliversAdmittedSampleBeforeReturning) {
   }
   EXPECT_TRUE(native_entered_in_time);
   EXPECT_TRUE(close_admission_in_time);
+  EXPECT_TRUE(close_reset_in_time);
   EXPECT_FALSE(returned_before_release);
   {
     std::lock_guard<std::mutex> lock(mutex);
@@ -520,7 +534,7 @@ TEST(ParamStoreSubscribeTest, CloseWaitsForBlockedLogSink) {
       close_admission = true;
     }
     close_condition.notify_all();
-  });
+  }, {});
   auto subscription = store.Subscribe("base", "", [](const sitos::ParamChange&) {});
   ASSERT_TRUE(subscription.IsOk());
 
@@ -651,7 +665,7 @@ TEST(ParamStoreSubscribeTest, ConcurrentRepeatedCloseIsSafe) {
       close_admission = true;
     }
     condition.notify_all();
-  });
+  }, {});
   auto subscription = store.Subscribe("base", "", [](const sitos::ParamChange&) {});
   ASSERT_TRUE(subscription.IsOk());
   std::thread emitter([&] {
@@ -1266,7 +1280,7 @@ TEST(ParamStoreSubscribeTest, DeclarationFailureWaitsForAdmittedCallbackCopy) {
       fail_staging_entered = true;
     }
     condition.notify_all();
-  }, {});
+  }, {}, {});
   transport->declaration_callback_admitted =
       [&] { return hook_entered.load(std::memory_order_acquire); };
   sitos::param_store_test_access::ParamStoreTestAccess::SetNativeEntryHook(store, [&] {
