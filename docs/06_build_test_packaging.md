@@ -190,6 +190,10 @@ ctest --test-dir build/asan --output-on-failure --timeout 60 \
   -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|TransportGetCompletionTest|ParamStoreSubscribeTest|ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture'
 ```
 
+The TSan CI lane additionally repeats the two subscription lifecycle regressions 100 times and the
+complete lifecycle selection 10 times. Each sanitizer test has a 60-second CTest timeout, and each
+sanitizer job has a 15-minute timeout.
+
 For a platform where the zenoh-c standalone runtime supports sanitizer instrumentation,
 repeat the ASan/UBSan configuration with `-DSITOS_WITH_ZENOH=ON` and run the lifecycle
 integration targets. The CI sanitizer job uses zenoh OFF to keep TSan independent of

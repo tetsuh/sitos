@@ -138,6 +138,18 @@ jobs:
       - name: Build
         run: cmake --build build/sanitizer-${{ matrix.name }} --parallel 2
 
+      - name: Stress subscription lifecycle under TSan
+        if: matrix.name == 'tsan'
+        env:
+          TSAN_OPTIONS: halt_on_error=1
+        run: |
+          ctest --test-dir build/sanitizer-tsan --output-on-failure --timeout 60 \
+            --repeat until-fail:100 \
+            -R 'ParamStoreSubscribeTest.(CloseWaitsForBlockedCallback|DeclarationFailureWaitsForAdmittedCallbackCopy)'
+          ctest --test-dir build/sanitizer-tsan --output-on-failure --timeout 60 \
+            --repeat until-fail:10 \
+            -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|TransportGetCompletionTest|ParamStoreSubscribeTest|ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture'
+
       - name: Run lifecycle tests
         env:
           TSAN_OPTIONS: halt_on_error=1
