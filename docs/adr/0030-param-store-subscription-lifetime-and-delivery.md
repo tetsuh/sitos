@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — Issue #16
+Accepted — 2026-07-26
 
 ## Context
 
@@ -42,7 +42,7 @@ application, persistence, visibility, or peer delivery. Python callback dispatch
 - This ADR does not add a wire surface or stable identifier and reuses existing key, Encoding,
   payload-v1, and batch-v1 contracts.
 
-## Alternatives considered
+## Options Considered
 
 - Fire-and-forget callbacks were rejected because Close could return while callbacks or diagnostics
   still accessed subscription-owned state.

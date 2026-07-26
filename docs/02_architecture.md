@@ -367,8 +367,8 @@ interleaving, and duplicate/self-echo samples are not suppressed. `Close()` clos
 undeclares the native handle, waits for native callbacks, queued work, user callbacks, and diagnostics,
 and guarantees no callback or LogSink invocation after return. Callback exceptions are contained and
 logged. Callbacks may submit nonblocking writes but must not perform blocking reads or subscription
-lifecycle operations from within the callback. This boundary is specified by Proposed ADR-0030;
-Python callback dispatch remains Issue #26.
+lifecycle operations from within the callback. This boundary is specified by ADR-0030; Python
+callback dispatch remains Issue #26.
 
 ## 8. Session Lifecycle (Overall Sequence)
 

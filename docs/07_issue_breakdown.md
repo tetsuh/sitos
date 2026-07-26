@@ -220,7 +220,7 @@ so it is not a v0.2 blocker. Include it by v0.5.
 
 ### #16 ParamStore: Subscribe
 * Milestone: v0.3
-* References: [04] §2.1, [01] F13, Proposed ADR-0030
+* References: [04] §2.1, [01] F13, ADR-0030
 * Implementation targets: `include/sitos/param_subscription.hpp`, `include/sitos/param_store.hpp`,
   `src/param_subscription.cpp`, `tests/unit/param_store_subscribe_test.cpp`,
   `tests/integration/param_store_subscribe_test.cpp`
