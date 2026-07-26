@@ -40,6 +40,7 @@ sitos/
   - **zenoh-c**: First choice is to use official prebuilt releases via
     `find_package(zenohc)`. CI pins versions with FetchContent.
     Also provide a Corrosion (Rust) path for environments that need source builds
+  - **RocksDB** (when `SITOS_WITH_ROCKSDB=ON`): `find_package(RocksDB)`.
   - **gtest / benchmark**: FetchContent
 * Presets: define `dev-windows`, `dev-linux`, `release`, and `python-wheel` in
   `CMakePresets.json`
