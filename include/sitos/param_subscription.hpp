@@ -39,8 +39,8 @@ class ParamSubscription {
 
   /// Stops delivery and waits for all admitted work to finish.
   ///
-  /// Calling Close, destroying this handle, or move-assigning this handle from its own callback
-  /// is forbidden.
+  /// Calling Close, destroying this handle, or move-assigning it from either this subscription's
+  /// ParamCallback or its subscription-owned LogSink::Write context is forbidden.
   void Close() noexcept;
 
  private:

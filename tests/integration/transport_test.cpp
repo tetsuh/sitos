@@ -144,6 +144,7 @@ TEST_F(SubscriptionTest, ResetPreservesEnteredSubscriberCallbackLifetime) {
   bool callback_returned = false;
   bool publish_succeeded = false;
   bool reset_started = false;
+  bool reset_boundary_observed = false;
   bool reset_returned = false;
   auto subscription = SubscriptionTestAccess::Make(
       "sitos/test/subscription/reset-quiescence", [&] {
@@ -158,6 +159,13 @@ TEST_F(SubscriptionTest, ResetPreservesEnteredSubscriberCallbackLifetime) {
         lock.unlock();
         callback_condition.notify_all();
       });
+  ASSERT_TRUE(SubscriptionTestAccess::SetResetObserver(subscription, [&] {
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex);
+      reset_boundary_observed = true;
+    }
+    callback_condition.notify_all();
+  }));
 
   std::thread publisher([&] {
     const bool published =
@@ -206,6 +214,36 @@ TEST_F(SubscriptionTest, ResetPreservesEnteredSubscriberCallbackLifetime) {
     reset_started_in_time = callback_condition.wait_for(
         lock, std::chrono::seconds(3), [&] { return reset_started; });
   }
+  if (!reset_started_in_time) {
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex);
+      release_callback = true;
+    }
+    callback_condition.notify_all();
+    reset_thread.join();
+    publisher.join();
+    ADD_FAILURE() << "subscription Reset thread did not start";
+    return;
+  }
+
+  bool reset_boundary_observed_in_time = false;
+  {
+    std::unique_lock<std::mutex> lock(callback_mutex);
+    reset_boundary_observed_in_time = callback_condition.wait_for(
+        lock, std::chrono::seconds(3), [&] { return reset_boundary_observed; });
+  }
+  if (!reset_boundary_observed_in_time) {
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex);
+      release_callback = true;
+    }
+    callback_condition.notify_all();
+    reset_thread.join();
+    publisher.join();
+    ADD_FAILURE() << "production Reset did not reach the native drop boundary";
+    return;
+  }
+
   bool reset_returned_before_release = false;
   {
     std::lock_guard<std::mutex> lock(callback_mutex);

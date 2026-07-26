@@ -523,6 +523,7 @@ void DropSubscriberContext(void* context) noexcept {
 struct Subscription::Impl {
   z_owned_subscriber_t subscriber{};
   std::shared_ptr<SubscriberState> callback_state;
+  std::function<void()> reset_observer;
 };
 
 namespace {
@@ -576,6 +577,14 @@ void Subscription::Reset() noexcept {
     if (impl_->callback_state) {
       impl_->callback_state->active.store(false, std::memory_order_release);
     }
+    if (impl_->reset_observer) {
+      auto observer = std::move(impl_->reset_observer);
+      try {
+        observer();
+      } catch (...) {
+        // Keep the internal test observer contained at this noexcept boundary.
+      }
+    }
     z_drop(z_move(impl_->subscriber));
     impl_.reset();
   }
@@ -614,6 +623,13 @@ Subscription SubscriptionTestAccess::Make(std::string_view keyexpr,
 
   subscription.impl_ = std::move(impl);
   return subscription;
+}
+
+bool SubscriptionTestAccess::SetResetObserver(Subscription& subscription,
+                                                   std::function<void()> observer) {
+  if (!subscription.impl_) return false;
+  subscription.impl_->reset_observer = std::move(observer);
+  return true;
 }
 
 bool SubscriptionTestAccess::Publish(std::string_view keyexpr) {
