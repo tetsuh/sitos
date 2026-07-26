@@ -197,7 +197,5 @@ The following must not change after zenoh updates:
 ## 7. RocksDB / Python dependencies
 
 As with zenoh, monitor RocksDB and Python packaging with locked versions + latest CI.
-However, RocksDB is optional (`sitos-rocksdb`) and must not impair availability of the standard
-wheel.
 
 (END OF DOCUMENT)

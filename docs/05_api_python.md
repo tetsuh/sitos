@@ -205,6 +205,5 @@ Wheel structure and build are described in [06_build_test_packaging.md](06_build
 The standard wheel installed by `pip install sitos` bundles InMemoryEngine + zenoh-c,
 and has only NumPy as an additional runtime dependency (simplified as a required dependency,
 not optional `sitos[numpy]`) [P03].
-RocksDBEngine is provided as a `sitos-rocksdb` wheel or as a future optional extra.
 
 (END OF DOCUMENT)

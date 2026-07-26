@@ -215,10 +215,6 @@ public:
     Result<void> Start(std::shared_ptr<StorageEngine> engine, Transport& transport,
                        Config config);
 
-    /// In-process direct access to engine (no zenoh round trip).
-    /// For fast reads in the host process (controller/orchestrator).
-    const StorageEngine& engine() const;
-
     // ---- session management (equivalent to SessionController) ----
     Result<void> CreateSession(std::string_view sid);   // [F05]
     Result<void> CloseSession(std::string_view sid);    // [F10]
