@@ -106,35 +106,33 @@ void Warn(const std::shared_ptr<SubscriptionState>& state, std::string_view mess
   EmitLog(state->log_sink, LogLevel::kWarning, "ParamSubscription", message);
 }
 
-void Error(const std::shared_ptr<SubscriptionState>& state, std::string_view message) {
+void Error(const std::shared_ptr<SubscriptionState>& state, std::string_view message) noexcept {
   EmitLog(state->log_sink, LogLevel::kError, "ParamSubscription", message);
 }
 
-template <typename ErrorHandler>
-bool InvokeTestHook(const std::shared_ptr<const SubscriptionTestHooks>& hooks,
-                    std::function<void()> SubscriptionTestHooks::*member,
-                    ErrorHandler&& on_error) noexcept {
+bool InvokeSilentTestHook(const std::shared_ptr<const SubscriptionTestHooks>& hooks,
+                          std::function<void()> SubscriptionTestHooks::*member) noexcept {
   if (!hooks || !(hooks.get()->*member)) return true;
   try {
     (hooks.get()->*member)();
     return true;
-  } catch (const std::exception& exception) {
-    try {
-      on_error(exception.what());
-    } catch (...) {
-    }
   } catch (...) {
-    try {
-      on_error("ParamSubscription internal test hook failed");
-    } catch (...) {
-    }
+    return false;
   }
-  return false;
 }
 
-bool InvokeTestHook(const std::shared_ptr<const SubscriptionTestHooks>& hooks,
-                    std::function<void()> SubscriptionTestHooks::*member) noexcept {
-  return InvokeTestHook(hooks, member, [](std::string_view) {});
+bool InvokeDecodeTestHook(const std::shared_ptr<SubscriptionState>& state) noexcept {
+  const auto& hooks = state->hooks;
+  if (!hooks || !hooks->decode) return true;
+  try {
+    hooks->decode();
+    return true;
+  } catch (const std::exception& exception) {
+    Error(state, exception.what());
+  } catch (...) {
+    Error(state, "ParamSubscription internal test hook failed");
+  }
+  return false;
 }
 
 std::vector<ParamChange> DecodeDelete(const std::shared_ptr<SubscriptionState>& state,
@@ -237,10 +235,7 @@ void Deliver(const std::shared_ptr<SubscriptionState>& state,
 
   std::optional<std::vector<ParamChange>> changes;
   try {
-    if (!InvokeTestHook(state->hooks, &SubscriptionTestHooks::decode,
-                        [&state](std::string_view message) { Error(state, message); })) {
-      return;
-    }
+    if (!InvokeDecodeTestHook(state)) return;
     changes = Decode(state, item->sample);
   } catch (const std::exception& exception) {
     Error(state, exception.what());
@@ -307,7 +302,7 @@ void OnSample(const std::shared_ptr<SubscriptionState>& state, const TransportSa
     std::shared_ptr<SubscriptionState> state;
   };
   NativeGuard guard(state);
-  InvokeTestHook(state->hooks, &SubscriptionTestHooks::native_entry);
+  InvokeSilentTestHook(state->hooks, &SubscriptionTestHooks::native_entry);
 
   std::vector<std::byte> payload(sample.payload.begin(), sample.payload.end());
   OwnedSample owned{sample.key, std::move(payload), sample.encoding, sample.kind};
@@ -352,7 +347,7 @@ void FailStaging(const std::shared_ptr<SubscriptionState>& state) {
   std::unique_lock<std::mutex> lock(state->mutex);
   state->accepting = false;
   lock.unlock();
-  InvokeTestHook(state->hooks, &SubscriptionTestHooks::fail_staging);
+  InvokeSilentTestHook(state->hooks, &SubscriptionTestHooks::fail_staging);
   lock.lock();
   state->condition.wait(lock, [&state] { return state->native_in_flight == 0; });
   state->queue.clear();
@@ -372,11 +367,11 @@ void CloseState(const std::shared_ptr<SubscriptionState>& state) noexcept {
     state->accepting = false;
     state->staging = false;
   }
-  InvokeTestHook(state->hooks, &SubscriptionTestHooks::close_admission);
+  InvokeSilentTestHook(state->hooks, &SubscriptionTestHooks::close_admission);
 
   {
     std::lock_guard<std::mutex> declaration_lock(state->control->mutex);
-    InvokeTestHook(state->hooks, &SubscriptionTestHooks::close_reset);
+    InvokeSilentTestHook(state->hooks, &SubscriptionTestHooks::close_reset);
     state->native = Subscription{};
   }
 
