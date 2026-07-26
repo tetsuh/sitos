@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -47,12 +48,14 @@ TEST_F(ParamStoreSubscribeIntegrationTest, ReceivesPutUnknownBytesDeleteAndStops
   std::condition_variable condition;
   int control_count = 0;
   int callback_count = 0;
+  std::vector<std::string> control_keys;
   std::vector<sitos::ParamChange> changes;
   auto control_result = transport_->DeclareSubscriber(
-      config_.prefix + "/base/**", [&](const sitos::TransportSample&) {
+      config_.prefix + "/base/**", [&](const sitos::TransportSample& sample) {
         {
           std::lock_guard<std::mutex> lock(mutex);
           ++control_count;
+          control_keys.emplace_back(sample.key);
         }
         condition.notify_all();
       });
@@ -129,8 +132,10 @@ TEST_F(ParamStoreSubscribeIntegrationTest, ReceivesPutUnknownBytesDeleteAndStops
                   .IsOk());
   {
     std::unique_lock<std::mutex> lock(mutex);
-    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(5),
-                                   [&] { return control_count > control_baseline; }));
+    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(5), [&] {
+      return std::find(control_keys.begin(), control_keys.end(), *post_close_key) !=
+             control_keys.end();
+    }));
     EXPECT_EQ(callback_count, callback_baseline);
   }
 }
