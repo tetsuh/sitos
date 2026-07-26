@@ -38,12 +38,15 @@ add_sitos_public_header_compile_test(
 add_sitos_public_header_compile_test(
   sitos_list_sink_header_compile_test consumer/list_sink_header_compile.cpp)
 add_sitos_public_header_compile_test(
+  sitos_param_subscription_header_compile_test consumer/param_subscription_header_compile.cpp)
+add_sitos_public_header_compile_test(
   sitos_session_view_header_compile_test consumer/session_view_header_compile.cpp)
 if(SITOS_WITH_ZENOH)
   sitos_copy_zenohc(sitos_param_store_header_compile_test)
   sitos_copy_zenohc(sitos_param_cache_header_compile_test)
   sitos_copy_zenohc(sitos_param_concepts_header_compile_test)
   sitos_copy_zenohc(sitos_list_sink_header_compile_test)
+  sitos_copy_zenohc(sitos_param_subscription_header_compile_test)
   sitos_copy_zenohc(sitos_session_view_header_compile_test)
 endif()
 
@@ -101,6 +104,14 @@ if(SITOS_WITH_ZENOH)
   sitos_copy_zenohc(sitos_param_store_test)
 endif()
 gtest_add_tests(TARGET sitos_param_store_test SOURCES unit/param_store_test.cpp)
+
+add_executable(sitos_param_store_subscribe_test unit/param_store_subscribe_test.cpp)
+target_link_libraries(sitos_param_store_subscribe_test PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_param_store_subscribe_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+sitos_enable_warnings(sitos_param_store_subscribe_test)
+gtest_add_tests(
+  TARGET sitos_param_store_subscribe_test
+  SOURCES unit/param_store_subscribe_test.cpp)
 
 add_executable(sitos_client_transport_factory_test unit/client_transport_factory_test.cpp)
 target_link_libraries(sitos_client_transport_factory_test PRIVATE GTest::gtest_main sitos::sitos)
@@ -261,6 +272,16 @@ if(SITOS_WITH_ZENOH)
   gtest_add_tests(
     TARGET sitos_param_store_integration_test
     SOURCES integration/param_store_test.cpp)
+
+  add_executable(sitos_param_store_subscribe_integration_test
+    integration/param_store_subscribe_test.cpp)
+  target_link_libraries(sitos_param_store_subscribe_integration_test
+    PRIVATE GTest::gtest_main sitos::sitos)
+  sitos_enable_warnings(sitos_param_store_subscribe_integration_test)
+  sitos_copy_zenohc(sitos_param_store_subscribe_integration_test)
+  gtest_add_tests(
+    TARGET sitos_param_store_subscribe_integration_test
+    SOURCES integration/param_store_subscribe_test.cpp)
 
   add_executable(sitos_session_view_integration_test
     integration/session_view_test.cpp)

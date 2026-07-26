@@ -16,6 +16,13 @@ TEST(ClientConfigTest, HasRequiredDefaults) {
   EXPECT_EQ(config.prefix, "sitos");
   EXPECT_FALSE(config.zenoh_config_json.has_value());
   EXPECT_EQ(config.query_timeout, std::chrono::milliseconds(5000));
+  EXPECT_NE(config.log_sink, nullptr);
+  EXPECT_TRUE(ValidateClientConfig(config).IsOk());
+}
+
+TEST(ClientConfigTest, NullLogSinkDisablesDiagnosticsWithoutInvalidatingConfig) {
+  ClientConfig config;
+  config.log_sink = nullptr;
   EXPECT_TRUE(ValidateClientConfig(config).IsOk());
 }
 

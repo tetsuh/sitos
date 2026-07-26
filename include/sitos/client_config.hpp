@@ -5,9 +5,11 @@
 #define SITOS_CLIENT_CONFIG_HPP
 
 #include <chrono>
+#include <memory>
 #include <optional>
 #include <string>
 
+#include "sitos/logging.hpp"
 #include "sitos/result.hpp"
 
 namespace sitos {
@@ -16,6 +18,7 @@ struct ClientConfig {
   std::string prefix = "sitos";
   std::optional<std::string> zenoh_config_json;
   std::chrono::milliseconds query_timeout{5000};
+  std::shared_ptr<LogSink> log_sink = DefaultLogSink();
 };
 
 Result<void> ValidateClientConfig(const ClientConfig& config);

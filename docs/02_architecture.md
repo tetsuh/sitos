@@ -353,6 +353,23 @@ ParamStore write success means only that Transport accepted/submitted the operat
 not confirm StorageNode application, durability, or cache visibility. Acknowledged writes and
 retry policy belong to Issues #14 and #17; this API does not add a `put_ack` configuration field.
 
+### 7.3 ParamStore Subscription
+
+`ParamStore::Subscribe` is a delta-only observer over base or session Transport samples. It performs
+no initial read. Declaration-time samples are copied and staged; a successful declaration drains
+staged work before returning, while declaration failure invokes no user callback. A move-only
+`ParamSubscription` owns the native handle, callback state, shared Transport, and client LogSink
+independently of ParamStore.
+
+Each subscription has a threadless single-flight drainer. User callbacks are serialized per
+subscription, canonical batches are prevalidated and expanded in encoded order without
+interleaving, and duplicate/self-echo samples are not suppressed. `Close()` closes admission,
+undeclares the native handle, waits for native callbacks, queued work, user callbacks, and diagnostics,
+and guarantees no callback or LogSink invocation after return. Callback exceptions are contained and
+logged. Callbacks may submit nonblocking writes but must not perform blocking reads or subscription
+lifecycle operations from within the callback. This boundary is specified by ADR-0030; Python
+callback dispatch remains Issue #26.
+
 ## 8. Session Lifecycle (Overall Sequence)
 
 ```
@@ -385,6 +402,7 @@ External client        Controller(StorageNode)          Calc(ParamCache)
 | ParamCache delta application | zenoh subscriber thread. The writer lock is held only briefly for replacement |
 | ParamCache local reads | Any application thread (atomic State snapshot + shared map lock) [N07] |
 | ParamCache writes | Caller thread; submission occurs without lifecycle or map locks, then local sequencing |
+| ParamSubscription callbacks | Whichever Transport callback/caller thread owns the per-subscription drainer; serialized per subscription, no thread affinity |
 | Python callbacks | Dedicated dispatch thread + queue (the GIL is not acquired on zenoh threads) [P04] |
 
 ## 10. Error Handling Policy

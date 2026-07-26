@@ -42,6 +42,7 @@ class SubscriptionTestAccess {
   static bool IsAvailable();
   static void Shutdown();
   static Subscription Make(std::string_view keyexpr, std::function<void()> callback);
+  static bool SetResetObserver(Subscription& subscription, std::function<void()> observer);
   static bool Publish(std::string_view keyexpr);
 };
 

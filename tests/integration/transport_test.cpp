@@ -133,6 +133,137 @@ TEST_F(SubscriptionTest, MoveAssignmentTransfersSubscriber) {
   EXPECT_TRUE(WaitForNoNewCallback(&old_callbacks, old_baseline));
 }
 
+TEST_F(SubscriptionTest, ResetPreservesEnteredSubscriberCallbackLifetime) {
+  using sitos::transport_test_access::SubscriptionTestAccess;
+  ASSERT_TRUE(SubscriptionTestAccess::IsAvailable());
+
+  std::mutex callback_mutex;
+  std::condition_variable callback_condition;
+  bool callback_entered = false;
+  bool release_callback = false;
+  bool callback_returned = false;
+  bool publish_succeeded = false;
+  bool reset_started = false;
+  bool reset_boundary_observed = false;
+  bool reset_returned = false;
+  auto subscription = SubscriptionTestAccess::Make(
+      "sitos/test/subscription/reset-quiescence", [&] {
+        {
+          std::lock_guard<std::mutex> lock(callback_mutex);
+          callback_entered = true;
+        }
+        callback_condition.notify_all();
+        std::unique_lock<std::mutex> lock(callback_mutex);
+        callback_condition.wait(lock, [&] { return release_callback; });
+        callback_returned = true;
+        lock.unlock();
+        callback_condition.notify_all();
+      });
+  ASSERT_TRUE(SubscriptionTestAccess::SetResetObserver(subscription, [&] {
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex);
+      reset_boundary_observed = true;
+    }
+    callback_condition.notify_all();
+  }));
+
+  std::thread publisher([&] {
+    const bool published =
+        SubscriptionTestAccess::Publish("sitos/test/subscription/reset-quiescence");
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex);
+      publish_succeeded = published;
+    }
+    callback_condition.notify_all();
+  });
+
+  bool entered = false;
+  {
+    std::unique_lock<std::mutex> lock(callback_mutex);
+    entered = callback_condition.wait_for(lock, std::chrono::seconds(3),
+                                          [&] { return callback_entered; });
+  }
+  if (!entered) {
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex);
+      release_callback = true;
+    }
+    callback_condition.notify_all();
+    publisher.join();
+    ADD_FAILURE() << "subscriber callback did not enter";
+    return;
+  }
+
+  std::thread reset_thread([&] {
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex);
+      reset_started = true;
+    }
+    callback_condition.notify_all();
+    subscription = sitos::Subscription{};
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex);
+      reset_returned = true;
+    }
+    callback_condition.notify_all();
+  });
+
+  bool reset_started_in_time = false;
+  {
+    std::unique_lock<std::mutex> lock(callback_mutex);
+    reset_started_in_time = callback_condition.wait_for(
+        lock, std::chrono::seconds(3), [&] { return reset_started; });
+  }
+  if (!reset_started_in_time) {
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex);
+      release_callback = true;
+    }
+    callback_condition.notify_all();
+    reset_thread.join();
+    publisher.join();
+    ADD_FAILURE() << "subscription Reset thread did not start";
+    return;
+  }
+
+  bool reset_boundary_observed_in_time = false;
+  {
+    std::unique_lock<std::mutex> lock(callback_mutex);
+    reset_boundary_observed_in_time = callback_condition.wait_for(
+        lock, std::chrono::seconds(3), [&] { return reset_boundary_observed; });
+  }
+  if (!reset_boundary_observed_in_time) {
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex);
+      release_callback = true;
+    }
+    callback_condition.notify_all();
+    reset_thread.join();
+    publisher.join();
+    ADD_FAILURE() << "production Reset did not reach the native drop boundary";
+    return;
+  }
+
+  bool reset_returned_before_release = false;
+  {
+    std::lock_guard<std::mutex> lock(callback_mutex);
+    reset_returned_before_release = reset_returned;
+    release_callback = true;
+  }
+  EXPECT_FALSE(reset_returned_before_release);
+  callback_condition.notify_all();
+  reset_thread.join();
+  publisher.join();
+
+  EXPECT_TRUE(reset_started_in_time);
+  EXPECT_TRUE(publish_succeeded);
+  EXPECT_TRUE(reset_returned);
+  {
+    std::lock_guard<std::mutex> lock(callback_mutex);
+    EXPECT_TRUE(callback_returned);
+  }
+}
+
 TEST_F(SubscriptionTest, DestructionStopsSubscriber) {
   using sitos::transport_test_access::SubscriptionTestAccess;
   ASSERT_TRUE(SubscriptionTestAccess::IsAvailable());
