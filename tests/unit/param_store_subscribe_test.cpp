@@ -804,8 +804,16 @@ TEST(ParamStoreSubscribeTest, CloseDrainsPendingBatchAndBlocksPostCloseDiagnosti
   std::mutex mutex;
   std::condition_variable condition;
   bool entered = false;
+  bool close_admission = false;
   bool release = false;
   std::vector<std::string> keys;
+  sitos::param_store_test_access::ParamStoreTestAccess::SetLifecycleHooks(store, {}, [&] {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      close_admission = true;
+    }
+    condition.notify_all();
+  }, {});
   auto subscription = store.Subscribe("base", "", [&](const sitos::ParamChange& change) {
     {
       std::lock_guard<std::mutex> lock(mutex);
@@ -838,27 +846,19 @@ TEST(ParamStoreSubscribeTest, CloseDrainsPendingBatchAndBlocksPostCloseDiagnosti
     std::unique_lock<std::mutex> lock(mutex);
     entered_in_time = condition.wait_for(lock, std::chrono::seconds(3), [&] { return entered; });
   }
-  bool close_started = false;
   std::atomic<bool> close_returned = false;
-  std::mutex close_mutex;
-  std::condition_variable close_condition;
   std::thread closer([&] {
-    {
-      std::lock_guard<std::mutex> lock(close_mutex);
-      close_started = true;
-    }
-    close_condition.notify_all();
     subscription.Value().Close();
     close_returned.store(true, std::memory_order_release);
   });
-  bool close_started_in_time = false;
+  bool close_admission_in_time = false;
   {
-    std::unique_lock<std::mutex> lock(close_mutex);
-    close_started_in_time = close_condition.wait_for(
-        lock, std::chrono::seconds(3), [&] { return close_started; });
+    std::unique_lock<std::mutex> lock(mutex);
+    close_admission_in_time =
+        condition.wait_for(lock, std::chrono::seconds(3), [&] { return close_admission; });
   }
   EXPECT_TRUE(entered_in_time);
-  EXPECT_TRUE(close_started_in_time);
+  EXPECT_TRUE(close_admission_in_time);
   EXPECT_FALSE(close_returned.load(std::memory_order_acquire));
   {
     std::lock_guard<std::mutex> lock(mutex);
