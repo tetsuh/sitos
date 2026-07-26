@@ -84,6 +84,7 @@ class ParamStore {
 
   std::shared_ptr<DeclarationControl> declaration_control_;
   std::function<void()> subscription_native_entry_hook_;
+  std::function<void()> subscription_decode_hook_;
   std::function<void()> subscription_fail_staging_hook_;
   std::function<void()> subscription_close_admission_hook_;
   std::function<void()> subscription_close_reset_hook_;
