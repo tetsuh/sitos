@@ -180,15 +180,19 @@ zenoh-independent fake-Transport paths; ASan/UBSan runs the same paths separatel
 cmake -S . -B build/tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=OFF -DSITOS_ENABLE_TSAN=ON
 cmake --build build/tsan
-ctest --test-dir build/tsan --output-on-failure \
+ctest --test-dir build/tsan --output-on-failure --timeout 60 \
   -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|TransportGetCompletionTest|ParamStoreSubscribeTest|ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture'
 
 cmake -S . -B build/asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=OFF -DSITOS_ENABLE_ASAN_UBSAN=ON
 cmake --build build/asan
-ctest --test-dir build/asan --output-on-failure \
+ctest --test-dir build/asan --output-on-failure --timeout 60 \
   -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|TransportGetCompletionTest|ParamStoreSubscribeTest|ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture'
 ```
+
+The TSan CI lane additionally repeats the two subscription lifecycle regressions 100 times and the
+complete lifecycle selection 10 times. Each sanitizer test has a 60-second CTest timeout, and each
+sanitizer job has a 15-minute timeout.
 
 For a platform where the zenoh-c standalone runtime supports sanitizer instrumentation,
 repeat the ASan/UBSan configuration with `-DSITOS_WITH_ZENOH=ON` and run the lifecycle
