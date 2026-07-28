@@ -140,6 +140,13 @@ gtest_add_tests(TARGET sitos_key_test SOURCES unit/key_test.cpp)
 # DISCOVERY_MODE PRE_TEST moves the flaky JSON discovery out of the build
 # step (ninja) and into ctest, so a discovery hiccup no longer breaks the
 # build itself (#93).
+if(NOT SITOS_WITH_ROCKSDB)
+  add_executable(sitos_rocksdb_engine_off_test unit/rocksdb_engine_off_test.cpp)
+  target_link_libraries(sitos_rocksdb_engine_off_test PRIVATE GTest::gtest_main sitos::sitos)
+  sitos_enable_warnings(sitos_rocksdb_engine_off_test)
+  gtest_add_tests(TARGET sitos_rocksdb_engine_off_test SOURCES unit/rocksdb_engine_off_test.cpp)
+endif()
+
 add_executable(sitos_storage_engine_contract_test
   unit/storage_engine_contract_test.cpp)
 target_link_libraries(sitos_storage_engine_contract_test
