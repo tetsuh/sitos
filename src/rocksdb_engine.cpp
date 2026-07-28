@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -22,6 +23,11 @@ namespace sitos {
 namespace {
 
 #if defined(SITOS_WITH_ROCKSDB)
+using RocksDBOpenResult = decltype(rocksdb::DB::Open(
+    std::declval<const rocksdb::Options&>(), std::declval<const std::string&>(),
+    std::declval<std::unique_ptr<rocksdb::DB>*>()));
+static_assert(std::is_same_v<RocksDBOpenResult, rocksdb::Status>);
+
 class RocksDBErrorCategory final : public std::error_category {
  public:
   const char* name() const noexcept override { return "sitos.rocksdb"; }
@@ -136,16 +142,15 @@ Result<std::unique_ptr<RocksDBEngine>> RocksDBEngine::Open(const std::string& pa
   }
   rocksdb::Options options;
   options.create_if_missing = true;
-  rocksdb::DB* raw_db = nullptr;
-  const rocksdb::Status status = rocksdb::DB::Open(options, path, &raw_db);
+  std::unique_ptr<rocksdb::DB> owned_db;
+  const rocksdb::Status status = rocksdb::DB::Open(options, path, &owned_db);
   if (!status.ok()) {
     return Result<std::unique_ptr<RocksDBEngine>>::Err(Status::Error,
                                                        "RocksDB open failed: " + status.ToString(),
                                                        MakeRocksDBError(status));
   }
-  std::unique_ptr<rocksdb::DB> owned_db(raw_db);
-  auto database = std::make_shared<DatabaseState>(
-      std::shared_ptr<rocksdb::DB>(std::move(owned_db)));
+  std::shared_ptr<rocksdb::DB> shared_db(std::move(owned_db));
+  auto database = std::make_shared<DatabaseState>(std::move(shared_db));
   return Result<std::unique_ptr<RocksDBEngine>>::Ok(
       std::unique_ptr<RocksDBEngine>(
           new RocksDBEngine(std::make_unique<Impl>(std::move(database)))));
