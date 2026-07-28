@@ -45,6 +45,39 @@ sitos/
 * Presets: define `dev-windows`, `dev-linux`, `release`, and `python-wheel` in
   `CMakePresets.json`
 
+### 2.1 Optional vcpkg provisioning foundation
+
+Optional native dependencies are provisioned explicitly through the root `vcpkg.json` manifest.
+The manifest has no ordinary dependencies and keeps RocksDB behind the non-default `rocksdb`
+feature. CI checks out the official `microsoft/vcpkg` repository detached at the manifest's
+`builtin-baseline`, verifies `HEAD` against that value, and bootstraps with telemetry disabled.
+The baseline is the sole executable and registry pin source; updates require a dedicated
+dependency-update PR that changes the baseline and expected probe version together.
+
+The canonical validation triplets are the built-in `x64-linux` and `x64-windows` triplets. Configure
+opt-in consumers with `VCPKG_MANIFEST_FEATURES=rocksdb` and a fresh explicit
+`VCPKG_INSTALLED_DIR`; ordinary builds, installed package validators, and standard wheels do not
+use the vcpkg toolchain and retain `SITOS_WITH_ROCKSDB=OFF`. Project CMake and installed package
+configuration never invoke vcpkg or another package manager and never perform hidden provisioning.
+Existing scoped Zenoh and Google Benchmark `FetchContent` paths are unchanged.
+
+Dedicated vcpkg CI jobs persist a per-platform filesystem binary archive with the GitHub-owned
+`actions/cache` action pinned to an exact commit and configure vcpkg with
+`clear;files,<directory>,readwrite`. Primary keys separate the cache format, OS, architecture,
+canonical triplet, root manifest hash, and GitHub-hosted runner image identity; vcpkg package ABI
+remains the inner correctness boundary. A compatible-prefix restore may seed a new runner-image key,
+but only an exact primary-key hit skips save. Restore occurs before provisioning, while save occurs
+only after provisioning, configure, build, runtime, no-feature, and static-guard validation succeeds.
+Pull-request writes remain isolated to their merge refs, trusted `main` pushes use their normal cache
+scope, and no secret or external credential is used. Cache hits affect performance only;
+provisioning, configure, build, and runtime failures remain fatal. The initial cold-provisioning
+budgets are 180 minutes on Linux and 360 minutes on Windows.
+
+On Windows, the canonical `RocksDB::rocksdb` target is the `/MD`-compatible static archive. The
+probe stages and verifies the baseline's canonical `z.dll` in a clean runtime directory. The
+validator requires `dumpbin` from the `vcvars64.bat` environment. It does not rename or duplicate
+`z.dll` as `zlib1.dll`, depend on `rocksdb-shared.dll`, or use build-tree/vcpkg PATH entries.
+
 ## 3. Install (C++ consumer)
 
 The C++ library and public headers can be installed with the generated CMake export:
