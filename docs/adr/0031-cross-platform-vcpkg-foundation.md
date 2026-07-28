@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — pending owner acceptance immediately before merge
+Accepted — 2026-07-28
 
 ## Context
 
@@ -138,5 +138,4 @@ Attempt 2 reran the exact same head and runner images:
   restored the exact v2 key, reported `cache-hit=true`, retained all validation, completed
   provisioning in 60.623 seconds, and skipped save.
 
-Cache behavior remains performance evidence only. ADR-0031 remains Proposed pending explicit owner
-acceptance.
+Cache behavior remains performance evidence only. ADR-0031 was accepted on 2026-07-28.
