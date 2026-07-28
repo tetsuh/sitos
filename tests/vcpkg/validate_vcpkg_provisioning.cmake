@@ -90,7 +90,9 @@ run_checked(
   "${CMAKE_COMMAND}" -S "${SITOS_SOURCE_DIR}/tests/package/consumer" -B "${_sitos_consumer_build}"
   ${_generator_args} -DCMAKE_BUILD_TYPE=Release
   -DSITOS_PACKAGE_CONSUMER_WITH_ROCKSDB=ON
-  "-DCMAKE_PREFIX_PATH=${_sitos_prefix};${_feature_install}/${TRIPLET}")
+  "-DCMAKE_PREFIX_PATH=${_sitos_prefix}"
+  "-DRocksDB_DIR=${_feature_install}/${TRIPLET}/share/rocksdb"
+  "-DZLIB_DIR=${_feature_install}/${TRIPLET}/share/zlib")
 run_checked("${CMAKE_COMMAND}" --build "${_sitos_consumer_build}")
 
 if(WIN32)
