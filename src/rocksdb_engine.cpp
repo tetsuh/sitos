@@ -143,7 +143,9 @@ Result<std::unique_ptr<RocksDBEngine>> RocksDBEngine::Open(const std::string& pa
                                                        "RocksDB open failed: " + status.ToString(),
                                                        MakeRocksDBError(status));
   }
-  auto database = std::make_shared<DatabaseState>(std::shared_ptr<rocksdb::DB>(raw_db));
+  std::unique_ptr<rocksdb::DB> owned_db(raw_db);
+  auto database = std::make_shared<DatabaseState>(
+      std::shared_ptr<rocksdb::DB>(std::move(owned_db)));
   return Result<std::unique_ptr<RocksDBEngine>>::Ok(
       std::unique_ptr<RocksDBEngine>(
           new RocksDBEngine(std::make_unique<Impl>(std::move(database)))));
