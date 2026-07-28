@@ -228,6 +228,11 @@ canonical static `RocksDB::rocksdb` target imports the baseline's zlib 1.3.2 run
 validation stages that file under its actual name, requires `dumpbin` from the `vcvars64.bat`
 environment, and rejects `zlib1.dll` compatibility copies and `rocksdb-shared.dll` dependencies.
 Historical backend failures and canonical cold/cached measurements are recorded in ADR-0031
-rather than duplicated in this policy document.
+rather than duplicated in this policy document. RocksDBEngine package reconstruction and snapshot
+lifetime are defined by ADR-0033. Installed RocksDB-ON consumers are configure/build/link-only and do
+not execute or stage runtime dependencies; runtime is covered by the RocksDB engine tests and the
+vcpkg clean-stage probe. Exact version equality is necessary but not sufficient for ABI compatibility,
+so external consumers own compiler, CRT, standard-library ABI, build configuration, and compile-option
+compatibility.
 
 (END OF DOCUMENT)

@@ -45,6 +45,17 @@ if(SITOS_WITH_ZENOH)
   include(cmake/zenohc.cmake)
 endif()
 
+if(SITOS_WITH_ROCKSDB)
+  find_package(RocksDB 11.1.2 EXACT CONFIG REQUIRED)
+  if(NOT RocksDB_VERSION VERSION_EQUAL 11.1.2)
+    message(FATAL_ERROR "Resolved RocksDB ${RocksDB_VERSION}, expected exactly 11.1.2")
+  endif()
+  if(NOT TARGET RocksDB::rocksdb)
+    message(FATAL_ERROR "RocksDB::rocksdb is required")
+  endif()
+  set(SITOS_ROCKSDB_VERSION "${RocksDB_VERSION}")
+endif()
+
 if(SITOS_BUILD_PYTHON)
   find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
   find_package(nanobind CONFIG REQUIRED)
@@ -123,6 +134,12 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
    AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16)
   set_property(SOURCE src/param_value.cpp APPEND PROPERTY
     COMPILE_OPTIONS -Wno-free-nonheap-object)
+endif()
+
+if(SITOS_WITH_ROCKSDB)
+  target_sources(sitos PRIVATE src/rocksdb_engine.cpp)
+  target_link_libraries(sitos PUBLIC RocksDB::rocksdb)
+  target_compile_definitions(sitos PRIVATE SITOS_WITH_ROCKSDB=1)
 endif()
 
 if(SITOS_WITH_ZENOH)

@@ -16,6 +16,7 @@
 #include "sitos/param_subscription.hpp"
 #include "sitos/param_value.hpp"
 #include "sitos/result.hpp"
+#include "sitos/rocksdb_engine.hpp"
 #include "sitos/session.hpp"
 #include "sitos/session_view.hpp"
 #include "sitos/status.hpp"
