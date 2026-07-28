@@ -1,0 +1,13 @@
+{
+  "name": "sitos",
+  "version-string": "0.1.0",
+  "builtin-baseline": "40f3c709db80acf154ac4b17a1f83c564ebd022e",
+  "features": {
+    "rocksdb": {
+      "description": "Provision RocksDB for the optional RocksDB consumer probe",
+      "dependencies": [
+        "rocksdb"
+      ]
+    }
+  }
+}
