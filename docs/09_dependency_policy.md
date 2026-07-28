@@ -199,4 +199,35 @@ The following must not change after zenoh updates:
 As with zenoh, monitor RocksDB and Python packaging with locked versions + latest CI.
 However, RocksDB is optional and must not impair availability of the standard wheel.
 
+### 7.1 Optional vcpkg foundation
+
+The root `vcpkg.json` is the sole source of the vcpkg executable and built-in registry pin. Its
+non-default `rocksdb` feature is validated through the official detached checkout at
+`40f3c709db80acf154ac4b17a1f83c564ebd022e`, resolving RocksDB 11.1.2 port-version 0 with the
+port's default zlib feature. Canonical CI uses only built-in `x64-linux` and `x64-windows`
+triplets and explicit isolated install roots.
+
+Provisioning is opt-in and explicit: project CMake and installed package configuration do not
+clone, bootstrap, install, update, or otherwise invoke a package manager, and package discovery
+has no hidden network behavior. Existing scoped Zenoh and Google Benchmark `FetchContent` paths
+remain unchanged. Standard builds, package validators, and wheels remain RocksDB-OFF and do not
+use vcpkg.
+
+Dedicated vcpkg jobs persist a per-platform package-ABI archive directory through a SHA-pinned
+GitHub-owned `actions/cache` action and configure vcpkg with
+`clear;files,<directory>,readwrite`. Primary keys separate cache format, OS, architecture, canonical
+triplet, root manifest hash, and GitHub-hosted runner image identity. A compatible-prefix restore
+may seed a new image key, but only an exact primary-key hit skips save. Pull-request writes remain
+isolated to their merge-ref scope; trusted pushes to `main` use their normal cache scope. Save occurs
+only after the complete validator succeeds, and no secret, long-lived credential, NuGet feed, Mono
+runtime, or external cache service is used. Cache behavior is performance-only and cannot make
+provisioning or runtime validation optional. A baseline or port version change requires an explicit
+dependency-update PR and cold/cached validation on both canonical triplets. Homebrew and macOS
+provisioning are unsupported; `apt` is limited to Linux CI bootstrap prerequisites. On Windows, the
+canonical static `RocksDB::rocksdb` target imports the baseline's zlib 1.3.2 runtime as `z.dll`;
+validation stages that file under its actual name, requires `dumpbin` from the `vcvars64.bat`
+environment, and rejects `zlib1.dll` compatibility copies and `rocksdb-shared.dll` dependencies.
+Historical backend failures and canonical cold/cached measurements are recorded in ADR-0031
+rather than duplicated in this policy document.
+
 (END OF DOCUMENT)

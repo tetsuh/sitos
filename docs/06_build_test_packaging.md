@@ -45,6 +45,73 @@ sitos/
 * Presets: define `dev-windows`, `dev-linux`, `release`, and `python-wheel` in
   `CMakePresets.json`
 
+### 2.1 Optional vcpkg provisioning foundation
+
+Optional native dependencies are provisioned explicitly through the root `vcpkg.json` manifest.
+The manifest has no ordinary dependencies and keeps RocksDB behind the non-default `rocksdb`
+feature. CI checks out the official `microsoft/vcpkg` repository detached at the manifest's
+`builtin-baseline`, verifies `HEAD` against that value, and bootstraps with telemetry disabled.
+The baseline is the sole executable and registry pin source; updates require a dedicated
+dependency-update PR that changes the baseline and expected probe version together.
+
+The canonical validation triplets are the built-in `x64-linux` and `x64-windows` triplets. Configure
+opt-in consumers with `VCPKG_MANIFEST_FEATURES=rocksdb` and a fresh explicit
+`VCPKG_INSTALLED_DIR`; ordinary builds, installed package validators, and standard wheels do not
+use the vcpkg toolchain and retain `SITOS_WITH_ROCKSDB=OFF`. Project CMake and installed package
+configuration never invoke vcpkg or another package manager and never perform hidden provisioning.
+Existing scoped Zenoh and Google Benchmark `FetchContent` paths are unchanged.
+
+Dedicated vcpkg CI jobs persist a per-platform filesystem binary archive with the GitHub-owned
+`actions/cache` action pinned to an exact commit and configure vcpkg with
+`clear;files,<directory>,readwrite`. Primary keys separate the cache format, OS, architecture,
+canonical triplet, root manifest hash, and GitHub-hosted runner image identity; vcpkg package ABI
+remains the inner correctness boundary. A compatible-prefix restore may seed a new runner-image key,
+but only an exact primary-key hit skips save. Restore occurs before provisioning, while save occurs
+only after provisioning, configure, build, runtime, no-feature, and static-guard validation succeeds.
+Pull-request writes remain isolated to their merge refs, trusted `main` pushes use their normal cache
+scope, and no secret or external credential is used. Cache hits affect performance only;
+provisioning, configure, build, and runtime failures remain fatal. The initial cold-provisioning
+budgets are 180 minutes on Linux and 360 minutes on Windows.
+
+The first successful canonical GitHub-hosted PR run was run `30236511593`,
+attempt 1: Linux job
+[89885220722](https://github.com/tetsuh/sitos/actions/runs/30236511593/job/89885220722) emitted
+`VCPKG_PROVISIONING_WALL_SECONDS=970.42`, and Windows job
+[89885220723](https://github.com/tetsuh/sitos/actions/runs/30236511593/job/89885220723) emitted
+`VCPKG_PROVISIONING_WALL_SECONDS=2,491.543` (2,491.543 seconds). These are provisioning-command
+wall times, not full job durations: the Linux job ran approximately 1,595 seconds and the Windows
+job approximately 2,531 seconds.
+
+The same PR merge-ref was rerun as run `30236511593`, attempt 3. Linux job
+[89961622937](https://github.com/tetsuh/sitos/actions/runs/30236511593/job/89961622937) emitted
+`VCPKG_PROVISIONING_WALL_SECONDS=1010.06`, and Windows job
+[89961622965](https://github.com/tetsuh/sitos/actions/runs/30236511593/job/89961622965) emitted
+`VCPKG_PROVISIONING_WALL_SECONDS=2,802.580` (2,802.580 seconds). The rerun full job durations were
+approximately 1,043 and 2,840 seconds respectively. Both runs explicitly report that the pinned
+vcpkg executable's `x-gha` binary caching backend "has been removed"; no cache restore, hit, miss, or
+save evidence is present. These historical runs explain the replacement but do not validate it.
+
+PR #127 uses the SHA-pinned GitHub cache action with vcpkg's `files` backend. Run `30277962785`,
+attempt 1, recorded cache misses, complete successful validation, and archive saves: Linux took
+951.12 seconds and Windows took 2,819.379 seconds. Attempt 2 on the same head restored the exact
+keys, retained all validation, and skipped save: Linux restored approximately 210 MB and took 24.96
+seconds, while Windows restored approximately 594 MB and took 73.277 seconds. The provisioning
+steps were about 38.1 and 38.5 times faster respectively. These measurements used the first
+filesystem-key schema, which lacked the runner-image boundary.
+
+Run `30315682979`, attempt 1, restored those v1 archives through migration restore keys and saved
+runner-image-aware v2 primary keys after all validation passed. Linux provisioning took 33.24 seconds
+for image `ubuntu24-20260720.247.2`; Windows took 61.910 seconds for image
+`win25-vs2026-20260714.173.1`. Attempt 2 restored the exact v2 keys, reported
+`VCPKG_BINARY_CACHE_HIT=true`, retained all validation, skipped save, and completed provisioning in
+23.24 seconds on Linux and 60.623 seconds on Windows. Cache entries are immutable and may be evicted,
+so later cold builds remain expected.
+
+On Windows, the canonical `RocksDB::rocksdb` target is the `/MD`-compatible static archive. The
+probe stages and verifies the baseline's canonical `z.dll` in a clean runtime directory. The
+validator requires `dumpbin` from the `vcvars64.bat` environment. It does not rename or duplicate
+`z.dll` as `zlib1.dll`, depend on `rocksdb-shared.dll`, or use build-tree/vcpkg PATH entries.
+
 ## 3. Install (C++ consumer)
 
 The C++ library and public headers can be installed with the generated CMake export:

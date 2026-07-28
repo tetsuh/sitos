@@ -34,3 +34,4 @@ See [docs/10_adr_process.md](../10_adr_process.md) for the process.
 | [0027](0027-keep-http-control-planes-in-host-applications.md) | Keep HTTP control planes in host applications |
 | [0028](0028-unify-acknowledged-operation-results.md) | Unify acknowledged operation results |
 | [0030](0030-param-store-subscription-lifetime-and-delivery.md) | Define ParamStore subscription lifetime and delivery semantics |
+| [0031](0031-cross-platform-vcpkg-foundation.md) | Establish a cross-platform vcpkg foundation |

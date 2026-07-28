@@ -209,3 +209,216 @@ jobs:
           $command = "call `"$vsPath\VC\Auxiliary\Build\vcvars64.bat`" && cmake -DSITOS_SOURCE_DIR=`"$workspace`" -DWORK_DIR=`"$workspace/build/package-validation`" -DCMAKE_GENERATOR=Ninja -P `"$workspace/tests/package/validate_installed_package.cmake`""
           cmd /c $command
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  vcpkg-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install Linux provisioning prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libssl-dev
+
+      - name: Resolve vcpkg cache outer compatibility boundary
+        id: vcpkg-cache-identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${ImageOS:-}" || -z "${ImageVersion:-}" ]]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          identity="${ImageOS}-${ImageVersion}"
+          identity="${identity//[^a-zA-Z0-9._-]/-}"
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          echo "value=$identity" >> "$GITHUB_OUTPUT"
+
+      - name: Restore vcpkg binary archives
+        if: steps.vcpkg-cache-identity.outputs.available == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+        id: vcpkg-binary-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: vcpkg-files-v2-${{ runner.os }}-${{ runner.arch }}-x64-linux-${{ hashFiles('vcpkg.json') }}-${{ steps.vcpkg-cache-identity.outputs.value }}
+          restore-keys: |
+            vcpkg-files-v2-${{ runner.os }}-${{ runner.arch }}-x64-linux-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-files-v1-${{ runner.os }}-${{ runner.arch }}-x64-linux-${{ hashFiles('vcpkg.json') }}
+
+      - name: Configure vcpkg filesystem binary cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_available='${{ steps.vcpkg-cache-identity.outputs.available }}'
+          if [[ "$cache_available" == "true" &&
+                ("$GITHUB_EVENT_NAME" == "pull_request" ||
+                 ("$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main")) ]]; then
+            mkdir -p "$RUNNER_TEMP/vcpkg-binary-cache"
+            echo "VCPKG_BINARY_SOURCES=clear;files,$RUNNER_TEMP/vcpkg-binary-cache,readwrite" >> "$GITHUB_ENV"
+          else
+            echo "VCPKG_BINARY_SOURCES=clear" >> "$GITHUB_ENV"
+          fi
+          echo "VCPKG_BINARY_CACHE_HIT=${{ steps.vcpkg-binary-cache.outputs.cache-hit }}"
+
+      - name: Checkout and bootstrap pinned vcpkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline="$(python3 -c 'import json; print(json.load(open("vcpkg.json"))["builtin-baseline"])')"
+          printf '%s\n' "$baseline" | grep -Eq '^[0-9a-f]{40}$'
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" checkout --detach "$baseline"
+          test "$(git -C "$RUNNER_TEMP/vcpkg" rev-parse HEAD)" = "$baseline"
+          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+
+      - name: Validate pinned RocksDB provisioning and isolated no-feature build
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/time -f 'VCPKG_PROVISIONING_WALL_SECONDS=%e' cmake \
+            -DSITOS_SOURCE_DIR="$GITHUB_WORKSPACE" \
+            -DVCPKG_ROOT="$RUNNER_TEMP/vcpkg" \
+            -DWORK_DIR="$GITHUB_WORKSPACE/build/vcpkg-linux" \
+            -DTRIPLET=x64-linux -DCMAKE_GENERATOR=Ninja \
+            -P tests/vcpkg/validate_vcpkg_provisioning.cmake
+
+      - name: Guard package discovery against hidden provisioning
+        shell: bash
+        run: |
+          set -euo pipefail
+          config=cmake/sitosConfig.cmake.in
+          test -f CMakeLists.txt
+          test -f "$config"
+          if grep -nE '(vcpkg|apt-get|brew|bootstrap|git clone|FetchContent)' "$config"; then
+            echo 'ERROR: installed package configuration contains a provisioning path' >&2
+            exit 1
+          fi
+          # tests/vcpkg intentionally owns explicit package-manager provisioning validation and is
+          # outside the root project and installed package-configuration boundary checked here.
+          project_matches=$(
+            grep -nE '(vcpkg|apt-get|brew|bootstrap|git clone)' CMakeLists.txt || true
+            grep -rnE '(vcpkg|apt-get|brew|bootstrap|git clone)' \
+              --include='*.cmake' --include='*.cmake.in' cmake || true
+          )
+          if [[ -n "$project_matches" ]]; then
+            echo 'ERROR: project CMake contains a package-manager provisioning path:' >&2
+            echo "$project_matches" >&2
+            exit 1
+          fi
+          echo 'OK: root project and installed package configuration contain no hidden provisioning path'
+
+      - name: Save vcpkg binary archives
+        if: success() && steps.vcpkg-cache-identity.outputs.available == 'true' && steps.vcpkg-binary-cache.outputs.cache-hit != 'true' && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: ${{ steps.vcpkg-binary-cache.outputs.cache-primary-key }}
+
+  vcpkg-windows:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Resolve vcpkg cache outer compatibility boundary
+        id: vcpkg-cache-identity
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:ImageOS) -or
+              [string]::IsNullOrWhiteSpace($env:ImageVersion)) {
+            'available=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            exit 0
+          }
+          $identity = "$($env:ImageOS)-$($env:ImageVersion)" -replace '[^A-Za-z0-9._-]', '-'
+          'available=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "value=$identity" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Restore vcpkg binary archives
+        if: steps.vcpkg-cache-identity.outputs.available == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+        id: vcpkg-binary-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: vcpkg-files-v2-${{ runner.os }}-${{ runner.arch }}-x64-windows-${{ hashFiles('vcpkg.json') }}-${{ steps.vcpkg-cache-identity.outputs.value }}
+          restore-keys: |
+            vcpkg-files-v2-${{ runner.os }}-${{ runner.arch }}-x64-windows-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-files-v1-${{ runner.os }}-${{ runner.arch }}-x64-windows-${{ hashFiles('vcpkg.json') }}
+
+      - name: Configure vcpkg filesystem binary cache
+        shell: pwsh
+        run: |
+          $cacheAvailable = '${{ steps.vcpkg-cache-identity.outputs.available }}'
+          if ($cacheAvailable -eq 'true' -and
+              ($env:GITHUB_EVENT_NAME -eq 'pull_request' -or
+               ($env:GITHUB_EVENT_NAME -eq 'push' -and $env:GITHUB_REF -eq 'refs/heads/main'))) {
+            $cache = Join-Path $env:RUNNER_TEMP 'vcpkg-binary-cache'
+            New-Item -ItemType Directory -Path $cache -Force | Out-Null
+            $cache = $cache.Replace('\', '/')
+            "VCPKG_BINARY_SOURCES=clear;files,$cache,readwrite" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } else {
+            'VCPKG_BINARY_SOURCES=clear' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+          Write-Host 'VCPKG_BINARY_CACHE_HIT=${{ steps.vcpkg-binary-cache.outputs.cache-hit }}'
+
+      - name: Checkout and bootstrap pinned vcpkg
+        shell: pwsh
+        run: |
+          $manifest = Get-Content vcpkg.json -Raw | ConvertFrom-Json
+          $baseline = $manifest.'builtin-baseline'
+          if ($baseline -notmatch '^[0-9a-f]{40}$') { throw 'invalid builtin-baseline' }
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg "$env:RUNNER_TEMP\vcpkg"
+          git -C "$env:RUNNER_TEMP\vcpkg" checkout --detach $baseline
+          if ((git -C "$env:RUNNER_TEMP\vcpkg" rev-parse HEAD) -ne $baseline) { throw 'pin mismatch' }
+          & "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+
+      - name: Validate pinned RocksDB provisioning and isolated no-feature build (MSVC + Ninja)
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $workspace = $env:GITHUB_WORKSPACE.Replace('\', '/')
+          $vcpkg = "$env:RUNNER_TEMP/vcpkg"
+          $command = "call `"$vsPath\VC\Auxiliary\Build\vcvars64.bat`" && cmake -DSITOS_SOURCE_DIR=`"$workspace`" -DVCPKG_ROOT=`"$vcpkg`" -DWORK_DIR=`"$workspace/build/vcpkg-windows`" -DTRIPLET=x64-windows -DCMAKE_GENERATOR=Ninja -P `"$workspace/tests/vcpkg/validate_vcpkg_provisioning.cmake`""
+          $timer = [System.Diagnostics.Stopwatch]::StartNew()
+          cmd /c $command
+          $exitCode = $LASTEXITCODE
+          $timer.Stop()
+          Write-Host ("VCPKG_PROVISIONING_WALL_SECONDS={0:N3}" -f $timer.Elapsed.TotalSeconds)
+          if ($exitCode -ne 0) { exit $exitCode }
+
+      - name: Guard package discovery against hidden provisioning
+        shell: pwsh
+        run: |
+          $config = 'cmake/sitosConfig.cmake.in'
+          if (-not (Test-Path -LiteralPath $config -PathType Leaf)) {
+            throw "Installed package configuration is missing: $config"
+          }
+          if (Select-String -LiteralPath $config -Pattern 'vcpkg|apt-get|brew|bootstrap|git clone|FetchContent') {
+            throw 'Installed package configuration contains a provisioning path'
+          }
+          # tests/vcpkg intentionally owns explicit package-manager provisioning validation and is
+          # outside the root project and installed package-configuration boundary checked here.
+          $projectFiles = @((Resolve-Path -LiteralPath CMakeLists.txt).Path)
+          $projectFiles += @(Get-ChildItem -LiteralPath cmake -Recurse -File |
+            Where-Object { $_.Name -match '\.cmake(\.in)?$' } |
+            ForEach-Object { $_.FullName })
+          if (Select-String -LiteralPath $projectFiles -Pattern 'vcpkg|apt-get|brew|bootstrap|git clone') {
+            throw 'Project CMake contains a package-manager provisioning path'
+          }
+          Write-Host 'OK: root project and installed package configuration contain no hidden provisioning path'
+
+      - name: Save vcpkg binary archives
+        if: success() && steps.vcpkg-cache-identity.outputs.available == 'true' && steps.vcpkg-binary-cache.outputs.cache-hit != 'true' && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: ${{ steps.vcpkg-binary-cache.outputs.cache-primary-key }}
