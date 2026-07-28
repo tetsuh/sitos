@@ -227,7 +227,7 @@ provisioning are unsupported; `apt` is limited to Linux CI bootstrap prerequisit
 canonical static `RocksDB::rocksdb` target imports the baseline's zlib 1.3.2 runtime as `z.dll`;
 validation stages that file under its actual name, requires `dumpbin` from the `vcvars64.bat`
 environment, and rejects `zlib1.dll` compatibility copies and `rocksdb-shared.dll` dependencies.
-Historical backend failures and canonical cold/cached measurements are recorded in Proposed
-ADR-0031 rather than duplicated in this policy document.
+Historical backend failures and canonical cold/cached measurements are recorded in ADR-0031
+rather than duplicated in this policy document.
 
 (END OF DOCUMENT)
