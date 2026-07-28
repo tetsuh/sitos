@@ -3,6 +3,7 @@
 
 #include "sitos/list_sink.hpp"
 #include "sitos/param_concepts.hpp"
+#include "sitos/rocksdb_engine.hpp"
 #include "sitos/session_view.hpp"
 #include "sitos/sitos.hpp"
 
@@ -25,5 +26,8 @@ static_assert(!HasSessionViewPut<sitos::SessionView>);
 
 int main() {
   static_cast<void>(sitos::MakeZenohTransport());
+#if defined(SITOS_PACKAGE_CONSUMER_WITH_ROCKSDB)
+  static_cast<void>(&sitos::RocksDBEngine::Open);
+#endif
   return 0;
 }

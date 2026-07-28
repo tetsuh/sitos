@@ -41,6 +41,8 @@ add_sitos_public_header_compile_test(
   sitos_param_subscription_header_compile_test consumer/param_subscription_header_compile.cpp)
 add_sitos_public_header_compile_test(
   sitos_session_view_header_compile_test consumer/session_view_header_compile.cpp)
+add_sitos_public_header_compile_test(
+  sitos_rocksdb_engine_header_compile_test consumer/rocksdb_engine_header_compile.cpp)
 if(SITOS_WITH_ZENOH)
   sitos_copy_zenohc(sitos_param_store_header_compile_test)
   sitos_copy_zenohc(sitos_param_cache_header_compile_test)
@@ -144,6 +146,16 @@ target_link_libraries(sitos_storage_engine_contract_test
   PRIVATE GTest::gtest_main sitos::sitos)
 sitos_enable_warnings(sitos_storage_engine_contract_test)
 gtest_discover_tests(sitos_storage_engine_contract_test DISCOVERY_MODE PRE_TEST)
+
+if(SITOS_WITH_ROCKSDB)
+  add_executable(sitos_rocksdb_engine_test
+    unit/rocksdb_engine_test.cpp)
+  target_link_libraries(sitos_rocksdb_engine_test
+    PRIVATE GTest::gtest_main sitos::sitos)
+  target_include_directories(sitos_rocksdb_engine_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  sitos_enable_warnings(sitos_rocksdb_engine_test)
+  gtest_discover_tests(sitos_rocksdb_engine_test DISCOVERY_MODE PRE_TEST)
+endif()
 
 add_executable(sitos_in_memory_engine_test
   unit/in_memory_engine_test.cpp)

@@ -72,6 +72,27 @@ run_checked(
   "-DPROBE_RUNTIME_DIR=${_feature_stage}")
 run_checked("${CMAKE_COMMAND}" --build "${_feature_build}")
 
+set(_sitos_build "${_work_dir}/sitos-rocksdb-build")
+set(_sitos_prefix "${_work_dir}/sitos-rocksdb-prefix")
+set(_sitos_consumer_build "${_work_dir}/sitos-rocksdb-consumer-build")
+run_checked(
+  "${CMAKE_COMMAND}" -S "${SITOS_SOURCE_DIR}" -B "${_sitos_build}"
+  ${_generator_args} -DCMAKE_BUILD_TYPE=Release
+  -DSITOS_BUILD_TESTS=OFF -DSITOS_WITH_ZENOH=OFF -DSITOS_WITH_ROCKSDB=ON
+  "-DCMAKE_TOOLCHAIN_FILE=${_toolchain}"
+  "-DVCPKG_MANIFEST_DIR=${SITOS_SOURCE_DIR}"
+  -DVCPKG_MANIFEST_FEATURES=rocksdb
+  "-DVCPKG_TARGET_TRIPLET=${TRIPLET}"
+  "-DVCPKG_INSTALLED_DIR=${_feature_install}")
+run_checked("${CMAKE_COMMAND}" --build "${_sitos_build}")
+run_checked("${CMAKE_COMMAND}" --install "${_sitos_build}" --prefix "${_sitos_prefix}")
+run_checked(
+  "${CMAKE_COMMAND}" -S "${SITOS_SOURCE_DIR}/tests/package/consumer" -B "${_sitos_consumer_build}"
+  ${_generator_args} -DCMAKE_BUILD_TYPE=Release
+  -DSITOS_PACKAGE_CONSUMER_WITH_ROCKSDB=ON
+  "-DCMAKE_PREFIX_PATH=${_sitos_prefix};${_feature_install}/${TRIPLET}")
+run_checked("${CMAKE_COMMAND}" --build "${_sitos_consumer_build}")
+
 if(WIN32)
   # The pinned baseline's zlib 1.3.2 port exports the canonical z.dll name.
   # Never rename it or add a compatibility copy under the pre-1.3.2 name.
