@@ -62,3 +62,81 @@ save. The cache is an optional performance optimization, not a correctness depen
 * ADR-0021: Resolve installed Zenoh dependencies without fetching or bundling
 * `docs/06_build_test_packaging.md`
 * `docs/09_dependency_policy.md`
+
+### Validation evidence
+
+#### Superseded `x-gha` attempt
+
+The first successful canonical GitHub-hosted PR run was run `30236511593`, attempt 1:
+
+* Linux job [89885220722](https://github.com/tetsuh/sitos/actions/runs/30236511593/job/89885220722)
+  emitted `VCPKG_PROVISIONING_WALL_SECONDS=970.42`.
+* Windows job [89885220723](https://github.com/tetsuh/sitos/actions/runs/30236511593/job/89885220723)
+  emitted `VCPKG_PROVISIONING_WALL_SECONDS=2,491.543` (2,491.543 seconds).
+
+These are provisioning-command wall times, not full job durations. The corresponding full job
+spans were 04:14:00–04:30:35 UTC (Linux, approximately 1,595 seconds) and
+04:14:01–04:56:12 UTC (Windows, approximately 2,531 seconds).
+
+The same PR merge-ref was rerun as run `30236511593`, attempt 3, with both focused jobs:
+
+* Linux job [89961622937](https://github.com/tetsuh/sitos/actions/runs/30236511593/job/89961622937)
+  emitted `VCPKG_PROVISIONING_WALL_SECONDS=1010.06`.
+* Windows job [89961622965](https://github.com/tetsuh/sitos/actions/runs/30236511593/job/89961622965)
+  emitted `VCPKG_PROVISIONING_WALL_SECONDS=2,802.580` (2,802.580 seconds).
+
+The rerun full job spans were 11:16:38–11:34:01 UTC (Linux, approximately 1,043 seconds) and
+11:16:39–12:03:59 UTC (Windows, approximately 2,840 seconds). Both attempts explicitly logged
+that the pinned vcpkg executable's `x-gha` binary caching backend "has been removed"; neither log
+contains cache restore, hit, miss, or save evidence. Therefore the rerun is a repeat provisioning
+measurement, not a warm-cache measurement, and same-PR `x-gha` reuse is not proven. This evidence
+is retained as the reason the backend was replaced, not as evidence for the replacement cache.
+
+#### Filesystem binary-cache evidence
+
+PR #127 uses SHA-pinned `actions/cache` restore/save steps around a dedicated vcpkg `files` binary
+archive. Run `30277962785`, attempt 1, recorded misses followed by successful post-validation saves:
+
+* Linux job [90016731979](https://github.com/tetsuh/sitos/actions/runs/30277962785/job/90016731979)
+  emitted `VCPKG_PROVISIONING_WALL_SECONDS=951.12` and saved the Linux archive.
+* Windows job
+  [90016731735](https://github.com/tetsuh/sitos/actions/runs/30277962785/job/90016731735)
+  emitted `VCPKG_PROVISIONING_WALL_SECONDS=2,819.379` and saved the Windows archive.
+
+The same run and head were rerun as attempt 2. Both jobs restored their exact keys, retained all
+provisioning and runtime validation, and skipped save because the primary key matched:
+
+* Linux job [90029988641](https://github.com/tetsuh/sitos/actions/runs/30277962785/job/90029988641)
+  restored approximately 210 MB and emitted `VCPKG_PROVISIONING_WALL_SECONDS=24.96`, about 38.1
+  times faster than the replacement-backend cold run.
+* Windows job
+  [90029988603](https://github.com/tetsuh/sitos/actions/runs/30277962785/job/90029988603)
+  restored approximately 594 MB and emitted `VCPKG_PROVISIONING_WALL_SECONDS=73.277`, about 38.5
+  times faster than the replacement-backend cold run.
+
+These measurements used the first filesystem-key schema, which lacked the runner-image boundary.
+Run `30315682979`, attempt 1, migrated to the runner-image-aware v2 key without discarding compatible
+archives:
+
+* Linux job [90140581635](https://github.com/tetsuh/sitos/actions/runs/30315682979/job/90140581635)
+  restored the v1 archive through the migration restore key, reported `cache-hit=false`, completed
+  provisioning in 33.24 seconds, and saved
+  `vcpkg-files-v2-Linux-X64-x64-linux-...-ubuntu24-20260720.247.2`.
+* Windows job
+  [90140581599](https://github.com/tetsuh/sitos/actions/runs/30315682979/job/90140581599)
+  restored the v1 archive through the migration restore key, reported `cache-hit=false`, completed
+  provisioning in 61.910 seconds, and saved
+  `vcpkg-files-v2-Windows-X64-x64-windows-...-win25-vs2026-20260714.173.1`.
+
+Attempt 2 reran the exact same head and runner images:
+
+* Linux job [90141182464](https://github.com/tetsuh/sitos/actions/runs/30315682979/job/90141182464)
+  restored the exact v2 key, reported `cache-hit=true`, retained all validation, completed
+  provisioning in 23.24 seconds, and skipped save.
+* Windows job
+  [90141182570](https://github.com/tetsuh/sitos/actions/runs/30315682979/job/90141182570)
+  restored the exact v2 key, reported `cache-hit=true`, retained all validation, completed
+  provisioning in 60.623 seconds, and skipped save.
+
+Cache behavior remains performance evidence only. ADR-0031 remains Proposed pending explicit owner
+acceptance.
