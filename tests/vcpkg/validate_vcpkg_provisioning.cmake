@@ -75,6 +75,12 @@ run_checked("${CMAKE_COMMAND}" --build "${_feature_build}")
 set(_sitos_build "${_work_dir}/sitos-rocksdb-build")
 set(_sitos_prefix "${_work_dir}/sitos-rocksdb-prefix")
 set(_sitos_consumer_build "${_work_dir}/sitos-rocksdb-consumer-build")
+if(WIN32)
+  set(_zlib_library "${_feature_install}/${TRIPLET}/lib/z.lib")
+else()
+  set(_zlib_library "${_feature_install}/${TRIPLET}/lib/libz.a")
+endif()
+set(_zlib_include_dir "${_feature_install}/${TRIPLET}/include")
 run_checked(
   "${CMAKE_COMMAND}" -S "${SITOS_SOURCE_DIR}" -B "${_sitos_build}"
   ${_generator_args} -DCMAKE_BUILD_TYPE=Release
@@ -92,7 +98,8 @@ run_checked(
   -DSITOS_PACKAGE_CONSUMER_WITH_ROCKSDB=ON
   "-DCMAKE_PREFIX_PATH=${_sitos_prefix}"
   "-DRocksDB_DIR=${_feature_install}/${TRIPLET}/share/rocksdb"
-  "-DZLIB_DIR=${_feature_install}/${TRIPLET}/share/zlib")
+  "-DZLIB_LIBRARY=${_zlib_library}"
+  "-DZLIB_INCLUDE_DIR=${_zlib_include_dir}")
 run_checked("${CMAKE_COMMAND}" --build "${_sitos_consumer_build}")
 
 if(WIN32)
