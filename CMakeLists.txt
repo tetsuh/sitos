@@ -109,6 +109,7 @@ add_library(sitos STATIC
   src/key.cpp
   src/storage_engine.cpp
   src/in_memory_engine.cpp
+  src/rocksdb_engine.cpp
   src/logging.cpp
   src/storage_node.cpp
   src/session_view.cpp
@@ -137,7 +138,6 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
 endif()
 
 if(SITOS_WITH_ROCKSDB)
-  target_sources(sitos PRIVATE src/rocksdb_engine.cpp)
   target_link_libraries(sitos PUBLIC RocksDB::rocksdb)
   target_compile_definitions(sitos PRIVATE SITOS_WITH_ROCKSDB=1)
 endif()
