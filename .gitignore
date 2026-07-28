@@ -87,5 +87,7 @@ dmypy.json
 .ruff_cache/
 
 # === Project-specific ===
+/vcpkg_installed/
+
 # Private handoff document is kept out of the public repository.
 HANDOFF.md
