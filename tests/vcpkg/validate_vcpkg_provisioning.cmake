@@ -108,9 +108,12 @@ endif()
 run_checked(
   "${_benchmark_executable}" --benchmark_filter=TakeSnapshot
   --benchmark_repetitions=1 --benchmark_min_time=0.001)
+string(CONCAT _rocksdb_test_regex
+  "RocksDBEngineContractTest|RocksDBEngineOpenApi|"
+  "RocksDBEngineSnapshotLifetime|RocksDBEngineConcurrency|RocksDBEngineTestSeam")
 run_checked(
   "${CMAKE_CTEST_COMMAND}" --test-dir "${_sitos_build}" --output-on-failure --no-tests=error
-  -R "RocksDBEngineContractTest|RocksDBEngineOpenApi|RocksDBEngineSnapshotLifetime|RocksDBEngineConcurrency|RocksDBEngineNativeFailure")
+  -R "${_rocksdb_test_regex}")
 run_checked(
   "${CMAKE_CTEST_COMMAND}" --test-dir "${_sitos_build}" --output-on-failure --no-tests=error)
 run_checked("${CMAKE_COMMAND}" --install "${_sitos_build}" --prefix "${_sitos_prefix}")

@@ -155,6 +155,18 @@ sitos_enable_warnings(sitos_storage_engine_contract_test)
 gtest_discover_tests(sitos_storage_engine_contract_test DISCOVERY_MODE PRE_TEST)
 
 if(SITOS_WITH_ROCKSDB)
+  # The contract suite links the production archive so it exercises the exact
+  # RocksDB implementation that is installed for consumers.
+  add_executable(sitos_rocksdb_engine_test
+    unit/rocksdb_engine_test.cpp)
+  target_link_libraries(sitos_rocksdb_engine_test
+    PRIVATE GTest::gtest_main sitos::sitos)
+  sitos_enable_warnings(sitos_rocksdb_engine_test)
+  gtest_discover_tests(sitos_rocksdb_engine_test DISCOVERY_MODE PRE_TEST)
+
+  # Native failure and lifecycle instrumentation stay in a separate binary.
+  # It supplies the seam translation unit directly and never links sitos::sitos,
+  # avoiding duplicate RocksDBEngine definitions in one executable.
   add_library(sitos_rocksdb_test_engine OBJECT ../src/rocksdb_engine.cpp)
   target_compile_definitions(sitos_rocksdb_test_engine PRIVATE
     SITOS_WITH_ROCKSDB=1 SITOS_ROCKSDB_TEST_SEAM=1)
@@ -163,15 +175,18 @@ if(SITOS_WITH_ROCKSDB)
   target_link_libraries(sitos_rocksdb_test_engine PRIVATE RocksDB::rocksdb)
   sitos_enable_warnings(sitos_rocksdb_test_engine)
 
-  add_executable(sitos_rocksdb_engine_test
-    unit/rocksdb_engine_test.cpp)
-  target_sources(sitos_rocksdb_engine_test PRIVATE
+  add_executable(sitos_rocksdb_test_access_test
+    unit/rocksdb_engine_test_access_test.cpp
+    ../src/status.cpp
+    ../src/storage_engine.cpp)
+  target_sources(sitos_rocksdb_test_access_test PRIVATE
     $<TARGET_OBJECTS:sitos_rocksdb_test_engine>)
-  target_link_libraries(sitos_rocksdb_engine_test
-    PRIVATE GTest::gtest_main sitos::sitos)
-  target_include_directories(sitos_rocksdb_engine_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
-  sitos_enable_warnings(sitos_rocksdb_engine_test)
-  gtest_discover_tests(sitos_rocksdb_engine_test DISCOVERY_MODE PRE_TEST)
+  target_link_libraries(sitos_rocksdb_test_access_test
+    PRIVATE GTest::gtest_main RocksDB::rocksdb)
+  target_include_directories(sitos_rocksdb_test_access_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+  sitos_enable_warnings(sitos_rocksdb_test_access_test)
+  gtest_discover_tests(sitos_rocksdb_test_access_test DISCOVERY_MODE PRE_TEST)
 endif()
 
 add_executable(sitos_in_memory_engine_test

@@ -9,6 +9,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -19,7 +20,6 @@
 #endif
 
 #include "sitos/rocksdb_engine.hpp"
-#include "rocksdb_engine_test_access.hpp"
 
 namespace {
 
@@ -31,24 +31,27 @@ std::filesystem::path MakeTestPath() {
 #else
   const auto process_id = getpid();
 #endif
-  return std::filesystem::temp_directory_path() /
-         ("sitos-rocksdb-test-" + std::to_string(process_id) + "-" + std::to_string(id));
+  const auto path = std::filesystem::temp_directory_path() /
+                    ("sitos-rocksdb-test-" + std::to_string(process_id) + "-" +
+                     std::to_string(id));
+  std::error_code error;
+  std::filesystem::remove_all(path, error);
+  EXPECT_FALSE(error);
+  return path;
 }
 
 class CleanupToken final {
  public:
-  CleanupToken(std::filesystem::path path, std::shared_ptr<sitos::rocksdb_test::EventLog> events)
-      : path_(std::move(path)), events_(std::move(events)) {}
+  explicit CleanupToken(std::filesystem::path path) : path_(std::move(path)) {}
 
   ~CleanupToken() {
     std::error_code error;
     std::filesystem::remove_all(path_, error);
-    events_->Add(error ? "directory_remove_failed" : "directory_remove");
+    EXPECT_FALSE(error);
   }
 
  private:
   std::filesystem::path path_;
-  std::shared_ptr<sitos::rocksdb_test::EventLog> events_;
 };
 
 class SnapshotAdapter final : public sitos::StorageReader {
@@ -110,9 +113,8 @@ std::unique_ptr<sitos::StorageEngine> MakeContractEngine() {
     return nullptr;
   }
   auto engine = std::move(result).Value();
-  auto events = sitos::rocksdb_test::GetEventLog(*engine);
   return std::make_unique<ContractEngine>(
-      std::move(engine), std::make_shared<CleanupToken>(path, std::move(events)));
+      std::move(engine), std::make_shared<CleanupToken>(path));
 }
 
 }  // namespace
@@ -124,25 +126,6 @@ TEST(RocksDBEngineOpenApi, EmptyPathIsInvalidArgument) {
   ASSERT_FALSE(result.IsOk());
   EXPECT_EQ(result.StatusCode(), sitos::Status::InvalidArgument);
   EXPECT_TRUE(result.Error());
-}
-
-TEST(RocksDBEngineOpenApi, InjectedNativeOpenFailureReturnsError) {
-  const auto path = MakeTestPath();
-  sitos::rocksdb_test::SetOpenFailureForTest();
-  const auto result = sitos::RocksDBEngine::Open(path.string());
-  ASSERT_FALSE(result.IsOk());
-  EXPECT_EQ(result.StatusCode(), sitos::Status::Error);
-  EXPECT_TRUE(result.Error());
-  EXPECT_FALSE(std::filesystem::exists(path));
-
-  auto retry = sitos::RocksDBEngine::Open(path.string());
-  ASSERT_TRUE(retry.IsOk());
-  auto engine = std::move(retry).Value();
-  ASSERT_NE(engine, nullptr);
-  engine.reset();
-  std::error_code error;
-  std::filesystem::remove_all(path, error);
-  EXPECT_FALSE(error);
 }
 
 TEST(RocksDBEngineOpenApi, ExistingFilePathReturnsNativeErrorWithoutValueBytes) {
@@ -178,85 +161,6 @@ TEST(RocksDBEngineOpenApi, CreatesAndReopensPersistentDatabase) {
   }
   std::error_code error;
   std::filesystem::remove_all(path, error);
-}
-
-TEST(RocksDBEngineSnapshotLifetime, TakeSnapshotUsesNativePrimitiveWithoutEnumeration) {
-  const auto path = MakeTestPath();
-  auto result = sitos::RocksDBEngine::Open(path.string());
-  ASSERT_TRUE(result.IsOk());
-  auto engine = std::move(result).Value();
-  ASSERT_TRUE(engine->Put("key", std::vector<std::byte>{std::byte{0x01}}));
-  auto snapshot = engine->TakeSnapshot();
-  ASSERT_NE(snapshot, nullptr);
-  std::size_t snapshot_calls = 0;
-  std::size_t enumeration_calls = 0;
-  sitos::rocksdb_test::GetSnapshotStats(*engine, snapshot_calls, enumeration_calls);
-  EXPECT_EQ(snapshot_calls, 1u);
-  EXPECT_EQ(enumeration_calls, 0u);
-  std::error_code error;
-  snapshot.reset();
-  engine.reset();
-  std::filesystem::remove_all(path, error);
-}
-
-TEST(RocksDBEngineSnapshotLifetime, SnapshotOutlivesEngine) {
-  const auto path = MakeTestPath();
-  std::shared_ptr<const sitos::StorageReader> snapshot;
-  std::shared_ptr<sitos::rocksdb_test::EventLog> events;
-  {
-    auto result = sitos::RocksDBEngine::Open(path.string());
-    ASSERT_TRUE(result.IsOk());
-    auto engine = std::move(result).Value();
-    events = sitos::rocksdb_test::GetEventLog(*engine);
-    auto cleanup = std::make_shared<CleanupToken>(path, events);
-    ASSERT_TRUE(engine->Put("stable", std::vector<std::byte>{std::byte{0x01}}));
-    snapshot = std::make_shared<SnapshotAdapter>(engine->TakeSnapshot(), cleanup);
-    ASSERT_NE(snapshot, nullptr);
-    engine.reset();
-    EXPECT_TRUE(snapshot->Get("stable", [](std::string_view, sitos::Bytes value) {
-      return value.size() == 1 && value[0] == std::byte{0x01};
-    }));
-  }
-  auto recorded = events->Snapshot();
-  ASSERT_EQ(recorded.size(), 2u);
-  EXPECT_EQ(recorded[0], "open");
-  EXPECT_EQ(recorded[1], "get_snapshot");
-  snapshot.reset();
-  recorded = events->Snapshot();
-  ASSERT_EQ(recorded.size(), 5u);
-  EXPECT_EQ(recorded[0], "open");
-  EXPECT_EQ(recorded[1], "get_snapshot");
-  EXPECT_EQ(recorded[2], "release_snapshot");
-  EXPECT_EQ(recorded[3], "db_close");
-  EXPECT_EQ(recorded[4], "directory_remove");
-  EXPECT_FALSE(std::filesystem::exists(path));
-}
-
-TEST(RocksDBEngineSnapshotLifetime, InjectedReleaseFailureFallsBackWithoutTerminating) {
-  const auto path = MakeTestPath();
-  std::shared_ptr<const sitos::StorageReader> snapshot;
-  std::shared_ptr<sitos::rocksdb_test::EventLog> events;
-  {
-    auto result = sitos::RocksDBEngine::Open(path.string());
-    ASSERT_TRUE(result.IsOk());
-    auto engine = std::move(result).Value();
-    events = sitos::rocksdb_test::GetEventLog(*engine);
-    auto cleanup = std::make_shared<CleanupToken>(path, events);
-    snapshot = std::make_shared<SnapshotAdapter>(engine->TakeSnapshot(), cleanup);
-    sitos::rocksdb_test::SetSnapshotReleaseFailureForTest(*engine);
-    engine.reset();
-  }
-
-  snapshot.reset();
-  const auto recorded = events->Snapshot();
-  ASSERT_EQ(recorded.size(), 6u);
-  EXPECT_EQ(recorded[0], "open");
-  EXPECT_EQ(recorded[1], "get_snapshot");
-  EXPECT_EQ(recorded[2], "release_snapshot_recovered");
-  EXPECT_EQ(recorded[3], "release_snapshot");
-  EXPECT_EQ(recorded[4], "db_close");
-  EXPECT_EQ(recorded[5], "directory_remove");
-  EXPECT_FALSE(std::filesystem::exists(path));
 }
 
 TEST(RocksDBEngineConcurrency, ConcurrentPutDeleteGetList) {
@@ -342,42 +246,6 @@ TEST(RocksDBEngineConcurrency, ConcurrentPutDeleteGetList) {
   EXPECT_EQ(final_count, static_cast<std::size_t>(kWriters));
 
   snapshot.reset();
-  engine.reset();
-  std::error_code error;
-  std::filesystem::remove_all(path, error);
-  EXPECT_FALSE(error);
-}
-
-TEST(RocksDBEngineNativeFailure, PutDeleteGetListHaveContractedFailures) {
-  const auto path = MakeTestPath();
-  auto result = sitos::RocksDBEngine::Open(path.string());
-  ASSERT_TRUE(result.IsOk());
-  auto engine = std::move(result).Value();
-  ASSERT_TRUE(engine->Put("fault", std::vector<std::byte>{std::byte{0x01}}));
-
-  sitos::rocksdb_test::SetFailures(*engine, sitos::rocksdb_test::kPut);
-  EXPECT_FALSE(engine->Put("fault", std::vector<std::byte>{std::byte{0x02}}));
-  EXPECT_TRUE(engine->Get("fault", [](std::string_view, sitos::Bytes value) {
-    return value.size() == 1 && value[0] == std::byte{0x01};
-  }));
-  sitos::rocksdb_test::SetFailures(*engine, sitos::rocksdb_test::kDelete);
-  EXPECT_FALSE(engine->Delete("fault"));
-
-  bool called = false;
-  sitos::rocksdb_test::SetFailures(*engine, sitos::rocksdb_test::kGet);
-  EXPECT_FALSE(engine->Get("fault", [&](std::string_view, sitos::Bytes) {
-    called = true;
-    return true;
-  }));
-  EXPECT_FALSE(called);
-  sitos::rocksdb_test::SetFailures(*engine, sitos::rocksdb_test::kList);
-  EXPECT_FALSE(engine->List("", [&](std::string_view, sitos::Bytes) {
-    called = true;
-    return true;
-  }));
-  EXPECT_FALSE(called);
-
-  sitos::rocksdb_test::SetFailures(*engine, 0);
   engine.reset();
   std::error_code error;
   std::filesystem::remove_all(path, error);

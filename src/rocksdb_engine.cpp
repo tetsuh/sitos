@@ -53,8 +53,49 @@ const std::error_category& RocksDBCategory() noexcept {
 }
 
 std::error_code MakeRocksDBError(const rocksdb::Status& status) {
-  const auto code = static_cast<int>(status.code());
+  using StatusCode = std::underlying_type_t<rocksdb::Status::Code>;
+  const auto code = static_cast<int>(static_cast<StatusCode>(status.code()));
   return {code + 1, RocksDBCategory()};
+}
+
+using EntryBuffer = std::vector<std::pair<std::string, std::vector<std::byte>>>;
+
+rocksdb::Status NativePut(rocksdb::DB& db, const rocksdb::WriteOptions& options,
+                          const rocksdb::Slice& key, const rocksdb::Slice& value) {
+  return db.Put(options, key, value);
+}
+
+rocksdb::Status NativeDelete(rocksdb::DB& db, const rocksdb::WriteOptions& options,
+                             const rocksdb::Slice& key) {
+  return db.Delete(options, key);
+}
+
+rocksdb::Status NativeGet(rocksdb::DB& db, const rocksdb::ReadOptions& options,
+                          const rocksdb::Slice& key, std::string* value) {
+  return db.Get(options, key, value);
+}
+
+rocksdb::Status ListEntries(rocksdb::DB& db, const rocksdb::ReadOptions& options,
+                            std::string_view prefix, EntryBuffer& entries) {
+  std::unique_ptr<rocksdb::Iterator> iterator(db.NewIterator(options));
+  iterator->Seek(rocksdb::Slice(prefix.data(), prefix.size()));
+  while (iterator->Valid()) {
+    const rocksdb::Slice key = iterator->key();
+    if (!std::string_view(key.data(), key.size()).starts_with(prefix)) break;
+    const rocksdb::Slice value = iterator->value();
+    entries.emplace_back(
+        std::string(key.data(), key.size()),
+        std::vector<std::byte>(reinterpret_cast<const std::byte*>(value.data()),
+                              reinterpret_cast<const std::byte*>(value.data()) + value.size()));
+    iterator->Next();
+  }
+  return iterator->status();
+}
+
+const rocksdb::Snapshot* NativeGetSnapshot(rocksdb::DB& db) { return db.GetSnapshot(); }
+
+void NativeReleaseSnapshot(rocksdb::DB& db, const rocksdb::Snapshot* snapshot) {
+  db.ReleaseSnapshot(snapshot);
 }
 
 #if defined(SITOS_ROCKSDB_TEST_SEAM)
@@ -66,8 +107,7 @@ struct OperationAdapter {
   using Get = std::function<rocksdb::Status(rocksdb::DB&, const rocksdb::ReadOptions&,
                                              const rocksdb::Slice&, std::string*)>;
   using List = std::function<rocksdb::Status(
-      rocksdb::DB&, const rocksdb::ReadOptions&, std::string_view,
-      std::vector<std::pair<std::string, std::vector<std::byte>>>&)>;
+      rocksdb::DB&, const rocksdb::ReadOptions&, std::string_view, EntryBuffer&)>;
   using GetSnapshot = std::function<const rocksdb::Snapshot*(rocksdb::DB&)>;
   using ReleaseSnapshot = std::function<void(rocksdb::DB&, const rocksdb::Snapshot*)>;
 
@@ -108,46 +148,31 @@ OperationAdapter MakeOperationAdapter(unsigned int failures = 0) {
     if ((failures & rocksdb_test::kPut) != 0) {
       return rocksdb::Status::IOError("injected Put failure");
     }
-    return db.Put(options, key, value);
+    return NativePut(db, options, key, value);
   };
   adapter.delete_key = [failures](rocksdb::DB& db, const rocksdb::WriteOptions& options,
                                   const rocksdb::Slice& key) {
     if ((failures & rocksdb_test::kDelete) != 0) {
       return rocksdb::Status::IOError("injected Delete failure");
     }
-    return db.Delete(options, key);
+    return NativeDelete(db, options, key);
   };
   adapter.get = [failures](rocksdb::DB& db, const rocksdb::ReadOptions& options,
                            const rocksdb::Slice& key, std::string* value) {
     if ((failures & rocksdb_test::kGet) != 0) {
       return rocksdb::Status::IOError("injected Get failure");
     }
-    return db.Get(options, key, value);
+    return NativeGet(db, options, key, value);
   };
   adapter.list = [failures](rocksdb::DB& db, const rocksdb::ReadOptions& options,
-                            std::string_view prefix,
-                            std::vector<std::pair<std::string, std::vector<std::byte>>>& entries) {
+                            std::string_view prefix, EntryBuffer& entries) {
     if ((failures & rocksdb_test::kList) != 0) {
       return rocksdb::Status::IOError("injected List failure");
     }
-    std::unique_ptr<rocksdb::Iterator> iterator(db.NewIterator(options));
-    iterator->Seek(rocksdb::Slice(prefix.data(), prefix.size()));
-    while (iterator->Valid()) {
-      const rocksdb::Slice key = iterator->key();
-      if (!std::string_view(key.data(), key.size()).starts_with(prefix)) break;
-      const rocksdb::Slice value = iterator->value();
-      entries.emplace_back(
-          std::string(key.data(), key.size()),
-          std::vector<std::byte>(reinterpret_cast<const std::byte*>(value.data()),
-                                reinterpret_cast<const std::byte*>(value.data()) + value.size()));
-      iterator->Next();
-    }
-    return iterator->status();
+    return ListEntries(db, options, prefix, entries);
   };
-  adapter.get_snapshot = [](rocksdb::DB& db) { return db.GetSnapshot(); };
-  adapter.release_snapshot = [](rocksdb::DB& db, const rocksdb::Snapshot* snapshot) {
-    db.ReleaseSnapshot(snapshot);
-  };
+  adapter.get_snapshot = NativeGetSnapshot;
+  adapter.release_snapshot = NativeReleaseSnapshot;
   return adapter;
 }
 
@@ -188,6 +213,87 @@ OperationAdapter Operations(const std::shared_ptr<DatabaseState>& state) {
 }
 #endif
 
+rocksdb::Status PutDatabase(const std::shared_ptr<DatabaseState>& state,
+                            const rocksdb::WriteOptions& options,
+                            const rocksdb::Slice& key, const rocksdb::Slice& value) {
+#if defined(SITOS_ROCKSDB_TEST_SEAM)
+  return Operations(state).put(*state->db, options, key, value);
+#else
+  return NativePut(*state->db, options, key, value);
+#endif
+}
+
+rocksdb::Status DeleteDatabase(const std::shared_ptr<DatabaseState>& state,
+                               const rocksdb::WriteOptions& options,
+                               const rocksdb::Slice& key) {
+#if defined(SITOS_ROCKSDB_TEST_SEAM)
+  return Operations(state).delete_key(*state->db, options, key);
+#else
+  return NativeDelete(*state->db, options, key);
+#endif
+}
+
+rocksdb::Status GetDatabase(const std::shared_ptr<DatabaseState>& state,
+                            const rocksdb::ReadOptions& options,
+                            const rocksdb::Slice& key, std::string* value) {
+#if defined(SITOS_ROCKSDB_TEST_SEAM)
+  return Operations(state).get(*state->db, options, key, value);
+#else
+  return NativeGet(*state->db, options, key, value);
+#endif
+}
+
+rocksdb::Status ListDatabase(const std::shared_ptr<DatabaseState>& state,
+                             const rocksdb::ReadOptions& options,
+                             std::string_view prefix, EntryBuffer& entries) {
+#if defined(SITOS_ROCKSDB_TEST_SEAM)
+  state->enumeration_calls.fetch_add(1);
+  return Operations(state).list(*state->db, options, prefix, entries);
+#else
+  return ListEntries(*state->db, options, prefix, entries);
+#endif
+}
+
+const rocksdb::Snapshot* GetDatabaseSnapshot(
+    const std::shared_ptr<DatabaseState>& state) {
+#if defined(SITOS_ROCKSDB_TEST_SEAM)
+  const rocksdb::Snapshot* snapshot = Operations(state).get_snapshot(*state->db);
+  state->snapshot_calls.fetch_add(1);
+  state->events->Add("get_snapshot");
+  return snapshot;
+#else
+  return NativeGetSnapshot(*state->db);
+#endif
+}
+
+bool ReadEntry(const std::shared_ptr<DatabaseState>& state,
+               const rocksdb::ReadOptions& options, std::string_view key,
+               const EntrySink& sink) {
+  std::string value;
+  if (const rocksdb::Status status =
+          GetDatabase(state, options, rocksdb::Slice(key.data(), key.size()), &value);
+      status.IsNotFound() || !status.ok()) {
+    return false;
+  }
+  sink(key, std::span<const std::byte>(reinterpret_cast<const std::byte*>(value.data()),
+                                        value.size()));
+  return true;
+}
+
+bool ReadEntries(const std::shared_ptr<DatabaseState>& state,
+                 const rocksdb::ReadOptions& options, std::string_view prefix,
+                 const EntrySink& sink) {
+  EntryBuffer entries;
+  if (const rocksdb::Status status = ListDatabase(state, options, prefix, entries);
+      !status.ok()) {
+    return false;
+  }
+  return std::ranges::all_of(entries, [&sink](const auto& entry) {
+    const auto& [entry_key, value] = entry;
+    return sink(entry_key, value);
+  });
+}
+
 void ReleaseSnapshotNoexcept(const std::shared_ptr<DatabaseState>& state,
                              const rocksdb::Snapshot* snapshot) noexcept {
 #if defined(SITOS_ROCKSDB_TEST_SEAM)
@@ -198,7 +304,7 @@ void ReleaseSnapshotNoexcept(const std::shared_ptr<DatabaseState>& state,
   } catch (...) {
     recovered = true;
     try {
-      state->db->ReleaseSnapshot(snapshot);
+      NativeReleaseSnapshot(*state->db, snapshot);
     } catch (...) {
       state->events->Add("release_snapshot_failed");
       return;
@@ -208,7 +314,7 @@ void ReleaseSnapshotNoexcept(const std::shared_ptr<DatabaseState>& state,
   state->events->Add("release_snapshot");
 #else
   try {
-    state->db->ReleaseSnapshot(snapshot);
+    NativeReleaseSnapshot(*state->db, snapshot);
   } catch (...) {
     // RocksDB does not normally throw; destructors cannot propagate an unexpected exception.
   }
@@ -230,60 +336,15 @@ class RocksDBSnapshot final : public StorageReader {
   RocksDBSnapshot& operator=(RocksDBSnapshot&&) = delete;
 
   bool Get(std::string_view key, const EntrySink& sink) const override {
-    std::string value;
     rocksdb::ReadOptions options;
     options.snapshot = snapshot_;
-#if defined(SITOS_ROCKSDB_TEST_SEAM)
-    if (const rocksdb::Status status = Operations(state_).get(
-            *state_->db, options, rocksdb::Slice(key.data(), key.size()), &value);
-        status.IsNotFound() || !status.ok()) {
-      return false;
-    }
-#else
-    if (const rocksdb::Status status =
-            state_->db->Get(options, rocksdb::Slice(key.data(), key.size()), &value);
-        status.IsNotFound() || !status.ok()) {
-      return false;
-    }
-#endif
-    sink(key, std::span<const std::byte>(reinterpret_cast<const std::byte*>(value.data()),
-                                          value.size()));
-    return true;
+    return ReadEntry(state_, options, key, sink);
   }
 
   bool List(std::string_view prefix, const EntrySink& sink) const override {
-    std::vector<std::pair<std::string, std::vector<std::byte>>> entries;
     rocksdb::ReadOptions options;
     options.snapshot = snapshot_;
-#if defined(SITOS_ROCKSDB_TEST_SEAM)
-    state_->enumeration_calls.fetch_add(1);
-    if (const rocksdb::Status status =
-            Operations(state_).list(*state_->db, options, prefix, entries);
-        !status.ok()) {
-      return false;
-    }
-#else
-    {
-      std::unique_ptr<rocksdb::Iterator> iterator(state_->db->NewIterator(options));
-      iterator->Seek(rocksdb::Slice(prefix.data(), prefix.size()));
-      while (iterator->Valid()) {
-        const rocksdb::Slice entry_key = iterator->key();
-        if (!std::string_view(entry_key.data(), entry_key.size()).starts_with(prefix)) break;
-        const rocksdb::Slice value = iterator->value();
-        entries.emplace_back(
-            std::string(entry_key.data(), entry_key.size()),
-            std::vector<std::byte>(
-                reinterpret_cast<const std::byte*>(value.data()),
-                reinterpret_cast<const std::byte*>(value.data()) + value.size()));
-        iterator->Next();
-      }
-      if (!iterator->status().ok()) return false;
-    }
-#endif
-    return std::ranges::all_of(entries, [&sink](const auto& entry) {
-      const auto& [entry_key, value] = entry;
-      return sink(entry_key, value);
-    });
+    return ReadEntries(state_, options, prefix, sink);
   }
 
  private:
@@ -386,16 +447,10 @@ Result<std::unique_ptr<RocksDBEngine>> RocksDBEngine::Open(const std::string& pa
 
 bool RocksDBEngine::Put(std::string_view key, Bytes value) {
 #if defined(SITOS_WITH_ROCKSDB)
-#if defined(SITOS_ROCKSDB_TEST_SEAM)
-  const rocksdb::Status status = Operations(impl_->state).put(
-      *impl_->state->db, rocksdb::WriteOptions{}, rocksdb::Slice(key.data(), key.size()),
-      rocksdb::Slice(reinterpret_cast<const char*>(value.data()), value.size()));
-#else
-  const rocksdb::Status status = impl_->state->db->Put(
-      rocksdb::WriteOptions{}, rocksdb::Slice(key.data(), key.size()),
-      rocksdb::Slice(reinterpret_cast<const char*>(value.data()), value.size()));
-#endif
-  return status.ok();
+  return PutDatabase(impl_->state, rocksdb::WriteOptions{},
+                     rocksdb::Slice(key.data(), key.size()),
+                     rocksdb::Slice(reinterpret_cast<const char*>(value.data()), value.size()))
+      .ok();
 #else
   static_cast<void>(key);
   static_cast<void>(value);
@@ -405,15 +460,9 @@ bool RocksDBEngine::Put(std::string_view key, Bytes value) {
 
 bool RocksDBEngine::Delete(std::string_view key) {
 #if defined(SITOS_WITH_ROCKSDB)
-#if defined(SITOS_ROCKSDB_TEST_SEAM)
-  return Operations(impl_->state).delete_key(
-             *impl_->state->db, rocksdb::WriteOptions{}, rocksdb::Slice(key.data(), key.size()))
+  return DeleteDatabase(impl_->state, rocksdb::WriteOptions{},
+                        rocksdb::Slice(key.data(), key.size()))
       .ok();
-#else
-  return impl_->state->db
-      ->Delete(rocksdb::WriteOptions{}, rocksdb::Slice(key.data(), key.size()))
-      .ok();
-#endif
 #else
   static_cast<void>(key);
   return false;
@@ -422,24 +471,7 @@ bool RocksDBEngine::Delete(std::string_view key) {
 
 bool RocksDBEngine::Get(std::string_view key, const EntrySink& sink) const {
 #if defined(SITOS_WITH_ROCKSDB)
-  std::string value;
-#if defined(SITOS_ROCKSDB_TEST_SEAM)
-  if (const rocksdb::Status status = Operations(impl_->state).get(
-          *impl_->state->db, rocksdb::ReadOptions{}, rocksdb::Slice(key.data(), key.size()),
-          &value);
-      status.IsNotFound() || !status.ok()) {
-    return false;
-  }
-#else
-  if (const rocksdb::Status status = impl_->state->db->Get(
-          rocksdb::ReadOptions{}, rocksdb::Slice(key.data(), key.size()), &value);
-      status.IsNotFound() || !status.ok()) {
-    return false;
-  }
-#endif
-  sink(key, std::span<const std::byte>(reinterpret_cast<const std::byte*>(value.data()),
-                                        value.size()));
-  return true;
+  return ReadEntry(impl_->state, rocksdb::ReadOptions{}, key, sink);
 #else
   static_cast<void>(key);
   static_cast<void>(sink);
@@ -449,37 +481,7 @@ bool RocksDBEngine::Get(std::string_view key, const EntrySink& sink) const {
 
 bool RocksDBEngine::List(std::string_view prefix, const EntrySink& sink) const {
 #if defined(SITOS_WITH_ROCKSDB)
-  std::vector<std::pair<std::string, std::vector<std::byte>>> entries;
-#if defined(SITOS_ROCKSDB_TEST_SEAM)
-  impl_->state->enumeration_calls.fetch_add(1);
-  if (const rocksdb::Status status = Operations(impl_->state).list(
-          *impl_->state->db, rocksdb::ReadOptions{}, prefix, entries);
-      !status.ok()) {
-    return false;
-  }
-#else
-  {
-    std::unique_ptr<rocksdb::Iterator> iterator(
-        impl_->state->db->NewIterator(rocksdb::ReadOptions{}));
-    iterator->Seek(rocksdb::Slice(prefix.data(), prefix.size()));
-    while (iterator->Valid()) {
-      const rocksdb::Slice entry_key = iterator->key();
-      if (!std::string_view(entry_key.data(), entry_key.size()).starts_with(prefix)) break;
-      const rocksdb::Slice value = iterator->value();
-      entries.emplace_back(
-          std::string(entry_key.data(), entry_key.size()),
-          std::vector<std::byte>(
-              reinterpret_cast<const std::byte*>(value.data()),
-              reinterpret_cast<const std::byte*>(value.data()) + value.size()));
-      iterator->Next();
-    }
-    if (!iterator->status().ok()) return false;
-  }
-#endif
-  return std::ranges::all_of(entries, [&sink](const auto& entry) {
-    const auto& [entry_key, value] = entry;
-    return sink(entry_key, value);
-  });
+  return ReadEntries(impl_->state, rocksdb::ReadOptions{}, prefix, sink);
 #else
   static_cast<void>(prefix);
   static_cast<void>(sink);
@@ -489,13 +491,7 @@ bool RocksDBEngine::List(std::string_view prefix, const EntrySink& sink) const {
 
 std::shared_ptr<const StorageReader> RocksDBEngine::TakeSnapshot() const {
 #if defined(SITOS_WITH_ROCKSDB)
-#if defined(SITOS_ROCKSDB_TEST_SEAM)
-  const rocksdb::Snapshot* snapshot = Operations(impl_->state).get_snapshot(*impl_->state->db);
-  impl_->state->snapshot_calls.fetch_add(1);
-  impl_->state->events->Add("get_snapshot");
-#else
-  const rocksdb::Snapshot* snapshot = impl_->state->db->GetSnapshot();
-#endif
+  const rocksdb::Snapshot* snapshot = GetDatabaseSnapshot(impl_->state);
   try {
     return std::make_shared<RocksDBSnapshot>(impl_->state, snapshot);
   } catch (...) {
@@ -523,11 +519,12 @@ void SetOpenFailureForTest() {
   };
 }
 
-void SetSnapshotReleaseFailureForTest(RocksDBEngine& engine) {
+void SetSnapshotReleaseFailureForTest(const RocksDBEngine& engine) {
   const auto state = StateFor(&engine);
   if (state == nullptr) return;
   std::lock_guard lock(state->operations_mutex);
   state->operations.release_snapshot = [](rocksdb::DB&, const rocksdb::Snapshot*) {
+    // Injected failures must throw before native release so the noexcept fallback releases once.
     throw std::bad_alloc{};
   };
 }

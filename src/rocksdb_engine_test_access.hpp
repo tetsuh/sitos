@@ -44,7 +44,7 @@ inline constexpr unsigned int kGet = 1U << 2;
 inline constexpr unsigned int kList = 1U << 3;
 
 void SetOpenFailureForTest();
-void SetSnapshotReleaseFailureForTest(RocksDBEngine& engine);
+void SetSnapshotReleaseFailureForTest(const RocksDBEngine& engine);
 void SetFailures(const RocksDBEngine& engine, unsigned int failures);
 void GetSnapshotStats(const RocksDBEngine& engine, std::size_t& snapshot_calls,
                       std::size_t& enumeration_calls);
