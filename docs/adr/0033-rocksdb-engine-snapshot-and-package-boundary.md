@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 2026-07-28
+Proposed — pending owner acceptance immediately before merge
 
 ## Context
 
@@ -21,7 +21,8 @@ packages, keep the OFF build linkable by making `RocksDBEngine::Open` return `St
 configuration time, and make installed-package dependency reconstruction exact, provider-neutral,
 relocatable, network-free, and non-bundling; an installed RocksDB-OFF package will neither discover
 nor require RocksDB. We will preserve ADR-0004's O(1), copy-free snapshot invariant by retaining
-shared database ownership until snapshot release; each `List` operation will fully materialize a
+shared database ownership until snapshot release and ordering native snapshot release before final
+database destruction and filesystem cleanup; each `List` operation will fully materialize a
 consistent read set before invoking user sinks, and no sink will run while an engine lock, native
 database lock, or iterator is held. We will run the reusable contract suite against the production
 library and build test-only native Open, CRUD, snapshot, and lifecycle seams into a separate
