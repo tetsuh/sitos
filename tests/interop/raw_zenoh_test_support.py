@@ -7,6 +7,7 @@ import os
 import queue
 import socket
 import subprocess
+import sys
 import threading
 import uuid
 from dataclasses import dataclass
@@ -84,7 +85,6 @@ class FixtureProcess:
                     continue
                 details = "; ".join(startup_errors)
                 raise AssertionError(f"fixture startup failed: {details}") from startup_error
-        raise AssertionError("fixture startup retry limit reached")
 
     @staticmethod
     def _select_port() -> int:
@@ -235,7 +235,9 @@ class FixtureProcess:
         except AssertionError as cleanup_error:
             if exc_value is None:
                 raise
-            if hasattr(exc_value, "add_note"):
-                exc_value.add_note(f"fixture cleanup failed: {cleanup_error}")
-                return
-            raise cleanup_error from exc_value
+            cleanup_diagnostic = f"fixture cleanup failed: {cleanup_error}"
+            add_note = getattr(exc_value, "add_note", None)
+            if callable(add_note):
+                add_note(cleanup_diagnostic)
+            else:
+                print(cleanup_diagnostic, file=sys.stderr)

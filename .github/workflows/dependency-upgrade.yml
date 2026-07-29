@@ -84,7 +84,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build libssl-dev python3-pip
-          python3 -m pip install --break-system-packages -r tests/interop/requirements.txt
+          python3 -m pip install --break-system-packages --only-binary=:all: \
+            --require-hashes -r tests/interop/requirements.txt
 
       - name: Configure (zenoh-c ${{ matrix.label }} = ${{ matrix.version }})
         env:

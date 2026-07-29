@@ -20,6 +20,18 @@ namespace {
 
 using namespace std::chrono_literals;
 
+template <typename T>
+void ReportStartupFailure(std::string_view stage, const sitos::Result<T>& result) {
+  std::cerr << stage << " failed: status=" << static_cast<int>(result.StatusCode());
+  if (!result.Message().empty()) std::cerr << ", message=" << result.Message();
+  const auto& cause = result.Error();
+  if (cause) {
+    std::cerr << ", cause=" << cause.category().name() << ':' << cause.value() << ' '
+              << cause.message();
+  }
+  std::cerr << '\n';
+}
+
 class Protocol final {
  public:
   void Reply(std::string_view line) { std::cout << line << std::endl; }
@@ -100,11 +112,18 @@ int main(int argc, char** argv) {
       "']}, scouting: {multicast: {enabled: false}}}";
 
   auto transport_result = sitos::OpenZenohTransport(config);
-  if (!transport_result.IsOk()) return 3;
+  if (!transport_result.IsOk()) {
+    ReportStartupFailure("OpenZenohTransport", transport_result);
+    return 3;
+  }
   std::shared_ptr<sitos::Transport> transport(std::move(transport_result).Value());
   auto engine = std::make_shared<sitos::InMemoryEngine>();
   sitos::StorageNode node(*transport);
-  if (!node.Start(engine, {.prefix = prefix, .log_sink = nullptr}).IsOk()) return 4;
+  const auto start_result = node.Start(engine, {.prefix = prefix, .log_sink = nullptr});
+  if (!start_result.IsOk()) {
+    ReportStartupFailure("StorageNode::Start", start_result);
+    return 4;
+  }
 
   sitos::ClientConfig client_config;
   client_config.prefix = prefix;
@@ -112,6 +131,7 @@ int main(int argc, char** argv) {
   client_config.log_sink = nullptr;
   auto store_result = sitos::ParamStore::Open(transport, std::move(client_config));
   if (!store_result.IsOk()) {
+    ReportStartupFailure("ParamStore::Open", store_result);
     node.Stop();
     return 5;
   }

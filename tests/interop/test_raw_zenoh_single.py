@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import ast
 import importlib.metadata
+import os
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -13,6 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 
+import pytest
 import zenoh
 
 import raw_zenoh_test_support as support
@@ -142,6 +145,48 @@ def test_raw_zenoh_client_can_put_and_get() -> None:
                 session, snapshot_key, _encode_dp(-17.25)
             )
             assert _decode_dp(snapshot_reply.payload) == -17.25
+
+
+def test_fixture_reports_transport_startup_failure() -> None:
+    executable = os.environ["SITOS_RAW_ZENOH_FIXTURE"]
+    with socket.socket() as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen()
+        occupied_port = occupied.getsockname()[1]
+        result = subprocess.run(
+            [
+                executable,
+                f"sitos/interop_diagnostic_{os.getpid()}",
+                str(occupied_port),
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=10,
+        )
+    assert result.returncode == 3
+    assert "OpenZenohTransport failed: status=" in result.stderr
+    assert ", cause=" in result.stderr
+    assert "{mode:" not in result.stderr
+
+
+def test_cleanup_failure_preserves_primary_without_exception_notes(capsys) -> None:
+    class LegacyError(RuntimeError):
+        add_note = None
+
+    fixture = object.__new__(support.FixtureProcess)
+
+    def fail_cleanup() -> None:
+        raise AssertionError("cleanup diagnostic")
+
+    fixture.close = fail_cleanup
+    with pytest.raises(LegacyError, match="primary failure"):
+        try:
+            raise LegacyError("primary failure")
+        except LegacyError as primary:
+            fixture.__exit__(LegacyError, primary, primary.__traceback__)
+            raise
+    assert "fixture cleanup failed: cleanup diagnostic" in capsys.readouterr().err
 
 
 def test_fixture_retries_a_port_bind_race(monkeypatch) -> None:

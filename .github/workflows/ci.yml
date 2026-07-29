@@ -49,7 +49,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build libssl-dev python3-pip
-          python3 -m pip install --break-system-packages -r tests/interop/requirements.txt
+          python3 -m pip install --break-system-packages --only-binary=:all: \
+            --require-hashes -r tests/interop/requirements.txt
 
       - name: Configure
         run: cmake --preset dev-linux
@@ -166,15 +167,31 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
       - name: Install raw Zenoh interoperability dependencies
-        run: python -m pip install -r tests/interop/requirements.txt
+        run: >-
+          python -m pip install --only-binary=:all: --require-hashes
+          -r tests/interop/requirements.txt
 
       - name: Configure, build and test (MSVC + Ninja)
         shell: pwsh
         run: |
+          $python = (Get-Command python).Source
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          cmd /c "call `"$vsPath\VC\Auxiliary\Build\vcvars64.bat`" && cmake --preset dev-windows && cmake --build --preset dev-windows && ctest --preset dev-windows"
+          $vsPath = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          $vcvars = "$vsPath\VC\Auxiliary\Build\vcvars64.bat"
+          $commands = @(
+            "call `"$vcvars`""
+            "cmake --preset dev-windows -DPython3_EXECUTABLE=`"$python`""
+            "cmake --build --preset dev-windows"
+            "ctest --preset dev-windows"
+          ) -join " && "
+          cmd /c $commands
 
       - name: Fixture validator (Python/struct independent check)
         run: python tests/fixtures/validate_fixtures.py
