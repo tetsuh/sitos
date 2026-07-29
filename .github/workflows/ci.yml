@@ -48,7 +48,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build libssl-dev
+          sudo apt-get install -y cmake ninja-build libssl-dev python3-pip
+          python3 -m pip install --break-system-packages -r tests/interop/requirements.txt
 
       - name: Configure
         run: cmake --preset dev-linux
@@ -164,6 +165,9 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+
+      - name: Install raw Zenoh interoperability dependencies
+        run: python -m pip install -r tests/interop/requirements.txt
 
       - name: Configure, build and test (MSVC + Ninja)
         shell: pwsh
