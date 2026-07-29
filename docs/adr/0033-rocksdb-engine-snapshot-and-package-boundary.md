@@ -14,21 +14,32 @@ hidden package-manager or runtime deployment behavior.
 
 ## Decision
 
-We will implement RocksDBEngine behind a PImpl-only public header, require the exact build-time
-RocksDB version when reconstructing RocksDB-ON installed packages, and keep RocksDB-OFF packages free
-of the dependency. We will consume ADR-0004's O(1), copy-free snapshot invariant while making shared
-DB ownership, snapshot release, final DB destruction, and filesystem cleanup ordering explicit. Read
-operations fully materialize each consistent List read set before invoking user sinks, and all sinks
-are invoked after native iterator and lock state has been released; sink invocation is never performed
-under an engine or native database lock.
+We will implement RocksDBEngine behind a PImpl-only public header that is installed in both
+RocksDB-ON and RocksDB-OFF packages. The OFF build remains linkable: RocksDBEngine::Open returns
+Status::Error with std::errc::operation_not_supported. The project configure gate requires
+RocksDB 11.1.2 EXACT and the RocksDB::rocksdb target. Installed package discovery is provider-neutral,
+relocatable, network-free, and non-bundling; an installed ON package reconstructs the exact build-time
+RocksDB dependency, while an installed OFF package discovers no RocksDB dependency.
+
+We will consume ADR-0004's O(1), copy-free snapshot invariant while making shared DB ownership,
+snapshot release, final DB destruction, and filesystem cleanup ordering explicit. Read operations
+fully materialize each consistent List read set before invoking user sinks, and all sinks are invoked
+after native iterator and lock state has been released; sink invocation is never performed under an
+engine or native database lock. Test-only native Open, CRUD, snapshot, and lifecycle seams are built
+only into test targets and are not part of the production library or installed archive.
 
 ## Consequences
 
 * Good: RocksDB snapshots can outlive the engine while retaining a live DB owner safely.
 * Good: `ReleaseSnapshot()` occurs before final DB destruction and directory removal, including on
   Windows where an open LOCK file prevents cleanup.
-* Good: Public headers and RocksDB-OFF packages remain independent of native RocksDB headers and
-  libraries.
+* Good: The PImpl public header is always installable, and RocksDB-OFF packages remain independent
+  of native RocksDB headers and libraries while providing a linkable unsupported Open stub.
+* Good: The ON configure and installed-package boundaries require RocksDB 11.1.2 EXACT through
+  RocksDB::rocksdb, with provider-neutral, relocatable, network-free, non-bundling discovery and
+  exact build-time dependency reconstruction.
+* Good: Test-only native Open, CRUD, snapshot, and lifecycle seams are excluded from production
+  library archives and installed packages.
 * Good: Installed RocksDB-ON consumers validate exact configure and compile/link dependency
   reconstruction without bundling or executing runtime deployment.
 * Good: Fully materialized List read sets provide consistent reads and deterministic, unlocked sink

@@ -84,19 +84,40 @@ set(_zlib_include_dir "${_feature_install}/${TRIPLET}/include")
 run_checked(
   "${CMAKE_COMMAND}" -S "${SITOS_SOURCE_DIR}" -B "${_sitos_build}"
   ${_generator_args} -DCMAKE_BUILD_TYPE=Release
-  -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=OFF -DSITOS_WITH_ROCKSDB=ON
+  -DSITOS_BUILD_TESTS=ON -DSITOS_BUILD_BENCHMARKS=ON -DSITOS_WITH_ZENOH=OFF -DSITOS_WITH_ROCKSDB=ON
   "-DCMAKE_TOOLCHAIN_FILE=${_toolchain}"
   "-DVCPKG_MANIFEST_DIR=${SITOS_SOURCE_DIR}"
   -DVCPKG_MANIFEST_FEATURES=rocksdb
   "-DVCPKG_TARGET_TRIPLET=${TRIPLET}"
   "-DVCPKG_INSTALLED_DIR=${_feature_install}")
 run_checked("${CMAKE_COMMAND}" --build "${_sitos_build}")
+if(WIN32)
+  set(_benchmark_suffix ".exe")
+else()
+  set(_benchmark_suffix "")
+endif()
+set(_benchmark_executable
+  "${_sitos_build}/tests/bench/sitos_rocksdb_snapshot_bench${_benchmark_suffix}")
+if(NOT EXISTS "${_benchmark_executable}")
+  set(_benchmark_executable
+    "${_sitos_build}/tests/bench/Release/sitos_rocksdb_snapshot_bench${_benchmark_suffix}")
+endif()
+if(NOT EXISTS "${_benchmark_executable}")
+  message(FATAL_ERROR "Snapshot benchmark executable was not built: ${_benchmark_executable}")
+endif()
+run_checked(
+  "${_benchmark_executable}" --benchmark_filter=TakeSnapshot
+  --benchmark_repetitions=1 --benchmark_min_time=0.001)
 run_checked(
   "${CMAKE_CTEST_COMMAND}" --test-dir "${_sitos_build}" --output-on-failure --no-tests=error
   -R "RocksDBEngineContractTest|RocksDBEngineOpenApi|RocksDBEngineSnapshotLifetime|RocksDBEngineConcurrency|RocksDBEngineNativeFailure")
 run_checked(
   "${CMAKE_CTEST_COMMAND}" --test-dir "${_sitos_build}" --output-on-failure --no-tests=error)
 run_checked("${CMAKE_COMMAND}" --install "${_sitos_build}" --prefix "${_sitos_prefix}")
+run_checked(
+  "${CMAKE_COMMAND}" "-DSITOS_PREFIX=${_sitos_prefix}"
+  "-DSITOS_INSTALL_LIBDIR=lib"
+  -P "${SITOS_SOURCE_DIR}/tests/package/check_no_rocksdb_test_symbols.cmake")
 set(_sitos_relocated_prefix "${_work_dir}/sitos-rocksdb-relocated-prefix")
 run_checked("${CMAKE_COMMAND}" -E copy_directory "${_sitos_prefix}" "${_sitos_relocated_prefix}")
 run_checked(
@@ -173,6 +194,11 @@ run_checked(
   "-DVCPKG_TARGET_TRIPLET=${TRIPLET}"
   "-DVCPKG_INSTALLED_DIR=${_default_install}")
 run_checked("${CMAKE_COMMAND}" --build "${_default_build}")
+run_checked("${CMAKE_COMMAND}" --install "${_default_build}" --prefix "${_default_install}")
+run_checked(
+  "${CMAKE_COMMAND}" "-DSITOS_PREFIX=${_default_install}"
+  "-DSITOS_INSTALL_LIBDIR=lib"
+  -P "${SITOS_SOURCE_DIR}/tests/package/check_no_rocksdb_test_symbols.cmake")
 run_checked(
   "${CMAKE_COMMAND}" "-DVCPKG_INSTALLED_DIR=${_default_install}"
   -P "${SITOS_SOURCE_DIR}/tests/vcpkg/check_default_no_rocksdb.cmake")

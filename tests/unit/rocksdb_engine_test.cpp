@@ -126,6 +126,25 @@ TEST(RocksDBEngineOpenApi, EmptyPathIsInvalidArgument) {
   EXPECT_TRUE(result.Error());
 }
 
+TEST(RocksDBEngineOpenApi, InjectedNativeOpenFailureReturnsError) {
+  const auto path = MakeTestPath();
+  sitos::rocksdb_test::SetOpenFailureForTest();
+  const auto result = sitos::RocksDBEngine::Open(path.string());
+  ASSERT_FALSE(result.IsOk());
+  EXPECT_EQ(result.StatusCode(), sitos::Status::Error);
+  EXPECT_TRUE(result.Error());
+  EXPECT_FALSE(std::filesystem::exists(path));
+
+  auto retry = sitos::RocksDBEngine::Open(path.string());
+  ASSERT_TRUE(retry.IsOk());
+  auto engine = std::move(retry).Value();
+  ASSERT_NE(engine, nullptr);
+  engine.reset();
+  std::error_code error;
+  std::filesystem::remove_all(path, error);
+  EXPECT_FALSE(error);
+}
+
 TEST(RocksDBEngineOpenApi, ExistingFilePathReturnsNativeErrorWithoutValueBytes) {
   const auto path = MakeTestPath();
   {
@@ -198,14 +217,16 @@ TEST(RocksDBEngineSnapshotLifetime, SnapshotOutlivesEngine) {
       return value.size() == 1 && value[0] == std::byte{0x01};
     }));
   }
-  ASSERT_EQ(events->events.size(), 1u);
-  EXPECT_EQ(events->events[0], "get_snapshot");
+  ASSERT_EQ(events->events.size(), 2u);
+  EXPECT_EQ(events->events[0], "open");
+  EXPECT_EQ(events->events[1], "get_snapshot");
   snapshot.reset();
-  ASSERT_EQ(events->events.size(), 4u);
-  EXPECT_EQ(events->events[0], "get_snapshot");
-  EXPECT_EQ(events->events[1], "release_snapshot");
-  EXPECT_EQ(events->events[2], "db_close");
-  EXPECT_EQ(events->events[3], "directory_remove");
+  ASSERT_EQ(events->events.size(), 5u);
+  EXPECT_EQ(events->events[0], "open");
+  EXPECT_EQ(events->events[1], "get_snapshot");
+  EXPECT_EQ(events->events[2], "release_snapshot");
+  EXPECT_EQ(events->events[3], "db_close");
+  EXPECT_EQ(events->events[4], "directory_remove");
   EXPECT_FALSE(std::filesystem::exists(path));
 }
 

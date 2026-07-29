@@ -155,8 +155,18 @@ sitos_enable_warnings(sitos_storage_engine_contract_test)
 gtest_discover_tests(sitos_storage_engine_contract_test DISCOVERY_MODE PRE_TEST)
 
 if(SITOS_WITH_ROCKSDB)
+  add_library(sitos_rocksdb_test_engine OBJECT ../src/rocksdb_engine.cpp)
+  target_compile_definitions(sitos_rocksdb_test_engine PRIVATE
+    SITOS_WITH_ROCKSDB=1 SITOS_ROCKSDB_TEST_SEAM=1)
+  target_include_directories(sitos_rocksdb_test_engine PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(sitos_rocksdb_test_engine PRIVATE RocksDB::rocksdb)
+  sitos_enable_warnings(sitos_rocksdb_test_engine)
+
   add_executable(sitos_rocksdb_engine_test
     unit/rocksdb_engine_test.cpp)
+  target_sources(sitos_rocksdb_engine_test PRIVATE
+    $<TARGET_OBJECTS:sitos_rocksdb_test_engine>)
   target_link_libraries(sitos_rocksdb_engine_test
     PRIVATE GTest::gtest_main sitos::sitos)
   target_include_directories(sitos_rocksdb_engine_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
