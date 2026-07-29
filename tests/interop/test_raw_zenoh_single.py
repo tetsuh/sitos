@@ -14,6 +14,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
+from unittest.mock import Mock, call
 
 import pytest
 import zenoh
@@ -187,6 +188,56 @@ def test_cleanup_failure_preserves_primary_without_exception_notes(capsys) -> No
             fixture.__exit__(LegacyError, primary, primary.__traceback__)
             raise
     assert "fixture cleanup failed: cleanup diagnostic" in capsys.readouterr().err
+
+
+def test_forced_cleanup_terminates_kills_and_preserves_primary(capsys) -> None:
+    process = Mock()
+    process.stdin = Mock()
+    process.returncode = None
+    wait_attempt = 0
+
+    def wait(timeout: float) -> int:
+        nonlocal wait_attempt
+        wait_attempt += 1
+        if wait_attempt <= 2:
+            raise subprocess.TimeoutExpired("fixture", timeout)
+        process.returncode = -9
+        return process.returncode
+
+    process.poll.return_value = None
+    process.wait.side_effect = wait
+
+    fixture = object.__new__(support.FixtureProcess)
+    fixture._process = process
+    fixture._stdout_reader = Mock()
+    fixture._stderr_reader = Mock()
+    fixture._stderr_lock = threading.Lock()
+    fixture.stderr_output = []
+    fixture.output = []
+    fixture._readline = Mock(return_value="STOPPED")
+
+    class LegacyError(RuntimeError):
+        add_note = None
+
+    with pytest.raises(LegacyError, match="primary failure"):
+        with fixture:
+            raise LegacyError("primary failure")
+
+    assert process.method_calls == [
+        call.poll(),
+        call.stdin.write("STOP\n"),
+        call.stdin.flush(),
+        call.wait(timeout=5),
+        call.terminate(),
+        call.wait(timeout=5),
+        call.kill(),
+        call.wait(timeout=5),
+        call.stdin.close(),
+    ]
+    fixture._readline.assert_called_once_with(5.0)
+    fixture._stdout_reader.join.assert_called_once_with(timeout=1)
+    fixture._stderr_reader.join.assert_called_once_with(timeout=1)
+    assert "fixture required forced termination" in capsys.readouterr().err
 
 
 def test_fixture_retries_a_port_bind_race(monkeypatch) -> None:
