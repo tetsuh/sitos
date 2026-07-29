@@ -18,8 +18,8 @@ main ─────●───────●───────●───
 
 * **main is always green** (required CI paths). Direct pushes are prohibited;
   changes go only through PRs. Every PR head must be green before merge.
-  Intentional RED commits may exist only in `feat/` branch history and must be followed by GREEN
-  before merge
+  Intentional RED commits may be created only on `feat/` branches and must be followed by GREEN
+  before merge; every merge commit on `main` is green
 * Working branches are **short-lived** (guideline: 1 issue = 1 branch = 1 PR,
   within a few days)
 * Branch name: `feat/<number>-<short-kebab-description>`
@@ -92,7 +92,7 @@ Rules:
 Feature-branch commits follow this convention. The GitHub-generated merge commit is governed by
 §4 and is not manually rewritten to fit the convention.
 
-### Issue Requirements (for AI Implementers)
+### 2.2 Issue Requirements (for AI Implementers)
 
 Each issue must include at minimum the following (following the format in [07]):
 
@@ -104,7 +104,7 @@ Each issue must include at minimum the following (following the format in [07]):
   `Implementation` / `none`), or `N/A` if no contract is touched
   ([08_contract_registry.md](08_contract_registry.md))
 
-### 2.2 Issue Scope Lifecycle
+### 2.3 Issue Scope Lifecycle
 
 * Design, Proposal, and ADR Issues may evolve during review until the owner explicitly declares
   their scope ready for implementation.
@@ -118,7 +118,7 @@ Each issue must include at minimum the following (following the format in [07]):
 
 ## 3. Test-Driven Development (TDD): Red-Green-Refactor
 
-This project has predefined AC, required test names ([06] §4.1), and golden
+This project has predefined AC, required test names ([06] §5.1), and golden
 fixtures ([03] §2.3), making it particularly compatible with TDD.
 
 **Implementation steps for each issue (required):**
@@ -144,7 +144,7 @@ Rules:
   If the test passes from the beginning, that is a sign that the test itself is wrong. For build,
   documentation, or example-only exceptions, record `N/A` with the reason instead of inventing RED
   evidence
-* Use the fixed AC test names from [06] §4.1. Additional tests are unrestricted
+* Use the fixed AC test names from [06] §5.1. Additional tests are unrestricted
 * Do not change the meaning of tests during refactoring (weakening assertions is prohibited)
 * For bug fixes, **write a reproduction test first** (RED) → fix (GREEN)
 
@@ -195,7 +195,7 @@ Prompt structure when assigning an issue to implementation AI:
    items checked”
 ```
 
-The frozen checklist in the Issue is the **definitive definition of scope** under §2.2. Progress is
+The frozen checklist in the Issue is the **definitive definition of scope** under §2.3. Progress is
 visualized using its copy in the PR body, and reviewers compare the PR check state with the
 implementation artifacts. The Issue is closed by `Closes #NN` when the PR is merged (checkboxes on
 the Issue side may remain unchecked when closed).
