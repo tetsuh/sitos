@@ -4,7 +4,6 @@
 #ifndef SITOS_ROCKSDB_ENGINE_HPP
 #define SITOS_ROCKSDB_ENGINE_HPP
 
-#include <cstddef>
 #include <memory>
 #include <string>
 
@@ -36,11 +35,6 @@ class RocksDBEngine : public StorageEngine {
  private:
   struct Impl;
   explicit RocksDBEngine(std::unique_ptr<Impl> impl);
-  void SetFailureMaskForTest(unsigned int mask);
-  void GetSnapshotStatsForTest(std::size_t& snapshot_calls,
-                               std::size_t& enumeration_calls) const;
-
-  friend class RocksDBEngineTestAccess;
   std::unique_ptr<Impl> impl_;
 };
 

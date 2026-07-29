@@ -17,7 +17,10 @@ hidden package-manager or runtime deployment behavior.
 We will implement RocksDBEngine behind a PImpl-only public header, require the exact build-time
 RocksDB version when reconstructing RocksDB-ON installed packages, and keep RocksDB-OFF packages free
 of the dependency. We will consume ADR-0004's O(1), copy-free snapshot invariant while making shared
-DB ownership, snapshot release, final DB destruction, and filesystem cleanup ordering explicit.
+DB ownership, snapshot release, final DB destruction, and filesystem cleanup ordering explicit. Read
+operations fully materialize each consistent List read set before invoking user sinks, and all sinks
+are invoked after native iterator and lock state has been released; sink invocation is never performed
+under an engine or native database lock.
 
 ## Consequences
 
@@ -28,6 +31,8 @@ DB ownership, snapshot release, final DB destruction, and filesystem cleanup ord
   libraries.
 * Good: Installed RocksDB-ON consumers validate exact configure and compile/link dependency
   reconstruction without bundling or executing runtime deployment.
+* Good: Fully materialized List read sets provide consistent reads and deterministic, unlocked sink
+  callbacks that may safely re-enter the engine.
 * Bad: Exact version equality is necessary but not sufficient for ABI compatibility. External
   consumers remain responsible for compiler, CRT, standard-library ABI, build configuration, and
   relevant compile options.

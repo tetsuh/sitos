@@ -24,10 +24,13 @@ concept HasSessionViewPut = requires(T& value) {
 };
 static_assert(!HasSessionViewPut<sitos::SessionView>);
 
-int main() {
+int main(int argc, char** argv) {
   static_cast<void>(sitos::MakeZenohTransport());
 #if defined(SITOS_PACKAGE_CONSUMER_WITH_ROCKSDB)
-  static_cast<void>(&sitos::RocksDBEngine::Open);
+  const std::string path = argc > 0 ? argv[0] : "rocksdb-consumer";
+  auto result = sitos::RocksDBEngine::Open(path);
+  volatile int status = static_cast<int>(result.StatusCode());
+  static_cast<void>(status);
 #endif
   return 0;
 }

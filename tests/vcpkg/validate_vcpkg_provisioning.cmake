@@ -84,19 +84,37 @@ set(_zlib_include_dir "${_feature_install}/${TRIPLET}/include")
 run_checked(
   "${CMAKE_COMMAND}" -S "${SITOS_SOURCE_DIR}" -B "${_sitos_build}"
   ${_generator_args} -DCMAKE_BUILD_TYPE=Release
-  -DSITOS_BUILD_TESTS=OFF -DSITOS_WITH_ZENOH=OFF -DSITOS_WITH_ROCKSDB=ON
+  -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=OFF -DSITOS_WITH_ROCKSDB=ON
   "-DCMAKE_TOOLCHAIN_FILE=${_toolchain}"
   "-DVCPKG_MANIFEST_DIR=${SITOS_SOURCE_DIR}"
   -DVCPKG_MANIFEST_FEATURES=rocksdb
   "-DVCPKG_TARGET_TRIPLET=${TRIPLET}"
   "-DVCPKG_INSTALLED_DIR=${_feature_install}")
 run_checked("${CMAKE_COMMAND}" --build "${_sitos_build}")
+run_checked(
+  "${CMAKE_CTEST_COMMAND}" --test-dir "${_sitos_build}" --output-on-failure --no-tests=error
+  -R "RocksDBEngineContractTest|RocksDBEngineOpenApi|RocksDBEngineSnapshotLifetime|RocksDBEngineConcurrency|RocksDBEngineNativeFailure")
+run_checked(
+  "${CMAKE_CTEST_COMMAND}" --test-dir "${_sitos_build}" --output-on-failure --no-tests=error)
 run_checked("${CMAKE_COMMAND}" --install "${_sitos_build}" --prefix "${_sitos_prefix}")
+set(_sitos_relocated_prefix "${_work_dir}/sitos-rocksdb-relocated-prefix")
+run_checked("${CMAKE_COMMAND}" -E copy_directory "${_sitos_prefix}" "${_sitos_relocated_prefix}")
+run_checked(
+  "${CMAKE_COMMAND}" "-DSITOS_PREFIX=${_sitos_prefix}"
+  "-DSITOS_INSTALL_LIBDIR=lib"
+  -P "${SITOS_SOURCE_DIR}/tests/package/check_clean_install.cmake")
+run_checked(
+  "${CMAKE_COMMAND}" "-DSITOS_PREFIX=${_sitos_relocated_prefix}"
+  "-DSITOS_SOURCE_DIR=${SITOS_SOURCE_DIR}"
+  "-DSITOS_BUILD_DIR=${_sitos_build}"
+  "-DORIGINAL_PREFIX=${_sitos_prefix}"
+  "-DSITOS_INSTALL_LIBDIR=lib"
+  -P "${SITOS_SOURCE_DIR}/tests/package/check_relocatable.cmake")
 run_checked(
   "${CMAKE_COMMAND}" -S "${SITOS_SOURCE_DIR}/tests/package/consumer" -B "${_sitos_consumer_build}"
   ${_generator_args} -DCMAKE_BUILD_TYPE=Release
   -DSITOS_PACKAGE_CONSUMER_WITH_ROCKSDB=ON
-  "-DCMAKE_PREFIX_PATH=${_sitos_prefix}"
+  "-DCMAKE_PREFIX_PATH=${_sitos_relocated_prefix}"
   "-DRocksDB_DIR=${_feature_install}/${TRIPLET}/share/rocksdb"
   "-DZLIB_LIBRARY=${_zlib_library}"
   "-DZLIB_INCLUDE_DIR=${_zlib_include_dir}")
