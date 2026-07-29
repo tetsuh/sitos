@@ -17,7 +17,9 @@ main ─────●───────●───────●───
 ```
 
 * **main is always green** (required CI paths). Direct pushes are prohibited;
-  changes go only through PRs
+  changes go only through PRs. Every PR head must be green before merge.
+  Intentional RED commits may exist only in `feat/` branch history and must be followed by GREEN
+  before merge
 * Working branches are **short-lived** (guideline: 1 issue = 1 branch = 1 PR,
   within a few days)
 * Branch name: `feat/<number>-<short-kebab-description>`
@@ -87,6 +89,9 @@ Rules:
   `BREAKING CHANGE: <description>` after the body (release-please uses this for
   major version bumps)
 
+Feature-branch commits follow this convention. The GitHub-generated merge commit is governed by
+§4 and is not manually rewritten to fit the convention.
+
 ### Issue Requirements (for AI Implementers)
 
 Each issue must include at minimum the following (following the format in [07]):
@@ -98,6 +103,18 @@ Each issue must include at minimum the following (following the format in [07]):
 * Affected contract-registry row(s) with their status transition (`Contract` /
   `Implementation` / `none`), or `N/A` if no contract is touched
   ([08_contract_registry.md](08_contract_registry.md))
+
+### 2.2 Issue Scope Lifecycle
+
+* Design, Proposal, and ADR Issues may evolve during review until the owner explicitly declares
+  their scope ready for implementation.
+* An implementation Issue checklist freezes when implementation begins. The Issue remains the
+  scope authority, and the frozen checklist is copied into the PR for progress tracking.
+* After the freeze, wording may be clarified only when its meaning does not change.
+* A material scope change requires an owner decision, renewed review, and an Issue split when
+  needed. Work on affected scope pauses until those steps are complete.
+* Scope readiness and freezing do not replace required ADR, Contract Registry, dependency, or
+  milestone-review gates.
 
 ## 3. Test-Driven Development (TDD): Red-Green-Refactor
 
@@ -118,9 +135,15 @@ Rules:
 
 * **Do not commit production code without tests**
   (exceptions: build settings, docs, examples)
-* Record in the PR description that the RED-phase tests “failed correctly”
-  (AI implementers must paste the “failure message during Red” into the PR body —
-  if the test passes from the beginning, that is a sign that the test itself is wrong)
+* Record concise structured RED evidence in the PR description:
+  - command;
+  - failing test name;
+  - expected failure reason;
+  - one representative failure-message line;
+  - complete CI-log link only when the excerpt is insufficient.
+  If the test passes from the beginning, that is a sign that the test itself is wrong. For build,
+  documentation, or example-only exceptions, record `N/A` with the reason instead of inventing RED
+  evidence
 * Use the fixed AC test names from [06] §4.1. Additional tests are unrestricted
 * Do not change the meaning of tests during refactoring (weakening assertions is prohibited)
 * For bug fixes, **write a reproduction test first** (RED) → fix (GREEN)
@@ -131,15 +154,32 @@ Rules:
   implementation + tests. If larger, consider splitting the issue)
 * Required items in the PR template:
   - `Closes #NN`
+  - Copy of the frozen Issue checklist
   - Corresponding requirement IDs ([01] F/N/C/P/X)
   - AC verification results (test execution logs)
-  - RED-phase failure confirmation (§3)
+  - Structured RED-phase evidence (§3)
   - Judgment on whether an ADR is needed (whether [10] §6 applies; §6 now includes
     the contract-registry Rule 2 overlap trigger)
   - Affected contract-registry row(s) with their status transition (`Contract` /
     `Implementation` / `none`), or `N/A` if no contract is touched ([08])
+  - Current-head owner merge authorization record, completed only after authorization is granted
 * CI (build + all tests + clang-format + clang-tidy) must be green
-* Merge to main by squash merge (keep history grouped by issue)
+* A normal merge commit is the default merge method, preserving intentional RED/GREEN/REFACTOR
+  history from the feature branch while the PR head and `main` remain green
+* The owner may choose squash merge when the branch-level history is not worth retaining
+* Keep GitHub's generated default merge commit message; the owner does not edit it manually
+* Rebase merge and auto-merge are prohibited
+
+### 4.1 Owner-Directed Merge Authorization
+
+The repository owner makes every merge decision. A coding agent may execute a merge only after an
+explicit owner instruction for that PR at its current head.
+
+* Authorization is one-time and expires after any new commit or new blocking finding
+* Passing CI or automated review never implies merge authorization
+* Record the authorized head and owner-instruction link in the PR before merge
+* Independent secondary review is optional and owner-directed; use it when its value justifies the
+  available human time and AI subscription or token budget
 
 ## 5. Instruction Template for AI Implementers
 
@@ -155,11 +195,10 @@ Prompt structure when assigning an issue to implementation AI:
    items checked”
 ```
 
-The checklist in the issue body is the **definitive definition of scope** and,
-as a rule, is not changed after issue filing. Progress is visualized using the
-checklist in the PR body, and reviewers compare the PR check state with the
-implementation artifacts. The issue is closed by `Closes #NN` when the PR is
-merged (checkboxes on the issue side may remain unchecked when closed).
+The frozen checklist in the Issue is the **definitive definition of scope** under §2.2. Progress is
+visualized using its copy in the PR body, and reviewers compare the PR check state with the
+implementation artifacts. The Issue is closed by `Closes #NN` when the PR is merged (checkboxes on
+the Issue side may remain unchecked when closed).
 
 ## 6. Release Flow
 
