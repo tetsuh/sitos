@@ -198,13 +198,19 @@ Bundled engines:
 /// Zero dependencies. TakeSnapshot performs a full copy [X02]
 class InMemoryEngine final : public StorageEngine { ... };
 
-/// Provided only when built with SITOS_WITH_ROCKSDB.
-/// TakeSnapshot is O(1) via rocksdb::DB::GetSnapshot [N02]
-class RocksDBEngine final : public StorageEngine {
+/// The PImpl-only public API is installed in both build modes. A functional implementation requires
+/// SITOS_WITH_ROCKSDB=ON; the OFF build returns Status::Error with operation_not_supported.
+/// TakeSnapshot consumes ADR-0004's O(1), copy-free native snapshot invariant [N02].
+class RocksDBEngine : public StorageEngine {
 public:
     static Result<std::unique_ptr<RocksDBEngine>> Open(const std::string& path);
 };
 ```
+
+The RocksDB-ON installed package reconstructs the exact RocksDB version used at build time. The
+installed consumer validates configure and compile/link only; runtime deployment remains with the
+application or package manager. Exact version equality is necessary but not sufficient for ABI
+compatibility. See ADR-0033.
 
 ```cpp
 class StorageNode {

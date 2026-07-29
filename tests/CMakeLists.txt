@@ -41,6 +41,8 @@ add_sitos_public_header_compile_test(
   sitos_param_subscription_header_compile_test consumer/param_subscription_header_compile.cpp)
 add_sitos_public_header_compile_test(
   sitos_session_view_header_compile_test consumer/session_view_header_compile.cpp)
+add_sitos_public_header_compile_test(
+  sitos_rocksdb_engine_header_compile_test consumer/rocksdb_engine_header_compile.cpp)
 if(SITOS_WITH_ZENOH)
   sitos_copy_zenohc(sitos_param_store_header_compile_test)
   sitos_copy_zenohc(sitos_param_cache_header_compile_test)
@@ -138,12 +140,54 @@ gtest_add_tests(TARGET sitos_key_test SOURCES unit/key_test.cpp)
 # DISCOVERY_MODE PRE_TEST moves the flaky JSON discovery out of the build
 # step (ninja) and into ctest, so a discovery hiccup no longer breaks the
 # build itself (#93).
+if(NOT SITOS_WITH_ROCKSDB)
+  add_executable(sitos_rocksdb_engine_off_test unit/rocksdb_engine_off_test.cpp)
+  target_link_libraries(sitos_rocksdb_engine_off_test PRIVATE GTest::gtest_main sitos::sitos)
+  sitos_enable_warnings(sitos_rocksdb_engine_off_test)
+  gtest_add_tests(TARGET sitos_rocksdb_engine_off_test SOURCES unit/rocksdb_engine_off_test.cpp)
+endif()
+
 add_executable(sitos_storage_engine_contract_test
   unit/storage_engine_contract_test.cpp)
 target_link_libraries(sitos_storage_engine_contract_test
   PRIVATE GTest::gtest_main sitos::sitos)
 sitos_enable_warnings(sitos_storage_engine_contract_test)
 gtest_discover_tests(sitos_storage_engine_contract_test DISCOVERY_MODE PRE_TEST)
+
+if(SITOS_WITH_ROCKSDB)
+  # The contract suite links the production archive so it exercises the exact
+  # RocksDB implementation that is installed for consumers.
+  add_executable(sitos_rocksdb_engine_test
+    unit/rocksdb_engine_test.cpp)
+  target_link_libraries(sitos_rocksdb_engine_test
+    PRIVATE GTest::gtest_main sitos::sitos)
+  sitos_enable_warnings(sitos_rocksdb_engine_test)
+  gtest_discover_tests(sitos_rocksdb_engine_test DISCOVERY_MODE PRE_TEST)
+
+  # Native failure and lifecycle instrumentation stay in a separate binary.
+  # It supplies the seam translation unit directly and never links sitos::sitos,
+  # avoiding duplicate RocksDBEngine definitions in one executable.
+  add_library(sitos_rocksdb_test_engine OBJECT ../src/rocksdb_engine.cpp)
+  target_compile_definitions(sitos_rocksdb_test_engine PRIVATE
+    SITOS_WITH_ROCKSDB=1 SITOS_ROCKSDB_TEST_SEAM=1)
+  target_include_directories(sitos_rocksdb_test_engine PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(sitos_rocksdb_test_engine PRIVATE RocksDB::rocksdb)
+  sitos_enable_warnings(sitos_rocksdb_test_engine)
+
+  add_executable(sitos_rocksdb_test_access_test
+    unit/rocksdb_engine_test_access_test.cpp
+    ../src/status.cpp
+    ../src/storage_engine.cpp)
+  target_sources(sitos_rocksdb_test_access_test PRIVATE
+    $<TARGET_OBJECTS:sitos_rocksdb_test_engine>)
+  target_link_libraries(sitos_rocksdb_test_access_test
+    PRIVATE GTest::gtest_main RocksDB::rocksdb)
+  target_include_directories(sitos_rocksdb_test_access_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+  sitos_enable_warnings(sitos_rocksdb_test_access_test)
+  gtest_discover_tests(sitos_rocksdb_test_access_test DISCOVERY_MODE PRE_TEST)
+endif()
 
 add_executable(sitos_in_memory_engine_test
   unit/in_memory_engine_test.cpp)

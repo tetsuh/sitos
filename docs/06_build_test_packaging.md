@@ -40,7 +40,7 @@ sitos/
   - **zenoh-c**: First choice is to use official prebuilt releases via
     `find_package(zenohc)`. CI pins versions with FetchContent.
     Also provide a Corrosion (Rust) path for environments that need source builds
-  - **RocksDB** (when `SITOS_WITH_ROCKSDB=ON`): `find_package(RocksDB)`.
+  - **RocksDB** (when `SITOS_WITH_ROCKSDB=ON`): `find_package(RocksDB 11.1.2 EXACT CONFIG REQUIRED)`.
   - **gtest / benchmark**: FetchContent
 * Presets: define `dev-windows`, `dev-linux`, `release`, and `python-wheel` in
   `CMakePresets.json`
@@ -113,6 +113,13 @@ validator requires `dumpbin` from the `vcvars64.bat` environment. It does not re
 `z.dll` as `zlib1.dll`, depend on `rocksdb-shared.dll`, or use build-tree/vcpkg PATH entries.
 
 ## 3. Install (C++ consumer)
+
+When `SITOS_WITH_ROCKSDB=ON`, the installed package records the exact RocksDB version used to build
+sitos and reconstructs `RocksDB::rocksdb` with `find_dependency(RocksDB <version> EXACT CONFIG)`.
+RocksDB-ON installed consumers are configured and built/linked but not executed; runtime deployment
+belongs to the application or package manager. Exact version equality is necessary but not sufficient
+for ABI compatibility, so external consumers must provide a compatible compiler, CRT, standard
+library ABI, build configuration, and compile options. See ADR-0033.
 
 The C++ library and public headers can be installed with the generated CMake export:
 
@@ -225,6 +232,8 @@ major behaviors.
 | `BatchV1GoldenFixture` | F09/C01 | Exact match with the batch fixture in [03] §5.1 |
 | `InvalidKeysAreRejected` | X03 | Reject reserved characters, empty chunks, and invalid sid |
 | `SnapshotIsIsolatedFromBasePut` | F05/N02 | A base put after CreateSession does not affect snap reads |
+| `SnapshotIsIsolatedFromBaseDelete` | F05/N02 | A base delete after snapshot creation does not affect snap reads |
+| `ListEmitsDeterministicKeyOrder` | X01 | StorageEngine List emits matching keys in ascending order |
 | `SnapshotFallbackCopiesForInMemory` | N03 | InMemory snapshot works with the same semantics |
 | `AttachDoesNotMissConcurrentPut` | F06 | Does not miss a concurrent put during Attach |
 | `BatchIsReceivedBySessionSubscriber` | F09 / ADR-0018 | `:batch` is received by a `session/<sid>/**` subscription |

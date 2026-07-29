@@ -10,8 +10,9 @@
 //       return std::make_unique<MyEngine>();
 //   });
 //
-// Required test names (docs/06 §4.1): SnapshotIsIsolatedFromBasePut,
-// SnapshotFallbackCopiesForInMemory.
+// Required test names (docs/06 §5.1): SnapshotIsIsolatedFromBasePut,
+// SnapshotFallbackCopiesForInMemory, SnapshotIsIsolatedFromBaseDelete,
+// ListEmitsDeterministicKeyOrder.
 
 #ifndef SITOS_STORAGE_ENGINE_CONTRACT_HPP
 #define SITOS_STORAGE_ENGINE_CONTRACT_HPP
@@ -43,7 +44,10 @@ using EngineFactory = std::function<std::unique_ptr<StorageEngine>()>;
 /// mock (if any).  Not needed for the contract itself but kept as a convenience.
 class EngineContractTest : public ::testing::TestWithParam<EngineFactory> {
  protected:
-  void SetUp() override { engine_ = GetParam()(); }
+  void SetUp() override {
+    engine_ = GetParam()();
+    ASSERT_NE(engine_, nullptr);
+  }
   void TearDown() override { engine_.reset(); }
 
   StorageEngine& engine() { return *engine_; }
@@ -224,7 +228,7 @@ inline void ListEmptyEngine(sitos::StorageEngine& engine) {
   EXPECT_FALSE(called);
 }
 
-// docs/06 §4.1: SnapshotFallbackCopiesForInMemory
+// docs/06 §5.1: SnapshotFallbackCopiesForInMemory
 inline void SnapshotFallbackCopiesForInMemory(sitos::StorageEngine& engine) {
   ASSERT_TRUE(engine.Put("s1", BytesFromString("hello")));
   ASSERT_TRUE(engine.Put("s2", BytesFromString("world")));
@@ -259,7 +263,7 @@ inline void SnapshotFallbackCopiesForInMemory(sitos::StorageEngine& engine) {
   EXPECT_FALSE(found);
 }
 
-// docs/06 §4.1: SnapshotIsIsolatedFromBasePut
+// docs/06 §5.1: SnapshotIsIsolatedFromBasePut
 inline void SnapshotIsIsolatedFromBasePut(sitos::StorageEngine& engine) {
   ASSERT_TRUE(engine.Put("iso", BytesFromString("before")));
 
@@ -285,6 +289,37 @@ inline void SnapshotIsIsolatedFromBasePut(sitos::StorageEngine& engine) {
                  [&](std::string_view /*key*/, sitos::Bytes /*value*/) { found = true; return true; });
   EXPECT_FALSE(ok);
   EXPECT_FALSE(found);
+}
+
+inline void SnapshotIsIsolatedFromBaseDelete(sitos::StorageEngine& engine) {
+  ASSERT_TRUE(engine.Put("iso-delete", BytesFromString("before")));
+  auto snap = engine.TakeSnapshot();
+  ASSERT_NE(snap, nullptr);
+  ASSERT_TRUE(engine.Delete("iso-delete"));
+
+  bool found = false;
+  const bool ok = snap->Get("iso-delete", [&](std::string_view, sitos::Bytes value) {
+    found = true;
+    EXPECT_EQ(value.size(), 6u);
+    EXPECT_EQ(static_cast<char>(value[0]), 'b');
+    return value.size() == 6u && static_cast<char>(value[0]) == 'b';
+  });
+  EXPECT_TRUE(ok);
+  EXPECT_TRUE(found);
+  EXPECT_FALSE(engine.Get("iso-delete", [](std::string_view, sitos::Bytes) { return true; }));
+}
+
+inline void ListEmitsDeterministicKeyOrder(sitos::StorageEngine& engine) {
+  ASSERT_TRUE(engine.Put("order/z", BytesFromString("z")));
+  ASSERT_TRUE(engine.Put("order/a", BytesFromString("a")));
+  ASSERT_TRUE(engine.Put("order/m", BytesFromString("m")));
+
+  std::vector<std::string> keys;
+  ASSERT_TRUE(engine.List("order/", [&](std::string_view key, sitos::Bytes) {
+    keys.emplace_back(key);
+    return true;
+  }));
+  EXPECT_EQ(keys, (std::vector<std::string>{"order/a", "order/m", "order/z"}));
 }
 
 inline void SinkCanReenterReadOperations(sitos::testing::EngineFactory factory) {
@@ -489,6 +524,12 @@ inline void HandlesOpaqueBytes(sitos::StorageEngine& engine) {
   }                                                                                         \
   TEST_P(SuiteName, SnapshotIsIsolatedFromBasePut) {                                         \
     sitos_contract::SnapshotIsIsolatedFromBasePut(engine());                                 \
+  }                                                                                         \
+  TEST_P(SuiteName, SnapshotIsIsolatedFromBaseDelete) {                                      \
+    sitos_contract::SnapshotIsIsolatedFromBaseDelete(engine());                              \
+  }                                                                                         \
+  TEST_P(SuiteName, ListEmitsDeterministicKeyOrder) {                                        \
+    sitos_contract::ListEmitsDeterministicKeyOrder(engine());                                \
   }                                                                                         \
   TEST_P(SuiteName, HandlesOpaqueBytes) {                                                    \
     sitos_contract::HandlesOpaqueBytes(engine());                                            \

@@ -1,6 +1,12 @@
 @PACKAGE_INIT@
 
+include(CMakeFindDependencyMacro)
 set(_sitos_with_zenoh "@SITOS_WITH_ZENOH@")
+set(_sitos_with_rocksdb "@SITOS_WITH_ROCKSDB@")
+if(_sitos_with_rocksdb)
+  find_dependency(RocksDB "@SITOS_ROCKSDB_VERSION@" EXACT CONFIG)
+endif()
+
 if(_sitos_with_zenoh AND NOT TARGET zenohc::zenohc)
   set(_sitos_module_path_defined FALSE)
   if(DEFINED CMAKE_MODULE_PATH)
