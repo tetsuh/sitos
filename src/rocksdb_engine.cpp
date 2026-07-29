@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -52,9 +53,8 @@ const std::error_category& RocksDBCategory() noexcept {
 }
 
 std::error_code MakeRocksDBError(const rocksdb::Status& status) {
-  using StatusCodeType = std::underlying_type_t<rocksdb::Status::Code>;
-  const auto code = static_cast<StatusCodeType>(status.code());
-  return {static_cast<int>(code) + 1, RocksDBCategory()};
+  const auto code = static_cast<int>(status.code());
+  return {code + 1, RocksDBCategory()};
 }
 
 #if defined(SITOS_ROCKSDB_TEST_SEAM)
@@ -82,15 +82,23 @@ struct OperationAdapter {
 using OpenOperation = std::function<rocksdb::Status(
     const rocksdb::Options&, const std::string&, std::unique_ptr<rocksdb::DB>*)>;
 
-std::mutex open_operation_mutex;
-OpenOperation open_operation = [](const rocksdb::Options& options, const std::string& path,
-                                  std::unique_ptr<rocksdb::DB>* database) {
-  return rocksdb::DB::Open(options, path, database);
+struct OpenOperationState {
+  std::mutex mutex;
+  OpenOperation operation = [](const rocksdb::Options& options, const std::string& path,
+                               std::unique_ptr<rocksdb::DB>* database) {
+    return rocksdb::DB::Open(options, path, database);
+  };
 };
 
+OpenOperationState& GetOpenOperationState() {
+  static OpenOperationState state;
+  return state;
+}
+
 OpenOperation OpenOperationForTest() {
-  std::lock_guard lock(open_operation_mutex);
-  return open_operation;
+  auto& state = GetOpenOperationState();
+  std::lock_guard lock(state.mutex);
+  return state.operation;
 }
 
 OperationAdapter MakeOperationAdapter(unsigned int failures = 0) {
@@ -145,11 +153,20 @@ OperationAdapter MakeOperationAdapter(unsigned int failures = 0) {
 
 #endif
 
+rocksdb::Status OpenDatabase(const rocksdb::Options& options, const std::string& path,
+                             std::unique_ptr<rocksdb::DB>* database) {
+#if defined(SITOS_ROCKSDB_TEST_SEAM)
+  return OpenOperationForTest()(options, path, database);
+#else
+  return rocksdb::DB::Open(options, path, database);
+#endif
+}
+
 struct DatabaseState {
 #if defined(SITOS_ROCKSDB_TEST_SEAM)
   DatabaseState(std::shared_ptr<rocksdb::DB> database,
                 std::shared_ptr<rocksdb_test::EventLog> event_log)
-      : db(std::move(database)), events(std::move(event_log)), operations(MakeOperationAdapter()) {}
+      : db(std::move(database)), events(std::move(event_log)) {}
 #else
   explicit DatabaseState(std::shared_ptr<rocksdb::DB> database) : db(std::move(database)) {}
 #endif
@@ -158,7 +175,7 @@ struct DatabaseState {
 #if defined(SITOS_ROCKSDB_TEST_SEAM)
   std::shared_ptr<rocksdb_test::EventLog> events;
   std::mutex operations_mutex;
-  OperationAdapter operations;
+  OperationAdapter operations = MakeOperationAdapter();
   std::atomic<std::size_t> snapshot_calls{0};
   std::atomic<std::size_t> enumeration_calls{0};
 #endif
@@ -171,22 +188,40 @@ OperationAdapter Operations(const std::shared_ptr<DatabaseState>& state) {
 }
 #endif
 
+void ReleaseSnapshotNoexcept(const std::shared_ptr<DatabaseState>& state,
+                             const rocksdb::Snapshot* snapshot) noexcept {
+#if defined(SITOS_ROCKSDB_TEST_SEAM)
+  bool recovered = false;
+  try {
+    std::lock_guard lock(state->operations_mutex);
+    state->operations.release_snapshot(*state->db, snapshot);
+  } catch (...) {
+    recovered = true;
+    try {
+      state->db->ReleaseSnapshot(snapshot);
+    } catch (...) {
+      state->events->Add("release_snapshot_failed");
+      return;
+    }
+  }
+  if (recovered) state->events->Add("release_snapshot_recovered");
+  state->events->Add("release_snapshot");
+#else
+  try {
+    state->db->ReleaseSnapshot(snapshot);
+  } catch (...) {
+    // RocksDB does not normally throw; destructors cannot propagate an unexpected exception.
+  }
+#endif
+}
+
 class RocksDBSnapshot final : public StorageReader {
  public:
   RocksDBSnapshot(std::shared_ptr<DatabaseState> state, const rocksdb::Snapshot* snapshot)
       : state_(std::move(state)), snapshot_(snapshot) {}
 
   ~RocksDBSnapshot() override {
-    if (snapshot_ != nullptr) {
-#if defined(SITOS_ROCKSDB_TEST_SEAM)
-      Operations(state_).release_snapshot(*state_->db, snapshot_);
-#else
-      state_->db->ReleaseSnapshot(snapshot_);
-#endif
-#if defined(SITOS_ROCKSDB_TEST_SEAM)
-      state_->events->Add("release_snapshot");
-#endif
-    }
+    if (snapshot_ != nullptr) ReleaseSnapshotNoexcept(state_, snapshot_);
   }
 
   RocksDBSnapshot(const RocksDBSnapshot&) = delete;
@@ -222,8 +257,11 @@ class RocksDBSnapshot final : public StorageReader {
     options.snapshot = snapshot_;
 #if defined(SITOS_ROCKSDB_TEST_SEAM)
     state_->enumeration_calls.fetch_add(1);
-    const rocksdb::Status status = Operations(state_).list(*state_->db, options, prefix, entries);
-    if (!status.ok()) return false;
+    if (const rocksdb::Status status =
+            Operations(state_).list(*state_->db, options, prefix, entries);
+        !status.ok()) {
+      return false;
+    }
 #else
     {
       std::unique_ptr<rocksdb::Iterator> iterator(state_->db->NewIterator(options));
@@ -254,23 +292,33 @@ class RocksDBSnapshot final : public StorageReader {
 };
 
 #if defined(SITOS_ROCKSDB_TEST_SEAM)
-std::mutex registry_mutex;
-std::unordered_map<const RocksDBEngine*, std::weak_ptr<DatabaseState>> registry;
+struct EngineRegistry {
+  std::mutex mutex;
+  std::unordered_map<const RocksDBEngine*, std::weak_ptr<DatabaseState>> engines;
+};
+
+EngineRegistry& GetEngineRegistry() {
+  static EngineRegistry registry;
+  return registry;
+}
 
 void Register(const RocksDBEngine* engine, const std::shared_ptr<DatabaseState>& state) {
-  std::lock_guard lock(registry_mutex);
-  registry[engine] = state;
+  auto& registry = GetEngineRegistry();
+  std::lock_guard lock(registry.mutex);
+  registry.engines[engine] = state;
 }
 
 void Unregister(const RocksDBEngine* engine) {
-  std::lock_guard lock(registry_mutex);
-  registry.erase(engine);
+  auto& registry = GetEngineRegistry();
+  std::lock_guard lock(registry.mutex);
+  registry.engines.erase(engine);
 }
 
 std::shared_ptr<DatabaseState> StateFor(const RocksDBEngine* engine) {
-  std::lock_guard lock(registry_mutex);
-  const auto it = registry.find(engine);
-  return it == registry.end() ? nullptr : it->second.lock();
+  auto& registry = GetEngineRegistry();
+  std::lock_guard lock(registry.mutex);
+  const auto it = registry.engines.find(engine);
+  return it == registry.engines.end() ? nullptr : it->second.lock();
 }
 #endif
 #endif
@@ -306,12 +354,7 @@ Result<std::unique_ptr<RocksDBEngine>> RocksDBEngine::Open(const std::string& pa
   rocksdb::Options options;
   options.create_if_missing = true;
   std::unique_ptr<rocksdb::DB> owned_db;
-#if defined(SITOS_ROCKSDB_TEST_SEAM)
-  const rocksdb::Status status = OpenOperationForTest()(options, path, &owned_db);
-#else
-  const rocksdb::Status status = rocksdb::DB::Open(options, path, &owned_db);
-#endif
-  if (!status.ok()) {
+  if (const rocksdb::Status status = OpenDatabase(options, path, &owned_db); !status.ok()) {
     return Result<std::unique_ptr<RocksDBEngine>>::Err(
         Status::Error, std::format("RocksDB open failed: {}", status.ToString()),
         MakeRocksDBError(status));
@@ -322,7 +365,7 @@ Result<std::unique_ptr<RocksDBEngine>> RocksDBEngine::Open(const std::string& pa
   std::weak_ptr<rocksdb_test::EventLog> weak_events = event_log;
   std::shared_ptr<rocksdb::DB> shared_db(
       owned_db.release(), [weak_events](rocksdb::DB* database) {
-        delete database;
+        std::default_delete<rocksdb::DB>{}(database);
         if (const auto events = weak_events.lock()) events->Add("db_close");
       });
   auto database = std::make_shared<DatabaseState>(std::move(shared_db), std::move(event_log));
@@ -456,12 +499,7 @@ std::shared_ptr<const StorageReader> RocksDBEngine::TakeSnapshot() const {
   try {
     return std::make_shared<RocksDBSnapshot>(impl_->state, snapshot);
   } catch (...) {
-#if defined(SITOS_ROCKSDB_TEST_SEAM)
-    Operations(impl_->state).release_snapshot(*impl_->state->db, snapshot);
-    impl_->state->events->Add("release_snapshot");
-#else
-    impl_->state->db->ReleaseSnapshot(snapshot);
-#endif
+    ReleaseSnapshotNoexcept(impl_->state, snapshot);
     throw;
   }
 #else
@@ -473,10 +511,11 @@ std::shared_ptr<const StorageReader> RocksDBEngine::TakeSnapshot() const {
 namespace rocksdb_test {
 
 void SetOpenFailureForTest() {
-  std::lock_guard lock(open_operation_mutex);
+  auto& state = GetOpenOperationState();
+  std::lock_guard lock(state.mutex);
   const auto remaining = std::make_shared<std::atomic_bool>(true);
-  open_operation = [remaining](const rocksdb::Options& options, const std::string& path,
-                               std::unique_ptr<rocksdb::DB>* database) {
+  state.operation = [remaining](const rocksdb::Options& options, const std::string& path,
+                                std::unique_ptr<rocksdb::DB>* database) {
     if (remaining->exchange(false)) {
       return rocksdb::Status::IOError("injected Open failure");
     }
@@ -484,7 +523,16 @@ void SetOpenFailureForTest() {
   };
 }
 
-void SetFailures(RocksDBEngine& engine, unsigned int failures) {
+void SetSnapshotReleaseFailureForTest(RocksDBEngine& engine) {
+  const auto state = StateFor(&engine);
+  if (state == nullptr) return;
+  std::lock_guard lock(state->operations_mutex);
+  state->operations.release_snapshot = [](rocksdb::DB&, const rocksdb::Snapshot*) {
+    throw std::bad_alloc{};
+  };
+}
+
+void SetFailures(const RocksDBEngine& engine, unsigned int failures) {
   const auto state = StateFor(&engine);
   if (state == nullptr) return;
   std::lock_guard lock(state->operations_mutex);

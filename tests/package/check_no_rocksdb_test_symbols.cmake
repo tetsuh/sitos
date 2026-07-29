@@ -37,7 +37,10 @@ endif()
 if(NOT _result EQUAL 0)
   message(FATAL_ERROR "Unable to inspect installed archive ${_archive}: ${_error}")
 endif()
-if(_symbols MATCHES "rocksdb_test|SetOpenFailureForTest|SetFailures|GetSnapshotStats|GetEventLog")
+string(CONCAT _test_symbol_pattern
+  "rocksdb_test|SetOpenFailureForTest|SetSnapshotReleaseFailureForTest"
+  "|SetFailures|GetSnapshotStats|GetEventLog")
+if(_symbols MATCHES "${_test_symbol_pattern}")
   message(FATAL_ERROR "Installed production archive exposes RocksDB test-control symbols")
 endif()
 message(STATUS "Installed production archive contains no RocksDB test-control symbols")

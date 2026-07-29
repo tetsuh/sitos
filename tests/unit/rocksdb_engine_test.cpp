@@ -217,16 +217,45 @@ TEST(RocksDBEngineSnapshotLifetime, SnapshotOutlivesEngine) {
       return value.size() == 1 && value[0] == std::byte{0x01};
     }));
   }
-  ASSERT_EQ(events->events.size(), 2u);
-  EXPECT_EQ(events->events[0], "open");
-  EXPECT_EQ(events->events[1], "get_snapshot");
+  auto recorded = events->Snapshot();
+  ASSERT_EQ(recorded.size(), 2u);
+  EXPECT_EQ(recorded[0], "open");
+  EXPECT_EQ(recorded[1], "get_snapshot");
   snapshot.reset();
-  ASSERT_EQ(events->events.size(), 5u);
-  EXPECT_EQ(events->events[0], "open");
-  EXPECT_EQ(events->events[1], "get_snapshot");
-  EXPECT_EQ(events->events[2], "release_snapshot");
-  EXPECT_EQ(events->events[3], "db_close");
-  EXPECT_EQ(events->events[4], "directory_remove");
+  recorded = events->Snapshot();
+  ASSERT_EQ(recorded.size(), 5u);
+  EXPECT_EQ(recorded[0], "open");
+  EXPECT_EQ(recorded[1], "get_snapshot");
+  EXPECT_EQ(recorded[2], "release_snapshot");
+  EXPECT_EQ(recorded[3], "db_close");
+  EXPECT_EQ(recorded[4], "directory_remove");
+  EXPECT_FALSE(std::filesystem::exists(path));
+}
+
+TEST(RocksDBEngineSnapshotLifetime, InjectedReleaseFailureFallsBackWithoutTerminating) {
+  const auto path = MakeTestPath();
+  std::shared_ptr<const sitos::StorageReader> snapshot;
+  std::shared_ptr<sitos::rocksdb_test::EventLog> events;
+  {
+    auto result = sitos::RocksDBEngine::Open(path.string());
+    ASSERT_TRUE(result.IsOk());
+    auto engine = std::move(result).Value();
+    events = sitos::rocksdb_test::GetEventLog(*engine);
+    auto cleanup = std::make_shared<CleanupToken>(path, events);
+    snapshot = std::make_shared<SnapshotAdapter>(engine->TakeSnapshot(), cleanup);
+    sitos::rocksdb_test::SetSnapshotReleaseFailureForTest(*engine);
+    engine.reset();
+  }
+
+  snapshot.reset();
+  const auto recorded = events->Snapshot();
+  ASSERT_EQ(recorded.size(), 6u);
+  EXPECT_EQ(recorded[0], "open");
+  EXPECT_EQ(recorded[1], "get_snapshot");
+  EXPECT_EQ(recorded[2], "release_snapshot_recovered");
+  EXPECT_EQ(recorded[3], "release_snapshot");
+  EXPECT_EQ(recorded[4], "db_close");
+  EXPECT_EQ(recorded[5], "directory_remove");
   EXPECT_FALSE(std::filesystem::exists(path));
 }
 
