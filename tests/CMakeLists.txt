@@ -261,9 +261,15 @@ if(SITOS_WITH_ZENOH)
     NAME RawZenohClientCanPutAndGet
     COMMAND "${Python3_EXECUTABLE}" -m pytest -q
             "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_single.py"
-            "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_wheel_boundary.py")
+            -k test_raw_zenoh_client_can_put_and_get)
+  add_test(
+    NAME RawZenohInteropFixtureBoundaries
+    COMMAND "${Python3_EXECUTABLE}" -m pytest -q
+            "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_single.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_wheel_boundary.py"
+            -k "not test_raw_zenoh_client_can_put_and_get")
   set_tests_properties(
-    RawZenohClientCanPutAndGet
+    RawZenohClientCanPutAndGet RawZenohInteropFixtureBoundaries
     PROPERTIES
       ENVIRONMENT "SITOS_RAW_ZENOH_FIXTURE=$<TARGET_FILE:sitos_raw_zenoh_fixture>"
       RUN_SERIAL TRUE
