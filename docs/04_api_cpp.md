@@ -213,8 +213,25 @@ application or package manager. Exact version equality is necessary but not suff
 compatibility. See ADR-0033.
 
 ```cpp
+struct SessionOptions {
+    bool durable_buffers = false;
+    bool ephemeral_buffers = false;
+};
+
+using DurableBufferEngineFactory =
+    std::function<Result<std::unique_ptr<StorageEngine>>(std::string_view sid)>;
+
+struct StorageNodeConfig {
+    std::string prefix = "sitos";
+    /// Diagnostic destination; nullptr explicitly disables logging.
+    std::shared_ptr<LogSink> log_sink = DefaultLogSink();
+    DurableBufferEngineFactory durable_buffer_engine_factory = {};
+};
+
 class StorageNode {
 public:
+    using Config = StorageNodeConfig;
+
     StorageNode() = default;
     explicit StorageNode(Transport& transport);
     Result<void> Start(std::shared_ptr<StorageEngine> engine, Config config);
@@ -222,8 +239,10 @@ public:
                        Config config);
 
     // ---- session management (equivalent to SessionController) ----
-    Result<void> CreateSession(std::string_view sid);   // [F05]
-    Result<void> CloseSession(std::string_view sid);    // [F10]
+    // The one-argument overload preserves the existing no-buffer behavior.
+    Result<void> CreateSession(std::string_view sid);  // [F05]
+    Result<void> CreateSession(std::string_view sid, SessionOptions options);  // [F05]
+    Result<void> CloseSession(std::string_view sid);   // [F10]
     std::vector<std::string> ActiveSessions() const;
 
     void Stop() noexcept;   // quiesces callbacks, then undeclares queryable/subscriber
@@ -237,6 +256,43 @@ public:
 // Start stages both Transport declarations and activates the node only after
 // both succeed. Stop is idempotent and waits for callbacks already in flight.
 ```
+
+`SessionOptions` enables durable buffers, ephemeral buffers, both, or neither. The exact lifecycle
+contract is `absent → Creating → Active` for `CreateSession` and
+`Active → Closing → absent` for `CloseSession`. Creation against `Creating` or `Closing` returns
+`std::errc::operation_in_progress`; a duplicate `Active` creation retains
+`std::errc::file_exists`. Close against `Creating` or `Closing` returns
+`std::errc::operation_in_progress`, while missing Close retains
+`std::errc::no_such_file_or_directory`. The creator commits only after verifying under
+`session_mutex` that the same reservation still exists and remains `Creating`.
+
+A node-level host factory creates at most one durable `StorageEngine` for each Session that enables
+the durable capability; all durable keys in that Session share it. The factory result is uniquely
+owned by the Session, and RocksDB types and filesystem paths remain outside this public API.
+Creation reserves a non-queryable `Creating` record before invoking the external factory, rolls
+back every resource already created on failure, and publishes it as `Active` only after all
+resources are ready. The `session_mutex` is not held during external factory or engine
+operations, callback quiescence, resource destruction, or logging. Close leaves a `Closing` record
+reserved until callbacks quiesce and every Session-owned resource, including the durable engine, is
+released.
+Same-SID lifecycle phase collisions do not wait and return
+`std::errc::operation_in_progress`; admission quiescence is a separate required wait and may use
+the gate's normal synchronization implementation. This contract does not prescribe
+condition-variable internals. Physical directory removal is host-owned after return.
+
+`ActiveSessions()` takes the node callback-gate lease, then takes `session_mutex` and copies only
+SIDs whose records are `SessionPhase::Active`. It releases `session_mutex` and the gate lease
+before returning, retains no Session resources after enumeration, and never externally lists
+`Creating` or `Closing` records.
+
+The existing `CreateSession(sid)` source call remains supported. Its exact member-pointer shape,
+`Result<void> (StorageNode::*)(std::string_view)`, is preserved by the distinct overload; the
+new two-argument overload adds buffer options without replacing that API. Adding
+`durable_buffer_engine_factory` extends the public `StorageNodeConfig` layout/ABI, so consumers
+must rebuild against the updated library or package. Issue #56 adds no C++ or Python
+BufferPublisher, BufferSubscriber, or engine-factory API beyond this node factory and
+SessionOptions boundary. Buffer values use the route-selected wire contract in ADR-0032, not
+ParamStore or ParamCache APIs.
 
 ## 4. ParamCache — Subscriber-Side Hot Path
 
@@ -317,7 +373,8 @@ Reads resolve overlay before snapshot and fall back only when the overlay key is
 selected payload returns `Status::Error`. `List` materializes and validates the merged set, sorts
 keys lexically using raw-prefix matching, releases internal synchronization, and then invokes the
 caller sink. `GetShared`, `GetSpan`, `Put`, `PutBatch`, and `Delete` are intentionally absent.
-Large binary values belong to the disk-backed `buffers/<sid>/**` scope described by ADR-0014.
+Large binary values belong to the route-selected `buffers/<sid>/durable/**` or
+`buffers/<sid>/ephemeral/**` scopes described by ADR-0032. These routes are not SessionView data.
 
 ## 6. Thread-Safety Contract
 

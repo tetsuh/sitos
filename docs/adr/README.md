@@ -18,7 +18,7 @@ See [docs/10_adr_process.md](../10_adr_process.md) for the process.
 | [0011](0011-develop-in-public-from-day-one.md) | Develop in public from day one |
 | [0012](0012-google-cpp-style-with-100-column-limit.md) | Google C++ style with 100-column limit |
 | [0013](0013-default-to-zenoh-scouting-with-explicit-endpoint-override.md) | Default to zenoh scouting with explicit endpoint override |
-| [0014](0014-session-scoped-buffers.md) | Add a session-scoped, disk-backed buffers key space |
+| [0014](0014-session-scoped-buffers.md) | Session-scoped buffers *(superseded by ADR-0032)* |
 | [0015](0015-optional-http-gateway-component.md) | Ship an optional HTTP gateway component on cpp-httplib *(superseded by ADR-0027)* |
 | [0016](0016-use-canonical-zenoh-bytes-encodings.md) | Use canonical zenoh bytes encodings |
 | [0017](0017-atomic-storage-node-lifecycle.md) | Use atomic, quiescent StorageNode lifecycle transitions |
@@ -35,4 +35,5 @@ See [docs/10_adr_process.md](../10_adr_process.md) for the process.
 | [0028](0028-unify-acknowledged-operation-results.md) | Unify acknowledged operation results |
 | [0030](0030-param-store-subscription-lifetime-and-delivery.md) | Define ParamStore subscription lifetime and delivery semantics |
 | [0031](0031-cross-platform-vcpkg-foundation.md) | Establish a cross-platform vcpkg foundation |
+| [0032](0032-mixed-session-buffer-routes.md) | Mixed durable/ephemeral session buffer routes |
 | [0033](0033-rocksdb-engine-snapshot-and-package-boundary.md) | Define the RocksDB engine, snapshot, and installed-package boundary |

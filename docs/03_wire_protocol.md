@@ -11,7 +11,8 @@ A standard zenoh client can interoperate with sitos simply by following this spe
 <prefix>/base/<key>
 <prefix>/session/<sid>/<key>
 <prefix>/snap/<sid>/<key>
-<prefix>/buffers/<sid>/<key>
+<prefix>/buffers/<sid>/durable/<key>
+<prefix>/buffers/<sid>/ephemeral/<key>
 <prefix>/meta/session/<sid>
 <prefix>/meta/ack/<uuid>
 <prefix>/base/:batch                 # batch delivery [ADR-0018]
@@ -21,9 +22,11 @@ A standard zenoh client can interoperate with sitos simply by following this spe
 * `<prefix>`: Default is `sitos`. Configurable. One or more zenoh chunks
 * `<sid>`: session ID. `[0-9a-zA-Z_-]+` (UUID recommended). One chunk
 * `<key>`: User key. One or more chunks (hierarchical keys allowed)
-* `buffers/<sid>/<key>`: session-scoped large binary values. `<sid>` and `<key>` follow the
-  same grammar as other scopes. No `:batch` and no `snap` counterpart. The persistence mode
-  (durable/ephemeral) is a host-side session option and is **not** encoded on the wire [ADR-0014]
+* `buffers/<sid>/{durable|ephemeral}/<key>`: route-selected session buffer values. `<sid>`
+  and `<key>` reuse the existing grammar. The route requires the corresponding explicit Session
+  capability. Payloads are plain `zenoh/bytes`, with no sitos schema or type tag.
+* Buffer routes support no `:batch`, `:fence`, snapshot, or other control namespace in v0.4.
+  They are disjoint from ParamStore, ParamCache, ParamSubscription, and SessionView [ADR-0032].
 
 ### 1.2 User-key grammar
 
@@ -124,10 +127,10 @@ Receiver interpretation rules:
 
 | Operation | zenoh operation | Key |
 |---|---|---|
-| Write value | `put` | `<prefix>/base/<key>` or `<prefix>/session/<sid>/<key>` |
-| Delete value | `delete` | Same as above (valid only for base; not allowed for snap) |
-| Read value | `get` | Same key as for writes, or `<prefix>/snap/<sid>/<key>` |
-| Prefix enumeration | `get` | `<prefix>/base/<chunk...>/**`, etc. |
+| Write value | `put` | Base, session, or a buffer route |
+| Delete value | `delete` | `<prefix>/base/<key>` only |
+| Read value | `get` | Base, session, snap, or durable buffer route |
+| Prefix enumeration | `get` | `<prefix>/base/<chunk...>/**`, or a durable buffer route |
 | Batch write | `put` (batch payload) | `<prefix>/base/:batch` / `<prefix>/session/<sid>/:batch` (§5) |
 
 ## 4. Query semantics
@@ -147,13 +150,35 @@ zenoh wildcards operate on chunks (`*` = one chunk, `**` = zero or more chunks).
   the client library gets the parent scope (`sitos/base/**`) and filters on the client side.
   This is not specified as part of the wire protocol
 
-### 4.3 read-only rules for snap / session
+### 4.3 Buffer delivery and consistency
+
+* Durable PUTs are write-once. A byte-identical repeat is idempotent; a conflicting repeat is
+  protocol-invalid and StorageNode does not persist it. Ephemeral publishers follow the same
+  contract, but no ephemeral value state is retained to enforce it.
+* Zenoh live fanout and StorageNode persistence are not atomic. StorageNode is one subscriber and
+  cannot retract a sample already observed by another subscriber. A conflicting raw PUT may
+  therefore be observed live while durable Get retains the first bytes; consumers must reject that
+  traffic. Invalid raw publications have no guaranteed live-observation semantics, and exactly-once
+  delivery is not promised.
+* Durable late join is normative: subscribe in buffering mode, perform synchronous Get and
+  materialize replies, drain buffered samples under one ordering boundary, then enter live mode.
+  Same-byte duplicates may be deduplicated during the transition. Ephemeral is live-only with no
+  initial Get or replay guarantee.
+* Buffer DELETE is unsupported in v0.4; Session lifecycle cleanup removes buffer state.
+  CloseSession destroys engine ownership before returning, but physical directory removal is
+  host-owned. A new v0.4 Session gets a fresh or logically empty store. Issue #108 owns restart
+  catalogs and deletion retry.
+
+### 4.4 read-only and admission rules
 
 * put/delete to `snap/**`: StorageNode ignores it and logs a warning (no error response — zenoh
   put is fire-and-forget)
+* Buffer capability checks and write-once validation are admission rules, not network ACLs.
 * get for a nonexistent `<sid>`: 0 replies
 
 ## 5. Batch format (`sitos.v1.batch`)
+
+Buffer routes never use this format; `:batch` is reserved for base and session parameter scopes.
 
 Delivers multiple entries in one zenoh put [F09].
 Put to key `<prefix>/base/:batch` or `<prefix>/session/<sid>/:batch`, and store all entries in

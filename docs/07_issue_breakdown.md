@@ -255,24 +255,42 @@ raw-Zenoh consumers such as #32 and #56.
 
 ### #56 Session-scoped buffers
 * Milestone: v0.4
-* References: ADR-0014, [02] §2/§4, [03] §1
+* References: ADR-0032, [01] F03/F04/F10/N05/N07/C03/X01/X03, [02] §2/§4,
+  [03] §1/§4
 * Implementation targets: `include/sitos/key.hpp` (`KeyKind::Buffer`, `BuildBufferKey`,
-  `ParseKey`), `src/storage_node.cpp` (`buffers/**` routing), SessionController
-  (`BufferPersistence`, per-session disk engine), `Config`/`SessionOptions`
-* Scope: independent `<prefix>/buffers/<sid>/<key>` scope; single put = full-payload push to
-  live subscribers + store to a per-session disk engine (`kDurable`) / push-only (`kEphemeral`);
-  get from the per-session engine; querying-subscriber late-join; purge on `CloseSession`.
-  No `:batch`, no snapshot
-* Acceptance criteria: key round-trip; push==get byte equality; late-join no-loss;
-  `kEphemeral` no-store/no-get; `CloseSession` purge → not-found; ParamCache scope isolation
-  (`session/**` never receives `buffers/**`); raw-zenoh interop
-* Depends on: #12 (session management), #8 (RocksDBEngine, disk-backed `kDurable`)
+  `ParseKey`), `src/storage_node.cpp` (buffer routing and lifecycle), SessionController
+  (`SessionOptions`, one durable engine factory result per Session), `StorageNodeConfig`
+* Scope: independent `<prefix>/buffers/<sid>/durable/<key>` and
+  `<prefix>/buffers/<sid>/ephemeral/<key>` routes. Payloads are plain `zenoh/bytes`; route
+  selects persistence. StorageNode stores durable PUTs, while Zenoh independently fans out both
+  route classes; ephemeral PUTs are live-only and StorageNode retains no ephemeral state. Keys
+  are write-once: same-byte retries are idempotent, conflicting PUTs are protocol-invalid and
+  not persisted. DELETE, `:batch`, `:fence`, snapshots, and control namespaces are unsupported.
+  Existing `CreateSession(sid)` enables neither capability. Use one owned Session record and a
+  per-Session admission gate; preserve global subscriber sequencing. Durable late join is
+  buffering subscribe → synchronous Get/materialize → drain under one ordering boundary →
+  live.
+  Do not add a production BufferSubscriber API.
+* Acceptance criteria: route key round-trip; plain-byte push and durable Get equality; conflicting
+  PUT keeps the first durable bytes; ephemeral has no Get/replay; late join has no loss; close
+  waits callbacks and destroys engine before return; new Session has a fresh/logically empty store;
+  ParamCache isolation; raw-Zenoh interop; combined Windows/Linux Zenoh-ON+RocksDB-ON validation
+  while preserving Zenoh-ON/RocksDB-OFF and RocksDB-ON/Zenoh-OFF/vcpkg configurations. Reuse #29
+  process-isolation invariants: one Transport/session topology as applicable, bounded readiness and
+  command handshakes, failure-safe cleanup, unique identifiers, and hash-locked Python
+  dependencies. Buffer payloads remain plain `zenoh/bytes`.
+* Depends on: #8, #12, #29, #121
+* F10 applies here as the Session resource-release principle: CloseSession releases the durable
+  buffer engine and other owned resources after callback quiescence.
+* Boundaries: #105 owns durability barriers; #106 owns publisher fences; #107 owns applied and
+  synchronized BufferPublisher fences; #108 owns restart catalogs, retention, orphan handling,
+  and deletion retry. #56 does not add those mechanisms or Python buffer APIs.
 
 ### #107 BufferPublisher applied and synchronized fences
 * Milestone: v0.5
-* References: ADR-0014, [02] §8, [04]
+* References: ADR-0032, [02] §8, [04]
 * Implementation targets: C++ and Python BufferPublisher APIs plus deterministic/integration tests
-  over `buffers/<sid>/**`
+  over `buffers/<sid>/{durable|ephemeral}/**`
 * Scope: explicit application-controlled `Push` plus applied or synchronized `Fence`; no automatic
   per-value fence or application-specific manifest policy; Python parity is mandatory v0.5 scope
   because Python Holoscan/CuPy Workers require the same terminal manifest-and-fence sequence
@@ -283,7 +301,7 @@ raw-Zenoh consumers such as #32 and #56.
 
 ### #108 Restart-safe retained-session catalog
 * Milestone: v0.5
-* References: ADR-0014, [02] §7, [10] §6
+* References: ADR-0032, [02] §7, [10] §6
 * Implementation targets: StorageNode durable-session catalog, startup recovery, and
   crash/restart integration tests
 * Scope: retain and recover durable buffer sessions without making ephemeral sessions restartable.
