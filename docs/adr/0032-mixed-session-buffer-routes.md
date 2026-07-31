@@ -115,9 +115,10 @@ We will define durable late-join delivery and admission semantics by:
 * Neutral: Durability barriers belong to #105, publisher fences to #106, and applied or
   synchronized BufferPublisher fences to #107; #56 adds none of those mechanisms or an
   acknowledgement mechanism.
-* Neutral: #56 adds no BufferPublisher, BufferSubscriber, Python buffer, or engine-factory API and
-  preserves the existing Zenoh-ON/RocksDB-OFF and RocksDB-ON/Zenoh-OFF/vcpkg configurations while
-  adding combined Zenoh-ON+RocksDB-ON validation on Windows and Linux.
+* Neutral: #56 adds no BufferPublisher, BufferSubscriber, Python buffer, or Python
+  engine-factory API and preserves the existing Zenoh-ON/RocksDB-OFF and
+  RocksDB-ON/Zenoh-OFF/vcpkg configurations while adding combined
+  Zenoh-ON+RocksDB-ON validation on Windows and Linux.
 * Neutral: The #56 evidence must cover the approved lifecycle, capability, rollback, ordering,
   and interop matrix; it reuses #29's process-isolation safeguards. Backpressure, chunking,
   shared memory, TTL, history, and generation management remain outside this decision.

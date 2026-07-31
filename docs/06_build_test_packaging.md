@@ -242,6 +242,67 @@ major behaviors.
 | `RawZenohClientCanSendBatch` | C03/F09 | Batch interoperability using only zenoh-python |
 | `PutAckTimesOutWhenNodeUnavailable` | N10 | ack timeout/status mapping |
 | `PythonCallbackDoesNotDeadlockWithGet` | P04 | get inside callback does not deadlock |
+| `BufferKeyTest.BufferRoutesRoundTrip` | C06/X03 | Build and parse canonical durable and ephemeral routes; custom prefix and non-buffer nullopt |
+| `BufferKeyTest.InvalidBufferRoutesAreRejected` | C06 | Reject malformed routes, unknown classes, and undefined BufferClass values |
+| `BufferKeyTest.BufferClassIsReservedOnlyInTheClassPosition` | C06 | Permit durable/ephemeral chunks inside a hierarchical user key |
+
+### 5.1.1 Session buffer implementation stages
+
+The Session buffer work is split into four sequential implementation Issues. The fixed tests in
+this section are the acceptance-name authority for each stage.
+
+**Stage #139 — mixed buffer key contract**
+
+The three `BufferKeyTest.*` tests above verify only canonical route grammar, parser
+classification, invalid-form rejection, class-position reservation, and the custom-prefix portion
+of X03. They do not prove bare-byte admission, durable retrieval, ephemeral non-retention, or raw
+client interoperability.
+
+**Stage #140 — SessionRecord and admission lifecycle**
+
+- `StorageNodeSessionLifecycleTest.CreatingAndClosingCollisionsAreDeterministic`
+- `StorageNodeSessionLifecycleTest.CreateRollbackAllowsSameSidRetry`
+- `StorageNodeSessionLifecycleTest.CloseQuiescesAdmittedOperations`
+- `StorageNodeSessionLifecycleTest.DestroysResourcesBeforeCloseReturns`
+- `StorageNodeSessionLifecycleTest.StopWaitsForAdmittedCreate`
+- `SessionViewTest.CloseWaitsForCapturedRead`
+- `SessionViewTest.StaleViewRejectsSameSidReplacement`
+
+**Stage #141 — capabilities, factory, and routing**
+
+- `StorageNodeBufferApiTest.PreservesLegacyCreateSessionOverload`
+- `StorageNodeBufferApiTest.ExposesCapabilityOverloadAndFactory`
+- `StorageNodeBufferLifecycleTest.FactoryFailureTaxonomyAndRollback`
+- `StorageNodeBufferLifecycleTest.FactoryAndStopLinearizeDeterministically`
+- `StorageNodeBufferLifecycleTest.CloseQuiescesDurableOperationsAndDestroysEngine`
+- `StorageNodeBufferLifecycleTest.SameSidRecreationUsesFreshEngine`
+- `StorageNodeBufferRoutingTest.CapabilityMatrix`
+- `StorageNodeBufferRoutingTest.DurablePutIsByteExactAndWriteOnce`
+- `StorageNodeBufferRoutingTest.PutFailureRereadsAuthoritativeEngineState`
+- `StorageNodeBufferRoutingTest.WholeSubscriberSerializationPreventsConflictingPuts`
+- `StorageNodeBufferRoutingTest.EphemeralPutNeverTouchesEngine`
+- `StorageNodeBufferRoutingTest.NonBytesEncodingIsRejected`
+- `StorageNodeBufferRoutingTest.DurableQuerySelectorsAndFailures`
+- `StorageNodeBufferRoutingTest.EngineFailuresAndExceptionsAreContained`
+- `StorageNodeBufferRoutingTest.BufferRoutesDoNotEnterParameterSurfaces`
+- `StorageNodeBufferRoutingTest.BufferDeleteAndControlRoutesAreRejected`
+
+These tests verify C06 bare-byte admission, durable Get/List, write-once handling, and absence of
+node-retained ephemeral state.
+
+**Final stage #56 — raw interoperability and durable late join**
+
+- `BufferLateJoinTest.OrdersMaterializedBufferedAndLiveSamples`
+- `BufferLateJoinTest.DurableLateJoinDoesNotLoseDistinctKeys`
+- `BufferLateJoinTest.FailureInvokesNoObserverAndCleansUp`
+- `RawZenohClientCanUseMixedSessionBuffers`
+- `RawZenohDurableLateJoinPreservesDistinctKeys`
+- `RawZenohBufferInteropFixtureBoundaries`
+- `RocksDBBufferLifecycleTest.CloseReleasesEngineBeforeReturn`
+- `RocksDBBufferLifecycleTest.SameSidRecreationUsesFreshEngine`
+
+These tests verify C03/C06 raw-client interoperability and the process-isolated durable late-join
+boundary. The final stage also owns combined Zenoh-ON/RocksDB-ON package and CI evidence.
 
 ## 5.2 Lifecycle sanitizer runs
 

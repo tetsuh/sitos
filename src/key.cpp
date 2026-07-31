@@ -119,6 +119,39 @@ std::optional<std::string> BuildKey(std::string_view prefix, std::string_view sc
   return result;
 }
 
+std::optional<std::string> BuildBufferKey(std::string_view prefix, std::string_view sid,
+                                          BufferClass buffer_class,
+                                          std::string_view user_key) {
+  if (!IsValidPrefix(prefix) || !IsValidSessionId(sid) || !IsValidKey(user_key)) {
+    return std::nullopt;
+  }
+  std::string_view class_name;
+  switch (buffer_class) {
+    case BufferClass::Durable:
+      class_name = "durable";
+      break;
+    case BufferClass::Ephemeral:
+      class_name = "ephemeral";
+      break;
+    default:
+      return std::nullopt;
+  }
+  constexpr std::string_view kBuffers = "buffers";
+  std::string result;
+  result.reserve(prefix.size() + 1 + kBuffers.size() + 1 + sid.size() + 1 + class_name.size() +
+                 1 + user_key.size());
+  result.append(prefix);
+  result.push_back('/');
+  result.append(kBuffers);
+  result.push_back('/');
+  result.append(sid);
+  result.push_back('/');
+  result.append(class_name);
+  result.push_back('/');
+  result.append(user_key);
+  return result;
+}
+
 std::optional<std::string> BuildBatchKey(std::string_view prefix, std::string_view scope) {
   if (!IsValidPrefix(prefix)) {
     return std::nullopt;
@@ -265,6 +298,35 @@ std::optional<ParsedKey> ParseKey(std::string_view prefix, std::string_view full
         return std::nullopt;  // rejects snap/<sid>/:batch as a read-only batch path
       }
       return ParsedKey{KeyKind::Snapshot, std::string(sid), "", std::string(value), false};
+    }
+    if (head == "buffers") {
+      // buffers/<sid>/durable/<key...> or buffers/<sid>/ephemeral/<key...>
+      auto sid_split = SplitFirst(tail);
+      if (!sid_split) {
+        return std::nullopt;
+      }
+      auto [sid, class_and_key] = *sid_split;
+      if (!IsValidSessionId(sid)) {
+        return std::nullopt;
+      }
+      auto class_split = SplitFirst(class_and_key);
+      if (!class_split) {
+        return std::nullopt;
+      }
+      auto [class_name, user_key] = *class_split;
+      BufferClass buffer_class;
+      if (class_name == "durable") {
+        buffer_class = BufferClass::Durable;
+      } else if (class_name == "ephemeral") {
+        buffer_class = BufferClass::Ephemeral;
+      } else {
+        return std::nullopt;
+      }
+      if (!IsValidKey(user_key)) {
+        return std::nullopt;
+      }
+      return ParsedKey{KeyKind::Buffer, std::string(sid), "", std::string(user_key), false,
+                       buffer_class};
     }
     if (head == "meta") {
       // meta/session/<sid> or meta/ack/<uuid>

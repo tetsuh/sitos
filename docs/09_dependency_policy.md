@@ -193,6 +193,16 @@ The following must not change after zenoh updates:
 * The loss-prevention sequence of `ParamCache::Attach`
 * Snapshot isolation semantics
 * Python API exception mapping
+* Buffer key paths are exactly `buffers/<sid>/durable/<key>` and
+  `buffers/<sid>/ephemeral/<key>`; `BufferClass` is reserved only in the route-class position.
+* Buffer values use opaque bare `zenoh/bytes`; parameter values retain payload-v1 encoding.
+* Durable buffer values are retrievable by Get/List, ephemeral values are live-only, and no
+  ephemeral state is retained by StorageNode.
+* Durable late join observes materialized Get replies, then buffered samples, then post-transition
+  live samples, with only documented same-byte duplicate handling.
+
+These buffer invariants are owned by Accepted ADR-0032 and are validated across stages #139, #141,
+and final #56; they add no dependency and do not change the transport adapter boundary.
 
 ## 7. RocksDB / Python dependencies
 

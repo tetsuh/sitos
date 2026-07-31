@@ -18,7 +18,7 @@ Milestone = release boundary).
 | **v0.1** | The zenoh-independent core works. Payload fixtures and InMemoryEngine contract tests are green | #1, #4, #5, #6, #7 |
 | **v0.2** | StorageNode/ParamStore/ParamCache work in C++ through same-process zenoh sessions | #2, #3, #9–#13, #15, #18, #19, #21 |
 | **v0.3** | Basic Python APIs work (InMemory, ParamStore, ParamCache, NumPy read) | #16, #22, #23, #24, #25, #27 |
-| **v0.4** | Cross-platform vcpkg foundation, RocksDB engine, process-isolated raw-Zenoh interop, session-scoped buffers, benchmarks, and C++/Python examples are in place | #122, #8, #29, #31, #32, #33, #56 |
+| **v0.4** | Cross-platform vcpkg foundation, RocksDB engine, process-isolated raw-Zenoh interop, session-scoped buffers, benchmarks, and C++/Python examples are in place | #122, #8, #29, #31, #32, #33, #139, #140, #141, #56 |
 | **v0.5** | Reliable and durable session-buffer delivery is ready for downstream application integration | #14, #17, #99, #105–#109 |
 | **v1.0** | Public OSS quality, reconnect recovery, advanced Python extensions, raw batch/ack interop, documentation, and publication readiness are complete | #20, #26, #28, #30, #34, #35 |
 
@@ -26,7 +26,9 @@ Milestone = release boundary).
 so it is not a v0.2 blocker. Include it by v0.5.
 
 For v0.4, #122 precedes #8; #8 precedes the RocksDB-dependent #31, #33, and #56; #29 precedes
-raw-Zenoh consumers such as #32 and #56.
+raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation sequence is
+#139 (key contract), #140 (SessionRecord lifecycle), #141 (capabilities and routing), then #56
+(final raw-Zenoh, RocksDB, package, and combined-CI integration).
 
 ---
 
@@ -253,55 +255,105 @@ raw-Zenoh consumers such as #32 and #56.
   handling, timeout, error preservation, and callback-quiescent lifecycle tests
 * Depends on: #14; requires an Accepted ADR before merge
 
-### #56 Session-scoped buffers
+### #139 Mixed Session buffer key contract
 * Milestone: v0.4
-* References: ADR-0032, [01] F03/F04/F10/N05/N07/C03/X01/X03, [02] §2/§4,
-  [03] §1/§4
-* Implementation targets: `include/sitos/key.hpp` (`KeyKind::Buffer`, `BuildBufferKey`,
-  `ParseKey`), `src/storage_node.cpp` (buffer routing and lifecycle), SessionController
-  (`SessionOptions`, one durable engine factory result per Session), `StorageNodeConfig`
-* Scope: independent `<prefix>/buffers/<sid>/durable/<key>` and
-  `<prefix>/buffers/<sid>/ephemeral/<key>` routes. Payloads are plain `zenoh/bytes`; route
-  selects persistence. StorageNode stores durable PUTs, while Zenoh independently fans out both
-  route classes; ephemeral PUTs are live-only and StorageNode retains no ephemeral state. Keys
-  are write-once: same-byte retries are idempotent, conflicting PUTs are protocol-invalid and
-  not persisted. Buffer DELETE, `:batch`, `:fence`, snapshots, and control namespaces are
-  unsupported. Existing `CreateSession(sid)` enables neither capability. Use one owned Session
-  record and a per-Session admission gate; preserve global subscriber sequencing. Durable late
-  join is buffering subscribe → synchronous Get/materialize → drain under one ordering boundary →
-  live. Creation uses the callback-shared State generation and must preserve the documented
-  transactional factory and reentrancy boundaries. Exact Status taxonomy for empty, null, and
-  exception outcomes is deferred to the Issue #56 scope freeze. Do not add a production
-  BufferSubscriber API.
+* References: ADR-0032, [01] C06/X03, [02] §2, [03] §1, [04] §1
+* Implementation targets: `include/sitos/key.hpp`, `src/key.cpp`, `tests/unit/key_test.cpp`,
+  and the listed documentation reconciliation files
+* Scope: append `KeyKind::Buffer` and `ParsedKey::buffer_class`, add `BufferClass` and
+  `BuildBufferKey(prefix, sid, buffer_class, user_key)`, and parse the canonical durable and
+  ephemeral routes. Preserve existing `KeyKind` integral values and five-field positional
+  `ParsedKey` aggregate initialization by appending the defaulted member. Five-element structured
+  bindings and exhaustive switches may require source changes or rebuild; no binary ABI promise is
+  made. Reject undefined enum values and leave non-buffer `buffer_class` disengaged. This stage has
+  no StorageNode routing,
+  Session lifecycle, capability, factory, interop, RocksDB, package, or CI behavior.
 * Acceptance criteria:
-  * Deterministic, sleep-free latch/barrier/fake-engine tests cover factory `Err`, exception,
-    empty factory, and `Ok(nullptr)`. Each proves that every Session record, admission state, and
-    engine state created by the attempt is removed or released before same-SID retry. Factory and
-    LogSink re-entry remains a documented caller precondition, not a runtime test outcome.
-  * A deterministic capability matrix covers none, durable-only, ephemeral-only, and both.
-    StorageNode admits durable PUT/Get/List and ephemeral PUT only when the matching capability
-    is enabled. Disabled durable routes create or mutate no durable engine state; disabled
-    ephemeral traffic is rejected by StorageNode admission without retracting independent Zenoh
-    fanout.
-  * The matrix covers `Creating`/`Closing` collisions and blocked admitted durable Get/List and
-    PUT versus `CloseSession`.
-  * The matrix proves engine destruction before `CloseSession` returns, recreation ordering, and
-    ordinary cross-thread `Stop` concurrency.
-  * Deterministic sleep-free fake-Transport/barrier tests prove durable late-join ordering:
-    materialized Get replies, then buffered samples, then post-transition live samples. Only
-    documented same-byte duplicates may be deduplicated; the process-isolated raw-Zenoh lane
-    must prove the same ordering.
-  * Route key round-trip, plain-byte push and durable Get equality, first durable bytes remain
-    stored after a conflicting PUT, ephemeral no-Get/replay, late-join no-loss, close quiescence,
-    fresh or logically empty recreation, and ParamCache isolation pass.
-  * Raw-Zenoh interop, including late join, is a separate test lane that reuses #29's
-    process-isolation safeguards: one Transport/session topology as applicable, bounded readiness
-    and command handshakes, failure-safe cleanup, unique identifiers, and hash-locked Python
-    dependencies.
+  * `BufferKeyTest.BufferRoutesRoundTrip` verifies canonical routes, parsed fields, custom prefix,
+    and nullopt for non-buffer keys.
+  * `BufferKeyTest.InvalidBufferRoutesAreRejected` verifies malformed routes and undefined enum
+    rejection.
+  * `BufferKeyTest.BufferClassIsReservedOnlyInTheClassPosition` verifies hierarchical user keys.
+* Depends on: #133; implementation precedes #140 and #141.
+* Contract Registry: none; the buffer row remains `Normative / Planned / ADR-0032 / —`.
+
+### #140 Unified SessionRecord and admission lifecycle
+* Milestone: v0.4
+* References: ADR-0032, [02] §4, [04] §3, [06] §5.1.1
+* Implementation targets: `include/sitos/storage_node.hpp`, `include/sitos/session.hpp`,
+  `src/storage_node.cpp`, `src/session_view.cpp`, focused lifecycle tests, and existing sanitizer
+  test selection
+* Scope: replace separate Session ownership tables with generation-safe Creating/Active/Closing
+  SessionRecord admission while preserving existing parameter, snapshot, overlay, and SessionView
+  behavior. Enforce callback-gate and lock-order contracts, rollback, quiescent Close, Stop
+  ordering, and stale same-SID View rejection. Do not add buffer capability or routing behavior.
+* Acceptance criteria:
+  * `StorageNodeSessionLifecycleTest.CreatingAndClosingCollisionsAreDeterministic`
+  * `StorageNodeSessionLifecycleTest.CreateRollbackAllowsSameSidRetry`
+  * `StorageNodeSessionLifecycleTest.CloseQuiescesAdmittedOperations`
+  * `StorageNodeSessionLifecycleTest.DestroysResourcesBeforeCloseReturns`
+  * `StorageNodeSessionLifecycleTest.StopWaitsForAdmittedCreate`
+  * `SessionViewTest.CloseWaitsForCapturedRead`
+  * `SessionViewTest.StaleViewRejectsSameSidReplacement`
+* Depends on: #139; implementation precedes #141 and final #56.
+* Contract Registry: none.
+
+### #141 Mixed Session buffer capability and routing
+* Milestone: v0.4
+* References: ADR-0032, [01] C06/X01/X03, [02] §2/§4, [04] §3, [06] §5.1.1
+* Implementation targets: `include/sitos/session.hpp`, `include/sitos/storage_node.hpp`,
+  `src/storage_node.cpp`, focused buffer API/lifecycle/routing tests, and sanitizer test selection
+* Scope: add SessionOptions and the node-level C++ DurableBufferEngineFactory, then implement
+  deterministic in-process capability admission and durable/ephemeral routing on #140. Apply the
+  owner-approved factory taxonomy, bare `zenoh/bytes` validation, engine-authoritative write-once
+  handling, query selectors, exception containment, and no node-retained ephemeral state. Do not
+  add raw-Zenoh, RocksDB, package, combined-CI, or production subscriber APIs.
+* Acceptance criteria:
+  * The fixed API, lifecycle, and routing tests from [06] §5.1.1 pass for all four capability
+    combinations and all DEC-56 failure, encoding, persistence, and Stop contracts.
+  * Disabled durable capability creates or mutates no engine state; disabled ephemeral capability
+    retains no node state; query failures produce no partial replies.
+* Depends on: #139 and #140; implementation precedes final #56.
+* Contract Registry: none; the buffer row remains Planned.
+
+### #56 Session-scoped buffer integration
+* Milestone: v0.4
+* References: ADR-0032, [01] F03/F04/F10/N05/N07/C03/C06/X01/X03, [02] §2/§4,
+  [03] §1/§4, [06] §5.1.1
+* Implementation targets: raw-Zenoh buffer fixture and Python controller, focused RocksDB buffer
+  lifecycle tests, installed consumer validation, `tests/vcpkg/validate_vcpkg_provisioning.cmake`,
+  `.github/workflows/ci.yml`, and the final documentation/Contract Registry transition
+* Scope: integrate #139, #140, and #141 with process-isolated raw-Zenoh interoperability, test-only
+  durable late join, RocksDB lifecycle evidence, combined Zenoh-ON/RocksDB-ON Windows and Linux
+  validation, and installed configure/build/link consumers. Preserve existing Zenoh-ON/RocksDB-OFF
+  and RocksDB-ON/Zenoh-OFF jobs. The buffer Registry row remains Contract `Normative`,
+  Implementation `Planned` until this final #56 PR, then `Implemented`, Normative spec `ADR-0032`,
+  and Design authority `—`. Do not add BufferPublisher/BufferSubscriber or absorb Issues #105-#108.
+* Acceptance criteria:
+  * Revalidate the merged #140 lifecycle and #141 capability/routing contracts at the integration
+    boundary without duplicating their deterministic in-process factory, lifecycle, capability, or
+    routing acceptance suites. Their fixed tests remain owned by #140 and #141.
+  * Reuse #29's process-isolated fixture safeguards: one Transport/session topology as applicable,
+    bounded readiness and command handshakes, independent stdout/stderr draining, failure-safe
+    cleanup, unique identifiers, port-race recovery, and hash-locked Python dependencies.
+  * `BufferLateJoinTest.OrdersMaterializedBufferedAndLiveSamples` and
+    `BufferLateJoinTest.DurableLateJoinDoesNotLoseDistinctKeys` prove materialized Get replies,
+    then buffered samples, then post-transition live samples, with only documented same-byte
+    duplicate handling. `FailureInvokesNoObserverAndCleansUp` proves failure cleanup.
+  * `RawZenohClientCanUseMixedSessionBuffers`,
+    `RawZenohDurableLateJoinPreservesDistinctKeys`, and
+    `RawZenohBufferInteropFixtureBoundaries` prove raw-client interoperability using canonical
+    routes, bare `zenoh/bytes`, capability behavior, and the durable late-join boundary.
+  * `RocksDBBufferLifecycleTest.CloseReleasesEngineBeforeReturn` and
+    `RocksDBBufferLifecycleTest.SameSidRecreationUsesFreshEngine` prove RocksDB-specific release
+    ordering and fresh recreation without claiming restart retention or #108 catalog behavior.
+  * Installed Linux and Windows consumers configure, build, and link against the combined package;
+    they do not execute `RocksDBEngine::Open`. Wheels remain RocksDB-free and no fixture binary
+    enters installed production artifacts.
   * Combined Windows/Linux Zenoh-ON+RocksDB-ON validation passes while preserving
     Zenoh-ON/RocksDB-OFF and RocksDB-ON/Zenoh-OFF/vcpkg configurations. Buffer payloads remain
     plain `zenoh/bytes`.
-* Depends on: #8, #12, #29, #121
+* Depends on: #8, #12, #29, #121, #139, #140, #141
 * F10 applies here as the Session resource-release principle: CloseSession releases the durable
   buffer engine and other owned resources after callback quiescence.
 * Boundaries: #105 owns durability barriers; #106 owns publisher fences; #107 owns applied and
