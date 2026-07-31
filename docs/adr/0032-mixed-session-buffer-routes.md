@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 2026-07-30
+Proposed — pending owner acceptance immediately before merge
 
 ## Context
 
@@ -14,88 +14,88 @@ must not imply that live delivery and persistence are one atomic operation.
 
 ## Decision
 
-We will define durable and ephemeral buffer routes as independent Session capabilities.
-We will use plain `zenoh/bytes` values with one host-created durable engine per enabled Session.
-We will use reservation, admission, and callback-quiescence rules to make Session lifecycle safe.
+We will define the exact routes `<prefix>/buffers/<sid>/durable/<key>` and
+`<prefix>/buffers/<sid>/ephemeral/<key>` as independent Session capabilities, with each Session
+able to enable either, both, or neither, preserve both `CreateSession` overloads with the
+one-argument behavior unchanged, use plain `zenoh/bytes` values with no sitos schema or type tag,
+make values immutable and write-once, with same-byte retries idempotent and conflicting PUTs
+protocol-invalid and not persisted, make ephemeral write-once compliance a publisher obligation
+without retaining ephemeral state, reject buffer DELETE, batch, fence, snapshot, and control
+operations in v0.4, and have `Start` move `DurableBufferEngineFactory` from
+`StorageNodeConfig` into the callback-shared long-lived State before Transport declarations,
+where the State owns it and the factory is invoked at most once per durable-enabled Session;
+its return type is `Result<std::unique_ptr<StorageEngine>>`, and a valid non-null result
+transfers into unique Session ownership; all durable keys in that Session share its engine; the
+empty default factory remains valid when durable capability is not requested; the creation/rollback
+path releases every attempt-created
+Session record, admission state, and engine state on every non-commit outcome, preserves factory
+`Err` unchanged, contains exceptions as non-OK Results, fails empty and null results, defers
+exact Status taxonomy to the Issue #56 scope freeze, and leaves the first bytes retained after a
+conflicting durable PUT.
+We will enforce the exact `absent → Creating → Active` and `Active → Closing → absent` transitions,
+map creation against `Creating` or `Closing` and Close against `Creating` or `Closing` to
+`std::errc::operation_in_progress`, retain `std::errc::file_exists` for duplicate `Active` creation
+and `std::errc::no_such_file_or_directory` for missing Close, allow Close only from `Active`,
+reserve a non-queryable `Creating` record, enroll `CreateSession`, `CloseSession`, and
+`ActiveSessions` in the node callback gate before lifecycle-state access, have `ActiveSessions` copy
+only Active SIDs and retain no Session resource after returning, keep the node gate as the
+`Stop`/shutdown quiescence boundary, use the same callback-shared State generation for
+`CreateSession`, commit only the same reservation while it remains `Creating`, remove only that
+reservation on rollback, have both Transport callbacks take the node gate at entry, have only the
+subscriber path hold the global `subscriber_mutex` across parsing and application including
+`durable ReadExact → first-writer decision → Put`, keep query callbacks out of
+`subscriber_mutex`, require every callback or operation using Session resources to take admission,
+order locks as node gate → `subscriber_mutex` (subscriber only) → `session_mutex` → Session
+admission, make active lookup plus admission atomic under `session_mutex`, release `session_mutex`
+before external factory or engine operations, callback quiescence, destruction, or logging, reject
+`Creating`/`Closing` phase collisions without waiting, keep admission quiescence as a distinct
+required wait without prescribing condition-variable internals, destroy owned resources before
+`CloseSession` returns, keep the SID reserved until release completes, and make the Factory/LogSink
+caller precondition forbid synchronously calling `Stop`, destruction, or another waiting lifecycle
+operation on the same StorageNode and forbid waiting for a task or thread that does so, while
+ordinary independent-thread calls and non-blocking stop-request posting remain supported.
+We will define durable late join as buffering subscribe, materialized Get replies, buffered-sample
+drain, and post-transition live delivery in that order, allow only documented same-byte duplicate
+handling during the transition, keep ephemeral routes live-only with no initial Get, replay, or
+node-retained state, treat Zenoh fanout and StorageNode persistence as non-atomic, and treat
+capability and write-once checks as admission rules rather than network ACLs.
 
 ## Consequences
 
-* Good: One Session can publish durable and ephemeral values without a session-wide mode.
-* Good: The routes are `<prefix>/buffers/<sid>/durable/<key>` and
-  `<prefix>/buffers/<sid>/ephemeral/<key>`. A Session may enable either, both, or neither through
-  `SessionOptions`; the existing `CreateSession(sid)` enables neither and remains source-compatible.
-* Good: Buffer payloads are plain `zenoh/bytes` with no sitos schema or type tag. Receivers keep
-  buffer data byte-opaque; buffer handling has no schema-fallback warning path. Keys are
-  immutable and write-once: identical repeated PUTs are idempotent, while conflicting PUTs are
-  protocol-invalid and not persisted. Ephemeral publishers follow the same contract, but no
-  ephemeral state is retained to enforce it.
-* Good: Buffer DELETE, `:batch`, `:fence`, snapshots, and control namespaces are
-  unsupported in v0.4.
-* Good: Durable late join is the normative buffering-subscriber → synchronous Get/materialize →
-  drain under one ordering boundary → live algorithm. Ephemeral routes have no replay or initial
-  Get requirement, and StorageNode retains no ephemeral state. A production BufferSubscriber API is
-  not added; process-isolated raw-Zenoh tests verify the algorithm.
-* Good: A node-level host factory returning `Result<std::unique_ptr<StorageEngine>>` creates at
-  most one durable engine per Session. `Start` moves the factory from `StorageNodeConfig` into the
-  callback-shared State before Transport declarations; its result is uniquely owned by the
-  Session, and all durable keys share it. The empty default remains valid when no durable
-  capability is requested.
-* Good: Session phases are exact: creation is `absent → Creating → Active`, and close is
-  `Active → Closing → absent`. Creation against `Creating` or `Closing` returns
-  `std::errc::operation_in_progress`; an `Active` duplicate retains
-  `std::errc::file_exists`. Close against `Creating` or `Closing` returns
-  `std::errc::operation_in_progress`, and missing Close retains
-  `std::errc::no_such_file_or_directory`.
-* Good: Creation reserves a non-queryable `Creating` record before external engine creation. The
-  creator uses the same callback-shared State generation and commits only after verifying under
-  `session_mutex` that the same reservation still exists and remains `Creating`; only `Active`
-  records are queryable. Only a valid non-null engine commits. For a Session requesting durable
-  buffers, factory `Err` is preserved; exceptions are contained and become a non-OK Result, and
-  empty or null results also fail. The exact Status taxonomy for these outcomes is deferred to
-  the Issue #56 scope freeze. The non-commit path releases created resources and removes only
-  the same `Creating` reservation, allowing same-SID retry.
-* Good: Each Session has an admission/quiescence gate covering every callback or operation that can
-  use Session resources. The lock order is node gate → `subscriber_mutex` (subscriber only) →
-  `session_mutex` → Session admission. Both Transport callbacks acquire the node gate at entry;
-  subscriber parsing and application, including durable ReadExact → first-writer decision → Put,
-  is under `subscriber_mutex`. Query callbacks stay out of `subscriber_mutex`. Active lookup and
-  admission are atomic under `session_mutex`, which is released before engine work or logging.
-* Good: Close changes `Active → Closing`, rejects same-SID recreation, and waits for admitted
-  callbacks and operations to quiesce, destroys the durable engine, releases all other resources,
-  and completes ownership release before returning. `session_mutex` is not held during external
-  factory or engine operations, callback quiescence, destruction, or logging. Same-SID lifecycle
-  phase collisions do not wait and return `std::errc::operation_in_progress`; admission
-  quiescence is a separate required wait and may use the gate's normal synchronization
-  implementation; this contract does not prescribe condition-variable internals.
-* Good: Existing raw DELETE support remains available for base and session routes. ParamStore's
-  public Delete API remains base-only; snapshots are read-only and buffer DELETE is unsupported
-  in v0.4.
-* Neutral: The node-wide callback gate remains responsible for StorageNode Stop/shutdown. The global
-  subscriber sequencing boundary remains. Orderly engine close/reopen checks validate resource
-  release only; they do not establish #108 restart or retention semantics. Physical directory
-  removal is host-owned after CloseSession returns, and a new v0.4 Session gets a fresh or logically
-  empty store. #108 owns restart catalogs, retention, orphan handling, and deletion retry.
-* Bad: StorageNode is one subscriber and cannot retract a sample already observed by another
-  subscriber. A durable conflicting raw PUT may therefore be observed live even though durable Get
-  keeps the first bytes; consumers must treat the traffic as protocol-invalid.
-* Bad: Zenoh fanout and StorageNode persistence are not atomic. Invalid raw publications have no
-  guaranteed live-observation semantics, duplicate samples may occur, and exactly-once delivery is
-  not promised.
-* Bad: Capability checks and write-once validation are admission rules, not network ACLs, and do
-  not control other subscribers' observations.
-* Neutral: `DurableBufferEngineFactory` and `LogSink` must not synchronously call `Stop`,
-  destruction, or another waiting lifecycle operation on the same StorageNode, or wait for a task
-  or thread that does so. Non-blocking stop-request posting and ordinary independent-thread calls
-  remain supported; the callback gate is not redesigned.
-* Neutral: Applied and synchronized fences belong to #107, using #105 and #106 mechanisms; #56
-  remains unacknowledged. #56 also adds no BufferPublisher, BufferSubscriber, or engine-factory API
-  for Python. #56 must preserve existing Zenoh-ON/RocksDB-OFF and RocksDB-ON/Zenoh-OFF/vcpkg
-  configurations while adding combined Zenoh-ON+RocksDB-ON validation on Windows and Linux. Its
-  interop tests reuse #29's one-Transport/session topology as applicable, bounded readiness and
-  command handshakes, failure-safe cleanup, unique identifiers, and hash-locked Python
-  dependencies. This is an #56 implementation requirement, not this documentation change.
-* Neutral: Backpressure, chunking, shared memory, retention, TTL, history, and generation
-  management remain outside this decision.
+* Good: Independent routes allow one Session to combine durable outputs and ephemeral progress
+  without a session-wide persistence mode, while the existing one-argument `CreateSession` call
+  remains source-compatible.
+* Good: Plain byte payloads preserve interoperability and keep receivers byte-opaque; the
+  route-selected engine gives durable values one ownership boundary and leaves ephemeral delivery
+  live-only.
+* Good: Reservation, admission, and callback quiescence prevent resource use after close and make
+  same-SID retry possible after a failed creation or completed close.
+* Good: Durable late-join evidence must include deterministic sleep-free fake-Transport/barrier
+  coverage and a process-isolated raw-Zenoh lane, with #29's topology, readiness, cleanup,
+  identifier, and dependency safeguards.
+* Bad: Plain bytes provide no schema or type metadata, and Zenoh fanout cannot be retracted when a
+  subscriber has already observed a conflicting or invalid publication.
+* Bad: Fanout and persistence are not atomic, so duplicate samples and live observations that do
+  not match durable Get remain possible; invalid raw publications have no guaranteed
+  live-observation semantics, and exactly-once delivery is not promised.
+* Bad: Capability and write-once checks do not act as network ACLs, and the synchronous re-entry
+  rule for Factory and LogSink callers is a lifecycle safety precondition rather than a runtime
+  detection mechanism.
+* Neutral: Raw DELETE remains supported for base and session routes; ParamStore Delete remains
+  base-only, snapshots remain read-only, and buffer DELETE remains unsupported in v0.4.
+* Neutral: Physical directory removal remains host-owned after `CloseSession`; a new v0.4 Session
+  receives a fresh or logically empty store. Orderly close/reopen checks cover resource release
+  only and do not establish #108 restart or retention semantics; restart catalogs, retention,
+  orphan handling, and deletion retry remain #108 responsibilities.
+* Neutral: Durability barriers belong to #105, publisher fences to #106, and applied or
+  synchronized BufferPublisher fences to #107; #56 adds none of those mechanisms or an
+  acknowledgement mechanism.
+* Neutral: #56 adds no BufferPublisher, BufferSubscriber, Python buffer, or engine-factory API and
+  preserves the existing Zenoh-ON/RocksDB-OFF and RocksDB-ON/Zenoh-OFF/vcpkg configurations while
+  adding combined Zenoh-ON+RocksDB-ON validation on Windows and Linux.
+* Neutral: The #56 evidence must cover the approved lifecycle, capability, rollback, ordering,
+  and interop matrix; it reuses #29's process-isolation safeguards. Backpressure, chunking,
+  shared memory, TTL, history, and generation management remain outside this decision.
 
 ## Options Considered
 
