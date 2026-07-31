@@ -14,51 +14,76 @@ must not imply that live delivery and persistence are one atomic operation.
 
 ## Decision
 
-We will define the exact routes `<prefix>/buffers/<sid>/durable/<key>` and
-`<prefix>/buffers/<sid>/ephemeral/<key>` as independent Session capabilities, with each Session
-able to enable either, both, or neither, preserve both `CreateSession` overloads with the
-one-argument behavior unchanged, use plain `zenoh/bytes` values with no sitos schema or type tag,
-make values immutable and write-once, with same-byte retries idempotent and conflicting PUTs
-protocol-invalid and not persisted, make ephemeral write-once compliance a publisher obligation
-without retaining ephemeral state, reject buffer DELETE, batch, fence, snapshot, and control
-operations in v0.4, and have `Start` move `DurableBufferEngineFactory` from
-`StorageNodeConfig` into the callback-shared long-lived State before Transport declarations,
-where the State owns it and the factory is invoked at most once per durable-enabled Session;
-its return type is `Result<std::unique_ptr<StorageEngine>>`, and a valid non-null result
-transfers into unique Session ownership; all durable keys in that Session share its engine; the
-empty default factory remains valid when durable capability is not requested; the creation/rollback
-path releases every attempt-created
-Session record, admission state, and engine state on every non-commit outcome, preserves factory
-`Err` unchanged, contains exceptions as non-OK Results, fails empty and null results, defers
-exact Status taxonomy to the Issue #56 scope freeze, and leaves the first bytes retained after a
-conflicting durable PUT.
-We will enforce the exact `absent → Creating → Active` and `Active → Closing → absent` transitions,
-map creation against `Creating` or `Closing` and Close against `Creating` or `Closing` to
-`std::errc::operation_in_progress`, retain `std::errc::file_exists` for duplicate `Active` creation
-and `std::errc::no_such_file_or_directory` for missing Close, allow Close only from `Active`,
-reserve a non-queryable `Creating` record, enroll `CreateSession`, `CloseSession`, and
-`ActiveSessions` in the node callback gate before lifecycle-state access, have `ActiveSessions` copy
-only Active SIDs and retain no Session resource after returning, keep the node gate as the
-`Stop`/shutdown quiescence boundary, use the same callback-shared State generation for
-`CreateSession`, commit only the same reservation while it remains `Creating`, remove only that
-reservation on rollback, have both Transport callbacks take the node gate at entry, have only the
-subscriber path hold the global `subscriber_mutex` across parsing and application including
-`durable ReadExact → first-writer decision → Put`, keep query callbacks out of
-`subscriber_mutex`, require every callback or operation using Session resources to take admission,
-order locks as node gate → `subscriber_mutex` (subscriber only) → `session_mutex` → Session
-admission, make active lookup plus admission atomic under `session_mutex`, release `session_mutex`
-before external factory or engine operations, callback quiescence, destruction, or logging, reject
-`Creating`/`Closing` phase collisions without waiting, keep admission quiescence as a distinct
-required wait without prescribing condition-variable internals, destroy owned resources before
-`CloseSession` returns, keep the SID reserved until release completes, and make the Factory/LogSink
-caller precondition forbid synchronously calling `Stop`, destruction, or another waiting lifecycle
-operation on the same StorageNode and forbid waiting for a task or thread that does so, while
-ordinary independent-thread calls and non-blocking stop-request posting remain supported.
-We will define durable late join as buffering subscribe, materialized Get replies, buffered-sample
-drain, and post-transition live delivery in that order, allow only documented same-byte duplicate
-handling during the transition, keep ephemeral routes live-only with no initial Get, replay, or
-node-retained state, treat Zenoh fanout and StorageNode persistence as non-atomic, and treat
-capability and write-once checks as admission rules rather than network ACLs.
+We will define the Session buffer routes, value rules, and durable-engine ownership by:
+
+- **Routes** — defining the exact routes `<prefix>/buffers/<sid>/durable/<key>` and
+  `<prefix>/buffers/<sid>/ephemeral/<key>` as independent Session capabilities;
+- **Capabilities** — allowing each Session to enable either, both, or neither, and preserving both
+  `CreateSession` overloads with the one-argument behavior unchanged;
+- **Encoding and writes** — using plain `zenoh/bytes` values with no sitos schema or type tag,
+  making values immutable and write-once, with same-byte retries idempotent and conflicting PUTs
+  protocol-invalid and not persisted;
+- **Ephemeral writes** — making ephemeral write-once compliance a publisher obligation without
+  retaining ephemeral state;
+- **Unsupported operations** — rejecting buffer DELETE, batch, fence, snapshot, and control
+  operations in v0.4;
+- **Factory transfer** — having `Start` move `DurableBufferEngineFactory` from
+  `StorageNodeConfig` into the callback-shared long-lived State before Transport declarations,
+  where the State owns it and the factory is invoked at most once per durable-enabled Session;
+- **Factory result** — requiring the return type `Result<std::unique_ptr<StorageEngine>>`, and
+  having a valid non-null result transfer into unique Session ownership;
+- **Engine sharing** — having all durable keys in that Session share its engine, and keeping the
+  empty default factory valid when durable capability is not requested;
+- **Failure and rollback** — requiring the creation/rollback path to release every attempt-created
+  Session record, admission state, and engine state on every non-commit outcome, preserving factory
+  `Err` unchanged, containing exceptions as non-OK Results, failing empty and null results, and
+  deferring exact Status taxonomy to the Issue #56 scope freeze;
+- **First bytes** — leaving the first bytes retained after a conflicting durable PUT.
+
+We will enforce Session lifecycle, admission, and callback synchronization by:
+
+- **Phases and statuses** — enforcing the exact `absent → Creating → Active` and
+  `Active → Closing → absent` transitions, mapping creation against `Creating` or `Closing` and
+  Close against `Creating` or `Closing` to `std::errc::operation_in_progress`, retaining
+  `std::errc::file_exists` for duplicate `Active` creation and
+  `std::errc::no_such_file_or_directory` for missing Close, and allowing Close only from `Active`;
+- **Reservation** — reserving a non-queryable `Creating` record, committing only the same
+  reservation while it remains `Creating`, and removing only that reservation on rollback;
+- **Callback gate** — enrolling `CreateSession`, `CloseSession`, and `ActiveSessions` in the node
+  callback gate before lifecycle-state access, and having both Transport callbacks take the node
+  gate at entry;
+- **Active sessions** — having `ActiveSessions` copy only Active SIDs and retain no Session resource
+  after returning, and keeping the node gate as the `Stop`/shutdown quiescence boundary;
+- **State generation** — using the same callback-shared State generation for `CreateSession`;
+- **Subscriber sequencing** — having only the subscriber path hold the global `subscriber_mutex`
+  across parsing and application including `durable ReadExact → first-writer decision → Put`;
+- **Query isolation** — keeping query callbacks out of `subscriber_mutex`;
+- **Admission** — requiring every callback or operation using Session resources to take admission;
+- **Lock order** — ordering locks as node gate → `subscriber_mutex` (subscriber only) →
+  `session_mutex` → Session admission;
+- **Atomic lookup** — making active lookup plus admission atomic under `session_mutex`;
+- **External work** — releasing `session_mutex` before external factory or engine operations,
+  callback quiescence, destruction, or logging;
+- **Phase collisions** — rejecting `Creating`/`Closing` phase collisions without waiting, and
+  keeping admission quiescence as a distinct required wait without prescribing condition-variable
+  internals;
+- **Close ordering** — destroying owned resources before `CloseSession` returns, and keeping the
+  SID reserved until release completes;
+- **Re-entry** — making the Factory/LogSink caller precondition forbid synchronously calling `Stop`,
+  destruction, or another waiting lifecycle operation on the same StorageNode and forbidding
+  waiting for a task or thread that does so, while ordinary independent-thread calls and
+  non-blocking stop-request posting remain supported.
+
+We will define durable late-join delivery and admission semantics by:
+
+- **Late join** — defining durable late join as buffering subscribe, materialized Get replies,
+  buffered-sample drain, and post-transition live delivery in that order, and allowing only
+  documented same-byte duplicate handling during the transition;
+- **Ephemeral delivery** — keeping ephemeral routes live-only with no initial Get, replay, or
+  node-retained state;
+- **Fanout** — treating Zenoh fanout and StorageNode persistence as non-atomic;
+- **Admission boundary** — treating capability and write-once checks as admission rules rather than
+  network ACLs.
 
 ## Consequences
 
