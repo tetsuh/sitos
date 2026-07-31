@@ -162,9 +162,11 @@ class ParamStore {
 };
 ```
 
-`scope` is `"base"`, `"session/<sid>"`, or `"snap/<sid>"`. Snapshot writes return
-`Status::ReadOnly`; session Delete returns `Status::InvalidKey`. `Put`, `PutBatch`, and
-`Delete` report Transport submission only and do not wait for node application. `PutBatch`
+`scope` is `"base"`, `"session/<sid>"`, or `"snap/<sid>"`. The public `Delete` API is
+base-only; session Delete returns `Status::InvalidKey`, and snapshot writes return
+`Status::ReadOnly`. Raw Transport DELETE remains supported for both base and session routes;
+buffer DELETE is unsupported in v0.4. `Put`, `PutBatch`, and `Delete` report Transport submission
+only and do not wait for node application. `PutBatch`
 uses the canonical `:batch` key and sends one `sitos.v1.batch` message; an empty valid batch
 sends no message.
 
@@ -269,16 +271,30 @@ contract is `absent → Creating → Active` for `CreateSession` and
 A node-level host factory creates at most one durable `StorageEngine` for each Session that enables
 the durable capability; all durable keys in that Session share it. The factory result is uniquely
 owned by the Session, and RocksDB types and filesystem paths remain outside this public API.
-Creation reserves a non-queryable `Creating` record before invoking the external factory, rolls
-back every resource already created on failure, and publishes it as `Active` only after all
-resources are ready. The `session_mutex` is not held during external factory or engine
-operations, callback quiescence, resource destruction, or logging. Close leaves a `Closing` record
-reserved until callbacks quiesce and every Session-owned resource, including the durable engine, is
-released.
+`Start` moves the factory from `StorageNodeConfig` into the callback-shared State before either
+Transport declaration. `CreateSession` uses that same State generation, not a later or different
+node configuration. Creation reserves a non-queryable `Creating` record before invoking the
+external factory, rolls back every resource already created on failure, and publishes it as
+`Active` only after all resources are ready.
+
+Only a valid, non-null engine may commit `Creating` to `Active`. For a Session requesting
+durable buffers, a factory `Err` preserves its status, cause, and message. An empty factory,
+`Ok(nullptr)`, or a factory exception fails with a non-OK Result; exceptions are contained. The
+exact Status taxonomy for empty, null, and exception outcomes is deferred to the Issue #56 scope
+freeze. The non-commit path releases resources created by that attempt and removes only the same
+`Creating` reservation, allowing same-SID retry.
+The `session_mutex` is not held during external factory or engine operations, callback
+quiescence, resource destruction, or logging. Close leaves a `Closing` record reserved until
+callbacks quiesce and every Session-owned resource, including the durable engine, is released.
 Same-SID lifecycle phase collisions do not wait and return
 `std::errc::operation_in_progress`; admission quiescence is a separate required wait and may use
 the gate's normal synchronization implementation. This contract does not prescribe
 condition-variable internals. Physical directory removal is host-owned after return.
+
+The synchronous-reentrancy boundary applies to `DurableBufferEngineFactory` and `LogSink`: neither
+may synchronously call `Stop`, destruction, or another waiting lifecycle operation on the same
+StorageNode, or wait for a task or thread that does so. Non-blocking stop-request posting and
+ordinary calls from an independent thread remain supported. The callback gate is unchanged.
 
 `ActiveSessions()` takes the node callback-gate lease, then takes `session_mutex` and copies only
 SIDs whose records are `SessionPhase::Active`. It releases `session_mutex` and the gate lease
@@ -383,7 +399,7 @@ Large binary values belong to the route-selected `buffers/<sid>/durable/**` or
 | `ParamValue` | Immutable. Can be freely shared |
 | `ParamStore` | All methods may be called concurrently |
 | `ParamCache` | Attach/Detach and local write sequencing are synchronized internally. Local reads are cache-only; stale/reconnect behavior is future #20 behavior |
-| `StorageNode` | All methods may be called concurrently |
+| `StorageNode` | Ordinary independent-thread calls may run concurrently; `DurableBufferEngineFactory` and `LogSink` must not synchronously call `Stop`, destruction, or another waiting lifecycle operation on the same node, or wait for one |
 | `SessionView` | All methods may be called concurrently. List callbacks run on the caller thread outside internal locks; re-entry and Stop from inside a sink are safe |
 | ParamSubscription callback | Serialized per subscription with no thread affinity. It may submit nonblocking Put/PutBatch/Delete, but blocking reads, Subscribe, subscription lifecycle, and Transport/session lifecycle operations are forbidden |
 

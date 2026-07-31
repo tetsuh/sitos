@@ -102,33 +102,38 @@ when re-encoding.
 
 ### 2.2 zenoh Encoding
 
-Set the following zenoh `Encoding` on put/reply [C02]:
+Authoritative Encoding rules are route-specific [C02]:
 
 ```
-zenoh/bytes;sitos.v1          (single value)
-zenoh/bytes;sitos.v1.batch    (batch, §5)
+zenoh/bytes;sitos.v1          (single parameter value)
+zenoh/bytes;sitos.v1.batch    (base/session batch, §5)
+zenoh/bytes                   (durable or ephemeral buffer value)
 ```
 
-(`Encoding` = type `zenoh/bytes` + schema suffix) [ADR-0016]
+Base, session, and snapshot parameter payload-v1 values use
+`zenoh/bytes;sitos.v1`. Base and session batch values use
+`zenoh/bytes;sitos.v1.batch`. Buffer routes always use bare `zenoh/bytes`: they
+have no `sitos.v1` schema or type tag, and receivers keep their payloads
+byte-opaque. Buffer handling has no schema-fallback warning path.
 
-Senders emit the canonical slash spelling above. Receivers also accept the
-legacy `zenoh.bytes;<schema>` spelling and schema-only identifiers for
-compatibility, but normalize recognized sitos schemas to `sitos.v1` or
-`sitos.v1.batch` in the transport-independent API.
+For parameter traffic, `Encoding` is type `zenoh/bytes` plus a schema suffix
+[ADR-0016]. Senders emit the canonical slash spelling above. Parameter
+receivers also accept the legacy `zenoh.bytes;<schema>` spelling and
+schema-only identifiers for compatibility, but normalize recognized sitos
+schemas to `sitos.v1` or `sitos.v1.batch` in the transport-independent API.
 
-Receiver interpretation rules:
+Parameter receiver interpretation rules:
 
 * schema is `sitos.v1` → decode according to this specification
-* schema is absent/unknown → accept it as BYTES (raw value without a type tag) and log a warning.
-  This lets a plain zenoh client still exchange the value as a binary value even if it forgets to
-  set Encoding (interoperability fallback)
+* schema is absent/unknown → accept it as BYTES (raw value without a type tag) and
+  log a warning as the parameter interoperability fallback
 
 ## 3. Mapping operations to keys
 
 | Operation | zenoh operation | Key |
 |---|---|---|
 | Write value | `put` | Base, session, or a buffer route |
-| Delete value | `delete` | `<prefix>/base/<key>` only |
+| Delete value | `delete` | `<prefix>/base/<key>` or `<prefix>/session/<sid>/<key>` |
 | Read value | `get` | Base, session, snap, or durable buffer route |
 | Prefix enumeration | `get` | `<prefix>/base/<chunk...>/**`, or a durable buffer route |
 | Batch write | `put` (batch payload) | `<prefix>/base/:batch` / `<prefix>/session/<sid>/:batch` (§5) |
@@ -171,6 +176,8 @@ zenoh wildcards operate on chunks (`*` = one chunk, `**` = zero or more chunks).
 
 ### 4.4 read-only and admission rules
 
+* Raw DELETE is supported for both base and session routes. The public ParamStore Delete API is
+  base-only; snapshots remain read-only and buffer DELETE is unsupported in v0.4.
 * put/delete to `snap/**`: StorageNode ignores it and logs a warning (no error response — zenoh
   put is fire-and-forget)
 * Buffer capability checks and write-once validation are admission rules, not network ACLs.

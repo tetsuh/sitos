@@ -265,20 +265,30 @@ raw-Zenoh consumers such as #32 and #56.
   selects persistence. StorageNode stores durable PUTs, while Zenoh independently fans out both
   route classes; ephemeral PUTs are live-only and StorageNode retains no ephemeral state. Keys
   are write-once: same-byte retries are idempotent, conflicting PUTs are protocol-invalid and
-  not persisted. DELETE, `:batch`, `:fence`, snapshots, and control namespaces are unsupported.
-  Existing `CreateSession(sid)` enables neither capability. Use one owned Session record and a
-  per-Session admission gate; preserve global subscriber sequencing. Durable late join is
-  buffering subscribe → synchronous Get/materialize → drain under one ordering boundary →
-  live.
-  Do not add a production BufferSubscriber API.
-* Acceptance criteria: route key round-trip; plain-byte push and durable Get equality; conflicting
-  PUT keeps the first durable bytes; ephemeral has no Get/replay; late join has no loss; close
-  waits callbacks and destroys engine before return; new Session has a fresh/logically empty store;
-  ParamCache isolation; raw-Zenoh interop; combined Windows/Linux Zenoh-ON+RocksDB-ON validation
-  while preserving Zenoh-ON/RocksDB-OFF and RocksDB-ON/Zenoh-OFF/vcpkg configurations. Reuse #29
-  process-isolation invariants: one Transport/session topology as applicable, bounded readiness and
-  command handshakes, failure-safe cleanup, unique identifiers, and hash-locked Python
-  dependencies. Buffer payloads remain plain `zenoh/bytes`.
+  not persisted. Buffer DELETE, `:batch`, `:fence`, snapshots, and control namespaces are
+  unsupported. Existing `CreateSession(sid)` enables neither capability. Use one owned Session
+  record and a per-Session admission gate; preserve global subscriber sequencing. Durable late
+  join is buffering subscribe → synchronous Get/materialize → drain under one ordering boundary →
+  live. Creation uses the callback-shared State generation and must preserve the documented
+  transactional factory and reentrancy boundaries. Exact Status taxonomy for empty, null, and
+  exception outcomes is deferred to the Issue #56 scope freeze. Do not add a production
+  BufferSubscriber API.
+* Acceptance criteria:
+  * Deterministic, sleep-free latch/barrier/fake-engine tests cover factory `Err`, exception,
+    empty factory, and `Ok(nullptr)` rollback, resource release, and same-SID retry.
+  * The matrix covers `Creating`/`Closing` collisions and blocked admitted durable Get/List and
+    PUT versus `CloseSession`.
+  * The matrix proves engine destruction before `CloseSession` returns, recreation ordering, and
+    ordinary cross-thread `Stop` concurrency.
+  * Route key round-trip, plain-byte push and durable Get equality, first durable bytes remain
+    stored after a conflicting PUT, ephemeral no-Get/replay, late-join no-loss, close quiescence,
+    fresh or logically empty recreation, and ParamCache isolation pass.
+  * Raw-Zenoh interop is a separate test lane that reuses #29's process-isolation safeguards:
+    one Transport/session topology as applicable, bounded readiness and command handshakes,
+    failure-safe cleanup, unique identifiers, and hash-locked Python dependencies.
+  * Combined Windows/Linux Zenoh-ON+RocksDB-ON validation passes while preserving
+    Zenoh-ON/RocksDB-OFF and RocksDB-ON/Zenoh-OFF/vcpkg configurations. Buffer payloads remain
+    plain `zenoh/bytes`.
 * Depends on: #8, #12, #29, #121
 * F10 applies here as the Session resource-release principle: CloseSession releases the durable
   buffer engine and other owned resources after callback quiescence.

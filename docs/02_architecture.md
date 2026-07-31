@@ -64,6 +64,9 @@ see [03_wire_protocol.md](03_wire_protocol.md).
 
 * put to `base/**` → the StorageNode subscriber writes to the engine [F04]
 * get to `base/**` → the StorageNode queryable responds from the engine [F03, F08]
+* raw DELETE to `base/**` or `session/<sid>/**` → remove the selected value. The public
+  ParamStore Delete API remains base-only; snapshots are read-only and buffer DELETE is
+  unsupported in v0.4
 * put to `session/<sid>/**` → StorageNode records it in the overlay (an in-memory map
   separate from the engine). zenoh directly distributes it to subscribers (ParamCache) [F06]
 * get to `snap/<sid>/**` → StorageNode responds from the snapshot view.
@@ -167,10 +170,11 @@ struct SessionRecord {
     SessionAdmission admission;
 };
 
-// Lives inside StorageNode's callback-shared State (see §4.4 / ADR-0017).
+// Lives inside StorageNode's callback-shared long-lived State (see §4.4 / ADR-0017).
 struct State /* excerpt */ {
     std::string prefix;  // validated key prefix used by callbacks
     std::shared_ptr<StorageEngine> engine;
+    DurableBufferEngineFactory durable_buffer_engine_factory;
     std::unordered_map<std::string, std::shared_ptr<SessionRecord>> sessions;
     // Serializes the complete subscriber application path, including batch entries.
     std::mutex subscriber_mutex;
@@ -206,16 +210,27 @@ The phase contract is exact: `absent → Creating → Active` for creation, and
 `std::errc::file_exists`. The creator commits only after taking `session_mutex` and verifying
 that the same reservation still exists and remains `Creating`; it then changes that record to
 `Active`. The reservation lock is released before external factory or engine operations and
-logging. `CloseSession` changes only an `Active` record to `Closing`; a `Creating` or `Closing`
-record returns `std::errc::operation_in_progress`, and a missing record retains
+logging. `CreateSession` uses the callback-shared State generation captured by the node, so its
+factory and resources cannot come from a different Start generation. The factory is moved from
+`StorageNodeConfig` into that State before Transport declarations.
+
+Only a valid, non-null durable engine may commit `Creating` to `Active`. For a
+Session requesting durable buffers, a factory `Err` is returned with its status, cause, and
+message preserved; an empty factory, `Ok(nullptr)`, or a factory exception is a non-OK
+failure. The exact Status taxonomy for empty, null, and exception outcomes is deferred to the
+Issue #56 scope freeze. Exceptions are contained. Every non-commit
+path releases all resources created by that attempt and removes only the same `Creating`
+reservation under `session_mutex`, so the same SID can be retried.
+
+`CloseSession` changes only an `Active` record to `Closing`; a `Creating` or `Closing` record
+returns `std::errc::operation_in_progress`, and a missing record retains
 `std::errc::no_such_file_or_directory`. The close operation releases `session_mutex` before
 callback quiescence, destruction, external engine work, or logging. Same-SID lifecycle phase
 collisions do not wait and return `std::errc::operation_in_progress`; admission quiescence is a
 separate required wait and may use the gate's normal synchronization implementation. This
-contract does not prescribe condition-variable internals. Any creation failure rolls back every
-resource already created and removes the same reservation under `session_mutex`; close leaves the
-SID reserved until quiescence and all resource release complete. `CreateSession`, `CloseSession`,
-and `ActiveSessions` also enroll in the node callback gate before using lifecycle state, so
+contract does not prescribe condition-variable internals. Close leaves the SID reserved until
+quiescence and all resource release complete. `CreateSession`, `CloseSession`, and
+`ActiveSessions` also enroll in the node callback gate before using lifecycle state, so
 `Stop()` remains a node-wide quiescence boundary.
 
 `ActiveSessions` takes the node callback-gate lease, then takes `session_mutex` and copies only
@@ -277,10 +292,17 @@ extends the exact branch and selector branch for durable buffer exact Get/List. 
 selectors remain no-reply.
 
 `AcquireActiveAdmission` below operates on the callback-captured `std::shared_ptr<State>`, not on
-`StorageNode`. The validated `prefix` is owned by the callback-captured State, while `log_sink` is
-captured by value. Both Transport callbacks acquire the node callback-gate lease before parsing or
-inspecting input. All parse, engine, reply, and diagnostic accumulation is inside a try scope. Local
-locks and admission leases therefore unwind before the catch and any diagnostic emission.
+`StorageNode`. Start validates the configured prefix before the callback-shared State owns it;
+the validated `prefix` is retained by that State, while `log_sink` is captured by value. Both
+Transport callbacks acquire the node callback-gate lease before parsing or inspecting input. All
+parse, engine, reply, and diagnostic accumulation is inside a try scope. Local locks and admission
+leases therefore unwind before the catch and any diagnostic emission.
+
+The synchronous-reentrancy boundary is explicit: `DurableBufferEngineFactory` and `LogSink` must
+not synchronously call `Stop`, destruction, or another waiting lifecycle operation on the same
+StorageNode. They must also not wait for a task or thread that does so. Non-blocking stop-request
+posting and ordinary calls from an independent thread remain supported. This boundary does not
+redesign the callback gate.
 
 ```cpp
 QuerySelector ParseQuerySelector(prefix, keyexpr):  // internal; not public API
@@ -294,7 +316,8 @@ QuerySelector ParseQuerySelector(prefix, keyexpr):  // internal; not public API
 StorageNode::Start(engine, transport, config):
   state = std::make_shared<State>()
   state->engine = engine
-  state->prefix = config.prefix
+  state->prefix = config.prefix  // validated before State ownership
+  state->durable_buffer_engine_factory = move(config.durable_buffer_engine_factory)
   log_sink = config.log_sink
   queryable_result = transport->DeclareQueryable(state->prefix + "/**",
     [state, log_sink](TransportQuery& q) {
