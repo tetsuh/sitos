@@ -275,17 +275,29 @@ raw-Zenoh consumers such as #32 and #56.
   BufferSubscriber API.
 * Acceptance criteria:
   * Deterministic, sleep-free latch/barrier/fake-engine tests cover factory `Err`, exception,
-    empty factory, and `Ok(nullptr)` rollback, resource release, and same-SID retry.
+    empty factory, and `Ok(nullptr)`. Each proves that every Session record, admission state, and
+    engine state created by the attempt is removed or released before same-SID retry. Factory and
+    LogSink re-entry remains a documented caller precondition, not a runtime test outcome.
+  * A deterministic capability matrix covers none, durable-only, ephemeral-only, and both.
+    StorageNode admits durable PUT/Get/List and ephemeral PUT only when the matching capability
+    is enabled. Disabled durable routes create or mutate no durable engine state; disabled
+    ephemeral traffic is rejected by StorageNode admission without retracting independent Zenoh
+    fanout.
   * The matrix covers `Creating`/`Closing` collisions and blocked admitted durable Get/List and
     PUT versus `CloseSession`.
   * The matrix proves engine destruction before `CloseSession` returns, recreation ordering, and
     ordinary cross-thread `Stop` concurrency.
+  * Deterministic sleep-free fake-Transport/barrier tests prove durable late-join ordering:
+    materialized Get replies, then buffered samples, then post-transition live samples. Only
+    documented same-byte duplicates may be deduplicated; the process-isolated raw-Zenoh lane
+    must prove the same ordering.
   * Route key round-trip, plain-byte push and durable Get equality, first durable bytes remain
     stored after a conflicting PUT, ephemeral no-Get/replay, late-join no-loss, close quiescence,
     fresh or logically empty recreation, and ParamCache isolation pass.
-  * Raw-Zenoh interop is a separate test lane that reuses #29's process-isolation safeguards:
-    one Transport/session topology as applicable, bounded readiness and command handshakes,
-    failure-safe cleanup, unique identifiers, and hash-locked Python dependencies.
+  * Raw-Zenoh interop, including late join, is a separate test lane that reuses #29's
+    process-isolation safeguards: one Transport/session topology as applicable, bounded readiness
+    and command handshakes, failure-safe cleanup, unique identifiers, and hash-locked Python
+    dependencies.
   * Combined Windows/Linux Zenoh-ON+RocksDB-ON validation passes while preserving
     Zenoh-ON/RocksDB-OFF and RocksDB-ON/Zenoh-OFF/vcpkg configurations. Buffer payloads remain
     plain `zenoh/bytes`.
