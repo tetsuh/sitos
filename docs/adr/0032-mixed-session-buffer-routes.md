@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — pending owner acceptance immediately before merge
+Accepted — 2026-07-31
 
 ## Context
 
