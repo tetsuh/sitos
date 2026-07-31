@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — 2026-07-09
+Superseded by ADR-0032
 
 > **Current HTTP boundary proposal:** Issue #57 closed the planned sitos-owned gateway as
 > not planned. ADR-0027 assigns any HTTP facade over the native

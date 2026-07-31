@@ -162,9 +162,11 @@ class ParamStore {
 };
 ```
 
-`scope` is `"base"`, `"session/<sid>"`, or `"snap/<sid>"`. Snapshot writes return
-`Status::ReadOnly`; session Delete returns `Status::InvalidKey`. `Put`, `PutBatch`, and
-`Delete` report Transport submission only and do not wait for node application. `PutBatch`
+`scope` is `"base"`, `"session/<sid>"`, or `"snap/<sid>"`. The public `Delete` API is
+base-only; session Delete returns `Status::InvalidKey`, and snapshot writes return
+`Status::ReadOnly`. Raw Transport DELETE remains supported for both base and session routes;
+buffer DELETE is unsupported in v0.4. `Put`, `PutBatch`, and `Delete` report Transport submission
+only and do not wait for node application. `PutBatch`
 uses the canonical `:batch` key and sends one `sitos.v1.batch` message; an empty valid batch
 sends no message.
 
@@ -213,8 +215,25 @@ application or package manager. Exact version equality is necessary but not suff
 compatibility. See ADR-0033.
 
 ```cpp
+struct SessionOptions {
+    bool durable_buffers = false;
+    bool ephemeral_buffers = false;
+};
+
+using DurableBufferEngineFactory =
+    std::function<Result<std::unique_ptr<StorageEngine>>(std::string_view sid)>;
+
+struct StorageNodeConfig {
+    std::string prefix = "sitos";
+    /// Diagnostic destination; nullptr explicitly disables logging.
+    std::shared_ptr<LogSink> log_sink = DefaultLogSink();
+    DurableBufferEngineFactory durable_buffer_engine_factory = {};
+};
+
 class StorageNode {
 public:
+    using Config = StorageNodeConfig;
+
     StorageNode() = default;
     explicit StorageNode(Transport& transport);
     Result<void> Start(std::shared_ptr<StorageEngine> engine, Config config);
@@ -222,8 +241,10 @@ public:
                        Config config);
 
     // ---- session management (equivalent to SessionController) ----
-    Result<void> CreateSession(std::string_view sid);   // [F05]
-    Result<void> CloseSession(std::string_view sid);    // [F10]
+    // The one-argument overload preserves the existing no-buffer behavior.
+    Result<void> CreateSession(std::string_view sid);  // [F05]
+    Result<void> CreateSession(std::string_view sid, SessionOptions options);  // [F05]
+    Result<void> CloseSession(std::string_view sid);   // [F10]
     std::vector<std::string> ActiveSessions() const;
 
     void Stop() noexcept;   // quiesces callbacks, then undeclares queryable/subscriber
@@ -237,6 +258,57 @@ public:
 // Start stages both Transport declarations and activates the node only after
 // both succeed. Stop is idempotent and waits for callbacks already in flight.
 ```
+
+`SessionOptions` enables durable buffers, ephemeral buffers, both, or neither. The exact lifecycle
+contract is `absent → Creating → Active` for `CreateSession` and
+`Active → Closing → absent` for `CloseSession`. Creation against `Creating` or `Closing` returns
+`std::errc::operation_in_progress`; a duplicate `Active` creation retains
+`std::errc::file_exists`. Close against `Creating` or `Closing` returns
+`std::errc::operation_in_progress`, while missing Close retains
+`std::errc::no_such_file_or_directory`. The creator commits only after verifying under
+`session_mutex` that the same reservation still exists and remains `Creating`.
+
+A node-level host factory creates at most one durable `StorageEngine` for each Session that enables
+the durable capability; all durable keys in that Session share it. The factory result is uniquely
+owned by the Session, and RocksDB types and filesystem paths remain outside this public API.
+`Start` moves the factory from `StorageNodeConfig` into the callback-shared State before either
+Transport declaration. `CreateSession` uses that same State generation, not a later or different
+node configuration. Creation reserves a non-queryable `Creating` record before invoking the
+external factory, rolls back every resource already created on failure, and publishes it as
+`Active` only after all resources are ready.
+
+Only a valid, non-null engine may commit `Creating` to `Active`. For a Session requesting
+durable buffers, a factory `Err` preserves its status, cause, and message. An empty factory,
+`Ok(nullptr)`, or a factory exception fails with a non-OK Result; exceptions are contained. The
+exact Status taxonomy for empty, null, and exception outcomes is deferred to the Issue #56 scope
+freeze. The non-commit path releases resources created by that attempt and removes only the same
+`Creating` reservation, allowing same-SID retry.
+The `session_mutex` is not held during external factory or engine operations, callback
+quiescence, resource destruction, or logging. Close leaves a `Closing` record reserved until
+callbacks quiesce and every Session-owned resource, including the durable engine, is released.
+Same-SID lifecycle phase collisions do not wait and return
+`std::errc::operation_in_progress`; admission quiescence is a separate required wait and may use
+the gate's normal synchronization implementation. This contract does not prescribe
+condition-variable internals. Physical directory removal is host-owned after return.
+
+The synchronous-reentrancy boundary applies to `DurableBufferEngineFactory` and `LogSink`: neither
+may synchronously call `Stop`, destruction, or another waiting lifecycle operation on the same
+StorageNode, or wait for a task or thread that does so. Non-blocking stop-request posting and
+ordinary calls from an independent thread remain supported. The callback gate is unchanged.
+
+`ActiveSessions()` takes the node callback-gate lease, then takes `session_mutex` and copies only
+SIDs whose records are `SessionPhase::Active`. It releases `session_mutex` and the gate lease
+before returning, retains no Session resources after enumeration, and never externally lists
+`Creating` or `Closing` records.
+
+The existing `CreateSession(sid)` source call remains supported. Its exact member-pointer shape,
+`Result<void> (StorageNode::*)(std::string_view)`, is preserved by the distinct overload; the
+new two-argument overload adds buffer options without replacing that API. Adding
+`durable_buffer_engine_factory` extends the public `StorageNodeConfig` layout/ABI, so consumers
+must rebuild against the updated library or package. Issue #56 adds no C++ or Python
+BufferPublisher, BufferSubscriber, or engine-factory API beyond this node factory and
+SessionOptions boundary. Buffer values use the route-selected wire contract in ADR-0032, not
+ParamStore or ParamCache APIs.
 
 ## 4. ParamCache — Subscriber-Side Hot Path
 
@@ -317,7 +389,8 @@ Reads resolve overlay before snapshot and fall back only when the overlay key is
 selected payload returns `Status::Error`. `List` materializes and validates the merged set, sorts
 keys lexically using raw-prefix matching, releases internal synchronization, and then invokes the
 caller sink. `GetShared`, `GetSpan`, `Put`, `PutBatch`, and `Delete` are intentionally absent.
-Large binary values belong to the disk-backed `buffers/<sid>/**` scope described by ADR-0014.
+Large binary values belong to the route-selected `buffers/<sid>/durable/**` or
+`buffers/<sid>/ephemeral/**` scopes described by ADR-0032. These routes are not SessionView data.
 
 ## 6. Thread-Safety Contract
 
@@ -326,7 +399,7 @@ Large binary values belong to the disk-backed `buffers/<sid>/**` scope described
 | `ParamValue` | Immutable. Can be freely shared |
 | `ParamStore` | All methods may be called concurrently |
 | `ParamCache` | Attach/Detach and local write sequencing are synchronized internally. Local reads are cache-only; stale/reconnect behavior is future #20 behavior |
-| `StorageNode` | All methods may be called concurrently |
+| `StorageNode` | Ordinary independent-thread calls may run concurrently; `DurableBufferEngineFactory` and `LogSink` must not synchronously call `Stop`, destruction, or another waiting lifecycle operation on the same node, or wait for one |
 | `SessionView` | All methods may be called concurrently. List callbacks run on the caller thread outside internal locks; re-entry and Stop from inside a sink are safe |
 | ParamSubscription callback | Serialized per subscription with no thread affinity. It may submit nonblocking Put/PutBatch/Delete, but blocking reads, Subscribe, subscription lifecycle, and Transport/session lifecycle operations are forbidden |
 

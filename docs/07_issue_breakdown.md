@@ -255,24 +255,64 @@ raw-Zenoh consumers such as #32 and #56.
 
 ### #56 Session-scoped buffers
 * Milestone: v0.4
-* References: ADR-0014, [02] §2/§4, [03] §1
+* References: ADR-0032, [01] F03/F04/F10/N05/N07/C03/X01/X03, [02] §2/§4,
+  [03] §1/§4
 * Implementation targets: `include/sitos/key.hpp` (`KeyKind::Buffer`, `BuildBufferKey`,
-  `ParseKey`), `src/storage_node.cpp` (`buffers/**` routing), SessionController
-  (`BufferPersistence`, per-session disk engine), `Config`/`SessionOptions`
-* Scope: independent `<prefix>/buffers/<sid>/<key>` scope; single put = full-payload push to
-  live subscribers + store to a per-session disk engine (`kDurable`) / push-only (`kEphemeral`);
-  get from the per-session engine; querying-subscriber late-join; purge on `CloseSession`.
-  No `:batch`, no snapshot
-* Acceptance criteria: key round-trip; push==get byte equality; late-join no-loss;
-  `kEphemeral` no-store/no-get; `CloseSession` purge → not-found; ParamCache scope isolation
-  (`session/**` never receives `buffers/**`); raw-zenoh interop
-* Depends on: #12 (session management), #8 (RocksDBEngine, disk-backed `kDurable`)
+  `ParseKey`), `src/storage_node.cpp` (buffer routing and lifecycle), SessionController
+  (`SessionOptions`, one durable engine factory result per Session), `StorageNodeConfig`
+* Scope: independent `<prefix>/buffers/<sid>/durable/<key>` and
+  `<prefix>/buffers/<sid>/ephemeral/<key>` routes. Payloads are plain `zenoh/bytes`; route
+  selects persistence. StorageNode stores durable PUTs, while Zenoh independently fans out both
+  route classes; ephemeral PUTs are live-only and StorageNode retains no ephemeral state. Keys
+  are write-once: same-byte retries are idempotent, conflicting PUTs are protocol-invalid and
+  not persisted. Buffer DELETE, `:batch`, `:fence`, snapshots, and control namespaces are
+  unsupported. Existing `CreateSession(sid)` enables neither capability. Use one owned Session
+  record and a per-Session admission gate; preserve global subscriber sequencing. Durable late
+  join is buffering subscribe → synchronous Get/materialize → drain under one ordering boundary →
+  live. Creation uses the callback-shared State generation and must preserve the documented
+  transactional factory and reentrancy boundaries. Exact Status taxonomy for empty, null, and
+  exception outcomes is deferred to the Issue #56 scope freeze. Do not add a production
+  BufferSubscriber API.
+* Acceptance criteria:
+  * Deterministic, sleep-free latch/barrier/fake-engine tests cover factory `Err`, exception,
+    empty factory, and `Ok(nullptr)`. Each proves that every Session record, admission state, and
+    engine state created by the attempt is removed or released before same-SID retry. Factory and
+    LogSink re-entry remains a documented caller precondition, not a runtime test outcome.
+  * A deterministic capability matrix covers none, durable-only, ephemeral-only, and both.
+    StorageNode admits durable PUT/Get/List and ephemeral PUT only when the matching capability
+    is enabled. Disabled durable routes create or mutate no durable engine state; disabled
+    ephemeral traffic is rejected by StorageNode admission without retracting independent Zenoh
+    fanout.
+  * The matrix covers `Creating`/`Closing` collisions and blocked admitted durable Get/List and
+    PUT versus `CloseSession`.
+  * The matrix proves engine destruction before `CloseSession` returns, recreation ordering, and
+    ordinary cross-thread `Stop` concurrency.
+  * Deterministic sleep-free fake-Transport/barrier tests prove durable late-join ordering:
+    materialized Get replies, then buffered samples, then post-transition live samples. Only
+    documented same-byte duplicates may be deduplicated; the process-isolated raw-Zenoh lane
+    must prove the same ordering.
+  * Route key round-trip, plain-byte push and durable Get equality, first durable bytes remain
+    stored after a conflicting PUT, ephemeral no-Get/replay, late-join no-loss, close quiescence,
+    fresh or logically empty recreation, and ParamCache isolation pass.
+  * Raw-Zenoh interop, including late join, is a separate test lane that reuses #29's
+    process-isolation safeguards: one Transport/session topology as applicable, bounded readiness
+    and command handshakes, failure-safe cleanup, unique identifiers, and hash-locked Python
+    dependencies.
+  * Combined Windows/Linux Zenoh-ON+RocksDB-ON validation passes while preserving
+    Zenoh-ON/RocksDB-OFF and RocksDB-ON/Zenoh-OFF/vcpkg configurations. Buffer payloads remain
+    plain `zenoh/bytes`.
+* Depends on: #8, #12, #29, #121
+* F10 applies here as the Session resource-release principle: CloseSession releases the durable
+  buffer engine and other owned resources after callback quiescence.
+* Boundaries: #105 owns durability barriers; #106 owns publisher fences; #107 owns applied and
+  synchronized BufferPublisher fences; #108 owns restart catalogs, retention, orphan handling,
+  and deletion retry. #56 does not add those mechanisms or Python buffer APIs.
 
 ### #107 BufferPublisher applied and synchronized fences
 * Milestone: v0.5
-* References: ADR-0014, [02] §8, [04]
+* References: ADR-0032, [02] §8, [04]
 * Implementation targets: C++ and Python BufferPublisher APIs plus deterministic/integration tests
-  over `buffers/<sid>/**`
+  over `buffers/<sid>/{durable|ephemeral}/**`
 * Scope: explicit application-controlled `Push` plus applied or synchronized `Fence`; no automatic
   per-value fence or application-specific manifest policy; Python parity is mandatory v0.5 scope
   because Python Holoscan/CuPy Workers require the same terminal manifest-and-fence sequence
@@ -283,7 +323,7 @@ raw-Zenoh consumers such as #32 and #56.
 
 ### #108 Restart-safe retained-session catalog
 * Milestone: v0.5
-* References: ADR-0014, [02] §7, [10] §6
+* References: ADR-0032, [02] §7, [10] §6
 * Implementation targets: StorageNode durable-session catalog, startup recovery, and
   crash/restart integration tests
 * Scope: retain and recover durable buffer sessions without making ephemeral sessions restartable.
