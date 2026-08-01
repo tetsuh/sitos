@@ -1,9 +1,9 @@
 // Copyright 2026 sitos contributors
 // SPDX-License-Identifier: Apache-2.0
 //
-// Session table types used by StorageNode to manage engine-native snapshots
-// (snap/<sid>/**), per-session overlays (session/<sid>/**), and session
-// metadata (meta/session/<sid>).
+// Legacy Session table aliases retained for source compatibility. StorageNode
+// keeps its active ownership and membership in private generation-safe
+// SessionRecord instances instead of these aliases.
 // See docs/02_architecture.md §4.1-4.3 and docs/03_wire_protocol.md §7.
 
 #ifndef SITOS_SESSION_HPP
@@ -24,16 +24,16 @@ struct SessionMeta {
   std::string created_at;
 };
 
-/// sid -> engine-native snapshot taken at CreateSession. Reads for
-/// snap/<sid>/** resolve against this consistent, immutable view.
+/// Legacy sid -> engine-native snapshot map shape retained for source
+/// compatibility; StorageNode does not use this alias as an ownership table.
 using SnapshotTable = std::unordered_map<std::string, std::shared_ptr<const StorageReader>>;
 
-/// sid -> per-session overlay engine. Writes to session/<sid>/** land here and
-/// reads for the same scope resolve from it.
+/// Legacy sid -> per-session overlay map shape retained for source
+/// compatibility; StorageNode does not use this alias as an ownership table.
 using OverlayTable = std::unordered_map<std::string, std::shared_ptr<StorageEngine>>;
 
-/// sid -> session metadata. Membership is the source of truth for whether a
-/// session is active.
+/// Legacy sid -> session metadata map shape retained for source compatibility;
+/// StorageNode does not use this alias as its membership source.
 using SessionTable = std::unordered_map<std::string, SessionMeta>;
 
 }  // namespace sitos

@@ -1,6 +1,7 @@
 // Copyright 2026 sitos contributors
 // SPDX-License-Identifier: Apache-2.0
 
+#include "sitos/session_view.hpp"
 #include "sitos/storage_node.hpp"
 
 #include <gtest/gtest.h>
@@ -15,6 +16,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -25,6 +27,7 @@
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/logging.hpp"
 #include "sitos/param_value.hpp"
+#include "storage_node_test_access.hpp"
 #include "transport/declaration_handle_test_access.hpp"
 
 namespace sitos {
@@ -157,8 +160,10 @@ class FakeTransport final : public Transport {
     }
     ++subscriber_declarations;
     return Result<Subscription>::Ok(
-        transport_test_access::DeclarationHandleTestAccess::MakeSubscription(
-            [this] { ++subscriber_resets; }));
+        transport_test_access::DeclarationHandleTestAccess::MakeSubscription([this] {
+          ++subscriber_resets;
+          if (clear_callbacks_on_reset) subscriber_callback = {};
+        }));
   }
 
   void InvokeSubscriber(std::string key, TransportSample::Kind kind,
@@ -192,8 +197,10 @@ class FakeTransport final : public Transport {
       query_callback(query);
     }
     return Result<Queryable>::Ok(
-        transport_test_access::DeclarationHandleTestAccess::MakeQueryable(
-            [this] { ++queryable_resets; }));
+        transport_test_access::DeclarationHandleTestAccess::MakeQueryable([this] {
+          ++queryable_resets;
+          if (clear_callbacks_on_reset) query_callback = {};
+        }));
   }
 
   std::vector<ReplyRecord> Invoke(std::string keyexpr, bool fail_after_first = false) {
@@ -222,6 +229,7 @@ class FakeTransport final : public Transport {
   std::optional<ErrorInfo> queryable_failure;
   std::optional<ErrorInfo> subscriber_failure;
   bool invoke_queryable_during_declare = false;
+  bool clear_callbacks_on_reset = false;
   int queryable_declarations = 0;
   int subscriber_declarations = 0;
   int queryable_resets = 0;
@@ -1322,6 +1330,11 @@ TEST(StorageNodeSessionTest, CloseUnknownSessionFails) {
   FakeTransport transport;
   StorageNode node;
   ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos"}).IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  const auto malformed = node.CloseSession("bad/sid");
+  EXPECT_EQ(malformed.StatusCode(), Status::Error);
+  EXPECT_EQ(malformed.Error(), std::make_error_code(std::errc::no_such_file_or_directory));
+  EXPECT_TRUE(malformed.Message().empty());
   EXPECT_EQ(node.CloseSession("nope").Error(),
             std::make_error_code(std::errc::no_such_file_or_directory));
 }
@@ -1431,6 +1444,425 @@ TEST(StorageNodeSessionTest, CreateCloseLoopReleasesResources) {
     EXPECT_TRUE(transport.Invoke("sitos/session/s1/p").empty());
   }
   EXPECT_TRUE(node.ActiveSessions().empty());
+}
+
+class SnapshotFailureEngine final : public InMemoryEngine {
+ public:
+  enum class Failure { Healthy, Null, Throw, BadAlloc };
+
+  explicit SnapshotFailureEngine(Failure failure) : failure_(failure) {}
+
+  void SetFailure(Failure failure) { failure_ = failure; }
+
+  std::shared_ptr<const StorageReader> TakeSnapshot() const override {
+    switch (failure_) {
+      case Failure::Healthy:
+        return InMemoryEngine::TakeSnapshot();
+      case Failure::Null:
+        return nullptr;
+      case Failure::Throw:
+        throw std::runtime_error("snapshot failure");
+      case Failure::BadAlloc:
+        throw std::bad_alloc();
+    }
+    return nullptr;
+  }
+
+ private:
+  Failure failure_;
+};
+
+class FirstSnapshotBlockingEngine final : public InMemoryEngine {
+ public:
+  std::shared_ptr<const StorageReader> TakeSnapshot() const override {
+    const auto call = calls_.fetch_add(1, std::memory_order_acq_rel);
+    if (call == 0) {
+      {
+        std::lock_guard lock(mutex_);
+        entered_ = true;
+      }
+      cv_.notify_all();
+      std::unique_lock lock(mutex_);
+      cv_.wait(lock, [this] { return released_; });
+    }
+    return InMemoryEngine::TakeSnapshot();
+  }
+
+  void WaitEntered() {
+    std::unique_lock lock(mutex_);
+    ASSERT_TRUE(cv_.wait_for(lock, std::chrono::seconds(2), [this] { return entered_; }));
+  }
+
+  void Release() {
+    {
+      std::lock_guard lock(mutex_);
+      released_ = true;
+    }
+    cv_.notify_all();
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  mutable std::condition_variable cv_;
+  mutable std::atomic<unsigned> calls_{0};
+  mutable bool entered_ = false;
+  bool released_ = false;
+};
+
+class StopOrderedSnapshotReader final : public StorageReader {
+ public:
+  struct Control {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool entered = false;
+    bool release = false;
+  };
+
+  StopOrderedSnapshotReader(std::shared_ptr<const StorageReader> inner,
+                            std::shared_ptr<Control> control)
+      : inner_(std::move(inner)), control_(std::move(control)) {}
+
+  ~StopOrderedSnapshotReader() override {
+    {
+      std::lock_guard lock(control_->mutex);
+      control_->entered = true;
+    }
+    control_->cv.notify_all();
+    std::unique_lock lock(control_->mutex);
+    control_->cv.wait(lock, [this] { return control_->release; });
+  }
+
+  bool Get(std::string_view key, const EntrySink& sink) const override {
+    return inner_->Get(key, sink);
+  }
+
+  bool List(std::string_view prefix, const EntrySink& sink) const override {
+    return inner_->List(prefix, sink);
+  }
+
+ private:
+  std::shared_ptr<const StorageReader> inner_;
+  std::shared_ptr<Control> control_;
+};
+
+class StopOrderedSnapshotEngine final : public InMemoryEngine {
+ public:
+  StopOrderedSnapshotEngine()
+      : setup_(std::make_shared<StopOrderedSnapshotReader::Control>()),
+        destruction_(std::make_shared<StopOrderedSnapshotReader::Control>()) {}
+
+  std::shared_ptr<const StorageReader> TakeSnapshot() const override {
+    {
+      std::lock_guard lock(setup_->mutex);
+      setup_->entered = true;
+    }
+    setup_->cv.notify_all();
+    {
+      std::unique_lock lock(setup_->mutex);
+      setup_->cv.wait(lock, [this] { return setup_->release; });
+    }
+    return std::make_shared<StopOrderedSnapshotReader>(InMemoryEngine::TakeSnapshot(),
+                                                       destruction_);
+  }
+
+  void WaitSetup() const {
+    std::unique_lock lock(setup_->mutex);
+    ASSERT_TRUE(setup_->cv.wait_for(lock, std::chrono::seconds(2),
+                                    [this] { return setup_->entered; }));
+  }
+
+  void ReleaseSetup() const {
+    {
+      std::lock_guard lock(setup_->mutex);
+      setup_->release = true;
+    }
+    setup_->cv.notify_all();
+  }
+
+  void WaitDestruction() const {
+    std::unique_lock lock(destruction_->mutex);
+    ASSERT_TRUE(destruction_->cv.wait_for(lock, std::chrono::seconds(2),
+                                          [this] { return destruction_->entered; }));
+  }
+
+  void ReleaseDestruction() const {
+    {
+      std::lock_guard lock(destruction_->mutex);
+      destruction_->release = true;
+    }
+    destruction_->cv.notify_all();
+  }
+
+ private:
+  std::shared_ptr<StopOrderedSnapshotReader::Control> setup_;
+  std::shared_ptr<StopOrderedSnapshotReader::Control> destruction_;
+};
+
+class DestructionTrackedEngine final : public StorageEngine {
+ public:
+  struct Control {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool entered = false;
+    bool release = false;
+  };
+
+  explicit DestructionTrackedEngine(std::shared_ptr<Control> control)
+      : control_(std::move(control)) {}
+
+  ~DestructionTrackedEngine() override {
+    {
+      std::lock_guard lock(control_->mutex);
+      control_->entered = true;
+    }
+    control_->cv.notify_all();
+    std::unique_lock lock(control_->mutex);
+    control_->cv.wait(lock, [this] { return control_->release; });
+  }
+
+  bool Put(std::string_view, Bytes) override { return true; }
+  bool Delete(std::string_view) override { return true; }
+  bool Get(std::string_view, const EntrySink&) const override { return false; }
+  bool List(std::string_view, const EntrySink&) const override { return false; }
+
+  static void WaitEntered(const std::shared_ptr<Control>& control) {
+    std::unique_lock lock(control->mutex);
+    ASSERT_TRUE(control->cv.wait_for(lock, std::chrono::seconds(2),
+                                     [&] { return control->entered; }));
+  }
+
+  static void Release(const std::shared_ptr<Control>& control) {
+    {
+      std::lock_guard lock(control->mutex);
+      control->release = true;
+    }
+    control->cv.notify_all();
+  }
+
+ private:
+  std::shared_ptr<Control> control_;
+};
+
+TEST(StorageNodeSessionLifecycleTest, CreatingAndClosingCollisionsAreDeterministic) {
+  auto engine = std::make_shared<FirstSnapshotBlockingEngine>();
+  FakeTransport transport;
+  StorageNode node(transport);
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
+
+  Result<void> creating = Result<void>::Err(Status::Error, "not started");
+  std::thread creator([&] { creating = node.CreateSession("s1"); });
+  engine->WaitEntered();
+
+  EXPECT_EQ(node.CreateSession("s1").Error(),
+            std::make_error_code(std::errc::operation_in_progress));
+  EXPECT_EQ(node.CloseSession("s1").Error(),
+            std::make_error_code(std::errc::operation_in_progress));
+  EXPECT_TRUE(node.ActiveSessions().empty());
+  EXPECT_TRUE(SessionView::Open(node, "s1").StatusCode() == Status::NotFound);
+  EXPECT_TRUE(transport.Invoke("sitos/snap/s1/key").empty());
+  EXPECT_TRUE(transport.Invoke("sitos/session/s1/key").empty());
+  EXPECT_TRUE(transport.Invoke("sitos/meta/session/s1").empty());
+
+  engine->Release();
+  creator.join();
+  ASSERT_TRUE(creating.IsOk());
+
+  auto blocking = std::make_shared<BlockingEngine>();
+  ASSERT_TRUE(storage_node_test_access::StorageNodeTestAccess::ReplaceSessionOverlay(
+      node, "s1", blocking));
+  const auto resources =
+      storage_node_test_access::StorageNodeTestAccess::ObserveSession(node, "s1");
+  ASSERT_TRUE(resources.has_value());
+  std::thread reader([&] { static_cast<void>(transport.Invoke("sitos/session/s1/key")); });
+  blocking->WaitForGet();
+  std::atomic<bool> closed{false};
+  std::thread closer([&] {
+    EXPECT_TRUE(node.CloseSession("s1").IsOk());
+    closed.store(true, std::memory_order_release);
+  });
+  ASSERT_TRUE(storage_node_test_access::StorageNodeTestAccess::WaitForClosing(node, "s1"));
+  EXPECT_FALSE(resources->record.expired());
+  EXPECT_FALSE(resources->snapshot.expired());
+  EXPECT_FALSE(resources->overlay.expired());
+  EXPECT_TRUE(node.ActiveSessions().empty());
+  EXPECT_EQ(SessionView::Open(node, "s1").StatusCode(), Status::NotFound);
+  EXPECT_TRUE(transport.Invoke("sitos/snap/s1/key").empty());
+  EXPECT_TRUE(transport.Invoke("sitos/session/s1/key").empty());
+  EXPECT_TRUE(transport.Invoke("sitos/meta/session/s1").empty());
+  EXPECT_EQ(node.CreateSession("s1").Error(),
+            std::make_error_code(std::errc::operation_in_progress));
+  EXPECT_FALSE(closed.load(std::memory_order_acquire));
+  EXPECT_EQ(node.CloseSession("s1").Error(),
+            std::make_error_code(std::errc::operation_in_progress));
+  blocking->Release();
+  reader.join();
+  closer.join();
+  blocking.reset();
+  EXPECT_TRUE(resources->record.expired());
+  EXPECT_TRUE(resources->snapshot.expired());
+  EXPECT_TRUE(resources->overlay.expired());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+}
+
+TEST(StorageNodeSessionLifecycleTest, CreateRollbackAllowsSameSidRetry) {
+  for (const auto failure : {SnapshotFailureEngine::Failure::Null,
+                             SnapshotFailureEngine::Failure::Throw,
+                             SnapshotFailureEngine::Failure::BadAlloc}) {
+    FakeTransport transport;
+    StorageNode node(transport);
+    auto failing = std::make_shared<SnapshotFailureEngine>(failure);
+    ASSERT_TRUE(node.Start(failing, transport, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
+    const auto result = node.CreateSession("s1");
+    EXPECT_EQ(result.StatusCode(), Status::Error);
+    EXPECT_EQ(result.Error(), MakeErrorCode(Status::Error));
+    EXPECT_EQ(result.Message(), failure == SnapshotFailureEngine::Failure::Null
+                                   ? "base snapshot creation returned null"
+                                   : "base snapshot creation threw an exception");
+    EXPECT_TRUE(node.ActiveSessions().empty());
+    EXPECT_FALSE(storage_node_test_access::StorageNodeTestAccess::ObserveSession(node, "s1")
+                     .has_value());
+    EXPECT_EQ(SessionView::Open(node, "s1").StatusCode(), Status::NotFound);
+    EXPECT_TRUE(transport.Invoke("sitos/snap/s1/key").empty());
+    EXPECT_TRUE(transport.Invoke("sitos/session/s1/key").empty());
+    EXPECT_TRUE(transport.Invoke("sitos/meta/session/s1").empty());
+    failing->SetFailure(SnapshotFailureEngine::Failure::Healthy);
+    EXPECT_TRUE(node.CreateSession("s1").IsOk());
+    node.Stop();
+  }
+}
+
+TEST(StorageNodeSessionLifecycleTest, CloseQuiescesAdmittedOperations) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node(transport);
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  auto blocking = std::make_shared<BlockingEngine>();
+  ASSERT_TRUE(storage_node_test_access::StorageNodeTestAccess::ReplaceSessionOverlay(
+      node, "s1", blocking));
+  const auto query_resources =
+      storage_node_test_access::StorageNodeTestAccess::ObserveSession(node, "s1");
+  ASSERT_TRUE(query_resources.has_value());
+
+  std::thread query([&] { static_cast<void>(transport.Invoke("sitos/session/s1/key")); });
+  blocking->WaitForGet();
+  std::atomic<bool> closed{false};
+  std::thread closer([&] {
+    EXPECT_TRUE(node.CloseSession("s1").IsOk());
+    closed.store(true, std::memory_order_release);
+  });
+  ASSERT_TRUE(storage_node_test_access::StorageNodeTestAccess::WaitForClosing(node, "s1"));
+  EXPECT_FALSE(query_resources->record.expired());
+  EXPECT_FALSE(query_resources->snapshot.expired());
+  EXPECT_FALSE(query_resources->overlay.expired());
+  EXPECT_FALSE(closed.load(std::memory_order_acquire));
+  EXPECT_EQ(node.CreateSession("s1").Error(),
+            std::make_error_code(std::errc::operation_in_progress));
+  blocking->Release();
+  query.join();
+  closer.join();
+  blocking.reset();
+  EXPECT_TRUE(closed.load(std::memory_order_acquire));
+  EXPECT_TRUE(query_resources->record.expired());
+  EXPECT_TRUE(query_resources->snapshot.expired());
+  EXPECT_TRUE(query_resources->overlay.expired());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+
+  auto subscriber_blocking = std::make_shared<BlockingEngine>();
+  ASSERT_TRUE(storage_node_test_access::StorageNodeTestAccess::ReplaceSessionOverlay(
+      node, "s1", subscriber_blocking));
+  const auto subscriber_resources =
+      storage_node_test_access::StorageNodeTestAccess::ObserveSession(node, "s1");
+  ASSERT_TRUE(subscriber_resources.has_value());
+  std::thread subscriber([&] {
+    transport.InvokeSubscriber("sitos/session/s1/write", TransportSample::Kind::Put,
+                               {std::byte{0x01}}, kV1);
+  });
+  subscriber_blocking->WaitForPut();
+  closed.store(false, std::memory_order_release);
+  std::thread subscriber_closer([&] {
+    EXPECT_TRUE(node.CloseSession("s1").IsOk());
+    closed.store(true, std::memory_order_release);
+  });
+  ASSERT_TRUE(storage_node_test_access::StorageNodeTestAccess::WaitForClosing(node, "s1"));
+  EXPECT_FALSE(subscriber_resources->record.expired());
+  EXPECT_FALSE(subscriber_resources->snapshot.expired());
+  EXPECT_FALSE(subscriber_resources->overlay.expired());
+  EXPECT_FALSE(closed.load(std::memory_order_acquire));
+  subscriber_blocking->Release();
+  subscriber.join();
+  subscriber_closer.join();
+  subscriber_blocking.reset();
+  EXPECT_TRUE(closed.load(std::memory_order_acquire));
+  EXPECT_TRUE(subscriber_resources->record.expired());
+  EXPECT_TRUE(subscriber_resources->snapshot.expired());
+  EXPECT_TRUE(subscriber_resources->overlay.expired());
+}
+
+TEST(StorageNodeSessionLifecycleTest, DestroysResourcesBeforeCloseReturns) {
+  auto engine = std::make_shared<InMemoryEngine>();
+  FakeTransport transport;
+  StorageNode node(transport);
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  auto control = std::make_shared<DestructionTrackedEngine::Control>();
+  auto tracked = std::make_shared<DestructionTrackedEngine>(control);
+  std::weak_ptr<DestructionTrackedEngine> weak = tracked;
+  ASSERT_TRUE(storage_node_test_access::StorageNodeTestAccess::ReplaceSessionOverlay(
+      node, "s1", tracked));
+  const auto resources =
+      storage_node_test_access::StorageNodeTestAccess::ObserveSession(node, "s1");
+  ASSERT_TRUE(resources.has_value());
+  tracked.reset();
+
+  std::atomic<bool> closed{false};
+  std::thread closer([&] {
+    EXPECT_TRUE(node.CloseSession("s1").IsOk());
+    closed.store(true, std::memory_order_release);
+  });
+  DestructionTrackedEngine::WaitEntered(control);
+  EXPECT_FALSE(closed.load(std::memory_order_acquire));
+  EXPECT_FALSE(resources->record.expired());
+  EXPECT_EQ(node.CloseSession("s1").Error(),
+            std::make_error_code(std::errc::operation_in_progress));
+  EXPECT_TRUE(node.ActiveSessions().empty());
+  DestructionTrackedEngine::Release(control);
+  closer.join();
+  EXPECT_TRUE(closed.load(std::memory_order_acquire));
+  EXPECT_TRUE(resources->record.expired());
+  EXPECT_TRUE(resources->snapshot.expired());
+  EXPECT_TRUE(resources->overlay.expired());
+  EXPECT_TRUE(weak.expired());
+}
+
+TEST(StorageNodeSessionLifecycleTest, StopWaitsForAdmittedCreate) {
+  auto engine = std::make_shared<StopOrderedSnapshotEngine>();
+  FakeTransport transport;
+  transport.clear_callbacks_on_reset = true;
+  StorageNode node(transport);
+  ASSERT_TRUE(node.Start(engine, transport, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
+  Result<void> created = Result<void>::Err(Status::Error, "not started");
+  std::thread creator([&] { created = node.CreateSession("s1"); });
+  engine->WaitSetup();
+  const auto gate_observer =
+      storage_node_test_access::StorageNodeTestAccess::CaptureGateObserver(node);
+  ASSERT_TRUE(gate_observer.has_value());
+  std::atomic<bool> stopped{false};
+  std::thread stopper([&] {
+    node.Stop();
+    stopped.store(true, std::memory_order_release);
+  });
+  ASSERT_TRUE(gate_observer->WaitForClosed());
+  EXPECT_FALSE(stopped.load(std::memory_order_acquire));
+  engine->ReleaseSetup();
+  creator.join();
+  ASSERT_TRUE(created.IsOk());
+  engine->WaitDestruction();
+  EXPECT_FALSE(stopped.load(std::memory_order_acquire));
+  engine->ReleaseDestruction();
+  stopper.join();
+  EXPECT_TRUE(stopped.load(std::memory_order_acquire));
+  EXPECT_FALSE(node.IsStarted());
 }
 
 }  // namespace

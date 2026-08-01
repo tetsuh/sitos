@@ -70,6 +70,7 @@ struct SessionView::Impl {
 struct SessionView::Readers {
   std::shared_ptr<void> state_owner;
   std::optional<StorageNode::State::CallbackLease> lease;
+  std::optional<StorageNode::SessionRecord::AdmissionLease> admission;
   std::shared_ptr<StorageEngine> overlay;
   std::shared_ptr<const StorageReader> snapshot;
 };
@@ -102,23 +103,28 @@ Result<SessionView> SessionView::Open(const StorageNode& node, std::string_view 
   auto lease = state->Enter();
   if (!lease) return Result<SessionView>::Err(Status::Disconnected, "StorageNode is stopped");
 
-  std::shared_ptr<StorageEngine> overlay;
+  std::weak_ptr<void> overlay_owner;
+  std::optional<StorageNode::SessionRecord::AdmissionLease> admission;
   {
     std::shared_lock lock(state->session_mutex);
     const std::string key(sid);
-    if (!state->sessions.contains(key)) {
+    auto it = state->sessions.find(key);
+    if (it == state->sessions.end() ||
+        it->second->phase != StorageNode::SessionRecord::Phase::Active ||
+        !it->second->overlay) {
       return Result<SessionView>::Err(Status::NotFound, "session not found");
     }
-    auto it = state->overlays.find(key);
-    if (it == state->overlays.end()) {
+    admission = it->second->TryAcquire();
+    if (!admission.has_value()) {
       return Result<SessionView>::Err(Status::NotFound, "session not found");
     }
-    overlay = it->second;
+    const std::shared_ptr<StorageEngine>& overlay = it->second->overlay;
+    overlay_owner = overlay;
   }
 
   auto impl = std::make_unique<Impl>();
   impl->state = state;
-  impl->overlay_owner = overlay;
+  impl->overlay_owner = std::move(overlay_owner);
   impl->sid = std::string(sid);
   return Result<SessionView>::Ok(SessionView(std::move(impl)));
 }
@@ -136,15 +142,19 @@ Result<SessionView::Readers> SessionView::AcquireReaders() const {
   readers.lease = std::move(lease);
   {
     std::shared_lock lock(state->session_mutex);
-    if (!state->sessions.contains(impl_->sid)) return Result<Readers>::ErrFrom(NotFound());
-    auto overlay_it = state->overlays.find(impl_->sid);
-    auto snapshot_it = state->snapshots.find(impl_->sid);
-    if (overlay_it == state->overlays.end() || snapshot_it == state->snapshots.end() ||
-        !SameOwner(impl_->overlay_owner, overlay_it->second)) {
+    auto it = state->sessions.find(impl_->sid);
+    if (it == state->sessions.end() ||
+        it->second->phase != StorageNode::SessionRecord::Phase::Active) {
       return Result<Readers>::ErrFrom(NotFound());
     }
-    readers.overlay = overlay_it->second;
-    readers.snapshot = snapshot_it->second;
+    auto& record = it->second;
+    readers.admission = record->TryAcquire();
+    if (!readers.admission.has_value() || !record->snapshot || !record->overlay ||
+        !SameOwner(impl_->overlay_owner, record->overlay)) {
+      return Result<Readers>::ErrFrom(NotFound());
+    }
+    readers.overlay = record->overlay;
+    readers.snapshot = record->snapshot;
   }
   return Result<Readers>::Ok(std::move(readers));
 }
@@ -256,6 +266,7 @@ Result<void> SessionView::List(std::string_view prefix, const ListSink& sink) co
 
   readers.overlay.reset();
   readers.snapshot.reset();
+  readers.admission.reset();
   readers.lease.reset();
   readers.state_owner.reset();
   for (const auto& item : values) {

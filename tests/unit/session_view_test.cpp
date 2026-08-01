@@ -24,6 +24,7 @@
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/storage_node.hpp"
 #include "sitos/param_value.hpp"
+#include "storage_node_test_access.hpp"
 #include "transport/declaration_handle_test_access.hpp"
 
 namespace sitos {
@@ -163,6 +164,37 @@ class BlockingSnapshotEngine final : public InMemoryEngine {
 
  private:
   std::shared_ptr<BlockingReadControl> control_;
+};
+
+class BlockingOverlayEngine final : public StorageEngine {
+ public:
+  explicit BlockingOverlayEngine(std::shared_ptr<BlockingReadControl> control)
+      : control_(std::move(control)) {}
+
+  bool Put(std::string_view key, Bytes value) override {
+    control_->Enter();
+    std::lock_guard lock(mutex_);
+    value_ = std::vector<std::byte>(value.begin(), value.end());
+    key_ = std::string(key);
+    return true;
+  }
+
+  bool Delete(std::string_view) override { return false; }
+
+  bool Get(std::string_view key, const EntrySink& sink) const override {
+    control_->Enter();
+    std::lock_guard lock(mutex_);
+    if (key_ != key) return false;
+    return sink(key_, value_);
+  }
+
+  bool List(std::string_view, const EntrySink&) const override { return false; }
+
+ private:
+  std::shared_ptr<BlockingReadControl> control_;
+  mutable std::mutex mutex_;
+  std::string key_;
+  std::vector<std::byte> value_;
 };
 
 class TrackingSnapshotReader final : public StorageReader {
@@ -445,7 +477,7 @@ TEST(SessionViewTest, ListReleasesSnapshotBeforeSink) {
   EXPECT_TRUE(listed.IsOk());
 }
 
-TEST(SessionViewTest, CapturedReadCompletesAcrossClose) {
+TEST(SessionViewTest, CloseWaitsForCapturedRead) {
   TestTransport transport;
   auto control = std::make_shared<BlockingReadControl>();
   auto engine = std::make_shared<BlockingSnapshotEngine>(control);
@@ -455,14 +487,32 @@ TEST(SessionViewTest, CapturedReadCompletesAcrossClose) {
   ASSERT_TRUE(node.CreateSession("s1").IsOk());
   auto view = SessionView::Open(node, "s1");
   ASSERT_TRUE(view.IsOk());
+  const auto resources =
+      storage_node_test_access::StorageNodeTestAccess::ObserveSession(node, "s1");
+  ASSERT_TRUE(resources.has_value());
 
   Result<ParamValue> read = Result<ParamValue>::Err(Status::Error, "not started");
   std::thread reader([&] { read = view.Value().Get("key"); });
   control->WaitUntilEntered();
-  ASSERT_TRUE(node.CloseSession("s1").IsOk());
+  std::atomic<bool> close_returned{false};
+  Result<void> close_result = Result<void>::Err(Status::Error, "not started");
+  std::thread closer([&] {
+    close_result = node.CloseSession("s1");
+    close_returned.store(true, std::memory_order_release);
+  });
+  ASSERT_TRUE(storage_node_test_access::StorageNodeTestAccess::WaitForClosing(node, "s1"));
+  EXPECT_FALSE(close_returned.load(std::memory_order_acquire));
+  EXPECT_FALSE(resources->record.expired());
+  EXPECT_FALSE(resources->snapshot.expired());
+  EXPECT_FALSE(resources->overlay.expired());
   EXPECT_EQ(view.Value().Get("key").StatusCode(), Status::NotFound);
   control->Release();
   reader.join();
+  closer.join();
+  ASSERT_TRUE(close_result.IsOk());
+  EXPECT_TRUE(resources->record.expired());
+  EXPECT_TRUE(resources->snapshot.expired());
+  EXPECT_TRUE(resources->overlay.expired());
   ASSERT_TRUE(read.IsOk());
   auto value = read.Value().As<std::int64_t>();
   ASSERT_TRUE(value.has_value());
@@ -659,6 +709,47 @@ TEST(SessionViewTest, OpenRacingStopHasOnlyAdmissibleOutcomes) {
   if (opened.IsOk()) {
     EXPECT_EQ(opened.Value().Get("key").StatusCode(), Status::Disconnected);
   }
+}
+
+TEST(SessionViewTest, StaleViewRejectsSameSidReplacement) {
+  TestTransport transport;
+  auto engine = std::make_shared<InMemoryEngine>();
+  StorageNode node(transport);
+  ASSERT_TRUE(node.Start(engine, {.prefix = "sitos", .log_sink = nullptr}).IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  auto control = std::make_shared<BlockingReadControl>();
+  auto blocking = std::make_shared<BlockingOverlayEngine>(control);
+  ASSERT_TRUE(storage_node_test_access::StorageNodeTestAccess::ReplaceSessionOverlay(
+      node, "s1", blocking));
+  auto stale = SessionView::Open(node, "s1");
+  ASSERT_TRUE(stale.IsOk());
+
+  Result<ParamValue> old_read = Result<ParamValue>::Err(Status::Error, "not started");
+  std::thread reader([&] { old_read = stale.Value().Get("old"); });
+  control->WaitUntilEntered();
+  std::atomic<bool> close_returned{false};
+  std::thread closer([&] {
+    EXPECT_TRUE(node.CloseSession("s1").IsOk());
+    close_returned.store(true, std::memory_order_release);
+  });
+  ASSERT_TRUE(storage_node_test_access::StorageNodeTestAccess::WaitForClosing(node, "s1"));
+  EXPECT_FALSE(close_returned.load(std::memory_order_acquire));
+  EXPECT_EQ(node.CreateSession("s1").Error(),
+            std::make_error_code(std::errc::operation_in_progress));
+  control->Release();
+  reader.join();
+  closer.join();
+  EXPECT_EQ(old_read.StatusCode(), Status::NotFound);
+
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  auto fresh = SessionView::Open(node, "s1");
+  ASSERT_TRUE(fresh.IsOk());
+  transport.Publish("sitos/session/s1/replacement", ParamValue(std::int64_t{7}).Encode(),
+                    Encoding{std::string(Encoding::kSitosV1)});
+  EXPECT_EQ(stale.Value().Get("replacement").StatusCode(), Status::NotFound);
+  auto replacement = fresh.Value().Get<std::int64_t>("replacement");
+  ASSERT_TRUE(replacement.IsOk());
+  EXPECT_EQ(replacement.Value(), 7);
 }
 
 TEST(SessionViewTest, ConcurrentReaderAndSessionReplacementHaveSafeOutcomes) {
