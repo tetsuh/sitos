@@ -407,5 +407,106 @@ TEST(KeyTest, InvalidKeysAreRejected) {
   EXPECT_FALSE(BuildKey("sitos", "base", "bad*key"));
 }
 
+TEST(BufferKeyTest, BufferRoutesRoundTrip) {
+  const auto durable = BuildBufferKey("my/app", "session-1", BufferClass::Durable,
+                                      "durable/part");
+  ASSERT_TRUE(durable.has_value());
+  EXPECT_EQ(*durable, "my/app/buffers/session-1/durable/durable/part");
+  const auto durable_parsed = ParseKey("my/app", *durable);
+  ASSERT_TRUE(durable_parsed.has_value());
+  EXPECT_EQ(durable_parsed->kind, KeyKind::Buffer);
+  EXPECT_EQ(durable_parsed->sid, "session-1");
+  ASSERT_TRUE(durable_parsed->buffer_class.has_value());
+  EXPECT_EQ(*durable_parsed->buffer_class, BufferClass::Durable);
+  EXPECT_EQ(durable_parsed->relative_key, "durable/part");
+  EXPECT_TRUE(durable_parsed->uuid.empty());
+  EXPECT_FALSE(durable_parsed->is_batch);
+
+  const auto ephemeral = BuildBufferKey("my/app", "session-1", BufferClass::Ephemeral,
+                                        "ephemeral/part");
+  ASSERT_TRUE(ephemeral.has_value());
+  EXPECT_EQ(*ephemeral, "my/app/buffers/session-1/ephemeral/ephemeral/part");
+  const auto ephemeral_parsed = ParseKey("my/app", *ephemeral);
+  ASSERT_TRUE(ephemeral_parsed.has_value());
+  EXPECT_EQ(ephemeral_parsed->kind, KeyKind::Buffer);
+  EXPECT_EQ(ephemeral_parsed->sid, "session-1");
+  ASSERT_TRUE(ephemeral_parsed->buffer_class.has_value());
+  EXPECT_EQ(*ephemeral_parsed->buffer_class, BufferClass::Ephemeral);
+  EXPECT_EQ(ephemeral_parsed->relative_key, "ephemeral/part");
+  EXPECT_TRUE(ephemeral_parsed->uuid.empty());
+  EXPECT_FALSE(ephemeral_parsed->is_batch);
+
+  const auto base = ParseKey("my/app", "my/app/base/key");
+  ASSERT_TRUE(base.has_value());
+  EXPECT_FALSE(base->buffer_class.has_value());
+  const auto session = ParseKey("my/app", "my/app/session/session-1/key");
+  ASSERT_TRUE(session.has_value());
+  EXPECT_FALSE(session->buffer_class.has_value());
+  const auto snapshot = ParseKey("my/app", "my/app/snap/session-1/key");
+  ASSERT_TRUE(snapshot.has_value());
+  EXPECT_FALSE(snapshot->buffer_class.has_value());
+  const auto meta_session = ParseKey("my/app", "my/app/meta/session/session-1");
+  ASSERT_TRUE(meta_session.has_value());
+  EXPECT_FALSE(meta_session->buffer_class.has_value());
+  const auto meta_ack = ParseKey("my/app", "my/app/meta/ack/ack-1");
+  ASSERT_TRUE(meta_ack.has_value());
+  EXPECT_FALSE(meta_ack->buffer_class.has_value());
+}
+
+TEST(BufferKeyTest, InvalidBufferRoutesAreRejected) {
+  EXPECT_FALSE(BuildBufferKey("", "session-1", BufferClass::Durable, "key"));
+  EXPECT_FALSE(BuildBufferKey("sitos", "", BufferClass::Durable, "key"));
+  EXPECT_FALSE(BuildBufferKey("sitos", "session-1", BufferClass::Durable, ""));
+  EXPECT_FALSE(BuildBufferKey("sitos", "bad/sid", BufferClass::Durable, "key"));
+  EXPECT_FALSE(BuildBufferKey("sitos", "session-1", BufferClass::Durable, "bad*key"));
+  EXPECT_FALSE(BuildBufferKey("sitos", "session-1", BufferClass::Ephemeral, "key/"));
+  EXPECT_FALSE(BuildBufferKey("sitos", "session-1", static_cast<BufferClass>(99), "key"));
+
+  EXPECT_FALSE(ParseKey("sitos", "sitos/buffers/session-1/key"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/buffers/session-1/unknown/key"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/buffers//durable/key"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/buffers/session-1//key"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/buffers/session-1/durable"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/buffers/session-1/durable/"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/buffers/session 1/durable/key"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/buffers/session-1/durable/bad*key"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/buffers/session-1/durable//key"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/buffers/session-1/durable/:batch"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/buffers/session-1/durable/:fence"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/buffers/session-1/durable/:control"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/buffers/session-1/durable/key/:fence"));
+  EXPECT_FALSE(ParseKey("sitos", "sitos/buffers/session-1/durable/key/extra/"));
+}
+
+TEST(BufferKeyTest, BufferClassIsReservedOnlyInTheClassPosition) {
+  const auto durable = BuildBufferKey("sitos", "session-1", BufferClass::Durable,
+                                      "nested/durable/ephemeral");
+  ASSERT_TRUE(durable.has_value());
+  EXPECT_EQ(*durable, "sitos/buffers/session-1/durable/nested/durable/ephemeral");
+  const auto durable_parsed = ParseKey("sitos", *durable);
+  ASSERT_TRUE(durable_parsed.has_value());
+  EXPECT_EQ(durable_parsed->kind, KeyKind::Buffer);
+  EXPECT_EQ(durable_parsed->sid, "session-1");
+  EXPECT_TRUE(durable_parsed->uuid.empty());
+  EXPECT_EQ(durable_parsed->relative_key, "nested/durable/ephemeral");
+  EXPECT_FALSE(durable_parsed->is_batch);
+  ASSERT_TRUE(durable_parsed->buffer_class.has_value());
+  EXPECT_EQ(*durable_parsed->buffer_class, BufferClass::Durable);
+
+  const auto ephemeral = BuildBufferKey("sitos", "session-1", BufferClass::Ephemeral,
+                                        "nested/durable/ephemeral");
+  ASSERT_TRUE(ephemeral.has_value());
+  EXPECT_EQ(*ephemeral, "sitos/buffers/session-1/ephemeral/nested/durable/ephemeral");
+  const auto ephemeral_parsed = ParseKey("sitos", *ephemeral);
+  ASSERT_TRUE(ephemeral_parsed.has_value());
+  EXPECT_EQ(ephemeral_parsed->kind, KeyKind::Buffer);
+  EXPECT_EQ(ephemeral_parsed->sid, "session-1");
+  EXPECT_TRUE(ephemeral_parsed->uuid.empty());
+  EXPECT_EQ(ephemeral_parsed->relative_key, "nested/durable/ephemeral");
+  EXPECT_FALSE(ephemeral_parsed->is_batch);
+  ASSERT_TRUE(ephemeral_parsed->buffer_class.has_value());
+  EXPECT_EQ(*ephemeral_parsed->buffer_class, BufferClass::Ephemeral);
+}
+
 }  // namespace
 }  // namespace sitos

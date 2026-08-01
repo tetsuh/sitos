@@ -23,6 +23,9 @@ struct Scope {
   std::string sid;
 };
 
+/// Persistence class for a Session buffer route.
+enum class BufferClass { Durable, Ephemeral };
+
 /// Key kind, used by the incoming-key parser for StorageNode routing.
 /// See docs/03_wire_protocol.md §1.1.
 enum class KeyKind {
@@ -31,22 +34,25 @@ enum class KeyKind {
   Snapshot,     ///< <prefix>/snap/<sid>/<key> (read-only; no :batch)
   MetaSession,  ///< <prefix>/meta/session/<sid>
   MetaAck,      ///< <prefix>/meta/ack/<uuid>
+  Buffer,       ///< <prefix>/buffers/<sid>/{durable,ephemeral}/<key>
 };
 
 /// Result of parsing an incoming zenoh key expression. The inverse of the
 /// Build*Key functions. See docs/03_wire_protocol.md §1.1.
 struct ParsedKey {
   KeyKind kind;
-  /// Session id for Session / Snapshot / MetaSession. Empty for Base / MetaAck.
+  /// Session id for Session / Snapshot / Buffer / MetaSession. Empty for Base / MetaAck.
   std::string sid;
   /// Ack UUID for MetaAck. Empty for all other kinds.
   std::string uuid;
-  /// Relative user key for Base / Session / Snapshot. Empty for Meta paths and
+  /// Relative user key for Base / Session / Snapshot / Buffer. Empty for Meta paths and
   /// for :batch paths (where is_batch is true instead).
   std::string relative_key;
   /// True for the special <prefix>/base/:batch and <prefix>/session/<sid>/:batch
   /// paths. Only Base and Session may be batch.
   bool is_batch = false;
+  /// Persistence class for Buffer. Nullopt for all non-buffer paths.
+  std::optional<BufferClass> buffer_class = std::nullopt;
 };
 
 /// Validates a user key according to wire protocol §1.2. Rejects empty
@@ -73,6 +79,12 @@ std::optional<Scope> ParseScope(std::string_view scope);
 /// Returns std::nullopt if any component is invalid.
 std::optional<std::string> BuildKey(std::string_view prefix, std::string_view scope,
                                     std::string_view user_key);
+
+/// Builds a Session buffer key: <prefix>/buffers/<sid>/{durable,ephemeral}/<key>.
+/// Returns std::nullopt if any component or the BufferClass is invalid.
+std::optional<std::string> BuildBufferKey(std::string_view prefix, std::string_view sid,
+                                          BufferClass buffer_class,
+                                          std::string_view user_key);
 
 /// Builds a :batch key for the given scope: <prefix>/base/:batch or
 /// <prefix>/session/<sid>/:batch. Batch is not defined for snap; returns

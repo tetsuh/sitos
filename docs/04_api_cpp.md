@@ -88,7 +88,11 @@ struct ClientConfig {
 Result<void> ValidateClientConfig(const ClientConfig& config);
 
 /// Payload format identifier ([03] §2.2). Corresponds to transport Encoding.
-enum class Encoding { SitosV1, SitosV1Batch, Raw };
+struct Encoding {
+    static constexpr std::string_view kSitosV1 = "sitos.v1";
+    static constexpr std::string_view kSitosV1Batch = "sitos.v1.batch";
+    std::string id;
+};
 
 /// Common sink for List APIs. Returning false aborts enumeration.
 using ListSink = std::function<bool(std::string_view key, const ParamValue&)>;
@@ -280,9 +284,10 @@ external factory, rolls back every resource already created on failure, and publ
 Only a valid, non-null engine may commit `Creating` to `Active`. For a Session requesting
 durable buffers, a factory `Err` preserves its status, cause, and message. An empty factory,
 `Ok(nullptr)`, or a factory exception fails with a non-OK Result; exceptions are contained. The
-exact Status taxonomy for empty, null, and exception outcomes is deferred to the Issue #56 scope
-freeze. The non-commit path releases resources created by that attempt and removes only the same
-`Creating` reservation, allowing same-SID retry.
+exact Status taxonomy for empty, null, and exception outcomes is defined by
+DEC-56-FACTORY-FAILURE-001 and implemented in stage #141; it is not deferred to the final #56
+integration. The non-commit path releases resources created by that attempt and removes only the
+same `Creating` reservation, allowing same-SID retry.
 The `session_mutex` is not held during external factory or engine operations, callback
 quiescence, resource destruction, or logging. Close leaves a `Closing` record reserved until
 callbacks quiesce and every Session-owned resource, including the durable engine, is released.
@@ -301,14 +306,23 @@ SIDs whose records are `SessionPhase::Active`. It releases `session_mutex` and t
 before returning, retains no Session resources after enumeration, and never externally lists
 `Creating` or `Closing` records.
 
-The existing `CreateSession(sid)` source call remains supported. Its exact member-pointer shape,
-`Result<void> (StorageNode::*)(std::string_view)`, is preserved by the distinct overload; the
-new two-argument overload adds buffer options without replacing that API. Adding
-`durable_buffer_engine_factory` extends the public `StorageNodeConfig` layout/ABI, so consumers
-must rebuild against the updated library or package. Issue #56 adds no C++ or Python
-BufferPublisher, BufferSubscriber, or engine-factory API beyond this node factory and
-SessionOptions boundary. Buffer values use the route-selected wire contract in ADR-0032, not
-ParamStore or ParamCache APIs.
+Existing `KeyKind` enumerator values remain unchanged, and existing five-field positional
+`ParsedKey` aggregate initialization remains valid because `buffer_class` is appended with a
+`= std::nullopt` default. Five-element structured bindings and exhaustive `KeyKind` switches may
+require source changes when they need to handle the new Buffer kind. The existing
+`CreateSession(sid)` source call remains a distinct overload with member-pointer shape
+`Result<void> (StorageNode::*)(std::string_view)`. Adding `durable_buffer_engine_factory` extends
+the public `StorageNodeConfig` layout; no binary ABI compatibility is promised, and consumers must
+rebuild against the updated library or package. Issue #56 adds no C++ or Python BufferPublisher or
+BufferSubscriber API. The public C++ engine-factory API and SessionOptions boundary are implemented
+in stage #141; no Python engine-factory API is added. Buffer values use the route-selected wire
+contract in ADR-0032, not ParamStore or ParamCache APIs. The key API uses
+`BufferClass { Durable, Ephemeral }`, appends `KeyKind::Buffer`, and exposes
+`std::optional<BufferClass> ParsedKey::buffer_class`, engaged only for buffer routes.
+`BuildBufferKey(prefix, sid, buffer_class, user_key)` returns
+`<prefix>/buffers/<sid>/{durable,ephemeral}/<key>` and returns `std::nullopt` for invalid
+components or an undefined enum value. Existing non-buffer parsed keys leave `buffer_class`
+disengaged.
 
 ## 4. ParamCache — Subscriber-Side Hot Path
 

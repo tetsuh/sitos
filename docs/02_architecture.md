@@ -275,8 +275,10 @@ cache behavior are outside this pseudocode and must not be implemented until #14
 
 Pseudocode for implementers. StorageNode does not use the raw zenoh-c API directly; it goes through
 the `Transport` abstraction ([09_dependency_policy.md](09_dependency_policy.md) §3).
-`BuildBufferKey(sid, buffer_class, key)` emits the durable or ephemeral route segment, and #56
-extends `ParsedKey` and `ParseKey` with `KeyKind::Buffer` and `buffer_class`. `AppendDiagnostic`
+`BuildBufferKey(prefix, sid, buffer_class, user_key)` emits the durable or ephemeral route
+segment. `BufferClass` selects `durable` or `ephemeral`; `KeyKind::Buffer` and
+`ParsedKey::buffer_class` identify parsed buffer routes, while non-buffer parsed keys leave
+`buffer_class` disengaged. `AppendDiagnostic`
 records a diagnostic without calling external code. `EmitDiagnostics` invokes the configured
 `LogSink` only after the serialized application scope has released `subscriber_mutex`,
 `session_mutex`, and every Session admission lease. `EmitLog` and `EmitDiagnosticsNoThrow` are

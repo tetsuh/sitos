@@ -48,11 +48,12 @@ the preceding legacy parameter store implementation.
 
 | ID | Priority | Requirement |
 |---|---|---|
-| C01 | MUST | payload v1 (1-byte type tag + LE raw value) is the wire and storage format and is strictly defined in [03_wire_protocol.md](03_wire_protocol.md) |
+| C01 | MUST | Parameter values use payload v1 (1-byte type tag plus little-endian raw value) as the wire and storage format defined in [03_wire_protocol.md](03_wire_protocol.md) |
 | C02 | MUST | A format identifier is set in zenoh `Encoding`, making coexistence with future payload v2 (CBOR, etc.) possible |
 | C03 | MUST | Reading and writing are possible using only standard zenoh APIs (get/put/subscribe) — interoperability with clients that do not depend on the sitos library (such as zenoh-python) |
 | C04 | MUST | Semantic versioning is adopted, and wire compatibility is broken only in major versions |
 | C05 | MUST | Provide an API that allows external compatibility adapters (such as wrappers for legacy KV APIs) to be implemented without changing the sitos core. In particular, Get with arithmetic casts between numeric types, prefix enumeration, and batch Put semantics must be available from the public API |
+| C06 | MUST | Session buffer values use opaque bare `zenoh/bytes`; durable values are retrievable by Get/List, while ephemeral values are live-only and leave no node-retained state |
 
 > **Note**: Compatibility layers for product-specific legacy APIs are outside
 > the scope of sitos (public OSS). C05 specifies only the responsibility on the
