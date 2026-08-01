@@ -305,7 +305,7 @@ std::optional<ParsedKey> ParseKey(std::string_view prefix, std::string_view full
       if (!sid_split) {
         return std::nullopt;
       }
-      auto [sid, class_and_key] = *sid_split;
+      const auto& [sid, class_and_key] = *sid_split;
       if (!IsValidSessionId(sid)) {
         return std::nullopt;
       }
@@ -313,7 +313,7 @@ std::optional<ParsedKey> ParseKey(std::string_view prefix, std::string_view full
       if (!class_split) {
         return std::nullopt;
       }
-      auto [class_name, user_key] = *class_split;
+      const auto& [class_name, user_key] = *class_split;
       BufferClass buffer_class;
       if (class_name == "durable") {
         buffer_class = BufferClass::Durable;
