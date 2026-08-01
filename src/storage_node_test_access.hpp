@@ -52,7 +52,7 @@ class StorageNodeTestAccess {
     }
     if (state == nullptr) return std::nullopt;
     std::shared_lock lock(state->session_mutex);
-    auto it = state->sessions.find(std::string(sid));
+    auto it = state->sessions.find(sid);
     if (it == state->sessions.end()) return std::nullopt;
     SessionResourceObservation observation;
     observation.record = it->second;
@@ -71,7 +71,7 @@ class StorageNodeTestAccess {
     std::shared_ptr<StorageNode::SessionRecord> record;
     {
       std::shared_lock state_lock(state->session_mutex);
-      auto it = state->sessions.find(std::string(sid));
+      auto it = state->sessions.find(sid);
       if (it == state->sessions.end()) return false;
       record = it->second;
     }
@@ -91,7 +91,7 @@ class StorageNodeTestAccess {
     }
     if (state == nullptr) return false;
     std::unique_lock lock(state->session_mutex);
-    auto it = state->sessions.find(std::string(sid));
+    auto it = state->sessions.find(sid);
     if (it == state->sessions.end() ||
         it->second->phase != StorageNode::SessionRecord::Phase::Active) {
       return false;

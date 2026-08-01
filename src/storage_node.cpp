@@ -323,7 +323,7 @@ Result<void> StorageNode::CreateSession(std::string_view sid) {
       }
       return Result<void>::Err(SessionAlreadyExists());
     }
-    state->sessions.emplace(key, record);
+    state->sessions.try_emplace(key, record);
   }
 
   struct SessionRollbackGuard {
@@ -331,6 +331,15 @@ Result<void> StorageNode::CreateSession(std::string_view sid) {
     const std::string& key;
     std::shared_ptr<SessionRecord> record;
     bool active = true;
+
+    SessionRollbackGuard(State* state_in, const std::string& key_in,
+                         std::shared_ptr<SessionRecord> record_in)
+        : state(state_in), key(key_in), record(std::move(record_in)) {}
+
+    SessionRollbackGuard(const SessionRollbackGuard&) = delete;
+    SessionRollbackGuard& operator=(const SessionRollbackGuard&) = delete;
+    SessionRollbackGuard(SessionRollbackGuard&&) = delete;
+    SessionRollbackGuard& operator=(SessionRollbackGuard&&) = delete;
 
     ~SessionRollbackGuard() noexcept {
       if (!active) return;
@@ -343,7 +352,8 @@ Result<void> StorageNode::CreateSession(std::string_view sid) {
     }
 
     void Dismiss() noexcept { active = false; }
-  } rollback{state.get(), key, record};
+  };
+  SessionRollbackGuard rollback{state.get(), key, record};
 
   std::shared_ptr<const StorageReader> snapshot;
   try {
@@ -426,6 +436,18 @@ std::vector<std::string> StorageNode::ActiveSessions() const {
   return result;
 }
 
+StorageNode::SessionAccess StorageNode::AcquireSession(const std::shared_ptr<State>& state,
+                                                        std::string_view sid) {
+  SessionAccess access;
+  std::shared_lock lock(state->session_mutex);
+  auto it = state->sessions.find(sid);
+  if (it != state->sessions.end()) {
+    access.record = it->second;
+    access.admission = access.record->TryAcquire();
+  }
+  return access;
+}
+
 void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportSample& sample) {
   auto lease = state->Enter();
   if (!lease) return;
@@ -446,20 +468,11 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
         } else if (parsed->kind == KeyKind::Base) {
           ApplyBatch(diagnostics, *state->engine, sample.payload);
         } else {
-          std::optional<SessionRecord::AdmissionLease> admission;
-          std::shared_ptr<SessionRecord> record;
-          {
-            std::shared_lock lock(state->session_mutex);
-            auto it = state->sessions.find(parsed->sid);
-            if (it != state->sessions.end()) {
-              record = it->second;
-              admission = record->TryAcquire();
-            }
-          }
-          if (!record || !admission.has_value()) {
+          auto access = AcquireSession(state, parsed->sid);
+          if (!access.record || !access.admission.has_value()) {
             diagnostics.push_back({LogLevel::kWarning, kUnknownSession});
           } else {
-            ApplyBatch(diagnostics, *record->overlay, sample.payload);
+            ApplyBatch(diagnostics, *access.record->overlay, sample.payload);
           }
         }
       } else {
@@ -468,20 +481,11 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
             ApplyWrite(diagnostics, *state->engine, parsed->relative_key, sample);
             break;
           case KeyKind::Session: {
-            std::optional<SessionRecord::AdmissionLease> admission;
-            std::shared_ptr<SessionRecord> record;
-            {
-              std::shared_lock lock(state->session_mutex);
-              auto it = state->sessions.find(parsed->sid);
-              if (it != state->sessions.end()) {
-                record = it->second;
-                admission = record->TryAcquire();
-              }
-            }
-            if (!record || !admission.has_value()) {
+            auto access = AcquireSession(state, parsed->sid);
+            if (!access.record || !access.admission.has_value()) {
               diagnostics.push_back({LogLevel::kWarning, kUnknownSession});
             } else {
-              ApplyWrite(diagnostics, *record->overlay, parsed->relative_key, sample);
+              ApplyWrite(diagnostics, *access.record->overlay, parsed->relative_key, sample);
             }
             break;
           }
@@ -539,7 +543,7 @@ void StorageNode::ReplyScopedQuery(const std::shared_ptr<State>& state, std::str
   std::shared_ptr<const StorageReader> reader;
   {
     std::shared_lock lock(state->session_mutex);
-    auto it = state->sessions.find(std::string(sid));
+    auto it = state->sessions.find(sid);
     if (it != state->sessions.end()) {
       record = it->second;
       admission = record->TryAcquire();

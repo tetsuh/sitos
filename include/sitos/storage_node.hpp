@@ -9,6 +9,7 @@
 #include <cassert>
 #include <condition_variable>
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -168,6 +169,14 @@ class StorageNode {
     SessionMeta metadata;
   };
 
+  struct SessionKeyHash {
+    using is_transparent = void;
+
+    std::size_t operator()(std::string_view value) const noexcept {
+      return std::hash<std::string_view>{}(value);
+    }
+  };
+
   struct State {
     State(std::shared_ptr<StorageEngine> storage, std::string key_prefix,
           std::shared_ptr<LogSink> diagnostics)
@@ -247,9 +256,18 @@ class StorageNode {
     // gate -> subscriber_mutex -> session_mutex -> admission ordering never
     // cycles.
     std::shared_mutex session_mutex;
-    std::unordered_map<std::string, std::shared_ptr<SessionRecord>> sessions;
+    std::unordered_map<std::string, std::shared_ptr<SessionRecord>, SessionKeyHash,
+                       std::equal_to<>>
+        sessions;
   };
 
+  struct SessionAccess {
+    std::optional<SessionRecord::AdmissionLease> admission;
+    std::shared_ptr<SessionRecord> record;
+  };
+
+  static SessionAccess AcquireSession(const std::shared_ptr<State>& state,
+                                      std::string_view sid);
   static void OnQuery(const std::shared_ptr<State>& state, TransportQuery& query);
   static void OnSample(const std::shared_ptr<State>& state, const TransportSample& sample);
   // Answers a get in the session or snap scope from the matching overlay or

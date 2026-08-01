@@ -107,8 +107,7 @@ Result<SessionView> SessionView::Open(const StorageNode& node, std::string_view 
   std::optional<StorageNode::SessionRecord::AdmissionLease> admission;
   {
     std::shared_lock lock(state->session_mutex);
-    const std::string key(sid);
-    auto it = state->sessions.find(key);
+    auto it = state->sessions.find(sid);
     if (it == state->sessions.end() ||
         it->second->phase != StorageNode::SessionRecord::Phase::Active ||
         !it->second->overlay) {
@@ -147,7 +146,7 @@ Result<SessionView::Readers> SessionView::AcquireReaders() const {
         it->second->phase != StorageNode::SessionRecord::Phase::Active) {
       return Result<Readers>::ErrFrom(NotFound());
     }
-    auto& record = it->second;
+    const auto& record = it->second;
     readers.admission = record->TryAcquire();
     if (!readers.admission.has_value() || !record->snapshot || !record->overlay ||
         !SameOwner(impl_->overlay_owner, record->overlay)) {
