@@ -316,9 +316,10 @@ cmake -S . -B build/tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=OFF -DSITOS_ENABLE_TSAN=ON
 cmake --build build/tsan
 lifecycle_filter="StorageNodeLifecycleTest|StorageNodeSessionTest|"
-lifecycle_filter+="StorageNodeSessionLifecycleTest|StorageNodeBatchTest|"
-lifecycle_filter+="TransportGetCompletionTest|ParamStoreSubscribeTest|"
-lifecycle_filter+="ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture"
+lifecycle_filter="${lifecycle_filter}StorageNodeSessionLifecycleTest|StorageNodeBatchTest|"
+lifecycle_filter="${lifecycle_filter}TransportGetCompletionTest|ParamStoreSubscribeTest|"
+lifecycle_filter="${lifecycle_filter}ParamCacheTest|ParamCacheReadTest|"
+lifecycle_filter="${lifecycle_filter}SessionViewTest|SessionViewFixture"
 ctest --test-dir build/tsan --output-on-failure --timeout 60 -R "$lifecycle_filter"
 
 cmake -S . -B build/asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \

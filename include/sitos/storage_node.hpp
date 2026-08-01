@@ -137,6 +137,20 @@ class StorageNode {
       return AdmissionLease(this);
     }
 
+    bool Activate() noexcept {
+      std::scoped_lock lock(admission_mutex);
+      if (phase != Phase::Creating) return false;
+      phase = Phase::Active;
+      accepting = true;
+      admission_cv.notify_all();
+      return true;
+    }
+
+    bool IsActive() noexcept {
+      std::scoped_lock lock(admission_mutex);
+      return phase == Phase::Active;
+    }
+
     bool BeginClose() noexcept {
       std::scoped_lock lock(admission_mutex);
       if (phase != Phase::Active) return false;
@@ -144,6 +158,11 @@ class StorageNode {
       accepting = false;
       admission_cv.notify_all();
       return true;
+    }
+
+    void WaitForClosing() noexcept {
+      std::unique_lock lock(admission_mutex);
+      admission_cv.wait(lock, [this] { return phase == Phase::Closing; });
     }
 
     void WaitForAdmission() noexcept {

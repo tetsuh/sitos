@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 
@@ -51,13 +52,18 @@ class StorageNodeTestAccess {
       state = node.state_;
     }
     if (state == nullptr) return std::nullopt;
+    std::optional<StorageNode::SessionRecord::AdmissionLease> admission;
+    std::shared_ptr<StorageNode::SessionRecord> record;
     std::shared_lock lock(state->session_mutex);
     auto it = state->sessions.find(sid);
     if (it == state->sessions.end()) return std::nullopt;
+    record = it->second;
+    admission = record->TryAcquire();
+    if (!admission.has_value()) return std::nullopt;
     SessionResourceObservation observation;
-    observation.record = it->second;
-    observation.snapshot = it->second->snapshot;
-    observation.overlay = it->second->overlay;
+    observation.record = record;
+    observation.snapshot = record->snapshot;
+    observation.overlay = record->overlay;
     return observation;
   }
 
@@ -75,10 +81,7 @@ class StorageNodeTestAccess {
       if (it == state->sessions.end()) return false;
       record = it->second;
     }
-    std::unique_lock lock(record->admission_mutex);
-    record->admission_cv.wait(lock, [&] {
-      return record->phase == StorageNode::SessionRecord::Phase::Closing;
-    });
+    record->WaitForClosing();
     return true;
   }
 
@@ -90,13 +93,17 @@ class StorageNodeTestAccess {
       state = node.state_;
     }
     if (state == nullptr) return false;
-    std::unique_lock lock(state->session_mutex);
-    auto it = state->sessions.find(sid);
-    if (it == state->sessions.end() ||
-        it->second->phase != StorageNode::SessionRecord::Phase::Active) {
-      return false;
+    std::optional<StorageNode::SessionRecord::AdmissionLease> admission;
+    std::shared_ptr<StorageNode::SessionRecord> record;
+    {
+      std::unique_lock lock(state->session_mutex);
+      auto it = state->sessions.find(sid);
+      if (it == state->sessions.end()) return false;
+      record = it->second;
+      admission = record->TryAcquire();
+      if (!admission.has_value()) return false;
+      record->overlay = std::move(overlay);
     }
-    it->second->overlay = std::move(overlay);
     return true;
   }
 };

@@ -318,9 +318,7 @@ Result<void> StorageNode::CreateSession(std::string_view sid) {
   {
     std::unique_lock lock(state->session_mutex);
     if (auto it = state->sessions.find(key); it != state->sessions.end()) {
-      if (it->second->phase != SessionRecord::Phase::Active) {
-        return Result<void>::Err(OperationInProgress());
-      }
+      if (!it->second->IsActive()) return Result<void>::Err(OperationInProgress());
       return Result<void>::Err(SessionAlreadyExists());
     }
     state->sessions.try_emplace(key, record);
@@ -373,11 +371,8 @@ Result<void> StorageNode::CreateSession(std::string_view sid) {
   {
     std::unique_lock lock(state->session_mutex);
     auto it = state->sessions.find(key);
-    if (it != state->sessions.end() && it->second == record &&
-        record->phase == SessionRecord::Phase::Creating) {
-      record->phase = SessionRecord::Phase::Active;
-      record->accepting = true;
-      committed = true;
+    if (it != state->sessions.end() && it->second == record) {
+      committed = record->Activate();
     }
   }
   if (!committed) return Result<void>::Err(OperationInProgress());
@@ -431,7 +426,7 @@ std::vector<std::string> StorageNode::ActiveSessions() const {
   std::vector<std::string> result;
   result.reserve(state->sessions.size());
   for (const auto& [id, record] : state->sessions) {
-    if (record->phase == SessionRecord::Phase::Active) result.push_back(id);
+    if (record->IsActive()) result.push_back(id);
   }
   return result;
 }
@@ -440,8 +435,7 @@ StorageNode::SessionAccess StorageNode::AcquireSession(const std::shared_ptr<Sta
                                                         std::string_view sid) {
   SessionAccess access;
   std::shared_lock lock(state->session_mutex);
-  auto it = state->sessions.find(sid);
-  if (it != state->sessions.end()) {
+  if (auto it = state->sessions.find(sid); it != state->sessions.end()) {
     access.record = it->second;
     access.admission = access.record->TryAcquire();
   }
@@ -468,8 +462,8 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
         } else if (parsed->kind == KeyKind::Base) {
           ApplyBatch(diagnostics, *state->engine, sample.payload);
         } else {
-          auto access = AcquireSession(state, parsed->sid);
-          if (!access.record || !access.admission.has_value()) {
+          if (auto access = AcquireSession(state, parsed->sid);
+              !access.record || !access.admission.has_value()) {
             diagnostics.push_back({LogLevel::kWarning, kUnknownSession});
           } else {
             ApplyBatch(diagnostics, *access.record->overlay, sample.payload);
@@ -481,8 +475,8 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
             ApplyWrite(diagnostics, *state->engine, parsed->relative_key, sample);
             break;
           case KeyKind::Session: {
-            auto access = AcquireSession(state, parsed->sid);
-            if (!access.record || !access.admission.has_value()) {
+            if (auto access = AcquireSession(state, parsed->sid);
+                !access.record || !access.admission.has_value()) {
               diagnostics.push_back({LogLevel::kWarning, kUnknownSession});
             } else {
               ApplyWrite(diagnostics, *access.record->overlay, parsed->relative_key, sample);
@@ -568,8 +562,7 @@ void StorageNode::ReplyMetaQuery(const std::shared_ptr<State>& state, TransportQ
   {
     std::shared_lock lock(state->session_mutex);
     auto it = state->sessions.find(parsed->sid);
-    if (it == state->sessions.end() ||
-        it->second->phase != SessionRecord::Phase::Active) {
+    if (it == state->sessions.end() || !it->second->IsActive()) {
       return;  // Unknown or non-active sid: 0 replies.
     }
     admission = it->second->TryAcquire();

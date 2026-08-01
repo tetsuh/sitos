@@ -1529,7 +1529,8 @@ class StopOrderedSnapshotReader final : public StorageReader {
     }
     control_->cv.notify_all();
     std::unique_lock lock(control_->mutex);
-    control_->cv.wait(lock, [this] { return control_->release; });
+    control_->cv.wait_for(lock, std::chrono::seconds(2),
+                          [this] { return control_->release; });
   }
 
   bool Get(std::string_view key, const EntrySink& sink) const override {
@@ -1617,7 +1618,8 @@ class DestructionTrackedEngine final : public StorageEngine {
     }
     control_->cv.notify_all();
     std::unique_lock lock(control_->mutex);
-    control_->cv.wait(lock, [this] { return control_->release; });
+    control_->cv.wait_for(lock, std::chrono::seconds(2),
+                          [this] { return control_->release; });
   }
 
   bool Put(std::string_view, Bytes) override { return true; }

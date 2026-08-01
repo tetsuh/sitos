@@ -108,8 +108,7 @@ Result<SessionView> SessionView::Open(const StorageNode& node, std::string_view 
   {
     std::shared_lock lock(state->session_mutex);
     auto it = state->sessions.find(sid);
-    if (it == state->sessions.end() ||
-        it->second->phase != StorageNode::SessionRecord::Phase::Active ||
+    if (it == state->sessions.end() || !it->second->IsActive() ||
         !it->second->overlay) {
       return Result<SessionView>::Err(Status::NotFound, "session not found");
     }
@@ -142,8 +141,7 @@ Result<SessionView::Readers> SessionView::AcquireReaders() const {
   {
     std::shared_lock lock(state->session_mutex);
     auto it = state->sessions.find(impl_->sid);
-    if (it == state->sessions.end() ||
-        it->second->phase != StorageNode::SessionRecord::Phase::Active) {
+    if (it == state->sessions.end() || !it->second->IsActive()) {
       return Result<Readers>::ErrFrom(NotFound());
     }
     const auto& record = it->second;
