@@ -310,23 +310,73 @@ Result<void> StorageNode::CreateSession(std::string_view sid) {
     state = state_;
   }
   if (!state) return Result<void>::Err(InvalidArgument());
-  // Enroll in the callback gate so a concurrent Stop() cannot tear the node down
-  // mid-operation; a node already quiescing rejects the request.
   auto lease = state->Enter();
   if (!lease) return Result<void>::Err(InvalidArgument());
 
-  // Take the snapshot before locking the session table: TakeSnapshot() may be
-  // O(n) and the engine is independently thread-safe.
-  auto snapshot = state->engine->TakeSnapshot();
-  auto overlay = std::make_shared<InMemoryEngine>();
-  SessionMeta meta{NowIso8601()};
-
   const std::string key(sid);
-  std::unique_lock lock(state->session_mutex);
-  if (state->sessions.contains(key)) return Result<void>::Err(SessionAlreadyExists());
-  state->snapshots.emplace(key, std::move(snapshot));
-  state->overlays.emplace(key, std::move(overlay));
-  state->sessions.emplace(key, std::move(meta));
+  auto record = std::make_shared<SessionRecord>();
+  {
+    std::unique_lock lock(state->session_mutex);
+    if (auto it = state->sessions.find(key); it != state->sessions.end()) {
+      if (!it->second->IsActive()) return Result<void>::Err(OperationInProgress());
+      return Result<void>::Err(SessionAlreadyExists());
+    }
+    state->sessions.try_emplace(key, record);
+  }
+
+  struct SessionRollbackGuard {
+    State* state;
+    const std::string& key;
+    std::shared_ptr<SessionRecord> record;
+    bool active = true;
+
+    SessionRollbackGuard(State* state_in, const std::string& key_in,
+                         std::shared_ptr<SessionRecord> record_in)
+        : state(state_in), key(key_in), record(std::move(record_in)) {}
+
+    SessionRollbackGuard(const SessionRollbackGuard&) = delete;
+    SessionRollbackGuard& operator=(const SessionRollbackGuard&) = delete;
+    SessionRollbackGuard(SessionRollbackGuard&&) = delete;
+    SessionRollbackGuard& operator=(SessionRollbackGuard&&) = delete;
+
+    ~SessionRollbackGuard() noexcept {
+      if (!active) return;
+      record->snapshot.reset();
+      record->overlay.reset();
+      record->metadata = {};
+      std::unique_lock lock(state->session_mutex);
+      auto it = state->sessions.find(key);
+      if (it != state->sessions.end() && it->second == record) state->sessions.erase(it);
+    }
+
+    void Dismiss() noexcept { active = false; }
+  };
+  SessionRollbackGuard rollback{state.get(), key, record};
+
+  std::shared_ptr<const StorageReader> snapshot;
+  try {
+    snapshot = state->engine->TakeSnapshot();
+  } catch (...) {
+    return Result<void>::Err(Status::Error, "base snapshot creation threw an exception");
+  }
+  if (!snapshot) {
+    return Result<void>::Err(Status::Error, "base snapshot creation returned null");
+  }
+
+  record->snapshot = std::move(snapshot);
+  record->overlay = std::make_shared<InMemoryEngine>();
+  record->metadata = SessionMeta{NowIso8601()};
+
+  bool committed = false;
+  {
+    std::unique_lock lock(state->session_mutex);
+    auto it = state->sessions.find(key);
+    if (it != state->sessions.end() && it->second == record) {
+      committed = record->Activate();
+    }
+  }
+  if (!committed) return Result<void>::Err(OperationInProgress());
+  rollback.Dismiss();
   return Result<void>::Ok();
 }
 
@@ -341,12 +391,24 @@ Result<void> StorageNode::CloseSession(std::string_view sid) {
   if (!lease) return Result<void>::Err(InvalidArgument());
 
   const std::string key(sid);
-  std::unique_lock lock(state->session_mutex);
-  auto it = state->sessions.find(key);
-  if (it == state->sessions.end()) return Result<void>::Err(NoSuchSession());
-  state->sessions.erase(it);
-  state->snapshots.erase(key);
-  state->overlays.erase(key);
+  std::shared_ptr<SessionRecord> record;
+  {
+    std::unique_lock lock(state->session_mutex);
+    auto it = state->sessions.find(key);
+    if (it == state->sessions.end()) return Result<void>::Err(NoSuchSession());
+    record = it->second;
+    if (!record->BeginClose()) return Result<void>::Err(OperationInProgress());
+  }
+
+  record->WaitForAdmission();
+  record->snapshot.reset();
+  record->overlay.reset();
+  record->metadata = {};
+  {
+    std::unique_lock lock(state->session_mutex);
+    auto it = state->sessions.find(key);
+    if (it != state->sessions.end() && it->second == record) state->sessions.erase(it);
+  }
   return Result<void>::Ok();
 }
 
@@ -363,11 +425,21 @@ std::vector<std::string> StorageNode::ActiveSessions() const {
   std::shared_lock lock(state->session_mutex);
   std::vector<std::string> result;
   result.reserve(state->sessions.size());
-  for (const auto& [id, meta] : state->sessions) {
-    (void)meta;
-    result.push_back(id);
+  for (const auto& [id, record] : state->sessions) {
+    if (record->IsActive()) result.push_back(id);
   }
   return result;
+}
+
+StorageNode::SessionAccess StorageNode::AcquireSession(const std::shared_ptr<State>& state,
+                                                        std::string_view sid) {
+  SessionAccess access;
+  std::shared_lock lock(state->session_mutex);
+  if (auto it = state->sessions.find(sid); it != state->sessions.end()) {
+    access.record = it->second;
+    access.admission = access.record->TryAcquire();
+  }
+  return access;
 }
 
 void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportSample& sample) {
@@ -390,16 +462,11 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
         } else if (parsed->kind == KeyKind::Base) {
           ApplyBatch(diagnostics, *state->engine, sample.payload);
         } else {
-          std::shared_ptr<StorageEngine> overlay;
-          {
-            std::shared_lock lock(state->session_mutex);
-            auto it = state->overlays.find(parsed->sid);
-            if (it != state->overlays.end()) overlay = it->second;
-          }
-          if (!overlay) {
+          if (auto access = AcquireSession(state, parsed->sid);
+              !access.record || !access.admission.has_value()) {
             diagnostics.push_back({LogLevel::kWarning, kUnknownSession});
           } else {
-            ApplyBatch(diagnostics, *overlay, sample.payload);
+            ApplyBatch(diagnostics, *access.record->overlay, sample.payload);
           }
         }
       } else {
@@ -408,16 +475,11 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
             ApplyWrite(diagnostics, *state->engine, parsed->relative_key, sample);
             break;
           case KeyKind::Session: {
-            std::shared_ptr<StorageEngine> overlay;
-            {
-              std::shared_lock lock(state->session_mutex);
-              auto it = state->overlays.find(parsed->sid);
-              if (it != state->overlays.end()) overlay = it->second;
-            }
-            if (!overlay) {
+            if (auto access = AcquireSession(state, parsed->sid);
+                !access.record || !access.admission.has_value()) {
               diagnostics.push_back({LogLevel::kWarning, kUnknownSession});
             } else {
-              ApplyWrite(diagnostics, *overlay, parsed->relative_key, sample);
+              ApplyWrite(diagnostics, *access.record->overlay, parsed->relative_key, sample);
             }
             break;
           }
@@ -470,18 +532,21 @@ void StorageNode::ReplyScopedQuery(const std::shared_ptr<State>& state, std::str
   auto selector = ParseRelativeSelector(relative);
   if (!selector) return;
 
+  std::optional<SessionRecord::AdmissionLease> admission;
+  std::shared_ptr<SessionRecord> record;
   std::shared_ptr<const StorageReader> reader;
   {
     std::shared_lock lock(state->session_mutex);
-    if (scope == "snap") {
-      auto it = state->snapshots.find(std::string(sid));
-      if (it != state->snapshots.end()) reader = it->second;
-    } else {
-      auto it = state->overlays.find(std::string(sid));
-      if (it != state->overlays.end()) reader = it->second;
+    auto it = state->sessions.find(sid);
+    if (it != state->sessions.end()) {
+      record = it->second;
+      admission = record->TryAcquire();
+      if (admission.has_value()) {
+        reader = scope == "snap" ? record->snapshot : record->overlay;
+      }
     }
   }
-  if (!reader) return;  // Unknown sid: 0 replies.
+  if (!record || !admission.has_value() || !reader) return;
 
   const std::string scope_path = std::string(scope) + "/" + std::string(sid);
   ReplyFromReader(*reader, *selector, state->prefix, scope_path, query);
@@ -493,11 +558,17 @@ void StorageNode::ReplyMetaQuery(const std::shared_ptr<State>& state, TransportQ
   if (!parsed || parsed->kind != KeyKind::MetaSession) return;
 
   std::string json;
+  std::optional<SessionRecord::AdmissionLease> admission;
   {
     std::shared_lock lock(state->session_mutex);
     auto it = state->sessions.find(parsed->sid);
-    if (it == state->sessions.end()) return;  // Unknown sid: 0 replies.
-    json = std::format(R"({{"state":"active","created_at":"{}"}})", it->second.created_at);
+    if (it == state->sessions.end() || !it->second->IsActive()) {
+      return;  // Unknown or non-active sid: 0 replies.
+    }
+    admission = it->second->TryAcquire();
+    if (!admission.has_value()) return;
+    json = std::format(R"({{"state":"active","created_at":"{}"}})",
+                       it->second->metadata.created_at);
   }
   const auto payload = ParamValue(json).Encode();
   query.Reply(query.keyexpr, payload, SitosEncoding());

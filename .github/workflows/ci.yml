@@ -148,17 +148,24 @@ jobs:
           ctest --test-dir build/sanitizer-tsan --output-on-failure --timeout 60 \
             --repeat until-fail:100 \
             -R 'ParamStoreSubscribeTest.(CloseWaitsForBlockedCallback|DeclarationFailureWaitsForAdmittedCallbackCopy)'
+          lifecycle_filter="StorageNodeLifecycleTest|StorageNodeSessionTest|"
+          lifecycle_filter+="StorageNodeSessionLifecycleTest|StorageNodeBatchTest|"
+          lifecycle_filter+="TransportGetCompletionTest|ParamStoreSubscribeTest|"
+          lifecycle_filter+="ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture"
           ctest --test-dir build/sanitizer-tsan --output-on-failure --timeout 60 \
-            --repeat until-fail:10 \
-            -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|TransportGetCompletionTest|ParamStoreSubscribeTest|ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture'
+            --repeat until-fail:10 -R "$lifecycle_filter"
 
       - name: Run lifecycle tests
         env:
           TSAN_OPTIONS: halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1
-        run: >-
-          ctest --test-dir build/sanitizer-${{ matrix.name }}
-          --output-on-failure --timeout 60 -R 'StorageNodeLifecycleTest|StorageNodeSessionTest|StorageNodeBatchTest|TransportGetCompletionTest|ParamStoreSubscribeTest|ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture'
+        run: |
+          lifecycle_filter="StorageNodeLifecycleTest|StorageNodeSessionTest|"
+          lifecycle_filter+="StorageNodeSessionLifecycleTest|StorageNodeBatchTest|"
+          lifecycle_filter+="TransportGetCompletionTest|ParamStoreSubscribeTest|"
+          lifecycle_filter+="ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture"
+          ctest --test-dir build/sanitizer-${{ matrix.name }} \
+            --output-on-failure --timeout 60 -R "$lifecycle_filter"
 
   build-windows:
     runs-on: windows-latest

@@ -9,6 +9,7 @@
 #include <cassert>
 #include <condition_variable>
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -16,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_map>
 #include <vector>
 
 #include "sitos/logging.hpp"
@@ -47,6 +49,9 @@ struct StorageNodeConfig {
 };
 
 class SessionView;
+namespace storage_node_test_access {
+class StorageNodeTestAccess;
+}
 
 /// Serves base-scope Get/List queries and base writes through Transport declarations.
 class StorageNode {
@@ -96,6 +101,100 @@ class StorageNode {
 
  private:
   friend class SessionView;
+  friend class storage_node_test_access::StorageNodeTestAccess;
+
+  struct SessionRecord {
+    enum class Phase { Creating, Active, Closing };
+
+    class AdmissionLease {
+     public:
+      explicit AdmissionLease(SessionRecord* record) : record_(record) {}
+      ~AdmissionLease() {
+        if (record_ != nullptr) record_->LeaveAdmission();
+      }
+      AdmissionLease(const AdmissionLease&) = delete;
+      AdmissionLease& operator=(const AdmissionLease&) = delete;
+      AdmissionLease(AdmissionLease&& other) noexcept : record_(other.record_) {
+        other.record_ = nullptr;
+      }
+      AdmissionLease& operator=(AdmissionLease&& other) noexcept {
+        if (this != &other) {
+          if (record_ != nullptr) record_->LeaveAdmission();
+          record_ = other.record_;
+          other.record_ = nullptr;
+        }
+        return *this;
+      }
+
+     private:
+      SessionRecord* record_;
+    };
+
+    std::optional<AdmissionLease> TryAcquire() noexcept {
+      std::scoped_lock lock(admission_mutex);
+      if (phase != Phase::Active || !accepting) return std::nullopt;
+      ++admitted;
+      return AdmissionLease(this);
+    }
+
+    bool Activate() noexcept {
+      std::scoped_lock lock(admission_mutex);
+      if (phase != Phase::Creating) return false;
+      phase = Phase::Active;
+      accepting = true;
+      admission_cv.notify_all();
+      return true;
+    }
+
+    bool IsActive() noexcept {
+      std::scoped_lock lock(admission_mutex);
+      return phase == Phase::Active;
+    }
+
+    bool BeginClose() noexcept {
+      std::scoped_lock lock(admission_mutex);
+      if (phase != Phase::Active) return false;
+      phase = Phase::Closing;
+      accepting = false;
+      admission_cv.notify_all();
+      return true;
+    }
+
+    void WaitForClosing() noexcept {
+      std::unique_lock lock(admission_mutex);
+      admission_cv.wait(lock, [this] { return phase == Phase::Closing; });
+    }
+
+    void WaitForAdmission() noexcept {
+      std::unique_lock lock(admission_mutex);
+      admission_cv.wait(lock, [this] { return admitted == 0; });
+    }
+
+    void LeaveAdmission() noexcept {
+      std::scoped_lock lock(admission_mutex);
+      assert(admitted > 0);
+      if (admitted == 0) return;
+      --admitted;
+      if (admitted == 0) admission_cv.notify_all();
+    }
+
+    Phase phase = Phase::Creating;
+    bool accepting = false;
+    std::size_t admitted = 0;
+    std::mutex admission_mutex;
+    std::condition_variable admission_cv;
+    std::shared_ptr<const StorageReader> snapshot;
+    std::shared_ptr<StorageEngine> overlay;
+    SessionMeta metadata;
+  };
+
+  struct SessionKeyHash {
+    using is_transparent = void;
+
+    std::size_t operator()(std::string_view value) const noexcept {
+      return std::hash<std::string_view>{}(value);
+    }
+  };
 
   struct State {
     State(std::shared_ptr<StorageEngine> storage, std::string key_prefix,
@@ -147,6 +246,7 @@ class StorageNode {
     void DeactivateAndWait() noexcept {
       std::unique_lock lock(gate_mutex);
       accepting = false;
+      gate_cv.notify_all();
       gate_cv.wait(lock, [this] { return in_flight == 0; });
     }
 
@@ -169,15 +269,24 @@ class StorageNode {
     // session locks are released before engine writes.
     std::mutex subscriber_mutex;
 
-    // Session tables. Guarded by session_mutex. Callbacks and session
-    // operations alike enter the callback gate before locking session_mutex,
-    // so the gate -> subscriber_mutex -> session_mutex ordering never cycles.
+    // Session records are the sole internal ownership and membership source.
+    // Guarded by session_mutex. Callbacks and session operations alike enter
+    // the callback gate before locking session_mutex, so the
+    // gate -> subscriber_mutex -> session_mutex -> admission ordering never
+    // cycles.
     std::shared_mutex session_mutex;
-    SnapshotTable snapshots;
-    OverlayTable overlays;
-    SessionTable sessions;
+    std::unordered_map<std::string, std::shared_ptr<SessionRecord>, SessionKeyHash,
+                       std::equal_to<>>
+        sessions;
   };
 
+  struct SessionAccess {
+    std::optional<SessionRecord::AdmissionLease> admission;
+    std::shared_ptr<SessionRecord> record;
+  };
+
+  static SessionAccess AcquireSession(const std::shared_ptr<State>& state,
+                                      std::string_view sid);
   static void OnQuery(const std::shared_ptr<State>& state, TransportQuery& query);
   static void OnSample(const std::shared_ptr<State>& state, const TransportSample& sample);
   // Answers a get in the session or snap scope from the matching overlay or
