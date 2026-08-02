@@ -96,6 +96,20 @@ def test_raw_zenoh_client_can_use_mixed_session_buffers() -> None:
                         b"preview",
                         encoding=zenoh.Encoding("zenoh/bytes"),
                     )
+                post_conflict_completion_key = (
+                    f"{fixture.prefix}/buffers/{session_ids['both']}/durable/post_conflict_completion"
+                )
+                post_conflict_completion_payload = b"post-conflict-completion"
+                session.put(
+                    post_conflict_completion_key,
+                    post_conflict_completion_payload,
+                    encoding=zenoh.Encoding("zenoh/bytes"),
+                )
+                _wait_for_payload(
+                    session,
+                    post_conflict_completion_key,
+                    post_conflict_completion_payload,
+                )
                 for mode in ("durable", "both"):
                     _wait_for_payload(
                         session,
@@ -179,13 +193,16 @@ def test_raw_zenoh_durable_late_join_preserves_distinct_keys() -> None:
             )
         with fixture.open_raw_session() as late:
             replies = _query(late, f"{fixture.prefix}/buffers/{fixture.session_id}/durable/**")
-            assert {reply.key for reply in replies} == {
-                f"{fixture.prefix}/buffers/{fixture.session_id}/durable/a",
-                f"{fixture.prefix}/buffers/{fixture.session_id}/durable/b",
+            assert len(replies) == 2
+            expected = {
+                f"{fixture.prefix}/buffers/{fixture.session_id}/durable/a": (b"a", "zenoh/bytes"),
+                f"{fixture.prefix}/buffers/{fixture.session_id}/durable/b": (b"b", "zenoh/bytes"),
             }
+            actual: dict[str, tuple[bytes, str]] = {}
             for reply in replies:
-                assert reply.encoding == "zenoh/bytes"
-                assert reply.payload == reply.key.rsplit("/", maxsplit=1)[-1].encode()
+                assert reply.key not in actual, f"duplicate durable reply: {reply.key}"
+                actual[reply.key] = (reply.payload, reply.encoding)
+            assert actual == expected
 
 
 def test_raw_zenoh_buffer_interop_fixture_boundaries() -> None:
