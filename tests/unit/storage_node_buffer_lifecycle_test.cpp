@@ -28,6 +28,7 @@ class LifecycleEngine final : public StorageEngine {
   explicit LifecycleEngine(std::shared_ptr<bool> destroyed = nullptr)
       : destroyed_(std::move(destroyed)) {}
   ~LifecycleEngine() override {
+    std::scoped_lock lock(release_mutex_);
     if (destroyed_) *destroyed_ = true;
   }
 
@@ -83,6 +84,7 @@ class LifecycleEngine final : public StorageEngine {
     }
   }
   void ReleaseAll() {
+    std::scoped_lock release_lock(release_mutex_);
     {
       std::scoped_lock lock(gate_mutex_);
       block_put = false;
@@ -94,6 +96,7 @@ class LifecycleEngine final : public StorageEngine {
 
   mutable std::mutex mutex_;
   mutable std::mutex gate_mutex_;
+  mutable std::mutex release_mutex_;
   mutable std::condition_variable cv;
   mutable std::map<std::string, std::vector<std::byte>> values_;
   mutable int put_entered = 0;
