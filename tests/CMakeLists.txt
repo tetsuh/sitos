@@ -43,6 +43,8 @@ add_sitos_public_header_compile_test(
   sitos_session_view_header_compile_test consumer/session_view_header_compile.cpp)
 add_sitos_public_header_compile_test(
   sitos_rocksdb_engine_header_compile_test consumer/rocksdb_engine_header_compile.cpp)
+add_sitos_public_header_compile_test(
+  sitos_storage_node_header_compile_test consumer/storage_node_header_compile.cpp)
 if(SITOS_WITH_ZENOH)
   sitos_copy_zenohc(sitos_param_store_header_compile_test)
   sitos_copy_zenohc(sitos_param_cache_header_compile_test)
@@ -225,6 +227,29 @@ if(SITOS_WITH_ZENOH)
   sitos_copy_zenohc(sitos_storage_node_test)
 endif()
 gtest_add_tests(TARGET sitos_storage_node_test SOURCES unit/storage_node_test.cpp)
+
+add_executable(sitos_storage_node_buffer_api_test
+  unit/storage_node_buffer_api_test.cpp)
+target_link_libraries(sitos_storage_node_buffer_api_test
+  PRIVATE GTest::gtest_main sitos::sitos)
+sitos_enable_warnings(sitos_storage_node_buffer_api_test)
+gtest_add_tests(TARGET sitos_storage_node_buffer_api_test SOURCES unit/storage_node_buffer_api_test.cpp)
+
+add_executable(sitos_storage_node_buffer_routing_test
+  unit/storage_node_buffer_routing_test.cpp)
+target_link_libraries(sitos_storage_node_buffer_routing_test
+  PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_storage_node_buffer_routing_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+sitos_enable_warnings(sitos_storage_node_buffer_routing_test)
+gtest_add_tests(TARGET sitos_storage_node_buffer_routing_test SOURCES unit/storage_node_buffer_routing_test.cpp)
+
+add_executable(sitos_storage_node_buffer_lifecycle_test
+  unit/storage_node_buffer_lifecycle_test.cpp)
+target_link_libraries(sitos_storage_node_buffer_lifecycle_test
+  PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_storage_node_buffer_lifecycle_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+sitos_enable_warnings(sitos_storage_node_buffer_lifecycle_test)
+gtest_add_tests(TARGET sitos_storage_node_buffer_lifecycle_test SOURCES unit/storage_node_buffer_lifecycle_test.cpp)
 
 add_executable(sitos_session_view_test
   unit/session_view_test.cpp)

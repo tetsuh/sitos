@@ -4,12 +4,14 @@
 #ifndef SITOS_STORAGE_NODE_TEST_ACCESS_HPP
 #define SITOS_STORAGE_NODE_TEST_ACCESS_HPP
 
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "sitos/storage_engine.hpp"
 #include "sitos/storage_node.hpp"
@@ -44,8 +46,43 @@ class StorageNodeTestAccess {
     return GateObserver{node.state_.get()};
   }
 
+  static bool SetSubscriberEntryObserver(StorageNode& node, std::function<void()> observer) {
+    std::shared_ptr<StorageNode::State> state;
+    {
+      std::scoped_lock lock(node.lifecycle_mutex_);
+      state = node.state_;
+    }
+    if (state == nullptr) return false;
+    std::scoped_lock lock(state->test_observer_mutex);
+    state->subscriber_entry_observer = std::move(observer);
+    return true;
+  }
+
+  static bool SetCreateSessionEntryObserver(StorageNode& node, std::function<void()> observer) {
+    std::shared_ptr<StorageNode::State> state;
+    {
+      std::scoped_lock lock(node.lifecycle_mutex_);
+      state = node.state_;
+    }
+    if (state == nullptr) return false;
+    std::scoped_lock lock(state->test_observer_mutex);
+    state->create_session_entry_observer = std::move(observer);
+    return true;
+  }
+
+  static bool TryLockSubscriberMutex(StorageNode& node) {
+    std::shared_ptr<StorageNode::State> state;
+    {
+      std::scoped_lock lock(node.lifecycle_mutex_);
+      state = node.state_;
+    }
+    if (state == nullptr || !state->subscriber_mutex.try_lock()) return false;
+    state->subscriber_mutex.unlock();
+    return true;
+  }
+
   static std::optional<SessionResourceObservation> ObserveSession(StorageNode& node,
-                                                                    std::string_view sid) {
+                                                                  std::string_view sid) {
     std::shared_ptr<StorageNode::State> state;
     {
       std::scoped_lock lock(node.lifecycle_mutex_);

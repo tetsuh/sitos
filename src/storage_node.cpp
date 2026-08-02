@@ -6,6 +6,7 @@
 
 #include "sitos/storage_node.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <format>
@@ -24,24 +25,19 @@
 namespace sitos {
 namespace {
 
-std::error_code InvalidArgument() {
-  return std::make_error_code(std::errc::invalid_argument);
-}
+std::error_code InvalidArgument() { return std::make_error_code(std::errc::invalid_argument); }
 
 std::error_code OperationInProgress() {
   return std::make_error_code(std::errc::operation_in_progress);
 }
 
-std::error_code SessionAlreadyExists() {
-  return std::make_error_code(std::errc::file_exists);
-}
+std::error_code SessionAlreadyExists() { return std::make_error_code(std::errc::file_exists); }
 
 std::error_code NoSuchSession() {
   return std::make_error_code(std::errc::no_such_file_or_directory);
 }
 
-std::optional<std::string_view> StripPrefix(std::string_view prefix,
-                                            std::string_view keyexpr) {
+std::optional<std::string_view> StripPrefix(std::string_view prefix, std::string_view keyexpr) {
   if (keyexpr.size() <= prefix.size() || !keyexpr.starts_with(prefix) ||
       keyexpr[prefix.size()] != '/') {
     return std::nullopt;
@@ -75,7 +71,8 @@ Encoding SitosEncoding() { return Encoding{std::string(Encoding::kSitosV1)}; }
 
 // Formats the current time as an ISO-8601 UTC timestamp, e.g. 2026-07-14T01:23:45Z.
 std::string NowIso8601() {
-  const std::time_t seconds = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+  const std::time_t seconds =
+      std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
   std::tm tm{};
 #if defined(_WIN32)
   gmtime_s(&tm, &seconds);
@@ -93,8 +90,7 @@ std::optional<StorageQuery> ParseRelativeSelector(std::string_view relative) {
 
   if (relative == "**") return StorageQuery{true, {}};
 
-  if (constexpr std::string_view kSelectorSuffix = "/**";
-      relative.ends_with(kSelectorSuffix)) {
+  if (constexpr std::string_view kSelectorSuffix = "/**"; relative.ends_with(kSelectorSuffix)) {
     std::string_view selector = relative.substr(0, relative.size() - kSelectorSuffix.size());
     if (!IsValidPrefix(selector)) return std::nullopt;
     std::string list_prefix(selector);
@@ -111,8 +107,7 @@ std::optional<StorageQuery> ParseRelativeSelector(std::string_view relative) {
 // Replies to a get/List against a resolved reader, rebuilding reply keys under
 // the given scope path.
 void ReplyFromReader(const StorageReader& reader, const StorageQuery& selector,
-                     std::string_view prefix, std::string_view scope_path,
-                     TransportQuery& query) {
+                     std::string_view prefix, std::string_view scope_path, TransportQuery& query) {
   const Encoding encoding = SitosEncoding();
   auto reply = [prefix, scope_path, &query, encoding](std::string_view key, Bytes value) {
     const std::string full_key = MakeReplyKey(prefix, scope_path, key);
@@ -138,6 +133,12 @@ constexpr std::string_view kInvalidBatchOperation = "invalid batch operation or 
 constexpr std::string_view kReadOnlySnapshotKey = "read-only snapshot key";
 constexpr std::string_view kUnknownSession = "unknown session";
 constexpr std::string_view kQueryCallbackFailed = "query callback exception";
+constexpr std::string_view kBufferUnsupported = "unsupported buffer operation";
+constexpr std::string_view kBufferCapabilityDisabled = "buffer capability disabled";
+constexpr std::string_view kBufferEncodingRejected = "buffer encoding rejected";
+constexpr std::string_view kBufferPutConflict = "durable buffer PUT conflicts with existing value";
+constexpr std::string_view kBufferPutFailed = "durable buffer PUT failed";
+constexpr std::string_view kBufferQueryFailed = "durable buffer query failed";
 
 struct SubscriberDiagnostic {
   LogLevel level;
@@ -147,8 +148,31 @@ struct SubscriberDiagnostic {
 using SubscriberDiagnostics = std::vector<SubscriberDiagnostic>;
 
 bool IsBatchPut(const TransportSample& sample) {
-  return sample.kind == TransportSample::Kind::Put &&
-         sample.encoding.id == Encoding::kSitosV1Batch;
+  return sample.kind == TransportSample::Kind::Put && sample.encoding.id == Encoding::kSitosV1Batch;
+}
+
+bool IsBufferBytes(const TransportSample& sample) {
+  return sample.kind == TransportSample::Kind::Put && sample.encoding.id == "zenoh/bytes";
+}
+
+enum class BufferWriteOutcome { Stored, Conflict, Failed };
+
+BufferWriteOutcome ApplyDurableBufferWrite(StorageEngine& engine, const ParsedKey& parsed,
+                                           const TransportSample& sample) {
+  try {
+    bool same = false;
+    if (engine.Get(parsed.relative_key, [&same, &sample](std::string_view, Bytes value) {
+          same = value.size() == sample.payload.size() &&
+                 std::equal(value.begin(), value.end(), sample.payload.begin());
+          return true;
+        })) {
+      return same ? BufferWriteOutcome::Stored : BufferWriteOutcome::Conflict;
+    }
+    if (engine.Put(parsed.relative_key, sample.payload)) return BufferWriteOutcome::Stored;
+  } catch (...) {
+    return BufferWriteOutcome::Failed;
+  }
+  return BufferWriteOutcome::Failed;
 }
 
 // Applies a put/delete sample to a target engine (base engine or session
@@ -219,8 +243,7 @@ void EmitDiagnostics(const std::shared_ptr<LogSink>& log_sink,
 
 }  // namespace
 
-std::optional<StorageQuery> ParseStorageQuery(std::string_view prefix,
-                                               std::string_view keyexpr) {
+std::optional<StorageQuery> ParseStorageQuery(std::string_view prefix, std::string_view keyexpr) {
   if (!IsValidPrefix(prefix)) return std::nullopt;
 
   auto rest = StripPrefix(prefix, keyexpr);
@@ -254,7 +277,8 @@ Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Transport
   }
 
   auto state = std::make_shared<State>(std::move(engine), std::move(config.prefix),
-                                       std::move(config.log_sink));
+                                       std::move(config.log_sink),
+                                       std::move(config.durable_buffer_engine_factory));
   const std::string declaration_key = state->prefix + "/**";
   auto queryable_result = transport.DeclareQueryable(
       declaration_key, [state](TransportQuery& query) { OnQuery(state, query); });
@@ -292,6 +316,26 @@ void StorageNode::Stop() noexcept {
   }
 
   state->DeactivateAndWait();
+
+  // Stop is a quiescence boundary for the entire Session generation. Once
+  // callbacks have drained, no Session admission can remain active; close and
+  // release every committed record before returning to the caller. Extracting
+  // one existing map node at a time avoids allocation in this noexcept path.
+  for (;;) {
+    std::shared_ptr<SessionRecord> record;
+    {
+      std::unique_lock lock(state->session_mutex);
+      if (state->sessions.empty()) break;
+      auto node = state->sessions.extract(state->sessions.begin());
+      record = std::move(node.mapped());
+    }
+    if (record->BeginClose()) record->WaitForAdmission();
+    record->snapshot.reset();
+    record->overlay.reset();
+    record->durable_buffers.reset();
+    record->metadata = {};
+  }
+
   subscriber = Subscription{};
   queryable = Queryable{};
 }
@@ -302,6 +346,10 @@ bool StorageNode::IsStarted() const noexcept {
 }
 
 Result<void> StorageNode::CreateSession(std::string_view sid) {
+  return CreateSession(sid, SessionOptions{});
+}
+
+Result<void> StorageNode::CreateSession(std::string_view sid, SessionOptions options) {
   if (!IsValidSessionId(sid)) return Result<void>::Err(InvalidArgument());
 
   std::shared_ptr<State> state;
@@ -310,9 +358,19 @@ Result<void> StorageNode::CreateSession(std::string_view sid) {
     state = state_;
   }
   if (!state) return Result<void>::Err(InvalidArgument());
+  std::function<void()> create_observer;
+  {
+    std::scoped_lock lock(state->test_observer_mutex);
+    create_observer = state->create_session_entry_observer;
+  }
+  if (create_observer) create_observer();
   auto lease = state->Enter();
   if (!lease) return Result<void>::Err(InvalidArgument());
+  return CreateSession(state, sid, options);
+}
 
+Result<void> StorageNode::CreateSession(const std::shared_ptr<State>& state, std::string_view sid,
+                                        SessionOptions options) {
   const std::string key(sid);
   auto record = std::make_shared<SessionRecord>();
   {
@@ -343,6 +401,7 @@ Result<void> StorageNode::CreateSession(std::string_view sid) {
       if (!active) return;
       record->snapshot.reset();
       record->overlay.reset();
+      record->durable_buffers.reset();
       record->metadata = {};
       std::unique_lock lock(state->session_mutex);
       auto it = state->sessions.find(key);
@@ -365,7 +424,26 @@ Result<void> StorageNode::CreateSession(std::string_view sid) {
 
   record->snapshot = std::move(snapshot);
   record->overlay = std::make_shared<InMemoryEngine>();
+  record->options = options;
   record->metadata = SessionMeta{NowIso8601()};
+
+  if (options.durable_buffers) {
+    if (!state->durable_buffer_engine_factory) {
+      return Result<void>::Err(Status::InvalidArgument, "durable buffer engine factory is required",
+                               std::make_error_code(std::errc::invalid_argument));
+    }
+    try {
+      auto factory_result = state->durable_buffer_engine_factory(sid);
+      if (!factory_result.IsOk()) return Result<void>::ErrFrom(factory_result);
+      auto durable_engine = std::move(factory_result).Value();
+      if (!durable_engine) {
+        return Result<void>::Err(Status::Error, "durable buffer engine factory returned null");
+      }
+      record->durable_buffers = std::move(durable_engine);
+    } catch (...) {
+      return Result<void>::Err(Status::Error, "durable buffer engine factory threw an exception");
+    }
+  }
 
   bool committed = false;
   {
@@ -403,6 +481,7 @@ Result<void> StorageNode::CloseSession(std::string_view sid) {
   record->WaitForAdmission();
   record->snapshot.reset();
   record->overlay.reset();
+  record->durable_buffers.reset();
   record->metadata = {};
   {
     std::unique_lock lock(state->session_mutex);
@@ -432,7 +511,7 @@ std::vector<std::string> StorageNode::ActiveSessions() const {
 }
 
 StorageNode::SessionAccess StorageNode::AcquireSession(const std::shared_ptr<State>& state,
-                                                        std::string_view sid) {
+                                                       std::string_view sid) {
   SessionAccess access;
   std::shared_lock lock(state->session_mutex);
   if (auto it = state->sessions.find(sid); it != state->sessions.end()) {
@@ -446,6 +525,12 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
   auto lease = state->Enter();
   if (!lease) return;
   try {
+    std::function<void()> subscriber_observer;
+    {
+      std::scoped_lock lock(state->test_observer_mutex);
+      subscriber_observer = state->subscriber_entry_observer;
+    }
+    if (subscriber_observer) subscriber_observer();
     SubscriberDiagnostics diagnostics;
     {
       // The gate lease is acquired first. Serializing the entire subscriber
@@ -467,6 +552,34 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
             diagnostics.push_back({LogLevel::kWarning, kUnknownSession});
           } else {
             ApplyBatch(diagnostics, *access.record->overlay, sample.payload);
+          }
+        }
+      } else if (parsed->kind == KeyKind::Buffer) {
+        if (sample.kind == TransportSample::Kind::Delete) {
+          diagnostics.emplace_back(LogLevel::kWarning, kBufferUnsupported);
+        } else if (!IsBufferBytes(sample)) {
+          diagnostics.emplace_back(LogLevel::kWarning, kBufferEncodingRejected);
+        } else if (auto access = AcquireSession(state, parsed->sid);
+                   !access.record || !access.admission.has_value()) {
+          diagnostics.emplace_back(LogLevel::kWarning, kUnknownSession);
+        } else if (!parsed->buffer_class.has_value()) {
+          diagnostics.emplace_back(LogLevel::kWarning, kBufferUnsupported);
+        } else if (*parsed->buffer_class == BufferClass::Ephemeral) {
+          if (!access.record->options.ephemeral_buffers) {
+            diagnostics.emplace_back(LogLevel::kWarning, kBufferCapabilityDisabled);
+          }
+        } else if (!access.record->options.durable_buffers || !access.record->durable_buffers) {
+          diagnostics.emplace_back(LogLevel::kWarning, kBufferCapabilityDisabled);
+        } else {
+          switch (ApplyDurableBufferWrite(*access.record->durable_buffers, *parsed, sample)) {
+            case BufferWriteOutcome::Conflict:
+              diagnostics.emplace_back(LogLevel::kWarning, kBufferPutConflict);
+              break;
+            case BufferWriteOutcome::Failed:
+              diagnostics.emplace_back(LogLevel::kError, kBufferPutFailed);
+              break;
+            case BufferWriteOutcome::Stored:
+              break;
           }
         }
       } else {
@@ -517,6 +630,8 @@ void StorageNode::OnQuery(const std::shared_ptr<State>& state, TransportQuery& q
       ReplyScopedQuery(state, head, tail, query);
     } else if (head == "meta") {
       ReplyMetaQuery(state, query);
+    } else if (head == "buffers") {
+      ReplyBufferQuery(state, query);
     }
   } catch (...) {
     EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, kQueryCallbackFailed);
@@ -552,6 +667,84 @@ void StorageNode::ReplyScopedQuery(const std::shared_ptr<State>& state, std::str
   ReplyFromReader(*reader, *selector, state->prefix, scope_path, query);
 }
 
+void StorageNode::ReplyBufferQuery(const std::shared_ptr<State>& state, TransportQuery& query) {
+  auto rest = StripPrefix(state->prefix, query.keyexpr);
+  if (!rest || !rest->starts_with("buffers/")) return;
+  auto sid_split = SplitFirst(rest->substr(8));
+  if (!sid_split) return;
+  const auto& [sid, class_and_selector] = *sid_split;
+  auto class_split = SplitFirst(class_and_selector);
+  if (!class_split || !IsValidSessionId(sid)) return;
+  const auto& [class_name, selector_text] = *class_split;
+  if (class_name != "durable") return;
+  if (selector_text.empty()) return;
+  std::string relative;
+  bool list = false;
+  if (selector_text == "**") {
+    list = true;
+  } else if (selector_text.ends_with("/**")) {
+    auto prefix = selector_text.substr(0, selector_text.size() - 3);
+    if (!IsValidPrefix(prefix)) return;
+    relative = std::string(prefix) + "/";
+    list = true;
+  } else {
+    if (!IsValidKey(selector_text)) return;
+    relative = std::string(selector_text);
+  }
+
+  struct OwnedEntry {
+    std::string key;
+    std::vector<std::byte> value;
+  };
+  std::vector<OwnedEntry> entries;
+  bool ok = false;
+  bool collection_failed = false;
+  {
+    std::optional<SessionRecord::AdmissionLease> admission;
+    std::shared_ptr<SessionRecord> record;
+    {
+      std::shared_lock lock(state->session_mutex);
+      auto it = state->sessions.find(sid);
+      if (it == state->sessions.end()) return;
+      record = it->second;
+      admission = record->TryAcquire();
+    }
+    if (!admission || !record->options.durable_buffers || !record->durable_buffers) return;
+    try {
+      auto sink = [&entries](std::string_view key, Bytes value) {
+        entries.emplace_back(std::string(key), std::vector<std::byte>(value.begin(), value.end()));
+        return true;
+      };
+      ok = list ? record->durable_buffers->List(relative, sink)
+                : record->durable_buffers->Get(relative, sink);
+    } catch (...) {
+      collection_failed = true;
+    }
+  }
+  if (collection_failed || (!ok && list)) {
+    EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, kBufferQueryFailed);
+    return;
+  }
+
+  const Encoding encoding{"zenoh/bytes"};
+  bool dispatch = true;
+  for (const auto& entry : entries) {
+    if (!dispatch) break;
+    const auto key =
+        MakeReplyKey(state->prefix, "buffers/" + std::string(sid) + "/durable", entry.key);
+    try {
+      auto result = query.Reply(key, entry.value, encoding);
+      if (!result.IsOk()) {
+        dispatch = false;
+        EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, kBufferQueryFailed);
+      }
+    } catch (...) {
+      dispatch = false;
+      EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, kBufferQueryFailed);
+    }
+  }
+}
+
 void StorageNode::ReplyMetaQuery(const std::shared_ptr<State>& state, TransportQuery& query) {
   auto parsed = ParseKey(state->prefix, query.keyexpr);
   // MetaAck (#14) is out of scope; only meta/session is answered here.
@@ -567,8 +760,8 @@ void StorageNode::ReplyMetaQuery(const std::shared_ptr<State>& state, TransportQ
     }
     admission = it->second->TryAcquire();
     if (!admission.has_value()) return;
-    json = std::format(R"({{"state":"active","created_at":"{}"}})",
-                       it->second->metadata.created_at);
+    json =
+        std::format(R"({{"state":"active","created_at":"{}"}})", it->second->metadata.created_at);
   }
   const auto payload = ParamValue(json).Encode();
   query.Reply(query.keyexpr, payload, SitosEncoding());

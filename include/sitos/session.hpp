@@ -17,6 +17,12 @@
 
 namespace sitos {
 
+/// Options selecting Session buffer capabilities.
+struct SessionOptions {
+  bool durable_buffers = false;
+  bool ephemeral_buffers = false;
+};
+
 /// Metadata recorded for an active session and surfaced as the payload-v1 STR
 /// JSON returned for a get on meta/session/<sid> (docs/03 §7.1).
 struct SessionMeta {

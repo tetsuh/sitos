@@ -122,7 +122,7 @@ types in the public API. An injected `std::shared_ptr<Transport>` can be passed 
 | `NotFound` | get target absent, nonexistent session | `sitos.NotFoundError` |
 | `TypeMismatch` | Type conversion impossible, Bytes dtype/size mismatch | `sitos.TypeMismatchError` |
 | `Timeout` | query does not complete within `ClientConfig::query_timeout` | `sitos.TimeoutError` |
-| `Disconnected` | zenoh session disconnected, StorageNode stopped | `sitos.DisconnectedError` |
+| `Disconnected` | zenoh session disconnected, or an operation-specific disconnected condition | `sitos.DisconnectedError` |
 | `ReadOnly` | put/delete through the library API to `snap/<sid>/**` | `sitos.ReadOnlyError` |
 | `InvalidKey` | Key/scope/session id violates the grammar | `ValueError` |
 | `InvalidArgument` | Invalid configuration or operation argument | `ValueError` |
@@ -130,6 +130,12 @@ types in the public API. An injected `std::shared_ptr<Transport>` can be passed 
 
 Python `get(..., default=...)` does not raise for `NotFound` only; it returns default.
 All other Status values are converted to exceptions.
+
+`StorageNode::CreateSession` is an explicit exception to generic stopped-node status wording:
+both `CreateSession(std::string_view)` overloads return `Status::InvalidArgument` with cause
+`std::errc::invalid_argument` and an empty message when the node State is absent (after Stop) or
+when a callback has captured a State whose lifecycle gate is already closed. This preserves
+DEC-140-STOP-STATUS-002; other stopped-node operations retain their method-specific status.
 
 ## 2. ParamStore — Writes and Ad Hoc Reads
 
@@ -263,7 +269,9 @@ public:
 // both succeed. Stop is idempotent and waits for callbacks already in flight.
 ```
 
-`SessionOptions` enables durable buffers, ephemeral buffers, both, or neither. The exact lifecycle
+`SessionOptions` enables durable buffers, ephemeral buffers, both, or neither. Stage #141
+implements the exact `zenoh/bytes` buffer admission and keeps the one-argument overload's
+parameter/session behavior unchanged. The exact lifecycle
 contract is `absent → Creating → Active` for `CreateSession` and
 `Active → Closing → absent` for `CloseSession`. Creation against `Creating` or `Closing` returns
 `std::errc::operation_in_progress`; a duplicate `Active` creation retains
@@ -276,10 +284,11 @@ A node-level host factory creates at most one durable `StorageEngine` for each S
 the durable capability; all durable keys in that Session share it. The factory result is uniquely
 owned by the Session, and RocksDB types and filesystem paths remain outside this public API.
 `Start` moves the factory from `StorageNodeConfig` into the callback-shared State before either
-Transport declaration. `CreateSession` uses that same State generation, not a later or different
-node configuration. Creation reserves a non-queryable `Creating` record before invoking the
-external factory, rolls back every resource already created on failure, and publishes it as
-`Active` only after all resources are ready.
+Transport declaration. Independent `CreateSession` calls may execute concurrently, so a factory
+with mutable shared state must synchronize its own state. `CreateSession` uses that same State
+generation, not a later or different node configuration. Creation reserves a non-queryable
+`Creating` record before invoking the external factory, rolls back every resource already created
+on failure, and publishes it as `Active` only after all resources are ready.
 
 Only a valid, non-null engine may commit `Creating` to `Active`. For a Session requesting
 durable buffers, a factory `Err` preserves its status, cause, and message. An empty factory,

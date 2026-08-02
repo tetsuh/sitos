@@ -157,6 +157,15 @@ Conventions:
 
 ### 4.2 Data Structures
 
+Stage #141 implements the mixed buffer routes with `SessionOptions` and a
+node-owned `DurableBufferEngineFactory`. Durable PUT admission accepts only
+`zenoh/bytes`, performs the engine read/compare/write sequence under the
+subscriber mutex, and retains no failed-key reservation. Ephemeral PUTs are
+capability-checked and never enter node storage. Durable query results are
+materialized before releasing Session admission; engine collection failures
+produce zero replies, while reply-handler failures after dispatch suppress
+subsequent replies without promising atomic transport replies.
+
 ```cpp
 enum class SessionPhase { Creating, Active, Closing };
 
@@ -204,23 +213,31 @@ Session resources. Readers copy ownership only while the record is active, so cl
 invalidate an in-flight reply. The node-wide callback gate still makes `Stop()` quiescent.
 
 The phase contract is exact: `absent → Creating → Active` for creation, and
-`Active → Closing → absent` for close. `CreateSession` reserves a non-queryable
+`Active → Closing → absent` for close. If the node State is absent, or a callback has captured a
+State whose lifecycle gate is closed before admission, both `CreateSession(std::string_view)`
+overloads return `Status::InvalidArgument` with cause `std::errc::invalid_argument` and an empty
+message, as required by DEC-140-STOP-STATUS-002. This method-specific exception is distinct from
+generic disconnected statuses documented for other APIs. `CreateSession` reserves a non-queryable
 `Creating` record before external factory creation. Creation against `Creating` or `Closing` returns
 `std::errc::operation_in_progress`, while a duplicate `Active` creation retains
 `std::errc::file_exists`. The creator commits only after taking `session_mutex` and verifying
 that the same reservation still exists and remains `Creating`; it then changes that record to
 `Active`. The reservation lock is released before external factory or engine operations and
-logging. `CreateSession` uses the callback-shared State generation captured by the node, so its
-factory and resources cannot come from a different Start generation. The factory is moved from
-`StorageNodeConfig` into that State before Transport declarations.
+logging. Independent `CreateSession` calls may execute concurrently and may invoke the stored
+factory concurrently; a factory implementation with mutable shared state is responsible for
+synchronizing that state. `CreateSession` uses the callback-shared State generation captured by the
+node, so its factory and resources cannot come from a different Start generation. The factory is
+moved from `StorageNodeConfig` into that State before Transport declarations.
 
 Only a valid, non-null durable engine may commit `Creating` to `Active`. For a
 Session requesting durable buffers, a factory `Err` is returned with its status, cause, and
 message preserved; an empty factory, `Ok(nullptr)`, or a factory exception is a non-OK
-failure. The exact Status taxonomy for empty, null, and exception outcomes is deferred to the
-Issue #56 scope freeze. Exceptions are contained. Every non-commit
-path releases all resources created by that attempt and removes only the same `Creating`
-reservation under `session_mutex`, so the same SID can be retried.
+failure. DEC-56-FACTORY-FAILURE-001 defines the exact taxonomy: a missing factory is
+`Status::InvalidArgument` with `std::errc::invalid_argument` and the message `durable buffer
+engine factory is required`; null success and exceptions are `Status::Error` with their exact
+public messages; and factory `Err` values are preserved. Exceptions are contained. Every
+non-commit path releases all resources created by that attempt and removes only the same
+`Creating` reservation under `session_mutex`, so the same SID can be retried.
 
 `CloseSession` changes only an `Active` record to `Closing`; a `Creating` or `Closing` record
 returns `std::errc::operation_in_progress`, and a missing record retains
@@ -288,8 +305,8 @@ so `Stop()` still quiesces diagnostics. Neither callback ever invokes the extern
 
 `ParseQuerySelector` is a concise internal implementation helper, not a new public API. It composes
 the exact-key grammar with the existing selector rules: it first uses `ParseKey(prefix, keyexpr)`
-for an exact key, then parses a terminal `/**` selector with the existing selector parser. #56
-extends the exact branch and selector branch for durable buffer exact Get/List. It returns
+for an exact key, then parses a terminal `/**` selector with the existing selector parser. Issue
+#141 implements the exact branch and selector branch for durable buffer exact Get/List. It returns
 `kind`, `sid`, `buffer_class`, and a relative selector, or empty. Empty means no reply; ephemeral
 selectors remain no-reply.
 
@@ -339,11 +356,16 @@ StorageNode::Start(engine, transport, config):
               ReplyFromReader(q, *lease.session.overlay, selector.relative_selector)
           case Buffer:
             if selector.buffer_class == Durable:
-              if lease = AcquireActiveAdmission(*state, selector.sid):
-                if lease.session.options.durable_buffers:
-                  ReplyFromReader(q, *lease.session.durable_buffers,
-                                  selector.relative_selector,
-                                  Encoding{"zenoh/bytes"})
+              owned = []
+              {
+                if lease = AcquireActiveAdmission(*state, selector.sid):
+                  if lease.session.options.durable_buffers:
+                    // Collect while admission protects the engine and copy every view.
+                    owned = CollectOwnedEntries(*lease.session.durable_buffers,
+                                                selector.relative_selector)
+              }  // release Session admission before any reply callback
+              for entry in owned:
+                q.Reply(entry.full_key, entry.bytes, Encoding{"zenoh/bytes"})
             else:
               // No replies: StorageNode retains no ephemeral state.
           case MetaSession:

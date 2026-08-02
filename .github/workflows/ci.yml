@@ -149,7 +149,8 @@ jobs:
             --repeat until-fail:100 \
             -R 'ParamStoreSubscribeTest.(CloseWaitsForBlockedCallback|DeclarationFailureWaitsForAdmittedCallbackCopy)'
           lifecycle_filter="StorageNodeLifecycleTest|StorageNodeSessionTest|"
-          lifecycle_filter+="StorageNodeSessionLifecycleTest|StorageNodeBatchTest|"
+          lifecycle_filter+="StorageNodeSessionLifecycleTest|StorageNodeBufferLifecycleTest|"
+          lifecycle_filter+="StorageNodeBufferRoutingTest|StorageNodeBufferApiTest|StorageNodeBatchTest|"
           lifecycle_filter+="TransportGetCompletionTest|ParamStoreSubscribeTest|"
           lifecycle_filter+="ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture"
           ctest --test-dir build/sanitizer-tsan --output-on-failure --timeout 60 \
@@ -161,7 +162,8 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1
         run: |
           lifecycle_filter="StorageNodeLifecycleTest|StorageNodeSessionTest|"
-          lifecycle_filter+="StorageNodeSessionLifecycleTest|StorageNodeBatchTest|"
+          lifecycle_filter+="StorageNodeSessionLifecycleTest|StorageNodeBufferLifecycleTest|"
+          lifecycle_filter+="StorageNodeBufferRoutingTest|StorageNodeBufferApiTest|StorageNodeBatchTest|"
           lifecycle_filter+="TransportGetCompletionTest|ParamStoreSubscribeTest|"
           lifecycle_filter+="ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture"
           ctest --test-dir build/sanitizer-${{ matrix.name }} \
