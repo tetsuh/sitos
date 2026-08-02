@@ -187,6 +187,10 @@ class FixtureProcess:
         )
         return sid
 
+    def close_session(self, session_id: str | None = None) -> None:
+        sid = self.session_id if session_id is None else session_id
+        self.command(f"CLOSE_SESSION {sid}", f"CLOSED {sid}")
+
     def open_raw_session(self) -> zenoh.Session:
         config = zenoh.Config.from_json5(
             json.dumps(

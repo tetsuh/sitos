@@ -41,13 +41,16 @@ def test_raw_zenoh_client_can_use_mixed_session_buffers() -> None:
         with fixture.open_raw_session() as session:
             marker_observed = threading.Event()
             live_observed = threading.Event()
+            observed_samples: list[support.WireSample] = []
             live_key = f"{fixture.prefix}/buffers/{session_ids['both']}/ephemeral/live"
             marker_key = f"{fixture.prefix}/buffers/{session_ids['both']}/ephemeral/marker"
 
             def observe(sample: zenoh.Sample) -> None:
-                if str(sample.key_expr) == marker_key:
+                copied = support.copy_sample(sample)
+                observed_samples.append(copied)
+                if copied.key == marker_key:
                     marker_observed.set()
-                if str(sample.key_expr) == live_key:
+                if copied.key == live_key:
                     live_observed.set()
 
             subscriber = session.declare_subscriber(
@@ -62,6 +65,16 @@ def test_raw_zenoh_client_can_use_mixed_session_buffers() -> None:
                     session.put(
                         durable_key,
                         mode.encode(),
+                        encoding=zenoh.Encoding("zenoh/bytes"),
+                    )
+                    session.put(
+                        durable_key,
+                        mode.encode(),
+                        encoding=zenoh.Encoding("zenoh/bytes"),
+                    )
+                    session.put(
+                        durable_key,
+                        b"conflicting-bytes",
                         encoding=zenoh.Encoding("zenoh/bytes"),
                     )
                     session.put(
@@ -111,6 +124,14 @@ def test_raw_zenoh_client_can_use_mixed_session_buffers() -> None:
                     encoding=zenoh.Encoding("zenoh/bytes"),
                 )
                 assert live_observed.wait(5.0)
+                live_samples = [sample for sample in observed_samples if sample.key == live_key]
+                assert live_samples
+                support.assert_wire_sample(
+                    live_samples[-1],
+                    expected_key=live_key,
+                    expected_payload=b"live-preview",
+                    expected_encoding="zenoh/bytes",
+                )
             finally:
                 subscriber.undeclare()
 
@@ -130,17 +151,43 @@ def test_raw_zenoh_durable_late_join_preserves_distinct_keys() -> None:
                 f"{fixture.prefix}/buffers/{fixture.session_id}/durable/a",
                 b"a",
             )
-            with fixture.open_raw_session() as late:
-                replies = _query(late, f"{fixture.prefix}/buffers/{fixture.session_id}/durable/**")
-                assert {reply.key for reply in replies} == {
-                    f"{fixture.prefix}/buffers/{fixture.session_id}/durable/a",
-                    f"{fixture.prefix}/buffers/{fixture.session_id}/durable/b",
-                }
-                for reply in replies:
-                    assert reply.encoding == "zenoh/bytes"
-                    assert reply.payload == reply.key.rsplit("/", maxsplit=1)[-1].encode()
+        with fixture.open_raw_session() as late:
+            replies = _query(late, f"{fixture.prefix}/buffers/{fixture.session_id}/durable/**")
+            assert {reply.key for reply in replies} == {
+                f"{fixture.prefix}/buffers/{fixture.session_id}/durable/a",
+                f"{fixture.prefix}/buffers/{fixture.session_id}/durable/b",
+            }
+            for reply in replies:
+                assert reply.encoding == "zenoh/bytes"
+                assert reply.payload == reply.key.rsplit("/", maxsplit=1)[-1].encode()
 
 
 def test_raw_zenoh_buffer_interop_fixture_boundaries() -> None:
+    import importlib.util
+    from pathlib import Path
+
+    validator_path = Path(__file__).parents[2] / "scripts" / "check_wheel.py"
+    spec = importlib.util.spec_from_file_location("sitos_check_wheel", validator_path)
+    assert spec is not None and spec.loader is not None
+    validator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(validator)
+    for member in (
+        "sitos/sitos_raw_zenoh_buffer_fixture",
+        "sitos/sitos_raw_zenoh_buffer_fixture.exe",
+    ):
+        with pytest.raises(RuntimeError, match="forbidden wheel entry"):
+            validator.validate_wheel_members([member])
+
     with support.FixtureProcess() as fixture:
         fixture.create_buffer_session()
+        fixture.command(
+            f"CREATE_BUFFER_SESSION {fixture.session_id} invalid",
+            "ERROR CREATE_BUFFER_SESSION invalid mode",
+        )
+        with fixture.open_raw_session() as session:
+            closed_key = f"{fixture.prefix}/buffers/{fixture.session_id}/durable/closed"
+            session.put(closed_key, b"before-close", encoding=zenoh.Encoding("zenoh/bytes"))
+            _wait_for_payload(session, closed_key, b"before-close")
+        fixture.close_session()
+        with fixture.open_raw_session() as session:
+            assert _query(session, closed_key) == []

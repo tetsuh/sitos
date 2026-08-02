@@ -199,6 +199,10 @@ if(SITOS_WITH_ROCKSDB)
   gtest_add_tests(
     TARGET sitos_rocksdb_buffer_lifecycle_test
     SOURCES integration/rocksdb_buffer_lifecycle_test.cpp)
+  set_tests_properties(
+    RocksDBBufferLifecycleTest.CloseReleasesEngineBeforeReturn
+    RocksDBBufferLifecycleTest.SameSidRecreationUsesFreshEngine
+    PROPERTIES TIMEOUT 60)
 endif()
 
 add_executable(sitos_in_memory_engine_test
@@ -270,6 +274,11 @@ sitos_enable_warnings(sitos_buffer_late_join_test)
 gtest_add_tests(
   TARGET sitos_buffer_late_join_test
   SOURCES integration/buffer_late_join_test.cpp)
+set_tests_properties(
+  BufferLateJoinTest.OrdersMaterializedBufferedAndLiveSamples
+  BufferLateJoinTest.DurableLateJoinDoesNotLoseDistinctKeys
+  BufferLateJoinTest.FailureInvokesNoObserverAndCleansUp
+  PROPERTIES TIMEOUT 60)
 
 add_executable(sitos_session_view_test
   unit/session_view_test.cpp)
@@ -304,6 +313,9 @@ if(SITOS_WITH_ZENOH)
   add_executable(sitos_raw_zenoh_buffer_fixture
     interop/raw_zenoh_buffer_fixture.cpp)
   target_link_libraries(sitos_raw_zenoh_buffer_fixture PRIVATE sitos::sitos)
+  if(SITOS_WITH_ROCKSDB)
+    target_compile_definitions(sitos_raw_zenoh_buffer_fixture PRIVATE SITOS_WITH_ROCKSDB=1)
+  endif()
   sitos_enable_warnings(sitos_raw_zenoh_buffer_fixture)
   sitos_copy_zenohc(sitos_raw_zenoh_buffer_fixture)
 

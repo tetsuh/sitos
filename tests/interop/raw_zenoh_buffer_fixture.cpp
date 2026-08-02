@@ -3,15 +3,21 @@
 
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/param_store.hpp"
+#if defined(SITOS_WITH_ROCKSDB)
+#include "sitos/rocksdb_engine.hpp"
+#endif
 #include "sitos/status.hpp"
 #include "sitos/storage_node.hpp"
 #include "sitos/transport.hpp"
@@ -69,8 +75,7 @@ bool HandlePutDp(std::istringstream& input, sitos::ParamStore& store, Protocol& 
   return true;
 }
 
-bool HandleCreateSession(std::istringstream& input, sitos::StorageNode& node,
-                         Protocol& protocol) {
+bool HandleCreateSession(std::istringstream& input, sitos::StorageNode& node, Protocol& protocol) {
   std::string session_id;
   std::string trailing;
   if (!(input >> session_id) || (input >> trailing)) {
@@ -120,8 +125,31 @@ bool HandleCreateBufferSession(std::istringstream& input, sitos::StorageNode& no
   return true;
 }
 
-bool HandleCommand(std::string_view command, sitos::ParamStore& store,
-                   sitos::StorageNode& node, Protocol& protocol) {
+bool HandleCloseSession(std::istringstream& input, sitos::StorageNode& node,
+                        const std::filesystem::path& durable_root, Protocol& protocol) {
+  std::string session_id;
+  std::string trailing;
+  if (!(input >> session_id) || (input >> trailing)) {
+    protocol.Error("CLOSE_SESSION", "invalid arguments");
+    return true;
+  }
+  const auto closed = node.CloseSession(session_id);
+  if (!closed.IsOk()) {
+    protocol.Error("CLOSE_SESSION", closed.Message());
+    return true;
+  }
+  std::error_code error;
+  std::filesystem::remove_all(durable_root / session_id, error);
+  if (error) {
+    protocol.Error("CLOSE_SESSION", error.message());
+    return true;
+  }
+  protocol.Reply("CLOSED " + session_id);
+  return true;
+}
+
+bool HandleCommand(std::string_view command, sitos::ParamStore& store, sitos::StorageNode& node,
+                   const std::filesystem::path& durable_root, Protocol& protocol) {
   std::istringstream input{std::string(command)};
   std::string operation;
   input >> operation;
@@ -129,6 +157,9 @@ bool HandleCommand(std::string_view command, sitos::ParamStore& store,
   if (operation == "CREATE_SESSION") return HandleCreateSession(input, node, protocol);
   if (operation == "CREATE_BUFFER_SESSION") {
     return HandleCreateBufferSession(input, node, protocol);
+  }
+  if (operation == "CLOSE_SESSION") {
+    return HandleCloseSession(input, node, durable_root, protocol);
   }
   if (operation == "STOP") {
     protocol.Reply("STOPPED");
@@ -144,9 +175,8 @@ int main(int argc, char** argv) {
   if (argc != 3) return 2;
   const std::string prefix = argv[1];
   const std::string port = argv[2];
-  const std::string config =
-      "{mode: 'peer', listen: {endpoints: ['tcp/127.0.0.1:" + port +
-      "']}, scouting: {multicast: {enabled: false}}}";
+  const std::string config = "{mode: 'peer', listen: {endpoints: ['tcp/127.0.0.1:" + port +
+                             "']}, scouting: {multicast: {enabled: false}}}";
 
   auto transport_result = sitos::OpenZenohTransport(config);
   if (!transport_result.IsOk()) {
@@ -155,13 +185,22 @@ int main(int argc, char** argv) {
   }
   std::shared_ptr<sitos::Transport> transport(std::move(transport_result).Value());
   auto engine = std::make_shared<sitos::InMemoryEngine>();
+  const auto durable_root = std::filesystem::temp_directory_path() /
+                            ("sitos-buffer-" + std::to_string(std::hash<std::string>{}(prefix)));
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(durable_root, cleanup_error);
   sitos::StorageNode node(*transport);
   const auto start_result = node.Start(
       engine, {.prefix = prefix,
                .log_sink = nullptr,
-               .durable_buffer_engine_factory = [](std::string_view) {
+               .durable_buffer_engine_factory = [durable_root](std::string_view sid) {
+#if defined(SITOS_WITH_ROCKSDB)
+                 return sitos::RocksDBEngine::Open((durable_root / std::string(sid)).string());
+#else
+                 static_cast<void>(sid);
                  return sitos::Result<std::unique_ptr<sitos::StorageEngine>>::Ok(
                      std::make_unique<sitos::InMemoryEngine>());
+#endif
                }});
   if (!start_result.IsOk()) {
     ReportStartupFailure("StorageNode::Start", start_result);
@@ -183,8 +222,10 @@ int main(int argc, char** argv) {
   Protocol protocol;
   protocol.Reply("READY " + prefix + " " + port);
   std::string command;
-  while (std::getline(std::cin, command) && HandleCommand(command, store, node, protocol)) {
+  while (std::getline(std::cin, command) &&
+         HandleCommand(command, store, node, durable_root, protocol)) {
   }
   node.Stop();
+  std::filesystem::remove_all(durable_root, cleanup_error);
   return 0;
 }

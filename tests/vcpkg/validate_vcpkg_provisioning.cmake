@@ -106,12 +106,42 @@ run_checked(
   "-DVCPKG_INSTALLED_DIR=${_feature_install}")
 run_checked("${CMAKE_COMMAND}" --build "${_combined_build}")
 string(CONCAT _combined_test_regex
+  "BufferKeyTest|StorageNodeSessionLifecycleTest|SessionViewTest|"
+  "StorageNodeBufferApiTest|StorageNodeBufferLifecycleTest|StorageNodeBufferRoutingTest|"
   "BufferLateJoinTest|RawZenohClientCanUseMixedSessionBuffers|"
   "RawZenohDurableLateJoinPreservesDistinctKeys|RawZenohBufferInteropFixtureBoundaries|"
   "RocksDBBufferLifecycleTest")
 run_checked(
   "${CMAKE_CTEST_COMMAND}" --test-dir "${_combined_build}" --output-on-failure
-  --no-tests=error -R "${_combined_test_regex}")
+  --no-tests=error --timeout 60 -R "${_combined_test_regex}")
+
+set(_combined_prefix "${_work_dir}/sitos-combined-prefix")
+set(_combined_relocated_prefix "${_work_dir}/sitos-combined-relocated-prefix")
+set(_combined_consumer_build "${_work_dir}/sitos-combined-consumer-build")
+run_checked("${CMAKE_COMMAND}" --install "${_combined_build}" --prefix "${_combined_prefix}")
+run_checked(
+  "${CMAKE_COMMAND}" "-DSITOS_PREFIX=${_combined_prefix}"
+  "-DSITOS_INSTALL_LIBDIR=lib"
+  -P "${SITOS_SOURCE_DIR}/tests/package/check_clean_install.cmake")
+run_checked("${CMAKE_COMMAND}" -E copy_directory "${_combined_prefix}" "${_combined_relocated_prefix}")
+run_checked(
+  "${CMAKE_COMMAND}" "-DSITOS_PREFIX=${_combined_relocated_prefix}"
+  "-DSITOS_SOURCE_DIR=${SITOS_SOURCE_DIR}"
+  "-DSITOS_BUILD_DIR=${_combined_build}"
+  "-DORIGINAL_PREFIX=${_combined_prefix}"
+  "-DSITOS_INSTALL_LIBDIR=lib"
+  -P "${SITOS_SOURCE_DIR}/tests/package/check_relocatable.cmake")
+run_checked(
+  "${CMAKE_COMMAND}" -S "${SITOS_SOURCE_DIR}/tests/package/consumer"
+  -B "${_combined_consumer_build}" ${_generator_args} -DCMAKE_BUILD_TYPE=Release
+  -DSITOS_PACKAGE_CONSUMER_WITH_ROCKSDB=ON
+  "-DCMAKE_PREFIX_PATH=${_combined_relocated_prefix}"
+  "-DRocksDB_DIR=${_feature_install}/${TRIPLET}/share/rocksdb"
+  "-DZENOHC_ROOT=${_combined_build}/_deps/zenohc-src"
+  "-DZLIB_LIBRARY=${_zlib_library}"
+  "-DZLIB_INCLUDE_DIR=${_zlib_include_dir}")
+run_checked("${CMAKE_COMMAND}" --build "${_combined_consumer_build}")
+
 if(WIN32)
   set(_benchmark_suffix ".exe")
 else()
