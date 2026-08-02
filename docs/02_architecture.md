@@ -299,8 +299,8 @@ so `Stop()` still quiesces diagnostics. Neither callback ever invokes the extern
 
 `ParseQuerySelector` is a concise internal implementation helper, not a new public API. It composes
 the exact-key grammar with the existing selector rules: it first uses `ParseKey(prefix, keyexpr)`
-for an exact key, then parses a terminal `/**` selector with the existing selector parser. #56
-extends the exact branch and selector branch for durable buffer exact Get/List. It returns
+for an exact key, then parses a terminal `/**` selector with the existing selector parser. Issue
+#141 implements the exact branch and selector branch for durable buffer exact Get/List. It returns
 `kind`, `sid`, `buffer_class`, and a relative selector, or empty. Empty means no reply; ephemeral
 selectors remain no-reply.
 
@@ -350,11 +350,16 @@ StorageNode::Start(engine, transport, config):
               ReplyFromReader(q, *lease.session.overlay, selector.relative_selector)
           case Buffer:
             if selector.buffer_class == Durable:
-              if lease = AcquireActiveAdmission(*state, selector.sid):
-                if lease.session.options.durable_buffers:
-                  ReplyFromReader(q, *lease.session.durable_buffers,
-                                  selector.relative_selector,
-                                  Encoding{"zenoh/bytes"})
+              owned = []
+              {
+                if lease = AcquireActiveAdmission(*state, selector.sid):
+                  if lease.session.options.durable_buffers:
+                    // Collect while admission protects the engine and copy every view.
+                    owned = CollectOwnedEntries(*lease.session.durable_buffers,
+                                                selector.relative_selector)
+              }  // release Session admission before any reply callback
+              for entry in owned:
+                q.Reply(entry.full_key, entry.bytes, Encoding{"zenoh/bytes"})
             else:
               // No replies: StorageNode retains no ephemeral state.
           case MetaSession:

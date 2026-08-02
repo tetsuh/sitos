@@ -9,13 +9,10 @@
 #ifndef SITOS_SESSION_HPP
 #define SITOS_SESSION_HPP
 
-#include <functional>
 #include <memory>
 #include <string>
-#include <string_view>
 #include <unordered_map>
 
-#include "sitos/result.hpp"
 #include "sitos/storage_engine.hpp"
 
 namespace sitos {

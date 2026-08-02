@@ -30,13 +30,9 @@ class ProgrammableEngine final : public StorageEngine {
   }
 
   bool Put(std::string_view key, Bytes value) override {
-    std::unique_lock lock(mutex_);
+    WaitUntilReleased(block_put, put_entered);
+    std::scoped_lock lock(mutex_);
     ++put_calls;
-    if (block_put) {
-      ++put_entered;
-      cv.notify_all();
-      cv.wait(lock, [this] { return !block_put; });
-    }
     if (throw_put) throw std::runtime_error("put failure");
     if (false_puts > 0) {
       --false_puts;
@@ -54,13 +50,9 @@ class ProgrammableEngine final : public StorageEngine {
   }
 
   bool Get(std::string_view key, const EntrySink& sink) const override {
+    WaitUntilReleased(block_get, get_entered);
     std::unique_lock lock(mutex_);
     ++get_calls;
-    if (block_get) {
-      ++get_entered;
-      cv.notify_all();
-      cv.wait(lock, [this] { return !block_get; });
-    }
     if (throw_get) throw std::runtime_error("get failure");
     auto it = values_.find(std::string(key));
     if (it == values_.end()) return false;
@@ -71,13 +63,9 @@ class ProgrammableEngine final : public StorageEngine {
   }
 
   bool List(std::string_view prefix, const EntrySink& sink) const override {
+    WaitUntilReleased(block_list, list_entered);
     std::unique_lock lock(mutex_);
     ++list_calls;
-    if (block_list) {
-      ++list_entered;
-      cv.notify_all();
-      cv.wait(lock, [this] { return !block_list; });
-    }
     if (throw_list) throw std::runtime_error("list failure");
     std::vector<std::pair<std::string, std::vector<std::byte>>> entries;
     for (const auto& [key, value] : values_) {
@@ -90,15 +78,16 @@ class ProgrammableEngine final : public StorageEngine {
     return !false_list;
   }
 
-  void WaitFor(std::condition_variable& condition, int& count) {
-    std::unique_lock lock(mutex_);
-    condition.wait(lock, [&] { return count > 0; });
+  void WaitFor(int& count) {
+    std::unique_lock lock(gate_mutex_);
+    cv.wait(lock, [&] { return count > 0; });
   }
   void ReleasePut() { SetBlocked(block_put, false); }
   void ReleaseGet() { SetBlocked(block_get, false); }
   void ReleaseList() { SetBlocked(block_list, false); }
 
   mutable std::mutex mutex_;
+  mutable std::mutex gate_mutex_;
   mutable std::condition_variable cv;
   mutable std::map<std::string, std::vector<std::byte>> values_;
   mutable int put_calls = 0;
@@ -108,8 +97,8 @@ class ProgrammableEngine final : public StorageEngine {
   mutable int get_entered = 0;
   mutable int list_entered = 0;
   bool block_put = false;
-  bool block_get = false;
-  bool block_list = false;
+  mutable bool block_get = false;
+  mutable bool block_list = false;
   bool throw_put = false;
   mutable bool throw_get = false;
   mutable bool throw_list = false;
@@ -122,10 +111,17 @@ class ProgrammableEngine final : public StorageEngine {
   static std::vector<std::byte> Copy(Bytes value) { return {value.begin(), value.end()}; }
   void SetBlocked(bool& blocked, bool value) {
     {
-      std::scoped_lock lock(mutex_);
+      std::scoped_lock lock(gate_mutex_);
       blocked = value;
     }
     cv.notify_all();
+  }
+  void WaitUntilReleased(bool& blocked, int& entered) const {
+    std::unique_lock lock(gate_mutex_);
+    if (!blocked) return;
+    ++entered;
+    cv.notify_all();
+    cv.wait(lock, [&] { return !blocked; });
   }
 };
 
@@ -161,9 +157,18 @@ class BufferTransport final : public Transport {
 
   void PutSample(std::string key, std::vector<std::byte> payload,
                  std::string encoding = "zenoh/bytes") {
+    {
+      std::scoped_lock lock(sample_mutex);
+      ++sample_callbacks;
+      sample_cv.notify_all();
+    }
     TransportSample sample{std::move(key), payload, Encoding{std::move(encoding)}, std::nullopt,
                            TransportSample::Kind::Put};
     subscriber(sample);
+  }
+  void WaitForSamples(int count) {
+    std::unique_lock lock(sample_mutex);
+    sample_cv.wait(lock, [&] { return sample_callbacks >= count; });
   }
   void DeleteSample(std::string key) {
     TransportSample sample{
@@ -191,13 +196,32 @@ class BufferTransport final : public Transport {
 
   std::function<void(const TransportSample&)> subscriber;
   std::function<void(TransportQuery&)> queryable;
+  std::mutex sample_mutex;
+  std::condition_variable sample_cv;
+  int sample_callbacks = 0;
+};
+
+class RecordingLogSink final : public LogSink {
+ public:
+  void Write(const LogRecord& record) override {
+    std::scoped_lock lock(mutex);
+    if (throwing) throw std::runtime_error("log failure");
+    messages.emplace_back(record.message);
+  }
+  std::vector<std::string> Messages() const {
+    std::scoped_lock lock(mutex);
+    return messages;
+  }
+  mutable std::mutex mutex;
+  std::vector<std::string> messages;
+  bool throwing = false;
 };
 
 struct StorageNodeBufferRoutingTest : testing::Test {
   void SetUp() override {
     ASSERT_TRUE(node.Start(base, transport,
                            {.prefix = "sitos",
-                            .log_sink = nullptr,
+                            .log_sink = log_sink,
                             .durable_buffer_engine_factory = [&](std::string_view sid) {
                               factory_sids.emplace_back(sid);
                               auto engine = std::make_unique<ProgrammableEngine>();
@@ -207,6 +231,7 @@ struct StorageNodeBufferRoutingTest : testing::Test {
                             }}));
   }
   std::shared_ptr<ProgrammableEngine> base = std::make_shared<ProgrammableEngine>();
+  std::shared_ptr<RecordingLogSink> log_sink = std::make_shared<RecordingLogSink>();
   BufferTransport transport;
   StorageNode node{transport};
   std::vector<std::string> factory_sids;
@@ -248,25 +273,39 @@ TEST_F(StorageNodeBufferRoutingTest, PutFailureRereadsAuthoritativeEngineState) 
   ASSERT_TRUE(node.CreateSession("s", {.durable_buffers = true}).IsOk());
   auto* engine = engines.at("s");
   engine->false_puts = 1;
+  transport.PutSample("sitos/buffers/s/durable/unmodified", {std::byte{1}});
+  EXPECT_EQ(engine->put_calls, 1);
+  transport.PutSample("sitos/buffers/s/durable/unmodified", {std::byte{1}});
+  EXPECT_EQ(engine->put_calls, 2);
+  engine->false_puts = 1;
   engine->partial_false_put = true;
-  transport.PutSample("sitos/buffers/s/durable/k", {std::byte{1}});
-  EXPECT_EQ(engine->put_calls, 1);
-  transport.PutSample("sitos/buffers/s/durable/k", {std::byte{1}});
-  EXPECT_EQ(engine->put_calls, 1);
-  transport.PutSample("sitos/buffers/s/durable/k", {std::byte{2}});
-  EXPECT_EQ(engine->put_calls, 1);
-  auto result = transport.Query("sitos/buffers/s/durable/k");
+  transport.PutSample("sitos/buffers/s/durable/partial", {std::byte{2}});
+  EXPECT_EQ(engine->put_calls, 3);
+  transport.PutSample("sitos/buffers/s/durable/partial", {std::byte{2}});
+  EXPECT_EQ(engine->put_calls, 3);
+  transport.PutSample("sitos/buffers/s/durable/partial", {std::byte{3}});
+  EXPECT_EQ(engine->put_calls, 3);
+  auto result = transport.Query("sitos/buffers/s/durable/partial");
   ASSERT_EQ(result.replies.size(), 1u);
-  EXPECT_EQ(result.replies[0].second, (std::vector<std::byte>{std::byte{1}}));
+  EXPECT_EQ(result.replies[0].first, "sitos/buffers/s/durable/partial");
+  EXPECT_EQ(result.replies[0].second, (std::vector<std::byte>{std::byte{2}}));
 }
 
 TEST_F(StorageNodeBufferRoutingTest, WholeSubscriberSerializationPreventsConflictingPuts) {
   ASSERT_TRUE(node.CreateSession("s", {.durable_buffers = true}).IsOk());
+  auto* engine = engines.at("s");
+  engine->block_get = true;
   std::thread first([&] { transport.PutSample("sitos/buffers/s/durable/k", {std::byte{1}}); });
+  engine->WaitFor(engine->get_entered);
   std::thread second([&] { transport.PutSample("sitos/buffers/s/durable/k", {std::byte{2}}); });
+  transport.WaitForSamples(2);
+  {
+    std::scoped_lock lock(engine->gate_mutex_);
+    EXPECT_EQ(engine->get_entered, 1);
+  }
+  engine->ReleaseGet();
   first.join();
   second.join();
-  auto* engine = engines.at("s");
   EXPECT_EQ(engine->put_calls, 1);
   auto result = transport.Query("sitos/buffers/s/durable/k");
   ASSERT_EQ(result.replies.size(), 1u);
@@ -286,10 +325,18 @@ TEST_F(StorageNodeBufferRoutingTest, NonBytesEncodingIsRejected) {
   auto* engine = engines.at("s");
   const std::vector<std::string> rejected = {"sitos.v1", "sitos.v1.batch", "zenoh/bytes;schema=x",
                                              "", "application/octet-stream"};
+  const auto diagnostics_before = log_sink->Messages().size();
   for (const auto& encoding : rejected) {
     transport.PutSample("sitos/buffers/s/durable/k", {std::byte{1}}, encoding);
   }
+  const auto diagnostics_after = log_sink->Messages();
+  EXPECT_GE(diagnostics_after.size(), diagnostics_before + rejected.size());
   EXPECT_EQ(engine->get_calls, 0);
+  EXPECT_EQ(engine->put_calls, 0);
+  log_sink->throwing = true;
+  EXPECT_NO_THROW(
+      transport.PutSample("sitos/buffers/s/durable/throw-log", {std::byte{1}}, "not-bytes"));
+  log_sink->throwing = false;
   EXPECT_EQ(engine->put_calls, 0);
   transport.PutSample("sitos/buffers/s/durable/empty", {}, "zenoh/bytes");
   EXPECT_EQ(engine->put_calls, 1);
@@ -300,22 +347,46 @@ TEST_F(StorageNodeBufferRoutingTest, DurableQuerySelectorsAndFailures) {
   transport.PutSample("sitos/buffers/s/durable/a/k", {std::byte{1}});
   transport.PutSample("sitos/buffers/s/durable/a/l", {std::byte{2}});
   transport.PutSample("sitos/buffers/s/durable/b", {std::byte{3}});
-  EXPECT_EQ(transport.Query("sitos/buffers/s/durable/a/k").replies.size(), 1u);
-  EXPECT_EQ(transport.Query("sitos/buffers/s/durable/**").replies.size(), 3u);
-  EXPECT_EQ(transport.Query("sitos/buffers/s/durable/a/**").replies.size(), 2u);
+  auto exact = transport.Query("sitos/buffers/s/durable/a/k");
+  ASSERT_EQ(exact.replies.size(), 1u);
+  EXPECT_EQ(exact.replies[0].first, "sitos/buffers/s/durable/a/k");
+  EXPECT_EQ(exact.replies[0].second, (std::vector<std::byte>{std::byte{1}}));
+  EXPECT_EQ(exact.encodings[0].id, "zenoh/bytes");
+  auto root = transport.Query("sitos/buffers/s/durable/**");
+  ASSERT_EQ(root.replies.size(), 3u);
+  EXPECT_EQ(root.replies[0].first, "sitos/buffers/s/durable/a/k");
+  EXPECT_EQ(root.replies[1].first, "sitos/buffers/s/durable/a/l");
+  EXPECT_EQ(root.replies[2].first, "sitos/buffers/s/durable/b");
+  for (const auto& encoding : root.encodings) EXPECT_EQ(encoding.id, "zenoh/bytes");
+  auto subtree = transport.Query("sitos/buffers/s/durable/a/**");
+  ASSERT_EQ(subtree.replies.size(), 2u);
+  EXPECT_EQ(subtree.replies[0].first, "sitos/buffers/s/durable/a/k");
+  EXPECT_EQ(subtree.replies[1].first, "sitos/buffers/s/durable/a/l");
   EXPECT_EQ(transport.Query("sitos/buffers/s/durable/missing").replies.size(), 0u);
   EXPECT_EQ(transport.Query("sitos/buffers/s/ephemeral/**").replies.size(), 0u);
+  ASSERT_TRUE(node.CreateSession("eph", {.ephemeral_buffers = true}).IsOk());
+  EXPECT_TRUE(transport.Query("sitos/buffers/eph/durable/**").replies.empty());
+  EXPECT_TRUE(transport.Query("sitos/buffers/unknown/durable/**").replies.empty());
+  EXPECT_TRUE(transport.Query("sitos/buffers/s/durable/a/*").replies.empty());
+  ASSERT_TRUE(node.CloseSession("eph").IsOk());
+  EXPECT_TRUE(transport.Query("sitos/buffers/eph/durable/**").replies.empty());
 
   auto* engine = engines.at("s");
   engine->false_list = true;
   EXPECT_TRUE(transport.Query("sitos/buffers/s/durable/**").replies.empty());
   engine->false_list = false;
+  engine->throw_list = true;
+  EXPECT_TRUE(transport.Query("sitos/buffers/s/durable/**").replies.empty());
+  engine->throw_list = false;
   engine->throw_get = true;
   EXPECT_TRUE(transport.Query("sitos/buffers/s/durable/a/k").replies.empty());
   engine->throw_get = false;
   auto partial = transport.Query("sitos/buffers/s/durable/**", 1);
   EXPECT_EQ(partial.replies.size(), 1u);
   EXPECT_EQ(partial.reply_calls, 1);
+  auto throwing = transport.Query("sitos/buffers/s/durable/**", 1, true);
+  EXPECT_EQ(throwing.replies.size(), 1u);
+  EXPECT_EQ(throwing.reply_calls, 1);
 }
 
 TEST_F(StorageNodeBufferRoutingTest, EngineFailuresAndExceptionsAreContained) {
@@ -325,16 +396,22 @@ TEST_F(StorageNodeBufferRoutingTest, EngineFailuresAndExceptionsAreContained) {
   EXPECT_NO_THROW(transport.PutSample("sitos/buffers/s/durable/k", {std::byte{1}}));
   EXPECT_EQ(engine->put_calls, 1);
   engine->throw_put = false;
+  EXPECT_NO_THROW(transport.PutSample("sitos/buffers/s/durable/k", {std::byte{1}}));
+  EXPECT_EQ(engine->put_calls, 2);
   engine->throw_get = true;
   EXPECT_NO_THROW(transport.Query("sitos/buffers/s/durable/k"));
-  EXPECT_NO_THROW(transport.PutSample("sitos/buffers/s/durable/k", {std::byte{2}}));
+  engine->throw_get = false;
 }
 
 TEST_F(StorageNodeBufferRoutingTest, BufferRoutesDoNotEnterParameterSurfaces) {
   ASSERT_TRUE(node.CreateSession("s", {.durable_buffers = true}).IsOk());
+  auto metadata_before = transport.Query("sitos/meta/session/s");
   transport.PutSample("sitos/buffers/s/durable/k", {std::byte{1}});
   EXPECT_TRUE(transport.Query("sitos/session/s/k").replies.empty());
-  EXPECT_TRUE(transport.Query("sitos/meta/session/s").replies.empty() == false);
+  auto metadata_after = transport.Query("sitos/meta/session/s");
+  ASSERT_EQ(metadata_before.replies.size(), 1u);
+  ASSERT_EQ(metadata_after.replies.size(), 1u);
+  EXPECT_EQ(metadata_before.replies[0].second, metadata_after.replies[0].second);
 }
 
 TEST_F(StorageNodeBufferRoutingTest, BufferDeleteAndControlRoutesAreRejected) {
@@ -343,6 +420,9 @@ TEST_F(StorageNodeBufferRoutingTest, BufferDeleteAndControlRoutesAreRejected) {
   EXPECT_NO_THROW(transport.DeleteSample("sitos/buffers/s/durable/k"));
   transport.PutSample("sitos/buffers/s/durable/k/*", {std::byte{1}});
   transport.PutSample("sitos/buffers/s/durable", {std::byte{1}});
+  transport.PutSample("sitos/buffers/s/durable/:batch", {std::byte{1}});
+  transport.PutSample("sitos/buffers/s/durable/:fence", {std::byte{1}});
+  transport.PutSample("sitos/snap/s/k", {std::byte{1}});
   EXPECT_EQ(engine->put_calls, 0);
 }
 

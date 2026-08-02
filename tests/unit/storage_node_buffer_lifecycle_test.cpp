@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "sitos/storage_node.hpp"
+#include "storage_node_test_access.hpp"
 #include "transport/declaration_handle_test_access.hpp"
 
 namespace sitos {
@@ -173,40 +174,63 @@ std::unique_ptr<StorageNode> MakeNode(LifecycleTransport& transport,
 }
 
 TEST(StorageNodeBufferLifecycleTest, FactoryFailureTaxonomyAndRollback) {
-  LifecycleTransport transport;
-  auto base = std::make_shared<LifecycleEngine>();
-  auto node = MakeNode(transport, base);
-  auto no_factory = node->CreateSession("missing", {.durable_buffers = true});
+  LifecycleTransport no_factory_transport;
+  auto no_factory_node = MakeNode(no_factory_transport, std::make_shared<LifecycleEngine>());
+  auto no_factory = no_factory_node->CreateSession("missing", {.durable_buffers = true});
   EXPECT_EQ(no_factory.StatusCode(), Status::InvalidArgument);
   EXPECT_EQ(no_factory.Error(), std::make_error_code(std::errc::invalid_argument));
   EXPECT_EQ(no_factory.Message(), "durable buffer engine factory is required");
-  EXPECT_TRUE(node->CreateSession("missing").IsOk());
+  EXPECT_TRUE(no_factory_node->CreateSession("missing").IsOk());
 
-  int calls = 0;
+  int null_calls = 0;
+  bool return_null = true;
+  std::string null_sid;
+  auto null_destroyed = std::make_shared<bool>(false);
   LifecycleTransport null_transport;
   auto null_node =
       MakeNode(null_transport, std::make_shared<LifecycleEngine>(), [&](std::string_view sid) {
-        EXPECT_EQ(sid, "null");
-        ++calls;
-        return Result<std::unique_ptr<StorageEngine>>::Ok(nullptr);
+        ++null_calls;
+        null_sid = std::string(sid);
+        if (return_null) {
+          return Result<std::unique_ptr<StorageEngine>>::Ok(nullptr);
+        }
+        return Result<std::unique_ptr<StorageEngine>>::Ok(
+            std::make_unique<LifecycleEngine>(null_destroyed));
       });
   auto null_result = null_node->CreateSession("null", {.durable_buffers = true});
   EXPECT_EQ(null_result.StatusCode(), Status::Error);
   EXPECT_EQ(null_result.Error(), MakeErrorCode(Status::Error));
   EXPECT_EQ(null_result.Message(), "durable buffer engine factory returned null");
-  EXPECT_EQ(calls, 1);
-  EXPECT_TRUE(null_node->CreateSession("null").IsOk());
+  EXPECT_EQ(null_sid, "null");
+  return_null = false;
+  EXPECT_TRUE(null_node->CreateSession("null", {.durable_buffers = true}).IsOk());
+  EXPECT_EQ(null_calls, 2);
+  EXPECT_TRUE(null_node->CloseSession("null").IsOk());
+  EXPECT_TRUE(*null_destroyed);
 
+  int throw_calls = 0;
+  bool throw_factory = true;
+  std::string throw_sid;
+  auto throw_destroyed = std::make_shared<bool>(false);
   LifecycleTransport throw_transport;
-  auto throw_node = MakeNode(throw_transport, std::make_shared<LifecycleEngine>(),
-                             [&](std::string_view) -> Result<std::unique_ptr<StorageEngine>> {
-                               ++calls;
-                               throw std::runtime_error("hidden detail");
-                             });
+  auto throw_node =
+      MakeNode(throw_transport, std::make_shared<LifecycleEngine>(), [&](std::string_view sid) {
+        ++throw_calls;
+        throw_sid = std::string(sid);
+        if (throw_factory) throw std::runtime_error("hidden detail");
+        return Result<std::unique_ptr<StorageEngine>>::Ok(
+            std::make_unique<LifecycleEngine>(throw_destroyed));
+      });
   auto throw_result = throw_node->CreateSession("throw", {.durable_buffers = true});
   EXPECT_EQ(throw_result.StatusCode(), Status::Error);
+  EXPECT_EQ(throw_result.Error(), MakeErrorCode(Status::Error));
   EXPECT_EQ(throw_result.Message(), "durable buffer engine factory threw an exception");
-  EXPECT_EQ(calls, 2);
+  EXPECT_EQ(throw_sid, "throw");
+  throw_factory = false;
+  EXPECT_TRUE(throw_node->CreateSession("throw", {.durable_buffers = true}).IsOk());
+  EXPECT_EQ(throw_calls, 2);
+  EXPECT_TRUE(throw_node->CloseSession("throw").IsOk());
+  EXPECT_TRUE(*throw_destroyed);
 
   LifecycleTransport err_transport;
   const auto cause = std::make_error_code(std::errc::permission_denied);
@@ -224,9 +248,13 @@ TEST(StorageNodeBufferLifecycleTest, FactoryFailureTaxonomyAndRollback) {
   LifecycleTransport setup_transport;
   auto setup_base = std::make_shared<LifecycleEngine>();
   int setup_calls = 0;
-  auto setup_node = MakeNode(setup_transport, setup_base, [&](std::string_view) {
+  std::string setup_sid;
+  auto setup_destroyed = std::make_shared<bool>(false);
+  auto setup_node = MakeNode(setup_transport, setup_base, [&](std::string_view sid) {
     ++setup_calls;
-    return Result<std::unique_ptr<StorageEngine>>::Ok(std::make_unique<LifecycleEngine>());
+    setup_sid = std::string(sid);
+    return Result<std::unique_ptr<StorageEngine>>::Ok(
+        std::make_unique<LifecycleEngine>(setup_destroyed));
   });
   setup_base->snapshot_mode = LifecycleEngine::SnapshotMode::Null;
   auto snapshot_null = setup_node->CreateSession("snapshot-null", {.durable_buffers = true});
@@ -234,20 +262,113 @@ TEST(StorageNodeBufferLifecycleTest, FactoryFailureTaxonomyAndRollback) {
   EXPECT_EQ(snapshot_null.Error(), MakeErrorCode(Status::Error));
   EXPECT_EQ(snapshot_null.Message(), "base snapshot creation returned null");
   EXPECT_EQ(setup_calls, 0);
+  setup_base->snapshot_mode = LifecycleEngine::SnapshotMode::Normal;
+  EXPECT_TRUE(setup_node->CreateSession("snapshot-null", {.durable_buffers = true}).IsOk());
+  EXPECT_EQ(setup_calls, 1);
+  EXPECT_EQ(setup_sid, "snapshot-null");
+  EXPECT_TRUE(setup_node->CloseSession("snapshot-null").IsOk());
   setup_base->snapshot_mode = LifecycleEngine::SnapshotMode::Throw;
   auto snapshot_throw = setup_node->CreateSession("snapshot-throw", {.durable_buffers = true});
   EXPECT_EQ(snapshot_throw.StatusCode(), Status::Error);
+  EXPECT_EQ(snapshot_throw.Error(), MakeErrorCode(Status::Error));
   EXPECT_EQ(snapshot_throw.Message(), "base snapshot creation threw an exception");
-  EXPECT_EQ(setup_calls, 0);
+  EXPECT_EQ(setup_calls, 1);
   setup_base->snapshot_mode = LifecycleEngine::SnapshotMode::Normal;
+  EXPECT_TRUE(setup_node->CreateSession("snapshot-throw", {.durable_buffers = true}).IsOk());
+  EXPECT_EQ(setup_calls, 2);
 
   EXPECT_EQ(setup_node->CreateSession("bad sid", {.durable_buffers = true}).StatusCode(),
             Status::InvalidArgument);
-  EXPECT_EQ(setup_calls, 0);
+  EXPECT_EQ(setup_calls, 2);
   ASSERT_TRUE(setup_node->CreateSession("collision").IsOk());
   EXPECT_EQ(setup_node->CreateSession("collision", {.durable_buffers = true}).StatusCode(),
             Status::Error);
-  EXPECT_EQ(setup_calls, 0);
+  EXPECT_EQ(setup_calls, 2);
+
+  LifecycleTransport phase_transport;
+  bool release_factory = false;
+  std::mutex phase_mutex;
+  std::condition_variable phase_cv;
+  bool factory_entered = false;
+  int phase_calls = 0;
+  auto phase_node =
+      MakeNode(phase_transport, std::make_shared<LifecycleEngine>(), [&](std::string_view) {
+        ++phase_calls;
+        {
+          std::scoped_lock lock(phase_mutex);
+          factory_entered = true;
+        }
+        phase_cv.notify_all();
+        std::unique_lock lock(phase_mutex);
+        phase_cv.wait(lock, [&] { return release_factory; });
+        return Result<std::unique_ptr<StorageEngine>>::Ok(std::make_unique<LifecycleEngine>());
+      });
+  std::optional<Result<void>> creating_result;
+  std::thread creating(
+      [&] { creating_result = phase_node->CreateSession("phase", {.durable_buffers = true}); });
+  {
+    std::unique_lock lock(phase_mutex);
+    phase_cv.wait(lock, [&] { return factory_entered; });
+  }
+  EXPECT_EQ(phase_node->CreateSession("phase", {.durable_buffers = true}).StatusCode(),
+            Status::Error);
+  EXPECT_EQ(phase_calls, 1);
+  {
+    std::scoped_lock lock(phase_mutex);
+    release_factory = true;
+  }
+  phase_cv.notify_all();
+  creating.join();
+  ASSERT_TRUE(creating_result.has_value());
+  EXPECT_TRUE(creating_result->IsOk());
+  EXPECT_TRUE(phase_node->CloseSession("phase").IsOk());
+
+  LifecycleTransport closing_transport;
+  LifecycleEngine* closing_raw = nullptr;
+  auto closing_destroyed = std::make_shared<bool>(false);
+  int closing_calls = 0;
+  auto closing_node =
+      MakeNode(closing_transport, std::make_shared<LifecycleEngine>(), [&](std::string_view) {
+        ++closing_calls;
+        auto engine = std::make_unique<LifecycleEngine>(closing_destroyed);
+        engine->block_put = true;
+        closing_raw = engine.get();
+        return Result<std::unique_ptr<StorageEngine>>::Ok(std::move(engine));
+      });
+  ASSERT_TRUE(closing_node->CreateSession("closing", {.durable_buffers = true}).IsOk());
+  std::thread blocked_put([&] { closing_transport.PutSample("sitos/buffers/closing/durable/k"); });
+  closing_raw->WaitFor(closing_raw->put_entered);
+  std::optional<Result<void>> close_result;
+  std::thread close([&] { close_result = closing_node->CloseSession("closing"); });
+  ASSERT_TRUE(
+      storage_node_test_access::StorageNodeTestAccess::WaitForClosing(*closing_node, "closing"));
+  EXPECT_EQ(closing_node->CreateSession("closing", {.durable_buffers = true}).StatusCode(),
+            Status::Error);
+  EXPECT_FALSE(close_result.has_value());
+  closing_raw->ReleaseAll();
+  blocked_put.join();
+  close.join();
+  ASSERT_TRUE(close_result.has_value());
+  EXPECT_TRUE(close_result->IsOk());
+  EXPECT_EQ(closing_calls, 1);
+  EXPECT_TRUE(*closing_destroyed);
+
+  auto success_destroyed = std::make_shared<bool>(false);
+  std::string success_sid;
+  int success_calls = 0;
+  LifecycleTransport success_transport;
+  auto success_node =
+      MakeNode(success_transport, std::make_shared<LifecycleEngine>(), [&](std::string_view sid) {
+        ++success_calls;
+        success_sid = std::string(sid);
+        return Result<std::unique_ptr<StorageEngine>>::Ok(
+            std::make_unique<LifecycleEngine>(success_destroyed));
+      });
+  ASSERT_TRUE(success_node->CreateSession("success", {.durable_buffers = true}).IsOk());
+  EXPECT_EQ(success_calls, 1);
+  EXPECT_EQ(success_sid, "success");
+  ASSERT_TRUE(success_node->CloseSession("success").IsOk());
+  EXPECT_TRUE(*success_destroyed);
 
   setup_node->Stop();
   for (auto result : {setup_node->CreateSession("stopped"),
@@ -256,7 +377,7 @@ TEST(StorageNodeBufferLifecycleTest, FactoryFailureTaxonomyAndRollback) {
     EXPECT_EQ(result.Error(), std::make_error_code(std::errc::invalid_argument));
     EXPECT_TRUE(result.Message().empty());
   }
-  EXPECT_EQ(setup_calls, 0);
+  EXPECT_EQ(setup_calls, 2);
 }
 
 TEST(StorageNodeBufferLifecycleTest, FactoryAndStopLinearizeDeterministically) {
@@ -266,8 +387,9 @@ TEST(StorageNodeBufferLifecycleTest, FactoryAndStopLinearizeDeterministically) {
   bool factory_entered = false;
   bool release_factory = false;
   auto destroyed = std::make_shared<bool>(false);
+  std::string factory_sid;
   auto node = MakeNode(transport, std::make_shared<LifecycleEngine>(), [&](std::string_view sid) {
-    EXPECT_EQ(sid, "s");
+    factory_sid = std::string(sid);
     {
       std::scoped_lock lock(mutex);
       factory_entered = true;
@@ -277,12 +399,11 @@ TEST(StorageNodeBufferLifecycleTest, FactoryAndStopLinearizeDeterministically) {
     cv.wait(lock, [&] { return release_factory; });
     return Result<std::unique_ptr<StorageEngine>>::Ok(std::make_unique<LifecycleEngine>(destroyed));
   });
-  std::atomic<bool> create_done = false;
+  auto observer = storage_node_test_access::StorageNodeTestAccess::CaptureGateObserver(*node);
+  ASSERT_TRUE(observer.has_value());
+  std::optional<Result<void>> create_result;
   std::atomic<bool> stop_done = false;
-  std::thread create([&] {
-    EXPECT_TRUE(node->CreateSession("s", {.durable_buffers = true}).IsOk());
-    create_done = true;
-  });
+  std::thread create([&] { create_result = node->CreateSession("s", {.durable_buffers = true}); });
   {
     std::unique_lock lock(mutex);
     cv.wait(lock, [&] { return factory_entered; });
@@ -291,9 +412,10 @@ TEST(StorageNodeBufferLifecycleTest, FactoryAndStopLinearizeDeterministically) {
     node->Stop();
     stop_done = true;
   });
-  std::this_thread::yield();
-  EXPECT_FALSE(create_done.load());
+  ASSERT_TRUE(observer->WaitForClosed());
   EXPECT_FALSE(stop_done.load());
+  EXPECT_EQ(node->CreateSession("late", {.durable_buffers = true}).StatusCode(),
+            Status::InvalidArgument);
   {
     std::scoped_lock lock(mutex);
     release_factory = true;
@@ -301,8 +423,10 @@ TEST(StorageNodeBufferLifecycleTest, FactoryAndStopLinearizeDeterministically) {
   cv.notify_all();
   create.join();
   stop.join();
-  EXPECT_TRUE(create_done);
-  EXPECT_TRUE(stop_done);
+  ASSERT_TRUE(create_result.has_value());
+  EXPECT_TRUE(create_result->IsOk());
+  EXPECT_EQ(factory_sid, "s");
+  EXPECT_TRUE(stop_done.load());
   EXPECT_TRUE(*destroyed);
 }
 
@@ -326,21 +450,17 @@ TEST(StorageNodeBufferLifecycleTest, CloseQuiescesDurableOperationsAndDestroysEn
   durable_raw->WaitFor(durable_raw->get_entered);
   durable_raw->WaitFor(durable_raw->list_entered);
 
-  std::atomic<bool> close_started = false;
-  std::atomic<bool> closed = false;
-  std::thread close([&] {
-    close_started = true;
-    ASSERT_TRUE(node->CloseSession("s").IsOk());
-    closed = true;
-  });
-  while (!close_started.load()) std::this_thread::yield();
-  EXPECT_FALSE(closed.load());
+  std::optional<Result<void>> close_result;
+  std::thread close([&] { close_result = node->CloseSession("s"); });
+  ASSERT_TRUE(storage_node_test_access::StorageNodeTestAccess::WaitForClosing(*node, "s"));
+  EXPECT_FALSE(close_result.has_value());
   durable_raw->ReleaseAll();
   put.join();
   get.join();
   list.join();
   close.join();
-  EXPECT_TRUE(closed.load());
+  ASSERT_TRUE(close_result.has_value());
+  EXPECT_TRUE(close_result->IsOk());
   EXPECT_TRUE(*destroyed);
 }
 
