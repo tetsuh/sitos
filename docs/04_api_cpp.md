@@ -263,7 +263,9 @@ public:
 // both succeed. Stop is idempotent and waits for callbacks already in flight.
 ```
 
-`SessionOptions` enables durable buffers, ephemeral buffers, both, or neither. The exact lifecycle
+`SessionOptions` enables durable buffers, ephemeral buffers, both, or neither. Stage #141
+implements the exact `zenoh/bytes` buffer admission and keeps the one-argument overload's
+parameter/session behavior unchanged. The exact lifecycle
 contract is `absent → Creating → Active` for `CreateSession` and
 `Active → Closing → absent` for `CloseSession`. Creation against `Creating` or `Closing` returns
 `std::errc::operation_in_progress`; a duplicate `Active` creation retains

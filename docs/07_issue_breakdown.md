@@ -312,7 +312,8 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
   * The fixed API, lifecycle, and routing tests from [06] §5.1.1 pass for all four capability
     combinations and all DEC-56 failure, encoding, persistence, and Stop contracts.
   * Disabled durable capability creates or mutates no engine state; disabled ephemeral capability
-    retains no node state; query failures produce no partial replies.
+    retains no node state; a false/throwing engine collection before reply dispatch produces zero replies,
+    while a reply-handler failure after dispatch begins suppresses later replies and may preserve earlier replies.
 * Depends on: #139 and #140; implementation precedes final #56.
 * Contract Registry: none; the buffer row remains Planned.
 

@@ -39,13 +39,13 @@ struct StorageQuery {
 ///
 /// The returned exact key is relative to the base scope. For a List selector,
 /// the returned prefix ends at a chunk boundary and includes its trailing `/`.
-std::optional<StorageQuery> ParseStorageQuery(std::string_view prefix,
-                                               std::string_view keyexpr);
+std::optional<StorageQuery> ParseStorageQuery(std::string_view prefix, std::string_view keyexpr);
 
 struct StorageNodeConfig {
   std::string prefix = "sitos";
   /// Diagnostic destination; nullptr explicitly disables logging.
   std::shared_ptr<LogSink> log_sink = DefaultLogSink();
+  DurableBufferEngineFactory durable_buffer_engine_factory = {};
 };
 
 class SessionView;
@@ -71,14 +71,16 @@ class StorageNode {
   Result<void> Start(std::shared_ptr<StorageEngine> engine, Config config);
 
   /// Starts the node using an externally owned transport.
-  Result<void> Start(std::shared_ptr<StorageEngine> engine, Transport& transport,
-                     Config config);
+  Result<void> Start(std::shared_ptr<StorageEngine> engine, Transport& transport, Config config);
 
   /// Opens a session: takes an engine snapshot for snap/<sid>/** reads and
   /// creates an empty overlay for session/<sid>/** reads and writes. Fails with
   /// invalid_argument for a malformed sid or a stopped node, and file_exists if
   /// the session already exists. [F10]
   Result<void> CreateSession(std::string_view sid);
+
+  /// Opens a session with explicit durable and ephemeral buffer capabilities.
+  Result<void> CreateSession(std::string_view sid, SessionOptions options);
 
   /// Closes a session: releases its snapshot and overlay and removes its
   /// metadata, so subsequent snap/session/meta gets reply nothing. Fails with
@@ -185,6 +187,8 @@ class StorageNode {
     std::condition_variable admission_cv;
     std::shared_ptr<const StorageReader> snapshot;
     std::shared_ptr<StorageEngine> overlay;
+    std::unique_ptr<StorageEngine> durable_buffers;
+    SessionOptions options;
     SessionMeta metadata;
   };
 
@@ -198,14 +202,16 @@ class StorageNode {
 
   struct State {
     State(std::shared_ptr<StorageEngine> storage, std::string key_prefix,
-          std::shared_ptr<LogSink> diagnostics)
+          std::shared_ptr<LogSink> diagnostics, DurableBufferEngineFactory durable_factory)
         : engine(std::move(storage)),
           prefix(std::move(key_prefix)),
-          log_sink(std::move(diagnostics)) {}
+          log_sink(std::move(diagnostics)),
+          durable_buffer_engine_factory(std::move(durable_factory)) {}
 
     std::shared_ptr<StorageEngine> engine;
     std::string prefix;
     const std::shared_ptr<LogSink> log_sink;
+    DurableBufferEngineFactory durable_buffer_engine_factory;
 
     class CallbackLease {
      public:
@@ -275,8 +281,7 @@ class StorageNode {
     // gate -> subscriber_mutex -> session_mutex -> admission ordering never
     // cycles.
     std::shared_mutex session_mutex;
-    std::unordered_map<std::string, std::shared_ptr<SessionRecord>, SessionKeyHash,
-                       std::equal_to<>>
+    std::unordered_map<std::string, std::shared_ptr<SessionRecord>, SessionKeyHash, std::equal_to<>>
         sessions;
   };
 
@@ -285,16 +290,18 @@ class StorageNode {
     std::shared_ptr<SessionRecord> record;
   };
 
-  static SessionAccess AcquireSession(const std::shared_ptr<State>& state,
-                                      std::string_view sid);
+  static SessionAccess AcquireSession(const std::shared_ptr<State>& state, std::string_view sid);
   static void OnQuery(const std::shared_ptr<State>& state, TransportQuery& query);
   static void OnSample(const std::shared_ptr<State>& state, const TransportSample& sample);
+  static Result<void> CreateSession(const std::shared_ptr<State>& state, std::string_view sid,
+                                    SessionOptions options);
   // Answers a get in the session or snap scope from the matching overlay or
   // snapshot; replies nothing for an unknown sid.
   static void ReplyScopedQuery(const std::shared_ptr<State>& state, std::string_view scope,
                                std::string_view tail, TransportQuery& query);
   // Answers a get on meta/session/<sid> with the session metadata JSON.
   static void ReplyMetaQuery(const std::shared_ptr<State>& state, TransportQuery& query);
+  static void ReplyBufferQuery(const std::shared_ptr<State>& state, TransportQuery& query);
 
   mutable std::mutex lifecycle_mutex_;
   // Serializes declaration/undeclaration transactions. Callbacks never hold this lock.

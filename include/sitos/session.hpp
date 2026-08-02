@@ -9,13 +9,27 @@
 #ifndef SITOS_SESSION_HPP
 #define SITOS_SESSION_HPP
 
+#include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
+#include "sitos/result.hpp"
 #include "sitos/storage_engine.hpp"
 
 namespace sitos {
+
+class StorageEngine;
+
+/// Options selecting Session buffer capabilities.
+struct SessionOptions {
+  bool durable = false;
+  bool ephemeral = false;
+};
+
+using DurableBufferEngineFactory =
+    std::function<Result<std::unique_ptr<StorageEngine>>(std::string_view sid)>;
 
 /// Metadata recorded for an active session and surfaced as the payload-v1 STR
 /// JSON returned for a get on meta/session/<sid> (docs/03 §7.1).

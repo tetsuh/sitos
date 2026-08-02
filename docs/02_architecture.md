@@ -157,6 +157,15 @@ Conventions:
 
 ### 4.2 Data Structures
 
+Stage #141 implements the mixed buffer routes with `SessionOptions` and a
+node-owned `DurableBufferEngineFactory`. Durable PUT admission accepts only
+`zenoh/bytes`, performs the engine read/compare/write sequence under the
+subscriber mutex, and retains no failed-key reservation. Ephemeral PUTs are
+capability-checked and never enter node storage. Durable query results are
+materialized before releasing Session admission; engine collection failures
+produce zero replies, while reply-handler failures after dispatch suppress
+subsequent replies without promising atomic transport replies.
+
 ```cpp
 enum class SessionPhase { Creating, Active, Closing };
 
