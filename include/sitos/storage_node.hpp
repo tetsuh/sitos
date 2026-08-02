@@ -279,9 +279,11 @@ class StorageNode {
     // session locks are released before engine writes.
     std::mutex subscriber_mutex;
 
-    // Test-only observer invoked after callback-gate admission and immediately
-    // before subscriber_mutex acquisition. It is unset in production use.
+    // Test-only observers are unset in production use. They are copied under
+    // test_observer_mutex and invoked without holding State locks.
+    mutable std::mutex test_observer_mutex;
     std::function<void()> subscriber_entry_observer;
+    std::function<void()> create_session_entry_observer;
 
     // Session records are the sole internal ownership and membership source.
     // Guarded by session_mutex. Callbacks and session operations alike enter

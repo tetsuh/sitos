@@ -319,25 +319,21 @@ void StorageNode::Stop() noexcept {
 
   // Stop is a quiescence boundary for the entire Session generation. Once
   // callbacks have drained, no Session admission can remain active; close and
-  // release every committed record before returning to the caller.
-  std::vector<std::shared_ptr<SessionRecord>> records;
-  {
-    std::unique_lock lock(state->session_mutex);
-    records.reserve(state->sessions.size());
-    for (auto& [sid, record] : state->sessions) {
-      if (record->BeginClose()) records.push_back(record);
+  // release every committed record before returning to the caller. Extracting
+  // one existing map node at a time avoids allocation in this noexcept path.
+  for (;;) {
+    std::shared_ptr<SessionRecord> record;
+    {
+      std::unique_lock lock(state->session_mutex);
+      if (state->sessions.empty()) break;
+      auto node = state->sessions.extract(state->sessions.begin());
+      record = std::move(node.mapped());
     }
-  }
-  for (const auto& record : records) {
-    record->WaitForAdmission();
+    if (record->BeginClose()) record->WaitForAdmission();
     record->snapshot.reset();
     record->overlay.reset();
     record->durable_buffers.reset();
     record->metadata = {};
-  }
-  {
-    std::unique_lock lock(state->session_mutex);
-    state->sessions.clear();
   }
 
   subscriber = Subscription{};
@@ -362,6 +358,12 @@ Result<void> StorageNode::CreateSession(std::string_view sid, SessionOptions opt
     state = state_;
   }
   if (!state) return Result<void>::Err(InvalidArgument());
+  std::function<void()> create_observer;
+  {
+    std::scoped_lock lock(state->test_observer_mutex);
+    create_observer = state->create_session_entry_observer;
+  }
+  if (create_observer) create_observer();
   auto lease = state->Enter();
   if (!lease) return Result<void>::Err(InvalidArgument());
   return CreateSession(state, sid, options);
@@ -523,7 +525,12 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
   auto lease = state->Enter();
   if (!lease) return;
   try {
-    if (state->subscriber_entry_observer) state->subscriber_entry_observer();
+    std::function<void()> subscriber_observer;
+    {
+      std::scoped_lock lock(state->test_observer_mutex);
+      subscriber_observer = state->subscriber_entry_observer;
+    }
+    if (subscriber_observer) subscriber_observer();
     SubscriberDiagnostics diagnostics;
     {
       // The gate lease is acquired first. Serializing the entire subscriber

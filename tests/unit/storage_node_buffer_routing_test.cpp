@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <condition_variable>
 #include <cstddef>
 #include <functional>
@@ -210,6 +211,7 @@ class RecordingLogSink final : public LogSink {
  public:
   void Write(const LogRecord& record) override {
     std::scoped_lock lock(mutex);
+    ++write_attempts;
     if (throwing) throw std::runtime_error("log failure");
     messages.emplace_back(record.message);
   }
@@ -219,6 +221,7 @@ class RecordingLogSink final : public LogSink {
   }
   mutable std::mutex mutex;
   std::vector<std::string> messages;
+  int write_attempts = 0;
   bool throwing = false;
 };
 
@@ -251,14 +254,22 @@ TEST_F(StorageNodeBufferRoutingTest, CapabilityMatrix) {
       node.CreateSession("both", {.durable_buffers = true, .ephemeral_buffers = true}).IsOk());
   EXPECT_EQ(factory_sids, (std::vector<std::string>{"dur", "both"}));
 
+  const auto enabled_ephemeral_before = log_sink->Messages().size();
+  transport.PutSample("sitos/buffers/eph/ephemeral/k", {std::byte{1}});
+  transport.PutSample("sitos/buffers/both/ephemeral/k", {std::byte{1}});
+  EXPECT_EQ(log_sink->Messages().size(), enabled_ephemeral_before);
+  const auto disabled_before = log_sink->Messages().size();
   transport.PutSample("sitos/buffers/none/durable/k", {std::byte{1}});
   transport.PutSample("sitos/buffers/none/ephemeral/k", {std::byte{1}});
-  transport.PutSample("sitos/buffers/dur/durable/k", {std::byte{1}});
   transport.PutSample("sitos/buffers/dur/ephemeral/k", {std::byte{1}});
   transport.PutSample("sitos/buffers/eph/durable/k", {std::byte{1}});
-  transport.PutSample("sitos/buffers/eph/ephemeral/k", {std::byte{1}});
+  const auto disabled_messages = log_sink->Messages();
+  ASSERT_EQ(disabled_messages.size(), disabled_before + 4);
+  for (std::size_t i = disabled_before; i < disabled_messages.size(); ++i) {
+    EXPECT_EQ(disabled_messages[i], "buffer capability disabled");
+  }
+  transport.PutSample("sitos/buffers/dur/durable/k", {std::byte{1}});
   transport.PutSample("sitos/buffers/both/durable/k", {std::byte{1}});
-  transport.PutSample("sitos/buffers/both/ephemeral/k", {std::byte{1}});
   EXPECT_EQ(engines.at("dur")->put_calls, 1);
   EXPECT_EQ(engines.at("both")->put_calls, 1);
   EXPECT_FALSE(engines.contains("eph"));
@@ -316,15 +327,13 @@ TEST_F(StorageNodeBufferRoutingTest, WholeSubscriberSerializationPreventsConflic
   std::mutex observer_mutex;
   std::condition_variable observer_cv;
   int boundary_entries = 0;
-  bool release_second = false;
   ASSERT_TRUE(
       storage_node_test_access::StorageNodeTestAccess::SetSubscriberEntryObserver(node, [&] {
-        std::unique_lock lock(observer_mutex);
-        ++boundary_entries;
-        observer_cv.notify_all();
-        if (boundary_entries >= 2) {
-          observer_cv.wait(lock, [&] { return release_second; });
+        {
+          std::scoped_lock lock(observer_mutex);
+          ++boundary_entries;
         }
+        observer_cv.notify_all();
       }));
   std::thread first([&] { transport.PutSample("sitos/buffers/s/durable/k", {std::byte{1}}); });
   engine->WaitFor(engine->get_entered);
@@ -337,12 +346,8 @@ TEST_F(StorageNodeBufferRoutingTest, WholeSubscriberSerializationPreventsConflic
     std::scoped_lock lock(engine->gate_mutex_);
     EXPECT_EQ(engine->get_entered, 1);
   }
+  EXPECT_FALSE(storage_node_test_access::StorageNodeTestAccess::TryLockSubscriberMutex(node));
   engine->ReleaseGet();
-  {
-    std::scoped_lock lock(observer_mutex);
-    release_second = true;
-  }
-  observer_cv.notify_all();
   first.join();
   second.join();
   EXPECT_EQ(engine->put_calls, 1);
@@ -382,8 +387,10 @@ TEST_F(StorageNodeBufferRoutingTest, NonBytesEncodingIsRejected) {
   EXPECT_EQ(engine->get_calls, 0);
   EXPECT_EQ(engine->put_calls, 0);
   log_sink->throwing = true;
+  const int subscriber_log_attempts = log_sink->write_attempts;
   EXPECT_NO_THROW(
       transport.PutSample("sitos/buffers/s/durable/throw-log", {std::byte{1}}, "not-bytes"));
+  EXPECT_EQ(log_sink->write_attempts, subscriber_log_attempts + 1);
   log_sink->throwing = false;
   EXPECT_EQ(engine->put_calls, 0);
   transport.PutSample("sitos/buffers/s/durable/empty", {}, "zenoh/bytes");
@@ -460,8 +467,17 @@ TEST_F(StorageNodeBufferRoutingTest, DurableQuerySelectorsAndFailures) {
   EXPECT_EQ(throwing.replies.size(), 1u);
   EXPECT_EQ(throwing.reply_calls, 1);
   EXPECT_EQ(throwing.reply_attempts, 2);
+  const int returned_reply_before = diagnostic_count("durable buffer query failed");
+  const int returned_reply_attempts = log_sink->write_attempts;
+  auto returned_failure = transport.Query("sitos/buffers/s/durable/**", 1);
+  EXPECT_EQ(returned_failure.replies.size(), 1u);
+  EXPECT_EQ(returned_failure.reply_attempts, 2);
+  EXPECT_EQ(diagnostic_count("durable buffer query failed"), returned_reply_before + 1);
+  EXPECT_EQ(log_sink->write_attempts, returned_reply_attempts + 1);
+  const int throwing_reply_attempts = log_sink->write_attempts;
   log_sink->throwing = true;
   EXPECT_NO_THROW(transport.Query("sitos/buffers/s/durable/**", 1));
+  EXPECT_EQ(log_sink->write_attempts, throwing_reply_attempts + 1);
   log_sink->throwing = false;
 }
 

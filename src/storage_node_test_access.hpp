@@ -47,9 +47,37 @@ class StorageNodeTestAccess {
   }
 
   static bool SetSubscriberEntryObserver(StorageNode& node, std::function<void()> observer) {
-    std::scoped_lock lock(node.lifecycle_mutex_);
-    if (node.state_ == nullptr) return false;
-    node.state_->subscriber_entry_observer = std::move(observer);
+    std::shared_ptr<StorageNode::State> state;
+    {
+      std::scoped_lock lock(node.lifecycle_mutex_);
+      state = node.state_;
+    }
+    if (state == nullptr) return false;
+    std::scoped_lock lock(state->test_observer_mutex);
+    state->subscriber_entry_observer = std::move(observer);
+    return true;
+  }
+
+  static bool SetCreateSessionEntryObserver(StorageNode& node, std::function<void()> observer) {
+    std::shared_ptr<StorageNode::State> state;
+    {
+      std::scoped_lock lock(node.lifecycle_mutex_);
+      state = node.state_;
+    }
+    if (state == nullptr) return false;
+    std::scoped_lock lock(state->test_observer_mutex);
+    state->create_session_entry_observer = std::move(observer);
+    return true;
+  }
+
+  static bool TryLockSubscriberMutex(StorageNode& node) {
+    std::shared_ptr<StorageNode::State> state;
+    {
+      std::scoped_lock lock(node.lifecycle_mutex_);
+      state = node.state_;
+    }
+    if (state == nullptr || !state->subscriber_mutex.try_lock()) return false;
+    state->subscriber_mutex.unlock();
     return true;
   }
 
