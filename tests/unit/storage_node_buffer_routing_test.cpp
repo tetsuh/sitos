@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "sitos/storage_node.hpp"
+#include "storage_node_test_access.hpp"
 #include "transport/declaration_handle_test_access.hpp"
 
 namespace sitos {
@@ -45,6 +46,7 @@ class ProgrammableEngine final : public StorageEngine {
 
   bool Delete(std::string_view key) override {
     std::scoped_lock lock(mutex_);
+    ++delete_calls;
     values_.erase(std::string(key));
     return true;
   }
@@ -93,6 +95,7 @@ class ProgrammableEngine final : public StorageEngine {
   mutable int put_calls = 0;
   mutable int get_calls = 0;
   mutable int list_calls = 0;
+  mutable int delete_calls = 0;
   mutable int put_entered = 0;
   mutable int get_entered = 0;
   mutable int list_entered = 0;
@@ -131,6 +134,7 @@ class BufferTransport final : public Transport {
     std::vector<std::pair<std::string, std::vector<std::byte>>> replies;
     std::vector<Encoding> encodings;
     int reply_calls = 0;
+    int reply_attempts = 0;
   };
 
   Result<void> Put(std::string_view, std::span<const std::byte>, Encoding, PutOptions) override {
@@ -179,7 +183,8 @@ class BufferTransport final : public Transport {
     QueryResult result;
     auto query = TransportQuery::ForTesting(
         [&](std::string_view reply_key, std::span<const std::byte> bytes, Encoding encoding) {
-          if (fail_after >= 0 && result.reply_calls >= fail_after) {
+          ++result.reply_attempts;
+          if (fail_after >= 0 && result.reply_attempts > fail_after) {
             if (throw_reply) throw std::runtime_error("reply failure");
             return Result<void>::Err(std::make_error_code(std::errc::broken_pipe));
           }
@@ -247,13 +252,20 @@ TEST_F(StorageNodeBufferRoutingTest, CapabilityMatrix) {
   EXPECT_EQ(factory_sids, (std::vector<std::string>{"dur", "both"}));
 
   transport.PutSample("sitos/buffers/none/durable/k", {std::byte{1}});
+  transport.PutSample("sitos/buffers/none/ephemeral/k", {std::byte{1}});
   transport.PutSample("sitos/buffers/dur/durable/k", {std::byte{1}});
+  transport.PutSample("sitos/buffers/dur/ephemeral/k", {std::byte{1}});
+  transport.PutSample("sitos/buffers/eph/durable/k", {std::byte{1}});
   transport.PutSample("sitos/buffers/eph/ephemeral/k", {std::byte{1}});
   transport.PutSample("sitos/buffers/both/durable/k", {std::byte{1}});
   transport.PutSample("sitos/buffers/both/ephemeral/k", {std::byte{1}});
   EXPECT_EQ(engines.at("dur")->put_calls, 1);
   EXPECT_EQ(engines.at("both")->put_calls, 1);
-  EXPECT_EQ(transport.Query("sitos/buffers/eph/ephemeral/**").replies.size(), 0u);
+  EXPECT_FALSE(engines.contains("eph"));
+  EXPECT_EQ(transport.Query("sitos/buffers/none/ephemeral/**").replies.size(), 0u);
+  EXPECT_EQ(transport.Query("sitos/buffers/dur/ephemeral/**").replies.size(), 0u);
+  EXPECT_EQ(transport.Query("sitos/buffers/eph/durable/**").replies.size(), 0u);
+  EXPECT_EQ(transport.Query("sitos/buffers/both/ephemeral/**").replies.size(), 0u);
 }
 
 TEST_F(StorageNodeBufferRoutingTest, DurablePutIsByteExactAndWriteOnce) {
@@ -273,7 +285,11 @@ TEST_F(StorageNodeBufferRoutingTest, PutFailureRereadsAuthoritativeEngineState) 
   ASSERT_TRUE(node.CreateSession("s", {.durable_buffers = true}).IsOk());
   auto* engine = engines.at("s");
   engine->false_puts = 1;
+  const auto put_failure_before = log_sink->Messages().size();
   transport.PutSample("sitos/buffers/s/durable/unmodified", {std::byte{1}});
+  auto put_failure_messages = log_sink->Messages();
+  ASSERT_EQ(put_failure_messages.size(), put_failure_before + 1);
+  EXPECT_EQ(put_failure_messages.back(), "durable buffer PUT failed");
   EXPECT_EQ(engine->put_calls, 1);
   transport.PutSample("sitos/buffers/s/durable/unmodified", {std::byte{1}});
   EXPECT_EQ(engine->put_calls, 2);
@@ -285,6 +301,8 @@ TEST_F(StorageNodeBufferRoutingTest, PutFailureRereadsAuthoritativeEngineState) 
   EXPECT_EQ(engine->put_calls, 3);
   transport.PutSample("sitos/buffers/s/durable/partial", {std::byte{3}});
   EXPECT_EQ(engine->put_calls, 3);
+  put_failure_messages = log_sink->Messages();
+  EXPECT_EQ(put_failure_messages.back(), "durable buffer PUT conflicts with existing value");
   auto result = transport.Query("sitos/buffers/s/durable/partial");
   ASSERT_EQ(result.replies.size(), 1u);
   EXPECT_EQ(result.replies[0].first, "sitos/buffers/s/durable/partial");
@@ -295,15 +313,36 @@ TEST_F(StorageNodeBufferRoutingTest, WholeSubscriberSerializationPreventsConflic
   ASSERT_TRUE(node.CreateSession("s", {.durable_buffers = true}).IsOk());
   auto* engine = engines.at("s");
   engine->block_get = true;
+  std::mutex observer_mutex;
+  std::condition_variable observer_cv;
+  int boundary_entries = 0;
+  bool release_second = false;
+  ASSERT_TRUE(
+      storage_node_test_access::StorageNodeTestAccess::SetSubscriberEntryObserver(node, [&] {
+        std::unique_lock lock(observer_mutex);
+        ++boundary_entries;
+        observer_cv.notify_all();
+        if (boundary_entries >= 2) {
+          observer_cv.wait(lock, [&] { return release_second; });
+        }
+      }));
   std::thread first([&] { transport.PutSample("sitos/buffers/s/durable/k", {std::byte{1}}); });
   engine->WaitFor(engine->get_entered);
   std::thread second([&] { transport.PutSample("sitos/buffers/s/durable/k", {std::byte{2}}); });
-  transport.WaitForSamples(2);
+  {
+    std::unique_lock lock(observer_mutex);
+    observer_cv.wait(lock, [&] { return boundary_entries >= 2; });
+  }
   {
     std::scoped_lock lock(engine->gate_mutex_);
     EXPECT_EQ(engine->get_entered, 1);
   }
   engine->ReleaseGet();
+  {
+    std::scoped_lock lock(observer_mutex);
+    release_second = true;
+  }
+  observer_cv.notify_all();
   first.join();
   second.join();
   EXPECT_EQ(engine->put_calls, 1);
@@ -326,11 +365,20 @@ TEST_F(StorageNodeBufferRoutingTest, NonBytesEncodingIsRejected) {
   const std::vector<std::string> rejected = {"sitos.v1", "sitos.v1.batch", "zenoh/bytes;schema=x",
                                              "", "application/octet-stream"};
   const auto diagnostics_before = log_sink->Messages().size();
+  const std::string sentinel_payload = "sentinel-payload";
   for (const auto& encoding : rejected) {
-    transport.PutSample("sitos/buffers/s/durable/k", {std::byte{1}}, encoding);
+    transport.PutSample("sitos/buffers/s/durable/sentinel-key",
+                        {std::byte{'s'}, std::byte{'e'}, std::byte{'n'}, std::byte{'t'},
+                         std::byte{'i'}, std::byte{'n'}, std::byte{'e'}, std::byte{'l'}},
+                        encoding);
   }
   const auto diagnostics_after = log_sink->Messages();
-  EXPECT_GE(diagnostics_after.size(), diagnostics_before + rejected.size());
+  ASSERT_GE(diagnostics_after.size(), diagnostics_before + rejected.size());
+  for (std::size_t i = diagnostics_before; i < diagnostics_after.size(); ++i) {
+    EXPECT_EQ(diagnostics_after[i], "buffer encoding rejected");
+    EXPECT_EQ(diagnostics_after[i].find("sentinel"), std::string::npos);
+    EXPECT_EQ(diagnostics_after[i].find(sentinel_payload), std::string::npos);
+  }
   EXPECT_EQ(engine->get_calls, 0);
   EXPECT_EQ(engine->put_calls, 0);
   log_sink->throwing = true;
@@ -357,73 +405,124 @@ TEST_F(StorageNodeBufferRoutingTest, DurableQuerySelectorsAndFailures) {
   EXPECT_EQ(root.replies[0].first, "sitos/buffers/s/durable/a/k");
   EXPECT_EQ(root.replies[1].first, "sitos/buffers/s/durable/a/l");
   EXPECT_EQ(root.replies[2].first, "sitos/buffers/s/durable/b");
+  EXPECT_EQ(root.replies[0].second, (std::vector<std::byte>{std::byte{1}}));
+  EXPECT_EQ(root.replies[1].second, (std::vector<std::byte>{std::byte{2}}));
+  EXPECT_EQ(root.replies[2].second, (std::vector<std::byte>{std::byte{3}}));
   for (const auto& encoding : root.encodings) EXPECT_EQ(encoding.id, "zenoh/bytes");
   auto subtree = transport.Query("sitos/buffers/s/durable/a/**");
   ASSERT_EQ(subtree.replies.size(), 2u);
   EXPECT_EQ(subtree.replies[0].first, "sitos/buffers/s/durable/a/k");
   EXPECT_EQ(subtree.replies[1].first, "sitos/buffers/s/durable/a/l");
+  EXPECT_EQ(subtree.replies[0].second, (std::vector<std::byte>{std::byte{1}}));
+  EXPECT_EQ(subtree.replies[1].second, (std::vector<std::byte>{std::byte{2}}));
+  ASSERT_EQ(subtree.encodings.size(), 2u);
+  EXPECT_EQ(subtree.encodings[0].id, "zenoh/bytes");
+  EXPECT_EQ(subtree.encodings[1].id, "zenoh/bytes");
+  const auto diagnostics_before_miss = log_sink->Messages().size();
   EXPECT_EQ(transport.Query("sitos/buffers/s/durable/missing").replies.size(), 0u);
+  EXPECT_EQ(log_sink->Messages().size(), diagnostics_before_miss);
   EXPECT_EQ(transport.Query("sitos/buffers/s/ephemeral/**").replies.size(), 0u);
   ASSERT_TRUE(node.CreateSession("eph", {.ephemeral_buffers = true}).IsOk());
   EXPECT_TRUE(transport.Query("sitos/buffers/eph/durable/**").replies.empty());
   EXPECT_TRUE(transport.Query("sitos/buffers/unknown/durable/**").replies.empty());
   EXPECT_TRUE(transport.Query("sitos/buffers/s/durable/a/*").replies.empty());
+  EXPECT_TRUE(transport.Query("sitos/buffers/s/durable/:batch").replies.empty());
+  EXPECT_TRUE(transport.Query("sitos/buffers/s/durable/:fence").replies.empty());
+  EXPECT_TRUE(transport.Query("sitos/snap/s/**").replies.empty());
   ASSERT_TRUE(node.CloseSession("eph").IsOk());
   EXPECT_TRUE(transport.Query("sitos/buffers/eph/durable/**").replies.empty());
 
   auto* engine = engines.at("s");
+  auto diagnostic_count = [&](std::string_view message) {
+    const auto messages = log_sink->Messages();
+    return static_cast<int>(std::count(messages.begin(), messages.end(), message));
+  };
   engine->false_list = true;
+  const int false_list_before = diagnostic_count("durable buffer query failed");
   EXPECT_TRUE(transport.Query("sitos/buffers/s/durable/**").replies.empty());
+  EXPECT_EQ(diagnostic_count("durable buffer query failed"), false_list_before + 1);
   engine->false_list = false;
   engine->throw_list = true;
+  const int throw_list_before = diagnostic_count("durable buffer query failed");
   EXPECT_TRUE(transport.Query("sitos/buffers/s/durable/**").replies.empty());
+  EXPECT_EQ(diagnostic_count("durable buffer query failed"), throw_list_before + 1);
   engine->throw_list = false;
   engine->throw_get = true;
+  const int throw_get_before = diagnostic_count("durable buffer query failed");
   EXPECT_TRUE(transport.Query("sitos/buffers/s/durable/a/k").replies.empty());
+  EXPECT_EQ(diagnostic_count("durable buffer query failed"), throw_get_before + 1);
   engine->throw_get = false;
   auto partial = transport.Query("sitos/buffers/s/durable/**", 1);
   EXPECT_EQ(partial.replies.size(), 1u);
   EXPECT_EQ(partial.reply_calls, 1);
+  EXPECT_EQ(partial.reply_attempts, 2);
   auto throwing = transport.Query("sitos/buffers/s/durable/**", 1, true);
   EXPECT_EQ(throwing.replies.size(), 1u);
   EXPECT_EQ(throwing.reply_calls, 1);
+  EXPECT_EQ(throwing.reply_attempts, 2);
+  log_sink->throwing = true;
+  EXPECT_NO_THROW(transport.Query("sitos/buffers/s/durable/**", 1));
+  log_sink->throwing = false;
 }
 
 TEST_F(StorageNodeBufferRoutingTest, EngineFailuresAndExceptionsAreContained) {
   ASSERT_TRUE(node.CreateSession("s", {.durable_buffers = true}).IsOk());
   auto* engine = engines.at("s");
   engine->throw_put = true;
+  const auto put_throw_before = log_sink->Messages().size();
   EXPECT_NO_THROW(transport.PutSample("sitos/buffers/s/durable/k", {std::byte{1}}));
   EXPECT_EQ(engine->put_calls, 1);
+  ASSERT_EQ(log_sink->Messages().size(), put_throw_before + 1);
+  EXPECT_EQ(log_sink->Messages().back(), "durable buffer PUT failed");
   engine->throw_put = false;
   EXPECT_NO_THROW(transport.PutSample("sitos/buffers/s/durable/k", {std::byte{1}}));
   EXPECT_EQ(engine->put_calls, 2);
   engine->throw_get = true;
+  const auto read_throw_before = log_sink->Messages().size();
   EXPECT_NO_THROW(transport.Query("sitos/buffers/s/durable/k"));
+  EXPECT_NO_THROW(transport.PutSample("sitos/buffers/s/durable/read-throw", {std::byte{2}}));
+  EXPECT_EQ(log_sink->Messages().size(), read_throw_before + 2);
+  EXPECT_EQ(log_sink->Messages()[read_throw_before], "durable buffer query failed");
+  EXPECT_EQ(log_sink->Messages()[read_throw_before + 1], "durable buffer PUT failed");
   engine->throw_get = false;
 }
 
 TEST_F(StorageNodeBufferRoutingTest, BufferRoutesDoNotEnterParameterSurfaces) {
   ASSERT_TRUE(node.CreateSession("s", {.durable_buffers = true}).IsOk());
   auto metadata_before = transport.Query("sitos/meta/session/s");
+  auto snapshot_before = transport.Query("sitos/snap/s/**");
+  const auto base_values_before = base->values_;
+  const int base_gets_before = base->get_calls;
+  const int base_lists_before = base->list_calls;
   transport.PutSample("sitos/buffers/s/durable/k", {std::byte{1}});
   EXPECT_TRUE(transport.Query("sitos/session/s/k").replies.empty());
   auto metadata_after = transport.Query("sitos/meta/session/s");
+  auto snapshot_after = transport.Query("sitos/snap/s/**");
   ASSERT_EQ(metadata_before.replies.size(), 1u);
   ASSERT_EQ(metadata_after.replies.size(), 1u);
   EXPECT_EQ(metadata_before.replies[0].second, metadata_after.replies[0].second);
+  EXPECT_EQ(snapshot_before.replies, snapshot_after.replies);
+  EXPECT_EQ(base->values_, base_values_before);
+  EXPECT_EQ(base->get_calls, base_gets_before);
+  EXPECT_EQ(base->list_calls, base_lists_before);
 }
 
 TEST_F(StorageNodeBufferRoutingTest, BufferDeleteAndControlRoutesAreRejected) {
   ASSERT_TRUE(node.CreateSession("s", {.durable_buffers = true}).IsOk());
   auto* engine = engines.at("s");
+  transport.PutSample("sitos/buffers/s/durable/k", {std::byte{9}});
+  const int deletes_before = engine->delete_calls;
   EXPECT_NO_THROW(transport.DeleteSample("sitos/buffers/s/durable/k"));
+  EXPECT_EQ(engine->delete_calls, deletes_before);
+  auto retained = transport.Query("sitos/buffers/s/durable/k");
+  ASSERT_EQ(retained.replies.size(), 1u);
+  EXPECT_EQ(retained.replies[0].second, (std::vector<std::byte>{std::byte{9}}));
   transport.PutSample("sitos/buffers/s/durable/k/*", {std::byte{1}});
   transport.PutSample("sitos/buffers/s/durable", {std::byte{1}});
   transport.PutSample("sitos/buffers/s/durable/:batch", {std::byte{1}});
   transport.PutSample("sitos/buffers/s/durable/:fence", {std::byte{1}});
   transport.PutSample("sitos/snap/s/k", {std::byte{1}});
-  EXPECT_EQ(engine->put_calls, 0);
+  EXPECT_EQ(engine->put_calls, 1);
 }
 
 }  // namespace

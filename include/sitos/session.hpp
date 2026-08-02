@@ -17,8 +17,6 @@
 
 namespace sitos {
 
-class StorageEngine;
-
 /// Options selecting Session buffer capabilities.
 struct SessionOptions {
   bool durable_buffers = false;

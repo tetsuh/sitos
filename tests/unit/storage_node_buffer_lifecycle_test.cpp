@@ -142,8 +142,7 @@ class LifecycleTransport final : public Transport {
     return Result<Queryable>::Ok(
         transport_test_access::DeclarationHandleTestAccess::MakeQueryable([] {}));
   }
-  void PutSample(std::string key) {
-    std::vector<std::byte> value{std::byte{1}};
+  void PutSample(std::string key, std::vector<std::byte> value = {std::byte{1}}) {
     subscriber(TransportSample{std::move(key), value, Encoding{"zenoh/bytes"}, std::nullopt,
                                TransportSample::Kind::Put});
   }
@@ -234,16 +233,34 @@ TEST(StorageNodeBufferLifecycleTest, FactoryFailureTaxonomyAndRollback) {
 
   LifecycleTransport err_transport;
   const auto cause = std::make_error_code(std::errc::permission_denied);
+  int err_calls = 0;
+  bool err_fail = true;
+  std::string err_sid;
+  auto err_destroyed = std::make_shared<bool>(false);
   auto err_node =
-      MakeNode(err_transport, std::make_shared<LifecycleEngine>(), [&](std::string_view) {
-        return Result<std::unique_ptr<StorageEngine>>::Err(Status::Disconnected,
-                                                           "factory-owned failure", cause);
+      MakeNode(err_transport, std::make_shared<LifecycleEngine>(), [&](std::string_view sid) {
+        ++err_calls;
+        err_sid = std::string(sid);
+        if (err_fail) {
+          return Result<std::unique_ptr<StorageEngine>>::Err(Status::Disconnected,
+                                                             "factory-owned failure", cause);
+        }
+        return Result<std::unique_ptr<StorageEngine>>::Ok(
+            std::make_unique<LifecycleEngine>(err_destroyed));
       });
   auto err_result = err_node->CreateSession("err", {.durable_buffers = true});
   EXPECT_EQ(err_result.StatusCode(), Status::Disconnected);
   EXPECT_EQ(err_result.Error(), cause);
   EXPECT_EQ(err_result.Message(), "factory-owned failure");
-  EXPECT_TRUE(err_node->CreateSession("err").IsOk());
+  EXPECT_EQ(err_calls, 1);
+  EXPECT_EQ(err_sid, "err");
+  err_fail = false;
+  ASSERT_TRUE(err_node->CreateSession("err", {.durable_buffers = true}).IsOk());
+  EXPECT_EQ(err_calls, 2);
+  err_transport.PutSample("sitos/buffers/err/durable/a", {std::byte{1}});
+  err_transport.PutSample("sitos/buffers/err/durable/b", {std::byte{2}});
+  ASSERT_TRUE(err_node->CloseSession("err").IsOk());
+  EXPECT_TRUE(*err_destroyed);
 
   LifecycleTransport setup_transport;
   auto setup_base = std::make_shared<LifecycleEngine>();
@@ -281,8 +298,9 @@ TEST(StorageNodeBufferLifecycleTest, FactoryFailureTaxonomyAndRollback) {
             Status::InvalidArgument);
   EXPECT_EQ(setup_calls, 2);
   ASSERT_TRUE(setup_node->CreateSession("collision").IsOk());
-  EXPECT_EQ(setup_node->CreateSession("collision", {.durable_buffers = true}).StatusCode(),
-            Status::Error);
+  auto active_collision = setup_node->CreateSession("collision", {.durable_buffers = true});
+  EXPECT_EQ(active_collision.StatusCode(), Status::Error);
+  EXPECT_EQ(active_collision.Error(), std::make_error_code(std::errc::file_exists));
   EXPECT_EQ(setup_calls, 2);
 
   LifecycleTransport phase_transport;
@@ -310,8 +328,10 @@ TEST(StorageNodeBufferLifecycleTest, FactoryFailureTaxonomyAndRollback) {
     std::unique_lock lock(phase_mutex);
     phase_cv.wait(lock, [&] { return factory_entered; });
   }
-  EXPECT_EQ(phase_node->CreateSession("phase", {.durable_buffers = true}).StatusCode(),
-            Status::Error);
+  EXPECT_EQ(phase_transport.Query("sitos/buffers/phase/durable/**"), 0);
+  auto creating_collision = phase_node->CreateSession("phase", {.durable_buffers = true});
+  EXPECT_EQ(creating_collision.StatusCode(), Status::Error);
+  EXPECT_EQ(creating_collision.Error(), std::make_error_code(std::errc::operation_in_progress));
   EXPECT_EQ(phase_calls, 1);
   {
     std::scoped_lock lock(phase_mutex);
@@ -339,12 +359,18 @@ TEST(StorageNodeBufferLifecycleTest, FactoryFailureTaxonomyAndRollback) {
   std::thread blocked_put([&] { closing_transport.PutSample("sitos/buffers/closing/durable/k"); });
   closing_raw->WaitFor(closing_raw->put_entered);
   std::optional<Result<void>> close_result;
-  std::thread close([&] { close_result = closing_node->CloseSession("closing"); });
+  std::atomic<bool> close_done = false;
+  std::thread close([&] {
+    close_result = closing_node->CloseSession("closing");
+    close_done.store(true, std::memory_order_release);
+  });
   ASSERT_TRUE(
       storage_node_test_access::StorageNodeTestAccess::WaitForClosing(*closing_node, "closing"));
-  EXPECT_EQ(closing_node->CreateSession("closing", {.durable_buffers = true}).StatusCode(),
-            Status::Error);
-  EXPECT_FALSE(close_result.has_value());
+  EXPECT_EQ(closing_transport.Query("sitos/buffers/closing/durable/**"), 0);
+  auto closing_collision = closing_node->CreateSession("closing", {.durable_buffers = true});
+  EXPECT_EQ(closing_collision.StatusCode(), Status::Error);
+  EXPECT_EQ(closing_collision.Error(), std::make_error_code(std::errc::operation_in_progress));
+  EXPECT_FALSE(close_done.load(std::memory_order_acquire));
   closing_raw->ReleaseAll();
   blocked_put.join();
   close.join();
@@ -451,9 +477,13 @@ TEST(StorageNodeBufferLifecycleTest, CloseQuiescesDurableOperationsAndDestroysEn
   durable_raw->WaitFor(durable_raw->list_entered);
 
   std::optional<Result<void>> close_result;
-  std::thread close([&] { close_result = node->CloseSession("s"); });
+  std::atomic<bool> close_done = false;
+  std::thread close([&] {
+    close_result = node->CloseSession("s");
+    close_done.store(true, std::memory_order_release);
+  });
   ASSERT_TRUE(storage_node_test_access::StorageNodeTestAccess::WaitForClosing(*node, "s"));
-  EXPECT_FALSE(close_result.has_value());
+  EXPECT_FALSE(close_done.load(std::memory_order_acquire));
   durable_raw->ReleaseAll();
   put.join();
   get.join();

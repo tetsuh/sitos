@@ -83,9 +83,10 @@ class StorageNode {
   Result<void> CreateSession(std::string_view sid);
 
   /// Opens a session with explicit durable and ephemeral buffer capabilities.
+  /// Durable creation requires the configured factory and reports factory/setup failures.
   Result<void> CreateSession(std::string_view sid, SessionOptions options);
 
-  /// Closes a session: releases its snapshot and overlay and removes its
+  /// Closes a session: releases its snapshot, overlay, and durable engine, then removes its
   /// metadata, so subsequent snap/session/meta gets reply nothing. Fails with
   /// invalid_argument for a stopped node and no_such_file_or_directory for an
   /// unknown sid. [F10]
@@ -277,6 +278,10 @@ class StorageNode {
     // session_mutex. This prevents ordinary writes from interleaving a batch;
     // session locks are released before engine writes.
     std::mutex subscriber_mutex;
+
+    // Test-only observer invoked after callback-gate admission and immediately
+    // before subscriber_mutex acquisition. It is unset in production use.
+    std::function<void()> subscriber_entry_observer;
 
     // Session records are the sole internal ownership and membership source.
     // Guarded by session_mutex. Callbacks and session operations alike enter

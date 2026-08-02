@@ -523,6 +523,7 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
   auto lease = state->Enter();
   if (!lease) return;
   try {
+    if (state->subscriber_entry_observer) state->subscriber_entry_observer();
     SubscriberDiagnostics diagnostics;
     {
       // The gate lease is acquired first. Serializing the entire subscriber

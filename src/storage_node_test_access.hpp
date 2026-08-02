@@ -4,12 +4,14 @@
 #ifndef SITOS_STORAGE_NODE_TEST_ACCESS_HPP
 #define SITOS_STORAGE_NODE_TEST_ACCESS_HPP
 
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "sitos/storage_engine.hpp"
 #include "sitos/storage_node.hpp"
@@ -44,8 +46,15 @@ class StorageNodeTestAccess {
     return GateObserver{node.state_.get()};
   }
 
+  static bool SetSubscriberEntryObserver(StorageNode& node, std::function<void()> observer) {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    if (node.state_ == nullptr) return false;
+    node.state_->subscriber_entry_observer = std::move(observer);
+    return true;
+  }
+
   static std::optional<SessionResourceObservation> ObserveSession(StorageNode& node,
-                                                                    std::string_view sid) {
+                                                                  std::string_view sid) {
     std::shared_ptr<StorageNode::State> state;
     {
       std::scoped_lock lock(node.lifecycle_mutex_);
