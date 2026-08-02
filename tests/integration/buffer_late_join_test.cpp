@@ -256,9 +256,15 @@ class LateJoinCollector final {
     return phase_ == Phase::Failed;
   }
 
-  void SetLiveBoundaryObserver(std::function<void()> observer) {
+  void EnableLiveBoundarySignal() {
     std::scoped_lock lock(collector_mutex_);
-    live_boundary_observer_ = std::move(observer);
+    live_boundary_enabled_ = true;
+    live_boundary_attempted_ = false;
+  }
+
+  bool WaitForLiveBoundaryAttempt(std::chrono::milliseconds timeout) {
+    std::unique_lock lock(collector_mutex_);
+    return live_boundary_cv_.wait_for(lock, timeout, [&] { return live_boundary_attempted_; });
   }
 
   ~LateJoinCollector() { MarkFailed(); }
@@ -359,10 +365,13 @@ class LateJoinCollector final {
       }
       AddLive(observation);
       dispatch.push_back(observation);
-      if (live_boundary_observer_) live_boundary_observer_();
-      observation_lock.lock();
-      if (observer_failed_.load(std::memory_order_acquire)) return;
+      if (live_boundary_enabled_) {
+        live_boundary_attempted_ = true;
+        live_boundary_cv_.notify_all();
+      }
     }
+    observation_lock.lock();
+    if (observer_failed_.load(std::memory_order_acquire)) return;
     try {
       Dispatch(std::move(dispatch), observation_lock);
     } catch (...) {
@@ -410,8 +419,10 @@ class LateJoinCollector final {
   LateJoinTransport& transport_;
   std::string selector_;
   std::function<void(const Observation&)> observer_;
-  std::function<void()> live_boundary_observer_;
   std::atomic<bool> observer_failed_ = false;
+  bool live_boundary_enabled_ = false;
+  bool live_boundary_attempted_ = false;
+  std::condition_variable live_boundary_cv_;
   mutable std::mutex collector_mutex_;
   std::mutex observation_mutex_;
   std::optional<sitos::Subscription> subscription_;
@@ -556,9 +567,6 @@ TEST(BufferLateJoinTest, ObservationBoundarySerializesInitialBatchAndLiveSample)
   std::condition_variable observer_cv;
   bool first_observer_entered = false;
   bool release_first_observer = false;
-  std::mutex live_mutex;
-  std::condition_variable live_cv;
-  bool live_boundary_attempted = false;
   LateJoinCollector collector(fixture.transport, "sitos/buffers/session/durable/**",
                               [&](const Observation& observation) {
                                 {
@@ -574,11 +582,7 @@ TEST(BufferLateJoinTest, ObservationBoundarySerializesInitialBatchAndLiveSample)
                                   observer_cv.wait(lock, [&] { return release_first_observer; });
                                 }
                               });
-  collector.SetLiveBoundaryObserver([&] {
-    std::scoped_lock lock(live_mutex);
-    live_boundary_attempted = true;
-    live_cv.notify_all();
-  });
+  collector.EnableLiveBoundarySignal();
   fixture.transport.block_after_first_reply = true;
   std::optional<bool> joined;
   std::thread join([&] { joined = collector.Join(); });
@@ -586,26 +590,34 @@ TEST(BufferLateJoinTest, ObservationBoundarySerializesInitialBatchAndLiveSample)
   const auto buffered = fixture.transport.Put("sitos/buffers/session/durable/buffered", Bytes({3}),
                                               {"zenoh/bytes"}, {});
   fixture.transport.ReleaseFirstReply();
-  std::thread live([&] {
-    static_cast<void>(fixture.transport.Put("sitos/buffers/session/durable/live", Bytes({4}),
-                                            {"zenoh/bytes"}, {}));
-  });
+  std::thread live;
+  bool live_started = false;
   {
     std::unique_lock lock(observer_mutex);
-    observer_cv.wait(lock, [&] { return first_observer_entered; });
+    if (!observer_cv.wait_for(lock, std::chrono::seconds(5),
+                              [&] { return first_observer_entered; })) {
+      release_first_observer = true;
+    } else {
+      live = std::thread([&] {
+        static_cast<void>(fixture.transport.Put("sitos/buffers/session/durable/live", Bytes({4}),
+                                                {"zenoh/bytes"}, {}));
+      });
+      live_started = true;
+    }
   }
-  {
-    std::unique_lock lock(live_mutex);
-    live_cv.wait(lock, [&] { return live_boundary_attempted; });
-  }
+  observer_cv.notify_all();
+  const bool boundary_seen =
+      live_started && collector.WaitForLiveBoundaryAttempt(std::chrono::seconds(5));
   {
     std::scoped_lock lock(observer_mutex);
     release_first_observer = true;
   }
   observer_cv.notify_all();
+  fixture.transport.ReleaseFirstReply();
   join.join();
-  live.join();
+  if (live_started) live.join();
   ASSERT_TRUE(buffered.IsOk());
+  ASSERT_TRUE(boundary_seen) << "live path did not reach observation boundary";
   ASSERT_TRUE(joined.has_value());
   ASSERT_TRUE(*joined);
   ASSERT_EQ(observed.size(), 4u);

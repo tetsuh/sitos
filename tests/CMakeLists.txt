@@ -276,6 +276,9 @@ gtest_add_tests(
   SOURCES integration/buffer_late_join_test.cpp)
 set_tests_properties(
   BufferLateJoinTest.OrdersMaterializedBufferedAndLiveSamples
+  BufferLateJoinTest.BufferedIdenticalReplyPromotesToMaterializedCategory
+  BufferLateJoinTest.BufferedConflictingReplyFailsBeforeObserverDelivery
+  BufferLateJoinTest.ObservationBoundarySerializesInitialBatchAndLiveSample
   BufferLateJoinTest.DurableLateJoinDoesNotLoseDistinctKeys
   BufferLateJoinTest.FailureInvokesNoObserverAndCleansUp
   PROPERTIES TIMEOUT 60)
