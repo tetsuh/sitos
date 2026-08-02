@@ -155,6 +155,29 @@ bool IsBufferBytes(const TransportSample& sample) {
   return sample.kind == TransportSample::Kind::Put && sample.encoding.id == "zenoh/bytes";
 }
 
+enum class BufferWriteOutcome { Stored, Conflict, Failed };
+
+BufferWriteOutcome ApplyDurableBufferWrite(StorageEngine& engine, const ParsedKey& parsed,
+                                           const TransportSample& sample) {
+  try {
+    bool same = false;
+    if (engine.Get(parsed.relative_key, [&same, &sample](std::string_view, Bytes value) {
+          same = value.size() == sample.payload.size() &&
+                 std::equal(value.begin(), value.end(), sample.payload.begin());
+          return true;
+        })) {
+      return same ? BufferWriteOutcome::Stored : BufferWriteOutcome::Conflict;
+    }
+    if (engine.Put(parsed.relative_key, sample.payload)) return BufferWriteOutcome::Stored;
+    // A failed Put has no node-side reservation. Read once to observe a
+    // possible engine-side commit; the next sample repeats the authoritative read.
+    engine.Get(parsed.relative_key, [](std::string_view, Bytes) { return true; });
+  } catch (...) {
+    return BufferWriteOutcome::Failed;
+  }
+  return BufferWriteOutcome::Failed;
+}
+
 // Applies a put/delete sample to a target engine (base engine or session
 // overlay), mirroring the wire-encoding rules for base writes. Diagnostics are
 // retained until the subscriber sequencer is released, so an injected sink is
@@ -504,47 +527,30 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
         }
       } else if (parsed->kind == KeyKind::Buffer) {
         if (sample.kind == TransportSample::Kind::Delete) {
-          diagnostics.push_back({LogLevel::kWarning, kBufferUnsupported});
+          diagnostics.emplace_back(LogLevel::kWarning, kBufferUnsupported);
         } else if (!IsBufferBytes(sample)) {
-          diagnostics.push_back({LogLevel::kWarning, kBufferEncodingRejected});
+          diagnostics.emplace_back(LogLevel::kWarning, kBufferEncodingRejected);
         } else if (auto access = AcquireSession(state, parsed->sid);
                    !access.record || !access.admission.has_value()) {
-          diagnostics.push_back({LogLevel::kWarning, kUnknownSession});
+          diagnostics.emplace_back(LogLevel::kWarning, kUnknownSession);
         } else if (!parsed->buffer_class.has_value()) {
-          diagnostics.push_back({LogLevel::kWarning, kBufferUnsupported});
+          diagnostics.emplace_back(LogLevel::kWarning, kBufferUnsupported);
         } else if (*parsed->buffer_class == BufferClass::Ephemeral) {
           if (!access.record->options.ephemeral) {
-            diagnostics.push_back({LogLevel::kWarning, kBufferCapabilityDisabled});
+            diagnostics.emplace_back(LogLevel::kWarning, kBufferCapabilityDisabled);
           }
         } else if (!access.record->options.durable || !access.record->durable_buffers) {
-          diagnostics.push_back({LogLevel::kWarning, kBufferCapabilityDisabled});
+          diagnostics.emplace_back(LogLevel::kWarning, kBufferCapabilityDisabled);
         } else {
-          try {
-            bool same = false;
-            if (access.record->durable_buffers->Get(
-                    parsed->relative_key, [&](std::string_view, Bytes value) {
-                      same = value.size() == sample.payload.size() &&
-                             std::equal(value.begin(), value.end(), sample.payload.begin());
-                      return true;
-                    })) {
-              if (!same) diagnostics.push_back({LogLevel::kWarning, kBufferPutConflict});
-            } else if (!access.record->durable_buffers->Put(parsed->relative_key, sample.payload)) {
-              diagnostics.push_back({LogLevel::kError, kBufferPutFailed});
-              try {
-                access.record->durable_buffers->Get(parsed->relative_key,
-                                                    [](std::string_view, Bytes) { return true; });
-              } catch (...) {
-                // The diagnostic remains payload-free and the next PUT may retry.
-              }
-            }
-          } catch (...) {
-            diagnostics.push_back({LogLevel::kError, kBufferPutFailed});
-            try {
-              access.record->durable_buffers->Get(parsed->relative_key,
-                                                  [](std::string_view, Bytes) { return true; });
-            } catch (...) {
-              // The failed attempt creates no node-side reservation.
-            }
+          switch (ApplyDurableBufferWrite(*access.record->durable_buffers, *parsed, sample)) {
+            case BufferWriteOutcome::Conflict:
+              diagnostics.emplace_back(LogLevel::kWarning, kBufferPutConflict);
+              break;
+            case BufferWriteOutcome::Failed:
+              diagnostics.emplace_back(LogLevel::kError, kBufferPutFailed);
+              break;
+            case BufferWriteOutcome::Stored:
+              break;
           }
         }
       } else {
@@ -637,10 +643,10 @@ void StorageNode::ReplyBufferQuery(const std::shared_ptr<State>& state, Transpor
   if (!rest || !rest->starts_with("buffers/")) return;
   auto sid_split = SplitFirst(rest->substr(8));
   if (!sid_split) return;
-  const auto [sid, class_and_selector] = *sid_split;
+  const auto& [sid, class_and_selector] = *sid_split;
   auto class_split = SplitFirst(class_and_selector);
   if (!class_split || !IsValidSessionId(sid)) return;
-  const auto [class_name, selector_text] = *class_split;
+  const auto& [class_name, selector_text] = *class_split;
   if (class_name != "durable") return;
   if (selector_text.empty()) return;
   std::string relative;
@@ -676,8 +682,8 @@ void StorageNode::ReplyBufferQuery(const std::shared_ptr<State>& state, Transpor
     }
     if (!admission || !record->options.durable || !record->durable_buffers) return;
     try {
-      auto sink = [&](std::string_view key, Bytes value) {
-        entries.push_back({std::string(key), std::vector<std::byte>(value.begin(), value.end())});
+      auto sink = [&entries](std::string_view key, Bytes value) {
+        entries.emplace_back(std::string(key), std::vector<std::byte>(value.begin(), value.end()));
         return true;
       };
       ok = list ? record->durable_buffers->List(relative, sink)
