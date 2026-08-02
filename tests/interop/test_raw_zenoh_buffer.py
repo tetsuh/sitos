@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 import zenoh
@@ -22,14 +23,27 @@ def _query(session: zenoh.Session, key: str) -> list[support.WireSample]:
 
 
 def _wait_for_payload(session: zenoh.Session, key: str, payload: bytes) -> None:
-    replies = _query(session, key)
-    assert len(replies) == 1, f"buffer value was not queryable: {key}"
-    support.assert_wire_sample(
-        replies[0],
-        expected_key=key,
-        expected_payload=payload,
-        expected_encoding="zenoh/bytes",
-    )
+    deadline = time.monotonic() + 5.0
+    last_diagnostic = "no query replies"
+    while time.monotonic() < deadline:
+        try:
+            replies = _query(session, key)
+            if len(replies) == 1:
+                try:
+                    support.assert_wire_sample(
+                        replies[0],
+                        expected_key=key,
+                        expected_payload=payload,
+                        expected_encoding="zenoh/bytes",
+                    )
+                    return
+                except AssertionError as error:
+                    last_diagnostic = str(error)
+            else:
+                last_diagnostic = f"expected one reply, got {len(replies)}"
+        except Exception as error:  # pragma: no cover - diagnostic for transient transport state
+            last_diagnostic = str(error)
+    raise AssertionError(f"buffer value was not queryable before deadline: {key}: {last_diagnostic}")
 
 
 def test_raw_zenoh_client_can_use_mixed_session_buffers() -> None:
@@ -82,6 +96,12 @@ def test_raw_zenoh_client_can_use_mixed_session_buffers() -> None:
                         b"preview",
                         encoding=zenoh.Encoding("zenoh/bytes"),
                     )
+                for mode in ("durable", "both"):
+                    _wait_for_payload(
+                        session,
+                        f"{fixture.prefix}/buffers/{session_ids[mode]}/durable/official",
+                        mode.encode(),
+                    )
                 durable_replies = {
                     mode: _query(
                         session,
@@ -107,9 +127,10 @@ def test_raw_zenoh_client_can_use_mixed_session_buffers() -> None:
                     ) == []
                 invalid_key = f"{fixture.prefix}/buffers/{session_ids['both']}/durable/invalid"
                 session.put(invalid_key, b"invalid", encoding=zenoh.Encoding("zenoh/bytes;sitos.v1"))
-                assert _query(session, invalid_key) == []
                 empty_key = f"{fixture.prefix}/buffers/{session_ids['both']}/durable/empty"
                 session.put(empty_key, b"", encoding=zenoh.Encoding("zenoh/bytes"))
+                _wait_for_payload(session, empty_key, b"")
+                assert _query(session, invalid_key) == []
                 empty_replies = _query(session, empty_key)
                 assert len(empty_replies) == 1
                 support.assert_wire_sample(
@@ -150,6 +171,11 @@ def test_raw_zenoh_durable_late_join_preserves_distinct_keys() -> None:
                 first,
                 f"{fixture.prefix}/buffers/{fixture.session_id}/durable/a",
                 b"a",
+            )
+            _wait_for_payload(
+                first,
+                f"{fixture.prefix}/buffers/{fixture.session_id}/durable/b",
+                b"b",
             )
         with fixture.open_raw_session() as late:
             replies = _query(late, f"{fixture.prefix}/buffers/{fixture.session_id}/durable/**")

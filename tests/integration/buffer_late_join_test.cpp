@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -238,13 +239,24 @@ class LateJoinCollector final {
       materialized_.clear();
       buffered_.clear();
     }
-    Dispatch(std::move(batch), observation_lock);
+    try {
+      Dispatch(std::move(batch), observation_lock);
+    } catch (...) {
+      if (observation_lock.owns_lock()) observation_lock.unlock();
+      MarkFailed();
+      return false;
+    }
     return true;
   }
 
   bool Failed() const {
     std::scoped_lock lock(collector_mutex_);
     return phase_ == Phase::Failed;
+  }
+
+  void SetLiveBoundaryObserver(std::function<void()> observer) {
+    std::scoped_lock lock(collector_mutex_);
+    live_boundary_observer_ = std::move(observer);
   }
 
   ~LateJoinCollector() { MarkFailed(); }
@@ -345,9 +357,14 @@ class LateJoinCollector final {
       }
       AddLive(observation);
       dispatch.push_back(observation);
+      if (live_boundary_observer_) live_boundary_observer_();
       observation_lock.lock();
     }
-    Dispatch(std::move(dispatch), observation_lock);
+    try {
+      Dispatch(std::move(dispatch), observation_lock);
+    } catch (...) {
+      MarkFailedPhase();
+    }
   }
 
   bool AddLive(const Observation& observation) {
@@ -363,6 +380,11 @@ class LateJoinCollector final {
   void Dispatch(std::vector<Observation> batch, std::unique_lock<std::mutex>& observation_lock) {
     for (const auto& observation : batch) observer_(observation);
     observation_lock.unlock();
+  }
+
+  void MarkFailedPhase() {
+    std::scoped_lock lock(collector_mutex_);
+    phase_ = Phase::Failed;
   }
 
   void MarkFailed() {
@@ -383,6 +405,7 @@ class LateJoinCollector final {
   LateJoinTransport& transport_;
   std::string selector_;
   std::function<void(const Observation&)> observer_;
+  std::function<void()> live_boundary_observer_;
   mutable std::mutex collector_mutex_;
   std::mutex observation_mutex_;
   std::optional<sitos::Subscription> subscription_;
@@ -450,6 +473,140 @@ TEST(BufferLateJoinTest, OrdersMaterializedBufferedAndLiveSamples) {
   EXPECT_EQ(observed[3].key, "sitos/buffers/session/durable/live");
   EXPECT_EQ(observed[2].payload, Bytes({3}));
   EXPECT_EQ(observed[3].payload, Bytes({4}));
+}
+
+TEST(BufferLateJoinTest, BufferedIdenticalReplyPromotesToMaterializedCategory) {
+  LateJoinFixture fixture;
+  fixture.Start();
+  ASSERT_TRUE(
+      fixture.transport.Put("sitos/buffers/session/durable/first", Bytes({1}), {"zenoh/bytes"}, {})
+          .IsOk());
+  ASSERT_TRUE(
+      fixture.transport.Put("sitos/buffers/session/durable/second", Bytes({2}), {"zenoh/bytes"}, {})
+          .IsOk());
+
+  std::vector<Observation> observed;
+  LateJoinCollector collector(
+      fixture.transport, "sitos/buffers/session/durable/**",
+      [&](const Observation& observation) { observed.push_back(observation); });
+  fixture.transport.block_after_first_reply = true;
+  std::optional<bool> joined;
+  std::thread join([&] { joined = collector.Join(); });
+  fixture.transport.WaitForFirstReply();
+  const auto buffered = fixture.transport.Put("sitos/buffers/session/durable/second", Bytes({2}),
+                                              {"zenoh/bytes"}, {});
+  fixture.transport.ReleaseFirstReply();
+  join.join();
+  ASSERT_TRUE(buffered.IsOk());
+  ASSERT_TRUE(joined.has_value());
+  ASSERT_TRUE(*joined);
+  ASSERT_EQ(observed.size(), 2u);
+  EXPECT_EQ(observed[0].key, "sitos/buffers/session/durable/first");
+  EXPECT_EQ(observed[1].key, "sitos/buffers/session/durable/second");
+  EXPECT_EQ(observed[1].payload, Bytes({2}));
+}
+
+TEST(BufferLateJoinTest, BufferedConflictingReplyFailsBeforeObserverDelivery) {
+  LateJoinFixture fixture;
+  fixture.Start();
+  ASSERT_TRUE(
+      fixture.transport.Put("sitos/buffers/session/durable/first", Bytes({1}), {"zenoh/bytes"}, {})
+          .IsOk());
+  ASSERT_TRUE(
+      fixture.transport.Put("sitos/buffers/session/durable/second", Bytes({2}), {"zenoh/bytes"}, {})
+          .IsOk());
+
+  std::vector<Observation> observed;
+  LateJoinCollector collector(
+      fixture.transport, "sitos/buffers/session/durable/**",
+      [&](const Observation& observation) { observed.push_back(observation); });
+  fixture.transport.block_after_first_reply = true;
+  std::optional<bool> joined;
+  std::thread join([&] { joined = collector.Join(); });
+  fixture.transport.WaitForFirstReply();
+  const auto buffered = fixture.transport.Put("sitos/buffers/session/durable/second", Bytes({9}),
+                                              {"zenoh/bytes"}, {});
+  fixture.transport.ReleaseFirstReply();
+  join.join();
+  ASSERT_TRUE(buffered.IsOk());
+  ASSERT_TRUE(joined.has_value());
+  EXPECT_FALSE(*joined);
+  EXPECT_TRUE(collector.Failed());
+  EXPECT_TRUE(observed.empty());
+}
+
+TEST(BufferLateJoinTest, ObservationBoundarySerializesInitialBatchAndLiveSample) {
+  LateJoinFixture fixture;
+  fixture.Start();
+  ASSERT_TRUE(
+      fixture.transport.Put("sitos/buffers/session/durable/first", Bytes({1}), {"zenoh/bytes"}, {})
+          .IsOk());
+  ASSERT_TRUE(
+      fixture.transport.Put("sitos/buffers/session/durable/second", Bytes({2}), {"zenoh/bytes"}, {})
+          .IsOk());
+
+  std::vector<Observation> observed;
+  std::mutex observer_mutex;
+  std::condition_variable observer_cv;
+  bool first_observer_entered = false;
+  bool release_first_observer = false;
+  std::mutex live_mutex;
+  std::condition_variable live_cv;
+  bool live_boundary_attempted = false;
+  LateJoinCollector collector(fixture.transport, "sitos/buffers/session/durable/**",
+                              [&](const Observation& observation) {
+                                {
+                                  std::scoped_lock lock(observer_mutex);
+                                  observed.push_back(observation);
+                                  if (observation.key == "sitos/buffers/session/durable/first") {
+                                    first_observer_entered = true;
+                                    observer_cv.notify_all();
+                                  }
+                                }
+                                if (observation.key == "sitos/buffers/session/durable/first") {
+                                  std::unique_lock lock(observer_mutex);
+                                  observer_cv.wait(lock, [&] { return release_first_observer; });
+                                }
+                              });
+  collector.SetLiveBoundaryObserver([&] {
+    std::scoped_lock lock(live_mutex);
+    live_boundary_attempted = true;
+    live_cv.notify_all();
+  });
+  fixture.transport.block_after_first_reply = true;
+  std::optional<bool> joined;
+  std::thread join([&] { joined = collector.Join(); });
+  fixture.transport.WaitForFirstReply();
+  const auto buffered = fixture.transport.Put("sitos/buffers/session/durable/buffered", Bytes({3}),
+                                              {"zenoh/bytes"}, {});
+  fixture.transport.ReleaseFirstReply();
+  std::thread live([&] {
+    static_cast<void>(fixture.transport.Put("sitos/buffers/session/durable/live", Bytes({4}),
+                                            {"zenoh/bytes"}, {}));
+  });
+  {
+    std::unique_lock lock(observer_mutex);
+    observer_cv.wait(lock, [&] { return first_observer_entered; });
+  }
+  {
+    std::unique_lock lock(live_mutex);
+    live_cv.wait(lock, [&] { return live_boundary_attempted; });
+  }
+  {
+    std::scoped_lock lock(observer_mutex);
+    release_first_observer = true;
+  }
+  observer_cv.notify_all();
+  join.join();
+  live.join();
+  ASSERT_TRUE(buffered.IsOk());
+  ASSERT_TRUE(joined.has_value());
+  ASSERT_TRUE(*joined);
+  ASSERT_EQ(observed.size(), 4u);
+  EXPECT_EQ(observed[0].key, "sitos/buffers/session/durable/first");
+  EXPECT_EQ(observed[1].key, "sitos/buffers/session/durable/second");
+  EXPECT_EQ(observed[2].key, "sitos/buffers/session/durable/buffered");
+  EXPECT_EQ(observed[3].key, "sitos/buffers/session/durable/live");
 }
 
 TEST(BufferLateJoinTest, DurableLateJoinDoesNotLoseDistinctKeys) {
@@ -530,6 +687,42 @@ TEST(BufferLateJoinTest, FailureInvokesNoObserverAndCleansUp) {
     EXPECT_TRUE(collector.Failed());
   }
   fixture.transport.fail_after_replies = -1;
+
+  bool initial_exception_propagated = false;
+  {
+    LateJoinCollector collector(
+        fixture.transport, "sitos/buffers/session/durable/**",
+        [&](const Observation&) { throw std::runtime_error("initial observer failure"); });
+    bool joined = true;
+    try {
+      joined = collector.Join();
+    } catch (...) {
+      initial_exception_propagated = true;
+    }
+    EXPECT_FALSE(joined);
+    EXPECT_TRUE(collector.Failed());
+  }
+  EXPECT_FALSE(initial_exception_propagated);
+
+  int live_observer_calls = 0;
+  {
+    LateJoinCollector collector(fixture.transport, "sitos/buffers/session/durable/**",
+                                [&](const Observation&) {
+                                  ++live_observer_calls;
+                                  if (live_observer_calls > 2)
+                                    throw std::runtime_error("live observer failure");
+                                });
+    ASSERT_TRUE(collector.Join());
+    const auto first_live = fixture.transport.Put("sitos/buffers/session/durable/live-failure",
+                                                  Bytes({6}), {"zenoh/bytes"}, {});
+    EXPECT_TRUE(first_live.IsOk());
+    EXPECT_TRUE(collector.Failed());
+    const int calls_after_failure = live_observer_calls;
+    const auto second_live = fixture.transport.Put("sitos/buffers/session/durable/live-suppressed",
+                                                   Bytes({7}), {"zenoh/bytes"}, {});
+    EXPECT_TRUE(second_live.IsOk());
+    EXPECT_EQ(live_observer_calls, calls_after_failure);
+  }
 
   fixture.transport.park_copied_callbacks = true;
   std::thread publish;

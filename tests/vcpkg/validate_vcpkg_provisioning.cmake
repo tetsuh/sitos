@@ -137,7 +137,7 @@ run_checked(
   -DSITOS_PACKAGE_CONSUMER_WITH_ROCKSDB=ON
   "-DCMAKE_PREFIX_PATH=${_combined_relocated_prefix}"
   "-DRocksDB_DIR=${_feature_install}/${TRIPLET}/share/rocksdb"
-  "-DZENOHC_ROOT=${_combined_build}/_deps/zenohc-src"
+  "-Dzenohc_ROOT=${_combined_build}/_deps/zenohc-src"
   "-DZLIB_LIBRARY=${_zlib_library}"
   "-DZLIB_INCLUDE_DIR=${_zlib_include_dir}")
 run_checked("${CMAKE_COMMAND}" --build "${_combined_consumer_build}")

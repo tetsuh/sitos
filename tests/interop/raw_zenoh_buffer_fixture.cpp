@@ -47,6 +47,31 @@ class Protocol final {
   }
 };
 
+class DurableRootCleanup final {
+ public:
+  explicit DurableRootCleanup(std::filesystem::path root) : root_(std::move(root)) {}
+
+  ~DurableRootCleanup() {
+    if (active_) {
+      std::error_code error;
+      std::filesystem::remove_all(root_, error);
+    }
+  }
+
+  bool Cleanup(std::error_code& error) noexcept {
+    if (!active_) return true;
+    std::filesystem::remove_all(root_, error);
+    if (!error) active_ = false;
+    return !error;
+  }
+
+  void Dismiss() noexcept { active_ = false; }
+
+ private:
+  std::filesystem::path root_;
+  bool active_ = true;
+};
+
 bool PutDpAndConfirm(sitos::ParamStore& store, std::string_view key, double value) {
   const auto deadline = std::chrono::steady_clock::now() + 5s;
   while (std::chrono::steady_clock::now() < deadline) {
@@ -200,6 +225,7 @@ int main(int argc, char** argv) {
               << (cleanup_error ? cleanup_error.message() : "not a directory") << '\n';
     return 6;
   }
+  DurableRootCleanup durable_root_cleanup(durable_root);
   sitos::StorageNode node(*transport);
   const auto start_result = node.Start(
       engine, {.prefix = prefix,
@@ -249,5 +275,6 @@ int main(int argc, char** argv) {
     std::cerr << "durable root final cleanup failed: " << cleanup_error.message() << '\n';
     return 6;
   }
+  durable_root_cleanup.Dismiss();
   return 0;
 }
