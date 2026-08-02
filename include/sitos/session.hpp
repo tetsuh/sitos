@@ -24,12 +24,9 @@ class StorageEngine;
 
 /// Options selecting Session buffer capabilities.
 struct SessionOptions {
-  bool durable = false;
-  bool ephemeral = false;
+  bool durable_buffers = false;
+  bool ephemeral_buffers = false;
 };
-
-using DurableBufferEngineFactory =
-    std::function<Result<std::unique_ptr<StorageEngine>>(std::string_view sid)>;
 
 /// Metadata recorded for an active session and surfaced as the payload-v1 STR
 /// JSON returned for a get on meta/session/<sid> (docs/03 §7.1).

@@ -30,9 +30,15 @@ TEST(StorageNodeBufferApiTest, PreservesLegacyCreateSessionOverload) {
 }
 
 TEST(StorageNodeBufferApiTest, ExposesCapabilityOverloadAndFactory) {
-  SessionOptions options;
-  EXPECT_FALSE(options.durable);
-  EXPECT_FALSE(options.ephemeral);
+  SessionOptions options{.durable_buffers = true, .ephemeral_buffers = true};
+  EXPECT_TRUE(options.durable_buffers);
+  EXPECT_TRUE(options.ephemeral_buffers);
+  StorageNodeConfig default_config{};
+  StorageNodeConfig prefix_config{.prefix = "example"};
+  StorageNodeConfig two_field_config{.prefix = "example", .log_sink = nullptr};
+  EXPECT_EQ(default_config.prefix, "sitos");
+  EXPECT_EQ(prefix_config.prefix, "example");
+  EXPECT_EQ(two_field_config.prefix, "example");
   DurableBufferEngineFactory factory = [](std::string_view) {
     return Result<std::unique_ptr<StorageEngine>>::Err(
         std::make_error_code(std::errc::operation_not_supported));

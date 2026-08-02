@@ -23,4 +23,17 @@ static_assert(
         sitos::DurableBufferEngineFactory,
         std::function<sitos::Result<std::unique_ptr<sitos::StorageEngine>>(std::string_view)>>);
 
-int main() { return 0; }
+constexpr sitos::SessionOptions kBufferOptions{.durable_buffers = true, .ephemeral_buffers = true};
+static_assert(kBufferOptions.durable_buffers && kBufferOptions.ephemeral_buffers);
+
+int main() {
+  sitos::StorageNodeConfig default_config{};
+  sitos::StorageNodeConfig prefix_config{.prefix = "example"};
+  sitos::StorageNodeConfig two_field_config{.prefix = "example", .log_sink = nullptr};
+  sitos::StorageNodeConfig full_config{
+      .prefix = "example", .log_sink = nullptr, .durable_buffer_engine_factory = {}};
+  return (default_config.prefix == "sitos" && prefix_config.prefix == "example" &&
+          two_field_config.prefix == "example" && full_config.prefix == "example")
+             ? 0
+             : 1;
+}

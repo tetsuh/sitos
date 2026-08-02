@@ -226,10 +226,12 @@ factory and resources cannot come from a different Start generation. The factory
 Only a valid, non-null durable engine may commit `Creating` to `Active`. For a
 Session requesting durable buffers, a factory `Err` is returned with its status, cause, and
 message preserved; an empty factory, `Ok(nullptr)`, or a factory exception is a non-OK
-failure. The exact Status taxonomy for empty, null, and exception outcomes is deferred to the
-Issue #56 scope freeze. Exceptions are contained. Every non-commit
-path releases all resources created by that attempt and removes only the same `Creating`
-reservation under `session_mutex`, so the same SID can be retried.
+failure. DEC-56-FACTORY-FAILURE-001 defines the exact taxonomy: a missing factory is
+`Status::InvalidArgument` with `std::errc::invalid_argument` and the message `durable buffer
+engine factory is required`; null success and exceptions are `Status::Error` with their exact
+public messages; and factory `Err` values are preserved. Exceptions are contained. Every
+non-commit path releases all resources created by that attempt and removes only the same
+`Creating` reservation under `session_mutex`, so the same SID can be retried.
 
 `CloseSession` changes only an `Active` record to `Closing`; a `Creating` or `Closing` record
 returns `std::errc::operation_in_progress`, and a missing record retains

@@ -169,9 +169,6 @@ BufferWriteOutcome ApplyDurableBufferWrite(StorageEngine& engine, const ParsedKe
       return same ? BufferWriteOutcome::Stored : BufferWriteOutcome::Conflict;
     }
     if (engine.Put(parsed.relative_key, sample.payload)) return BufferWriteOutcome::Stored;
-    // A failed Put has no node-side reservation. Read once to observe a
-    // possible engine-side commit; the next sample repeats the authoritative read.
-    engine.Get(parsed.relative_key, [](std::string_view, Bytes) { return true; });
   } catch (...) {
     return BufferWriteOutcome::Failed;
   }
@@ -319,6 +316,30 @@ void StorageNode::Stop() noexcept {
   }
 
   state->DeactivateAndWait();
+
+  // Stop is a quiescence boundary for the entire Session generation. Once
+  // callbacks have drained, no Session admission can remain active; close and
+  // release every committed record before returning to the caller.
+  std::vector<std::shared_ptr<SessionRecord>> records;
+  {
+    std::unique_lock lock(state->session_mutex);
+    records.reserve(state->sessions.size());
+    for (auto& [sid, record] : state->sessions) {
+      if (record->BeginClose()) records.push_back(record);
+    }
+  }
+  for (const auto& record : records) {
+    record->WaitForAdmission();
+    record->snapshot.reset();
+    record->overlay.reset();
+    record->durable_buffers.reset();
+    record->metadata = {};
+  }
+  {
+    std::unique_lock lock(state->session_mutex);
+    state->sessions.clear();
+  }
+
   subscriber = Subscription{};
   queryable = Queryable{};
 }
@@ -404,10 +425,10 @@ Result<void> StorageNode::CreateSession(const std::shared_ptr<State>& state, std
   record->options = options;
   record->metadata = SessionMeta{NowIso8601()};
 
-  if (options.durable) {
+  if (options.durable_buffers) {
     if (!state->durable_buffer_engine_factory) {
-      return Result<void>::Err(Status::InvalidArgument,
-                               "durable buffer engine factory is required");
+      return Result<void>::Err(Status::InvalidArgument, "durable buffer engine factory is required",
+                               std::make_error_code(std::errc::invalid_argument));
     }
     try {
       auto factory_result = state->durable_buffer_engine_factory(sid);
@@ -536,10 +557,10 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
         } else if (!parsed->buffer_class.has_value()) {
           diagnostics.emplace_back(LogLevel::kWarning, kBufferUnsupported);
         } else if (*parsed->buffer_class == BufferClass::Ephemeral) {
-          if (!access.record->options.ephemeral) {
+          if (!access.record->options.ephemeral_buffers) {
             diagnostics.emplace_back(LogLevel::kWarning, kBufferCapabilityDisabled);
           }
-        } else if (!access.record->options.durable || !access.record->durable_buffers) {
+        } else if (!access.record->options.durable_buffers || !access.record->durable_buffers) {
           diagnostics.emplace_back(LogLevel::kWarning, kBufferCapabilityDisabled);
         } else {
           switch (ApplyDurableBufferWrite(*access.record->durable_buffers, *parsed, sample)) {
@@ -680,7 +701,7 @@ void StorageNode::ReplyBufferQuery(const std::shared_ptr<State>& state, Transpor
       record = it->second;
       admission = record->TryAcquire();
     }
-    if (!admission || !record->options.durable || !record->durable_buffers) return;
+    if (!admission || !record->options.durable_buffers || !record->durable_buffers) return;
     try {
       auto sink = [&entries](std::string_view key, Bytes value) {
         entries.emplace_back(std::string(key), std::vector<std::byte>(value.begin(), value.end()));

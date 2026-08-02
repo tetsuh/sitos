@@ -243,6 +243,14 @@ target_include_directories(sitos_storage_node_buffer_routing_test PRIVATE ${PROJ
 sitos_enable_warnings(sitos_storage_node_buffer_routing_test)
 gtest_add_tests(TARGET sitos_storage_node_buffer_routing_test SOURCES unit/storage_node_buffer_routing_test.cpp)
 
+add_executable(sitos_storage_node_buffer_lifecycle_test
+  unit/storage_node_buffer_lifecycle_test.cpp)
+target_link_libraries(sitos_storage_node_buffer_lifecycle_test
+  PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_storage_node_buffer_lifecycle_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+sitos_enable_warnings(sitos_storage_node_buffer_lifecycle_test)
+gtest_add_tests(TARGET sitos_storage_node_buffer_lifecycle_test SOURCES unit/storage_node_buffer_lifecycle_test.cpp)
+
 add_executable(sitos_session_view_test
   unit/session_view_test.cpp)
 target_link_libraries(sitos_session_view_test

@@ -27,6 +27,9 @@
 
 namespace sitos {
 
+using DurableBufferEngineFactory =
+    std::function<Result<std::unique_ptr<StorageEngine>>(std::string_view sid)>;
+
 /// The supported query shape for the StorageNode base scope.
 struct StorageQuery {
   /// True for a terminal star-star selector, false for an exact key.
