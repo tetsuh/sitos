@@ -112,9 +112,9 @@ class BlockingRocksDbEngine final : public sitos::StorageEngine {
   ~BlockingRocksDbEngine() override { destroyed_->store(true, std::memory_order_release); }
 
   bool Put(std::string_view key, sitos::Bytes value) override {
-    Wait(gates_->block_put, gates_->put_entered);
+    const bool tracked = Wait(gates_->block_put, gates_->put_entered);
     const bool result = engine_->Put(key, value);
-    Complete(gates_->put_completed);
+    if (tracked) Complete(gates_->put_completed);
     return result;
   }
 
@@ -122,16 +122,17 @@ class BlockingRocksDbEngine final : public sitos::StorageEngine {
 
   bool Get(std::string_view key, const sitos::EntrySink& sink) const override {
     const bool designated = key == "seed";
-    if (designated) Wait(gates_->block_explicit_get, gates_->explicit_get_entered);
+    const bool tracked =
+        designated && Wait(gates_->block_explicit_get, gates_->explicit_get_entered);
     const bool result = engine_->Get(key, sink);
-    if (designated) Complete(gates_->explicit_get_completed);
+    if (tracked) Complete(gates_->explicit_get_completed);
     return result;
   }
 
   bool List(std::string_view prefix, const sitos::EntrySink& sink) const override {
-    Wait(gates_->block_list, gates_->list_entered);
+    const bool tracked = Wait(gates_->block_list, gates_->list_entered);
     const bool result = engine_->List(prefix, sink);
-    Complete(gates_->list_completed);
+    if (tracked) Complete(gates_->list_completed);
     return result;
   }
 
@@ -140,12 +141,13 @@ class BlockingRocksDbEngine final : public sitos::StorageEngine {
   }
 
  private:
-  void Wait(bool& blocked, int& entered) const {
+  bool Wait(bool& blocked, int& entered) const {
     std::unique_lock lock(gates_->mutex);
-    if (!blocked) return;
+    if (!blocked) return false;
     ++entered;
     gates_->condition.notify_all();
     gates_->condition.wait(lock, [&] { return !blocked; });
+    return true;
   }
 
   void Complete(bool& completed) const {
@@ -336,6 +338,19 @@ TEST(RocksDBBufferLifecycleTest, CloseReleasesEngineBeforeReturn) {
     ADD_FAILURE() << "designated real-engine Put/Get/List operations did not all enter barriers";
     return;
   }
+
+  bool put_completed_before_workers = false;
+  bool get_completed_before_workers = false;
+  bool list_completed_before_workers = false;
+  {
+    std::scoped_lock lock(gates->mutex);
+    put_completed_before_workers = gates->put_completed;
+    get_completed_before_workers = gates->explicit_get_completed;
+    list_completed_before_workers = gates->list_completed;
+  }
+  EXPECT_FALSE(put_completed_before_workers);
+  EXPECT_FALSE(get_completed_before_workers);
+  EXPECT_FALSE(list_completed_before_workers);
 
   std::optional<sitos::Result<void>> close_result;
   std::atomic<bool> close_done = false;
