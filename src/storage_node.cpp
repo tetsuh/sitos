@@ -657,39 +657,39 @@ void StorageNode::ReplyBufferQuery(const std::shared_ptr<State>& state, Transpor
     relative = std::string(selector_text);
   }
 
-  std::optional<SessionRecord::AdmissionLease> admission;
-  std::shared_ptr<SessionRecord> record;
-  {
-    std::shared_lock lock(state->session_mutex);
-    auto it = state->sessions.find(sid);
-    if (it == state->sessions.end()) return;
-    record = it->second;
-    admission = record->TryAcquire();
-  }
-  if (!admission || !record->options.durable || !record->durable_buffers) return;
-
   struct OwnedEntry {
     std::string key;
     std::vector<std::byte> value;
   };
   std::vector<OwnedEntry> entries;
   bool ok = false;
-  try {
-    auto sink = [&](std::string_view key, Bytes value) {
-      entries.push_back({std::string(key), std::vector<std::byte>(value.begin(), value.end())});
-      return true;
-    };
-    ok = list ? record->durable_buffers->List(relative, sink)
-              : record->durable_buffers->Get(relative, sink);
-  } catch (...) {
+  bool collection_failed = false;
+  {
+    std::optional<SessionRecord::AdmissionLease> admission;
+    std::shared_ptr<SessionRecord> record;
+    {
+      std::shared_lock lock(state->session_mutex);
+      auto it = state->sessions.find(sid);
+      if (it == state->sessions.end()) return;
+      record = it->second;
+      admission = record->TryAcquire();
+    }
+    if (!admission || !record->options.durable || !record->durable_buffers) return;
+    try {
+      auto sink = [&](std::string_view key, Bytes value) {
+        entries.push_back({std::string(key), std::vector<std::byte>(value.begin(), value.end())});
+        return true;
+      };
+      ok = list ? record->durable_buffers->List(relative, sink)
+                : record->durable_buffers->Get(relative, sink);
+    } catch (...) {
+      collection_failed = true;
+    }
+  }
+  if (collection_failed || (!ok && list)) {
     EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, kBufferQueryFailed);
     return;
   }
-  if (!ok && list) {
-    EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, kBufferQueryFailed);
-    return;
-  }
-  admission.reset();
 
   const Encoding encoding{"zenoh/bytes"};
   bool dispatch = true;
