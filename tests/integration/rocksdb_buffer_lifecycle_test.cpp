@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -81,40 +82,57 @@ class RocksDbTransport final : public sitos::Transport {
   std::function<void(sitos::TransportQuery&)> queryable_;
 };
 
+struct Reply {
+  std::string key;
+  std::vector<std::byte> payload;
+  std::string encoding;
+};
+
 struct GateState {
   mutable std::mutex mutex;
   std::condition_variable condition;
   bool block_put = false;
-  bool block_get = false;
+  bool block_explicit_get = false;
   bool block_list = false;
   int put_entered = 0;
-  int get_entered = 0;
+  int explicit_get_entered = 0;
   int list_entered = 0;
+  bool put_completed = false;
+  bool explicit_get_completed = false;
+  bool list_completed = false;
 };
 
 class BlockingRocksDbEngine final : public sitos::StorageEngine {
  public:
   BlockingRocksDbEngine(std::unique_ptr<sitos::RocksDBEngine> engine,
-                        std::shared_ptr<GateState> gates, std::shared_ptr<bool> destroyed)
+                        std::shared_ptr<GateState> gates,
+                        std::shared_ptr<std::atomic<bool>> destroyed)
       : engine_(std::move(engine)), gates_(std::move(gates)), destroyed_(std::move(destroyed)) {}
 
-  ~BlockingRocksDbEngine() override { *destroyed_ = true; }
+  ~BlockingRocksDbEngine() override { destroyed_->store(true, std::memory_order_release); }
 
   bool Put(std::string_view key, sitos::Bytes value) override {
     Wait(gates_->block_put, gates_->put_entered);
-    return engine_->Put(key, value);
+    const bool result = engine_->Put(key, value);
+    Complete(gates_->put_completed);
+    return result;
   }
 
   bool Delete(std::string_view key) override { return engine_->Delete(key); }
 
   bool Get(std::string_view key, const sitos::EntrySink& sink) const override {
-    Wait(gates_->block_get, gates_->get_entered);
-    return engine_->Get(key, sink);
+    const bool designated = key == "seed";
+    if (designated) Wait(gates_->block_explicit_get, gates_->explicit_get_entered);
+    const bool result = engine_->Get(key, sink);
+    if (designated) Complete(gates_->explicit_get_completed);
+    return result;
   }
 
   bool List(std::string_view prefix, const sitos::EntrySink& sink) const override {
     Wait(gates_->block_list, gates_->list_entered);
-    return engine_->List(prefix, sink);
+    const bool result = engine_->List(prefix, sink);
+    Complete(gates_->list_completed);
+    return result;
   }
 
   std::shared_ptr<const sitos::StorageReader> TakeSnapshot() const override {
@@ -124,17 +142,23 @@ class BlockingRocksDbEngine final : public sitos::StorageEngine {
  private:
   void Wait(bool& blocked, int& entered) const {
     std::unique_lock lock(gates_->mutex);
-    if (!blocked) {
-      return;
-    }
+    if (!blocked) return;
     ++entered;
     gates_->condition.notify_all();
     gates_->condition.wait(lock, [&] { return !blocked; });
   }
 
+  void Complete(bool& completed) const {
+    {
+      std::scoped_lock lock(gates_->mutex);
+      completed = true;
+    }
+    gates_->condition.notify_all();
+  }
+
   std::unique_ptr<sitos::RocksDBEngine> engine_;
   std::shared_ptr<GateState> gates_;
-  std::shared_ptr<bool> destroyed_;
+  std::shared_ptr<std::atomic<bool>> destroyed_;
 };
 
 class ScopedRoot {
@@ -192,14 +216,26 @@ class ThreadScope {
     threads_.emplace_back(std::forward<Function>(function));
   }
 
-  void Release() {
+  void ReleasePut() {
     {
       std::scoped_lock lock(gates_->mutex);
       gates_->block_put = false;
-      gates_->block_get = false;
+    }
+    gates_->condition.notify_all();
+  }
+
+  void ReleaseGetAndList() {
+    {
+      std::scoped_lock lock(gates_->mutex);
+      gates_->block_explicit_get = false;
       gates_->block_list = false;
     }
     gates_->condition.notify_all();
+  }
+
+  void Release() {
+    ReleasePut();
+    ReleaseGetAndList();
   }
 
   void JoinAll() {
@@ -219,8 +255,14 @@ bool WaitForMaterialization(std::chrono::milliseconds timeout,
                             const std::shared_ptr<GateState>& gates) {
   std::unique_lock lock(gates->mutex);
   return gates->condition.wait_for(lock, timeout, [&] {
-    return gates->put_entered > 0 && gates->get_entered > 0 && gates->list_entered > 0;
+    return gates->put_entered > 0 && gates->explicit_get_entered > 0 && gates->list_entered > 0;
   });
+}
+
+bool WaitForCompletion(std::chrono::milliseconds timeout, const std::shared_ptr<GateState>& gates,
+                       bool GateState::*completed) {
+  std::unique_lock lock(gates->mutex);
+  return gates->condition.wait_for(lock, timeout, [&] { return gates.get()->*completed; });
 }
 
 bool EnsureDirectory(const std::filesystem::path& path) {
@@ -237,7 +279,7 @@ TEST(RocksDBBufferLifecycleTest, CloseReleasesEngineBeforeReturn) {
   RocksDbTransport transport;
   ScopedRoot root("close");
   auto gates = std::make_shared<GateState>();
-  auto destroyed = std::make_shared<bool>(false);
+  auto destroyed = std::make_shared<std::atomic<bool>>(false);
   sitos::StorageNode node{transport};
   ASSERT_TRUE(node.Start(
       std::make_shared<sitos::InMemoryEngine>(),
@@ -250,35 +292,48 @@ TEST(RocksDBBufferLifecycleTest, CloseReleasesEngineBeforeReturn) {
              std::make_unique<BlockingRocksDbEngine>(std::move(opened).Value(), gates, destroyed));
        }}));
   ASSERT_TRUE(node.CreateSession("session", {.durable_buffers = true}).IsOk());
+  ASSERT_TRUE(transport.PutSample("sitos/buffers/session/durable/seed", {std::byte{3}}).IsOk());
   {
     std::scoped_lock lock(gates->mutex);
     gates->block_put = true;
-    gates->block_get = true;
+    gates->block_explicit_get = true;
     gates->block_list = true;
   }
 
   std::optional<sitos::Result<void>> put_result;
   std::optional<sitos::Result<void>> get_result;
   std::optional<sitos::Result<void>> list_result;
+  std::vector<Reply> get_replies;
+  std::vector<Reply> list_replies;
   ThreadScope threads(gates);
   threads.Start([&] {
-    put_result = transport.PutSample("sitos/buffers/session/durable/key", {std::byte{7}});
+    put_result = transport.PutSample("sitos/buffers/session/durable/written", {std::byte{7}});
   });
   threads.Start([&] {
     get_result = transport.Get(
-        "sitos/buffers/session/durable/key", [](auto, auto, auto) { return true; },
+        "sitos/buffers/session/durable/seed",
+        [&](std::string_view key, std::span<const std::byte> payload, sitos::Encoding encoding) {
+          get_replies.push_back(
+              {std::string(key), {payload.begin(), payload.end()}, std::move(encoding.id)});
+          return true;
+        },
         std::chrono::seconds(1));
   });
   threads.Start([&] {
     list_result = transport.Get(
-        "sitos/buffers/session/durable/**", [](auto, auto, auto) { return true; },
+        "sitos/buffers/session/durable/**",
+        [&](std::string_view key, std::span<const std::byte> payload, sitos::Encoding encoding) {
+          list_replies.push_back(
+              {std::string(key), {payload.begin(), payload.end()}, std::move(encoding.id)});
+          return true;
+        },
         std::chrono::seconds(1));
   });
 
   if (!WaitForMaterialization(std::chrono::seconds(5), gates)) {
     threads.Release();
     threads.JoinAll();
-    ADD_FAILURE() << "Put/Get/List did not all reach the real RocksDB barrier";
+    ADD_FAILURE() << "designated real-engine Put/Get/List operations did not all enter barriers";
     return;
   }
 
@@ -291,11 +346,28 @@ TEST(RocksDBBufferLifecycleTest, CloseReleasesEngineBeforeReturn) {
   const bool closing_seen =
       sitos::storage_node_test_access::StorageNodeTestAccess::WaitForClosing(node, "session");
   const bool close_done_while_blocked = close_done.load(std::memory_order_acquire);
-  threads.Release();
+
+  threads.ReleasePut();
+  if (!WaitForCompletion(std::chrono::seconds(5), gates, &GateState::put_completed)) {
+    threads.Release();
+    threads.JoinAll();
+    ADD_FAILURE() << "real RocksDB PUT did not complete after its gate was released";
+    return;
+  }
+  threads.ReleaseGetAndList();
   threads.JoinAll();
 
+  bool get_completed = false;
+  bool list_completed = false;
+  {
+    std::scoped_lock lock(gates->mutex);
+    get_completed = gates->explicit_get_completed;
+    list_completed = gates->list_completed;
+  }
   EXPECT_TRUE(closing_seen);
   EXPECT_FALSE(close_done_while_blocked);
+  EXPECT_TRUE(get_completed);
+  EXPECT_TRUE(list_completed);
   ASSERT_TRUE(put_result.has_value());
   ASSERT_TRUE(get_result.has_value());
   ASSERT_TRUE(list_result.has_value());
@@ -304,7 +376,24 @@ TEST(RocksDBBufferLifecycleTest, CloseReleasesEngineBeforeReturn) {
   EXPECT_TRUE(get_result->IsOk());
   EXPECT_TRUE(list_result->IsOk());
   EXPECT_TRUE(close_result->IsOk());
-  EXPECT_TRUE(*destroyed);
+  EXPECT_EQ(get_replies.size(), 1u);
+  ASSERT_EQ(get_replies.size(), 1u);
+  EXPECT_EQ(get_replies[0].key, "sitos/buffers/session/durable/seed");
+  EXPECT_EQ(get_replies[0].payload, (std::vector<std::byte>{std::byte{3}}));
+  EXPECT_EQ(get_replies[0].encoding, "zenoh/bytes");
+
+  std::map<std::string, Reply> listed;
+  for (const auto& reply : list_replies) {
+    ASSERT_TRUE(listed.emplace(reply.key, reply).second);
+  }
+  ASSERT_EQ(listed.size(), 2u);
+  EXPECT_EQ(listed.at("sitos/buffers/session/durable/seed").payload,
+            (std::vector<std::byte>{std::byte{3}}));
+  EXPECT_EQ(listed.at("sitos/buffers/session/durable/written").payload,
+            (std::vector<std::byte>{std::byte{7}}));
+  EXPECT_EQ(listed.at("sitos/buffers/session/durable/seed").encoding, "zenoh/bytes");
+  EXPECT_EQ(listed.at("sitos/buffers/session/durable/written").encoding, "zenoh/bytes");
+  EXPECT_TRUE(destroyed->load(std::memory_order_acquire));
   EXPECT_GT(std::filesystem::remove_all(root.Path()), 0u);
   EXPECT_FALSE(std::filesystem::exists(root.Path()));
 }
@@ -328,9 +417,9 @@ TEST(RocksDBBufferLifecycleTest, SameSidRecreationUsesFreshEngine) {
                  return sitos::Result<std::unique_ptr<sitos::StorageEngine>>::ErrFrom(opened);
                }
                return sitos::Result<std::unique_ptr<sitos::StorageEngine>>::Ok(
-                   std::make_unique<BlockingRocksDbEngine>(std::move(opened).Value(),
-                                                           std::make_shared<GateState>(),
-                                                           std::make_shared<bool>(false)));
+                   std::make_unique<BlockingRocksDbEngine>(
+                       std::move(opened).Value(), std::make_shared<GateState>(),
+                       std::make_shared<std::atomic<bool>>(false)));
              }}));
   ASSERT_TRUE(EnsureDirectory(first_root));
   ASSERT_TRUE(node.CreateSession("session", {.durable_buffers = true}).IsOk());
