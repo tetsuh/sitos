@@ -98,3 +98,37 @@ validate_consumer("${_on_moved}" "${_on_consumer}-cmake-root"
   "-DZENOHC_ROOT=${_zenoh_root}")
 validate_consumer("${_on_moved}" "${_on_consumer}-environment-root"
   "-DZENOHC_ROOT_ENV=${_zenoh_root}")
+
+# The final ADR-0032 integration boundary is validated in one combined tree as well. The
+# installed consumer is still configure/build/link-only; runtime RocksDB probes remain owned by
+# the vcpkg validation lane. Standard package jobs omit VCPKG_ROOT and retain their existing
+# Zenoh-only and no-feature lanes.
+if(DEFINED VCPKG_ROOT AND NOT "${VCPKG_ROOT}" STREQUAL "")
+set(_combined_build "${WORK_DIR}/combined-build")
+set(_combined_prefix "${WORK_DIR}/combined-prefix")
+set(_combined_consumer "${WORK_DIR}/combined-consumer")
+run_checked(
+  "${CMAKE_COMMAND}" -S "${SITOS_SOURCE_DIR}" -B "${_combined_build}"
+  -G "${CMAKE_GENERATOR}" -DCMAKE_BUILD_TYPE=Release
+  -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=ON -DSITOS_WITH_ROCKSDB=ON
+  "-DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+  "-DVCPKG_ROOT=${VCPKG_ROOT}" "-DVCPKG_TARGET_TRIPLET=${TRIPLET}"
+  "-DVCPKG_INSTALLED_DIR=${_combined_build}/vcpkg_installed"
+  "-DVCPKG_MANIFEST_FEATURES=rocksdb")
+run_checked("${CMAKE_COMMAND}" --build "${_combined_build}")
+string(CONCAT _combined_test_regex
+  "BufferLateJoinTest|RawZenohClientCanUseMixedSessionBuffers|"
+  "RawZenohDurableLateJoinPreservesDistinctKeys|RawZenohBufferInteropFixtureBoundaries|"
+  "RocksDBBufferLifecycleTest")
+run_checked(
+  "${CMAKE_CTEST_COMMAND}" --test-dir "${_combined_build}" --output-on-failure
+  --no-tests=error -R "${_combined_test_regex}")
+run_checked("${CMAKE_COMMAND}" --install "${_combined_build}" --prefix "${_combined_prefix}")
+validate_clean_install("${_combined_prefix}")
+run_checked("${CMAKE_COMMAND}" -E copy_directory "${_combined_prefix}" "${_combined_prefix}-relocated")
+validate_relocation("${_combined_prefix}-relocated" "${_combined_prefix}" "${_combined_build}")
+validate_consumer("${_combined_prefix}-relocated" "${_combined_consumer}"
+  "-DSITOS_PACKAGE_CONSUMER_WITH_ROCKSDB=ON"
+  "-DRocksDB_DIR=${_combined_build}/vcpkg_installed/${TRIPLET}/share/rocksdb"
+  "-DZENOHC_ROOT=${_combined_build}/_deps/zenohc-src")
+endif()

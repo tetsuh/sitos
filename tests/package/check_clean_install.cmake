@@ -24,3 +24,13 @@ if(_test_libraries)
   list(JOIN _test_libraries "\n  " _test_library_list)
   message(FATAL_ERROR "Test-only libraries were installed:\n  ${_test_library_list}")
 endif()
+
+file(GLOB_RECURSE _raw_fixture_artifacts LIST_DIRECTORIES FALSE
+  "${SITOS_PREFIX}/sitos_raw_zenoh_fixture*"
+  "${SITOS_PREFIX}/sitos_raw_zenoh_buffer_fixture*"
+  "${SITOS_PREFIX}/bin/sitos_raw_zenoh_fixture*"
+  "${SITOS_PREFIX}/bin/sitos_raw_zenoh_buffer_fixture*")
+if(_raw_fixture_artifacts)
+  list(JOIN _raw_fixture_artifacts "\n  " _raw_fixture_list)
+  message(FATAL_ERROR "Raw Zenoh fixture artifacts were installed:\n  ${_raw_fixture_list}")
+endif()

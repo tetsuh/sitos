@@ -189,6 +189,16 @@ if(SITOS_WITH_ROCKSDB)
     ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
   sitos_enable_warnings(sitos_rocksdb_test_access_test)
   gtest_discover_tests(sitos_rocksdb_test_access_test DISCOVERY_MODE PRE_TEST)
+
+  add_executable(sitos_rocksdb_buffer_lifecycle_test
+    integration/rocksdb_buffer_lifecycle_test.cpp)
+  target_link_libraries(sitos_rocksdb_buffer_lifecycle_test
+    PRIVATE GTest::gtest_main sitos::sitos)
+  target_include_directories(sitos_rocksdb_buffer_lifecycle_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+  sitos_enable_warnings(sitos_rocksdb_buffer_lifecycle_test)
+  gtest_add_tests(
+    TARGET sitos_rocksdb_buffer_lifecycle_test
+    SOURCES integration/rocksdb_buffer_lifecycle_test.cpp)
 endif()
 
 add_executable(sitos_in_memory_engine_test
@@ -251,6 +261,16 @@ target_include_directories(sitos_storage_node_buffer_lifecycle_test PRIVATE ${PR
 sitos_enable_warnings(sitos_storage_node_buffer_lifecycle_test)
 gtest_add_tests(TARGET sitos_storage_node_buffer_lifecycle_test SOURCES unit/storage_node_buffer_lifecycle_test.cpp)
 
+add_executable(sitos_buffer_late_join_test
+  integration/buffer_late_join_test.cpp)
+target_link_libraries(sitos_buffer_late_join_test
+  PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_buffer_late_join_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+sitos_enable_warnings(sitos_buffer_late_join_test)
+gtest_add_tests(
+  TARGET sitos_buffer_late_join_test
+  SOURCES integration/buffer_late_join_test.cpp)
+
 add_executable(sitos_session_view_test
   unit/session_view_test.cpp)
 target_link_libraries(sitos_session_view_test
@@ -281,6 +301,12 @@ if(SITOS_WITH_ZENOH)
   sitos_enable_warnings(sitos_raw_zenoh_fixture)
   sitos_copy_zenohc(sitos_raw_zenoh_fixture)
 
+  add_executable(sitos_raw_zenoh_buffer_fixture
+    interop/raw_zenoh_buffer_fixture.cpp)
+  target_link_libraries(sitos_raw_zenoh_buffer_fixture PRIVATE sitos::sitos)
+  sitos_enable_warnings(sitos_raw_zenoh_buffer_fixture)
+  sitos_copy_zenohc(sitos_raw_zenoh_buffer_fixture)
+
   find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
   add_test(
     NAME RawZenohClientCanPutAndGet
@@ -293,10 +319,34 @@ if(SITOS_WITH_ZENOH)
             "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_single.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_wheel_boundary.py"
             -k "not test_raw_zenoh_client_can_put_and_get")
+  add_test(
+    NAME RawZenohClientCanUseMixedSessionBuffers
+    COMMAND "${Python3_EXECUTABLE}" -m pytest -q
+            "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_buffer.py"
+            -k test_raw_zenoh_client_can_use_mixed_session_buffers)
+  add_test(
+    NAME RawZenohDurableLateJoinPreservesDistinctKeys
+    COMMAND "${Python3_EXECUTABLE}" -m pytest -q
+            "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_buffer.py"
+            -k test_raw_zenoh_durable_late_join_preserves_distinct_keys)
+  add_test(
+    NAME RawZenohBufferInteropFixtureBoundaries
+    COMMAND "${Python3_EXECUTABLE}" -m pytest -q
+            "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_buffer.py"
+            -k test_raw_zenoh_buffer_interop_fixture_boundaries)
   set_tests_properties(
     RawZenohClientCanPutAndGet RawZenohInteropFixtureBoundaries
+    RawZenohClientCanUseMixedSessionBuffers RawZenohDurableLateJoinPreservesDistinctKeys
+    RawZenohBufferInteropFixtureBoundaries
     PROPERTIES
       ENVIRONMENT "SITOS_RAW_ZENOH_FIXTURE=$<TARGET_FILE:sitos_raw_zenoh_fixture>"
+      RUN_SERIAL TRUE
+      TIMEOUT 60)
+  set_tests_properties(
+    RawZenohClientCanUseMixedSessionBuffers RawZenohDurableLateJoinPreservesDistinctKeys
+    RawZenohBufferInteropFixtureBoundaries
+    PROPERTIES
+      ENVIRONMENT "SITOS_RAW_ZENOH_FIXTURE=$<TARGET_FILE:sitos_raw_zenoh_buffer_fixture>"
       RUN_SERIAL TRUE
       TIMEOUT 60)
 

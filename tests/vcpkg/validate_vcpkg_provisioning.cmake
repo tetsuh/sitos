@@ -91,6 +91,27 @@ run_checked(
   "-DVCPKG_TARGET_TRIPLET=${TRIPLET}"
   "-DVCPKG_INSTALLED_DIR=${_feature_install}")
 run_checked("${CMAKE_COMMAND}" --build "${_sitos_build}")
+
+# Final Issue #56 combined dependency tree: exercise Zenoh and RocksDB together while reusing the
+# pinned vcpkg install. Raw interop dependencies are provisioned by the invoking CI job.
+set(_combined_build "${_work_dir}/sitos-combined-build")
+run_checked(
+  "${CMAKE_COMMAND}" -S "${SITOS_SOURCE_DIR}" -B "${_combined_build}"
+  ${_generator_args} -DCMAKE_BUILD_TYPE=Release
+  -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=ON -DSITOS_WITH_ROCKSDB=ON
+  "-DCMAKE_TOOLCHAIN_FILE=${_toolchain}"
+  "-DVCPKG_MANIFEST_DIR=${SITOS_SOURCE_DIR}"
+  -DVCPKG_MANIFEST_FEATURES=rocksdb
+  "-DVCPKG_TARGET_TRIPLET=${TRIPLET}"
+  "-DVCPKG_INSTALLED_DIR=${_feature_install}")
+run_checked("${CMAKE_COMMAND}" --build "${_combined_build}")
+string(CONCAT _combined_test_regex
+  "BufferLateJoinTest|RawZenohClientCanUseMixedSessionBuffers|"
+  "RawZenohDurableLateJoinPreservesDistinctKeys|RawZenohBufferInteropFixtureBoundaries|"
+  "RocksDBBufferLifecycleTest")
+run_checked(
+  "${CMAKE_CTEST_COMMAND}" --test-dir "${_combined_build}" --output-on-failure
+  --no-tests=error -R "${_combined_test_regex}")
 if(WIN32)
   set(_benchmark_suffix ".exe")
 else()
