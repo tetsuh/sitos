@@ -226,10 +226,17 @@ class ThreadScope {
     gates_->condition.notify_all();
   }
 
-  void ReleaseGetAndList() {
+  void ReleaseGet() {
     {
       std::scoped_lock lock(gates_->mutex);
       gates_->block_explicit_get = false;
+    }
+    gates_->condition.notify_all();
+  }
+
+  void ReleaseList() {
+    {
+      std::scoped_lock lock(gates_->mutex);
       gates_->block_list = false;
     }
     gates_->condition.notify_all();
@@ -237,7 +244,8 @@ class ThreadScope {
 
   void Release() {
     ReleasePut();
-    ReleaseGetAndList();
+    ReleaseGet();
+    ReleaseList();
   }
 
   void JoinAll() {
@@ -354,8 +362,11 @@ TEST(RocksDBBufferLifecycleTest, CloseReleasesEngineBeforeReturn) {
 
   std::optional<sitos::Result<void>> close_result;
   std::atomic<bool> close_done = false;
+  std::atomic<bool> destroyed_at_close_return = false;
   threads.Start([&] {
     close_result = node.CloseSession("session");
+    destroyed_at_close_return.store(destroyed->load(std::memory_order_acquire),
+                                    std::memory_order_release);
     close_done.store(true, std::memory_order_release);
   });
   const bool closing_seen =
@@ -369,7 +380,30 @@ TEST(RocksDBBufferLifecycleTest, CloseReleasesEngineBeforeReturn) {
     ADD_FAILURE() << "real RocksDB PUT did not complete after its gate was released";
     return;
   }
-  threads.ReleaseGetAndList();
+  const bool close_done_after_put = close_done.load(std::memory_order_acquire);
+  const bool destroyed_after_put = destroyed->load(std::memory_order_acquire);
+  EXPECT_FALSE(close_done_after_put);
+  EXPECT_FALSE(destroyed_after_put);
+
+  threads.ReleaseGet();
+  if (!WaitForCompletion(std::chrono::seconds(5), gates, &GateState::explicit_get_completed)) {
+    threads.Release();
+    threads.JoinAll();
+    ADD_FAILURE() << "designated RocksDB Get did not complete after its gate was released";
+    return;
+  }
+  const bool close_done_after_get = close_done.load(std::memory_order_acquire);
+  const bool destroyed_after_get = destroyed->load(std::memory_order_acquire);
+  EXPECT_FALSE(close_done_after_get);
+  EXPECT_FALSE(destroyed_after_get);
+
+  threads.ReleaseList();
+  if (!WaitForCompletion(std::chrono::seconds(5), gates, &GateState::list_completed)) {
+    threads.Release();
+    threads.JoinAll();
+    ADD_FAILURE() << "designated RocksDB List did not complete after its gate was released";
+    return;
+  }
   threads.JoinAll();
 
   bool get_completed = false;
@@ -391,6 +425,7 @@ TEST(RocksDBBufferLifecycleTest, CloseReleasesEngineBeforeReturn) {
   EXPECT_TRUE(get_result->IsOk());
   EXPECT_TRUE(list_result->IsOk());
   EXPECT_TRUE(close_result->IsOk());
+  EXPECT_TRUE(destroyed_at_close_return.load(std::memory_order_acquire));
   EXPECT_EQ(get_replies.size(), 1u);
   ASSERT_EQ(get_replies.size(), 1u);
   EXPECT_EQ(get_replies[0].key, "sitos/buffers/session/durable/seed");

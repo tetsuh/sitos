@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -242,6 +243,7 @@ class LateJoinCollector final {
     try {
       Dispatch(std::move(batch), observation_lock);
     } catch (...) {
+      observer_failed_.store(true, std::memory_order_release);
       if (observation_lock.owns_lock()) observation_lock.unlock();
       MarkFailed();
       return false;
@@ -359,10 +361,13 @@ class LateJoinCollector final {
       dispatch.push_back(observation);
       if (live_boundary_observer_) live_boundary_observer_();
       observation_lock.lock();
+      if (observer_failed_.load(std::memory_order_acquire)) return;
     }
     try {
       Dispatch(std::move(dispatch), observation_lock);
     } catch (...) {
+      observer_failed_.store(true, std::memory_order_release);
+      if (observation_lock.owns_lock()) observation_lock.unlock();
       MarkFailedPhase();
     }
   }
@@ -406,6 +411,7 @@ class LateJoinCollector final {
   std::string selector_;
   std::function<void(const Observation&)> observer_;
   std::function<void()> live_boundary_observer_;
+  std::atomic<bool> observer_failed_ = false;
   mutable std::mutex collector_mutex_;
   std::mutex observation_mutex_;
   std::optional<sitos::Subscription> subscription_;
