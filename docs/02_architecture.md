@@ -213,15 +213,21 @@ Session resources. Readers copy ownership only while the record is active, so cl
 invalidate an in-flight reply. The node-wide callback gate still makes `Stop()` quiescent.
 
 The phase contract is exact: `absent → Creating → Active` for creation, and
-`Active → Closing → absent` for close. `CreateSession` reserves a non-queryable
+`Active → Closing → absent` for close. If the node State is absent, or a callback has captured a
+State whose lifecycle gate is closed before admission, both `CreateSession(std::string_view)`
+overloads return `Status::InvalidArgument` with cause `std::errc::invalid_argument` and an empty
+message, as required by DEC-140-STOP-STATUS-002. This method-specific exception is distinct from
+generic disconnected statuses documented for other APIs. `CreateSession` reserves a non-queryable
 `Creating` record before external factory creation. Creation against `Creating` or `Closing` returns
 `std::errc::operation_in_progress`, while a duplicate `Active` creation retains
 `std::errc::file_exists`. The creator commits only after taking `session_mutex` and verifying
 that the same reservation still exists and remains `Creating`; it then changes that record to
 `Active`. The reservation lock is released before external factory or engine operations and
-logging. `CreateSession` uses the callback-shared State generation captured by the node, so its
-factory and resources cannot come from a different Start generation. The factory is moved from
-`StorageNodeConfig` into that State before Transport declarations.
+logging. Independent `CreateSession` calls may execute concurrently and may invoke the stored
+factory concurrently; a factory implementation with mutable shared state is responsible for
+synchronizing that state. `CreateSession` uses the callback-shared State generation captured by the
+node, so its factory and resources cannot come from a different Start generation. The factory is
+moved from `StorageNodeConfig` into that State before Transport declarations.
 
 Only a valid, non-null durable engine may commit `Creating` to `Active`. For a
 Session requesting durable buffers, a factory `Err` is returned with its status, cause, and

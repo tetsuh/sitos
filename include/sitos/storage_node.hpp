@@ -27,6 +27,10 @@
 
 namespace sitos {
 
+/// Creates the one durable engine owned by a durable-enabled Session.
+/// CreateSession calls may run concurrently; factories with mutable shared state must synchronize
+/// that state themselves. The factory must not synchronously wait for same-node lifecycle
+/// quiescence operations.
 using DurableBufferEngineFactory =
     std::function<Result<std::unique_ptr<StorageEngine>>(std::string_view sid)>;
 
@@ -78,12 +82,14 @@ class StorageNode {
 
   /// Opens a session: takes an engine snapshot for snap/<sid>/** reads and
   /// creates an empty overlay for session/<sid>/** reads and writes. Fails with
-  /// invalid_argument for a malformed sid or a stopped node, and file_exists if
+  /// invalid_argument for a malformed sid, an absent node State, or a captured State whose
+  /// lifecycle gate is closed; the latter two return an empty message. Returns file_exists if
   /// the session already exists. [F10]
   Result<void> CreateSession(std::string_view sid);
 
-  /// Opens a session with explicit durable and ephemeral buffer capabilities.
-  /// Durable creation requires the configured factory and reports factory/setup failures.
+  /// Opens a session with explicit durable and ephemeral buffer capabilities. The same
+  /// stopped/captured-closed-gate InvalidArgument contract applies. Durable creation requires the
+  /// configured factory and reports factory/setup failures.
   Result<void> CreateSession(std::string_view sid, SessionOptions options);
 
   /// Closes a session: releases its snapshot, overlay, and durable engine, then removes its

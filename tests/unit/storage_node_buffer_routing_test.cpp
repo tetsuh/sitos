@@ -463,10 +463,18 @@ TEST_F(StorageNodeBufferRoutingTest, DurableQuerySelectorsAndFailures) {
   EXPECT_EQ(partial.replies.size(), 1u);
   EXPECT_EQ(partial.reply_calls, 1);
   EXPECT_EQ(partial.reply_attempts, 2);
+  const int throwing_handler_before = diagnostic_count("durable buffer query failed");
+  const int throwing_handler_attempts = log_sink->write_attempts;
   auto throwing = transport.Query("sitos/buffers/s/durable/**", 1, true);
   EXPECT_EQ(throwing.replies.size(), 1u);
   EXPECT_EQ(throwing.reply_calls, 1);
   EXPECT_EQ(throwing.reply_attempts, 2);
+  EXPECT_EQ(diagnostic_count("durable buffer query failed"), throwing_handler_before + 1);
+  EXPECT_EQ(log_sink->write_attempts, throwing_handler_attempts + 1);
+  const auto throwing_handler_messages = log_sink->Messages();
+  ASSERT_EQ(throwing_handler_messages.size(), throwing_handler_before + 1);
+  EXPECT_EQ(throwing_handler_messages.back(), "durable buffer query failed");
+  EXPECT_EQ(throwing_handler_messages.back().find("sentinel"), std::string::npos);
   const int returned_reply_before = diagnostic_count("durable buffer query failed");
   const int returned_reply_attempts = log_sink->write_attempts;
   auto returned_failure = transport.Query("sitos/buffers/s/durable/**", 1);
@@ -476,7 +484,7 @@ TEST_F(StorageNodeBufferRoutingTest, DurableQuerySelectorsAndFailures) {
   EXPECT_EQ(log_sink->write_attempts, returned_reply_attempts + 1);
   const int throwing_reply_attempts = log_sink->write_attempts;
   log_sink->throwing = true;
-  EXPECT_NO_THROW(transport.Query("sitos/buffers/s/durable/**", 1));
+  EXPECT_NO_THROW(transport.Query("sitos/buffers/s/durable/**", 1, true));
   EXPECT_EQ(log_sink->write_attempts, throwing_reply_attempts + 1);
   log_sink->throwing = false;
 }
