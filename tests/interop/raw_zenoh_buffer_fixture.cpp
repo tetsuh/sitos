@@ -189,13 +189,30 @@ int main(int argc, char** argv) {
                             ("sitos-buffer-" + std::to_string(std::hash<std::string>{}(prefix)));
   std::error_code cleanup_error;
   std::filesystem::remove_all(durable_root, cleanup_error);
+  if (cleanup_error) {
+    std::cerr << "durable root cleanup failed: " << cleanup_error.message() << '\n';
+    return 6;
+  }
+  std::filesystem::create_directories(durable_root, cleanup_error);
+  if (cleanup_error || !std::filesystem::is_directory(durable_root, cleanup_error) ||
+      cleanup_error) {
+    std::cerr << "durable root creation failed: "
+              << (cleanup_error ? cleanup_error.message() : "not a directory") << '\n';
+    return 6;
+  }
   sitos::StorageNode node(*transport);
   const auto start_result = node.Start(
       engine, {.prefix = prefix,
                .log_sink = nullptr,
                .durable_buffer_engine_factory = [durable_root](std::string_view sid) {
 #if defined(SITOS_WITH_ROCKSDB)
-                 return sitos::RocksDBEngine::Open((durable_root / std::string(sid)).string());
+                 auto opened =
+                     sitos::RocksDBEngine::Open((durable_root / std::string(sid)).string());
+                 if (!opened.IsOk()) {
+                   return sitos::Result<std::unique_ptr<sitos::StorageEngine>>::ErrFrom(opened);
+                 }
+                 return sitos::Result<std::unique_ptr<sitos::StorageEngine>>::Ok(
+                     std::unique_ptr<sitos::StorageEngine>(std::move(opened).Value()));
 #else
                  static_cast<void>(sid);
                  return sitos::Result<std::unique_ptr<sitos::StorageEngine>>::Ok(
@@ -226,6 +243,11 @@ int main(int argc, char** argv) {
          HandleCommand(command, store, node, durable_root, protocol)) {
   }
   node.Stop();
+  cleanup_error.clear();
   std::filesystem::remove_all(durable_root, cleanup_error);
+  if (cleanup_error) {
+    std::cerr << "durable root final cleanup failed: " << cleanup_error.message() << '\n';
+    return 6;
+  }
   return 0;
 }

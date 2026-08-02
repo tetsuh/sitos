@@ -354,11 +354,13 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
   * Combined Windows/Linux Zenoh-ON+RocksDB-ON validation passes while preserving
     Zenoh-ON/RocksDB-OFF and RocksDB-ON/Zenoh-OFF/vcpkg configurations. Buffer payloads remain
     plain `zenoh/bytes`.
-  * Validation classification is explicit: the six late-join/raw behavior cases are
-    pre-implementation behavioral RED; the two RocksDB lifecycle cases and inherited #139-#141
-    checks are review-driven regression; combined package/platform execution is co-developed
-    integration coverage; workflow/docs-only checks are N/A with a recorded reason. No RED history
-    may be fabricated or relabeled.
+  * Validation classification is explicit and follows published `DEC-56-TDD-EXCEPTION-001`: the
+    six attempted late-join/raw RED runs are retained as partial/incorrect factual evidence and do
+    not satisfy the TDD gate; every corrected or newly strengthened assertion for those six cases
+    is review-driven regression. The two RocksDB lifecycle cases and inherited #139-#141 checks are
+    review-driven regression; combined package/platform execution is co-developed integration
+    coverage; workflow/docs-only checks are N/A with a recorded reason. No RED history may be
+    fabricated or relabeled.
 * Depends on: #8, #12, #29, #121, #139, #140, #141
 * F10 applies here as the Session resource-release principle: CloseSession releases the durable
   buffer engine and other owned resources after callback quiescence.

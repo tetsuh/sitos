@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -45,6 +46,14 @@ class LateJoinTransport final : public sitos::Transport {
         callbacks.push_back(callback);
       }
     }
+    {
+      std::unique_lock lock(copied_callback_mutex);
+      if (park_copied_callbacks) {
+        copied_callbacks_entered = true;
+        copied_callback_cv.notify_all();
+        copied_callback_cv.wait(lock, [&] { return !park_copied_callbacks; });
+      }
+    }
     for (const auto& callback : callbacks) callback(sample);
     return sitos::Result<void>::Ok();
   }
@@ -63,16 +72,28 @@ class LateJoinTransport final : public sitos::Transport {
           if (fail_after_replies >= 0 && reply_count > fail_after_replies) {
             return sitos::Result<void>::Err(std::make_error_code(std::errc::broken_pipe));
           }
-          if (sink(key, payload, std::move(encoding))) return sitos::Result<void>::Ok();
-          return sitos::Result<void>::Err(std::make_error_code(std::errc::broken_pipe));
+          if (!sink(key, payload, std::move(encoding))) {
+            return sitos::Result<void>::Err(std::make_error_code(std::errc::broken_pipe));
+          }
+          if (reply_count == 1) {
+            std::unique_lock lock(reply_mutex);
+            if (block_after_first_reply) {
+              first_reply_entered = true;
+              reply_cv.notify_all();
+              reply_cv.wait(lock, [&] { return !block_after_first_reply; });
+            }
+          }
+          return sitos::Result<void>::Ok();
         });
     query.keyexpr = std::string(keyexpr);
     if (queryable_) queryable_(query);
-    if (block_get) {
+    {
       std::unique_lock lock(get_mutex);
-      get_entered = true;
-      get_cv.notify_all();
-      get_cv.wait(lock, [&] { return !block_get; });
+      if (block_get) {
+        get_entered = true;
+        get_cv.notify_all();
+        get_cv.wait(lock, [&] { return !block_get; });
+      }
     }
     if (fail_after_replies >= 0 && reply_count > fail_after_replies) {
       return sitos::Result<void>::Err(std::make_error_code(std::errc::broken_pipe));
@@ -86,9 +107,10 @@ class LateJoinTransport final : public sitos::Transport {
       return sitos::Result<sitos::Subscription>::Err(
           std::make_error_code(std::errc::permission_denied));
     }
-    const int id = next_subscriber_id++;
+    int id = 0;
     {
       std::scoped_lock lock(subscriber_mutex_);
+      id = next_subscriber_id++;
       subscribers_.emplace(id, std::move(callback));
     }
     return sitos::Result<sitos::Subscription>::Ok(
@@ -118,13 +140,47 @@ class LateJoinTransport final : public sitos::Transport {
     get_cv.notify_all();
   }
 
+  void WaitForFirstReply() {
+    std::unique_lock lock(reply_mutex);
+    reply_cv.wait(lock, [&] { return first_reply_entered; });
+  }
+
+  void ReleaseFirstReply() {
+    {
+      std::scoped_lock lock(reply_mutex);
+      block_after_first_reply = false;
+    }
+    reply_cv.notify_all();
+  }
+
+  void WaitForCopiedCallbacks() {
+    std::unique_lock lock(copied_callback_mutex);
+    copied_callback_cv.wait(lock, [&] { return copied_callbacks_entered; });
+  }
+
+  void ReleaseCopiedCallbacks() {
+    {
+      std::scoped_lock lock(copied_callback_mutex);
+      park_copied_callbacks = false;
+    }
+    copied_callback_cv.notify_all();
+  }
+
   bool query_failure = false;
   bool declaration_failure = false;
   int fail_after_replies = -1;
   bool block_get = false;
   bool get_entered = false;
+  bool block_after_first_reply = false;
+  bool first_reply_entered = false;
+  bool park_copied_callbacks = false;
+  bool copied_callbacks_entered = false;
   std::mutex get_mutex;
   std::condition_variable get_cv;
+  std::mutex reply_mutex;
+  std::condition_variable reply_cv;
+  std::mutex copied_callback_mutex;
+  std::condition_variable copied_callback_cv;
 
  private:
   int next_subscriber_id = 1;
@@ -140,42 +196,49 @@ class LateJoinCollector final {
       : transport_(transport), selector_(std::move(selector)), observer_(std::move(observer)) {}
 
   bool Join() {
+    auto callback_state = std::make_shared<CallbackState>();
+    callback_state->handler = [this](const sitos::TransportSample& sample) { OnSample(sample); };
     auto declaration = transport_.DeclareSubscriber(
-        selector_, [this](const sitos::TransportSample& sample) { OnSample(sample); });
+        selector_,
+        [callback_state](const sitos::TransportSample& sample) { callback_state->Invoke(sample); });
     if (!declaration.IsOk()) {
-      std::scoped_lock lock(collector_mutex_);
-      phase_ = Phase::Failed;
+      MarkFailed();
       return false;
     }
     {
       std::scoped_lock lock(collector_mutex_);
+      callback_state_ = callback_state;
       subscription_ = std::move(declaration).Value();
     }
 
     const auto result = transport_.Get(
         selector_,
         [this](std::string_view key, std::span<const std::byte> payload, sitos::Encoding encoding) {
+          std::scoped_lock lock(collector_mutex_);
           Observation observation{
               std::string(key), {payload.begin(), payload.end()}, std::move(encoding.id)};
-          std::scoped_lock lock(collector_mutex_);
-          return AddObservation(observation);
+          return AddMaterialized(observation);
         },
         std::chrono::seconds(1));
+
     std::vector<Observation> batch;
+    std::unique_lock observation_lock(observation_mutex_, std::defer_lock);
     {
       std::unique_lock lock(collector_mutex_);
       if (!result.IsOk() || phase_ == Phase::Failed) {
-        phase_ = Phase::Failed;
-        subscription_.reset();
-        pending_.clear();
+        lock.unlock();
+        MarkFailed();
         return false;
       }
-      observation_mutex_.lock();
+      observation_lock.lock();
       phase_ = Phase::Live;
-      batch = std::move(pending_);
-      pending_.clear();
+      batch = std::move(materialized_);
+      batch.insert(batch.end(), std::make_move_iterator(buffered_.begin()),
+                   std::make_move_iterator(buffered_.end()));
+      materialized_.clear();
+      buffered_.clear();
     }
-    DispatchAndUnlock(std::move(batch));
+    Dispatch(std::move(batch), observation_lock);
     return true;
   }
 
@@ -184,57 +247,137 @@ class LateJoinCollector final {
     return phase_ == Phase::Failed;
   }
 
-  ~LateJoinCollector() {
-    std::scoped_lock lock(collector_mutex_);
-    phase_ = Phase::Failed;
-    subscription_.reset();
-    pending_.clear();
-  }
+  ~LateJoinCollector() { MarkFailed(); }
 
  private:
   enum class Phase { Collecting, Live, Failed };
+  enum class Source { Materialized, Buffered, Live };
+
+  struct Seen {
+    Observation observation;
+    Source source;
+  };
+
+  struct CallbackState {
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool active = true;
+    size_t in_flight = 0;
+    std::function<void(const sitos::TransportSample&)> handler;
+
+    void Invoke(const sitos::TransportSample& sample) {
+      {
+        std::scoped_lock lock(mutex);
+        if (!active) return;
+        ++in_flight;
+      }
+      struct Admission {
+        CallbackState& state;
+        ~Admission() {
+          std::scoped_lock lock(state.mutex);
+          --state.in_flight;
+          if (state.in_flight == 0) state.condition.notify_all();
+        }
+      } admission{*this};
+      handler(sample);
+    }
+
+    void DeactivateAndDrain() {
+      std::unique_lock lock(mutex);
+      active = false;
+      condition.wait(lock, [&] { return in_flight == 0; });
+      handler = {};
+    }
+  };
 
   static bool Same(const Observation& lhs, const Observation& rhs) {
     return lhs.key == rhs.key && lhs.payload == rhs.payload && lhs.encoding == rhs.encoding;
   }
 
-  bool AddObservation(const Observation& observation) {
-    auto it = seen_.find(observation.key);
-    if (it != seen_.end()) return Same(it->second, observation);
-    seen_.emplace(observation.key, observation);
-    pending_.push_back(observation);
+  bool AddMaterialized(const Observation& observation) {
+    const auto it = seen_.find(observation.key);
+    if (it == seen_.end()) {
+      seen_.emplace(observation.key, Seen{observation, Source::Materialized});
+      materialized_.push_back(observation);
+      return true;
+    }
+    if (!Same(it->second.observation, observation)) {
+      phase_ = Phase::Failed;
+      return false;
+    }
+    if (it->second.source == Source::Buffered) {
+      const auto buffered =
+          std::find_if(buffered_.begin(), buffered_.end(),
+                       [&](const Observation& item) { return item.key == observation.key; });
+      if (buffered != buffered_.end()) buffered_.erase(buffered);
+      it->second.source = Source::Materialized;
+      materialized_.push_back(observation);
+    }
+    return true;
+  }
+
+  bool AddBuffered(const Observation& observation) {
+    const auto it = seen_.find(observation.key);
+    if (it != seen_.end()) {
+      if (!Same(it->second.observation, observation)) phase_ = Phase::Failed;
+      return Same(it->second.observation, observation);
+    }
+    seen_.emplace(observation.key, Seen{observation, Source::Buffered});
+    buffered_.push_back(observation);
     return true;
   }
 
   void OnSample(const sitos::TransportSample& sample) {
-    Observation observation{
-        sample.key, {sample.payload.begin(), sample.payload.end()}, sample.encoding.id};
     std::vector<Observation> dispatch;
+    std::unique_lock observation_lock(observation_mutex_, std::defer_lock);
     {
       std::unique_lock lock(collector_mutex_);
+      Observation observation{
+          sample.key, {sample.payload.begin(), sample.payload.end()}, sample.encoding.id};
       if (phase_ == Phase::Failed) return;
       if (phase_ == Phase::Collecting) {
-        if (!AddObservation(observation)) phase_ = Phase::Failed;
+        AddBuffered(observation);
         return;
       }
       if (const auto it = seen_.find(observation.key); it != seen_.end()) {
-        if (!Same(it->second, observation)) phase_ = Phase::Failed;
+        if (!Same(it->second.observation, observation)) phase_ = Phase::Failed;
         return;
       }
-      if (!AddObservation(observation)) {
-        phase_ = Phase::Failed;
-        return;
-      }
+      AddLive(observation);
       dispatch.push_back(observation);
-      observation_mutex_.lock();
+      observation_lock.lock();
     }
-    for (const auto& item : dispatch) observer_(item);
-    observation_mutex_.unlock();
+    Dispatch(std::move(dispatch), observation_lock);
   }
 
-  void DispatchAndUnlock(std::vector<Observation> batch) {
+  bool AddLive(const Observation& observation) {
+    const auto it = seen_.find(observation.key);
+    if (it != seen_.end()) {
+      if (!Same(it->second.observation, observation)) phase_ = Phase::Failed;
+      return Same(it->second.observation, observation);
+    }
+    seen_.emplace(observation.key, Seen{observation, Source::Live});
+    return true;
+  }
+
+  void Dispatch(std::vector<Observation> batch, std::unique_lock<std::mutex>& observation_lock) {
     for (const auto& observation : batch) observer_(observation);
-    observation_mutex_.unlock();
+    observation_lock.unlock();
+  }
+
+  void MarkFailed() {
+    std::optional<sitos::Subscription> subscription;
+    std::shared_ptr<CallbackState> callback_state;
+    {
+      std::scoped_lock lock(collector_mutex_);
+      phase_ = Phase::Failed;
+      subscription = std::move(subscription_);
+      callback_state = std::move(callback_state_);
+      materialized_.clear();
+      buffered_.clear();
+    }
+    subscription.reset();
+    if (callback_state) callback_state->DeactivateAndDrain();
   }
 
   LateJoinTransport& transport_;
@@ -243,8 +386,10 @@ class LateJoinCollector final {
   mutable std::mutex collector_mutex_;
   std::mutex observation_mutex_;
   std::optional<sitos::Subscription> subscription_;
-  std::map<std::string, Observation> seen_;
-  std::vector<Observation> pending_;
+  std::shared_ptr<CallbackState> callback_state_;
+  std::map<std::string, Seen> seen_;
+  std::vector<Observation> materialized_;
+  std::vector<Observation> buffered_;
   Phase phase_ = Phase::Collecting;
 };
 
@@ -283,15 +428,15 @@ TEST(BufferLateJoinTest, OrdersMaterializedBufferedAndLiveSamples) {
   LateJoinCollector collector(
       fixture.transport, "sitos/buffers/session/durable/**",
       [&](const Observation& observation) { observed.push_back(observation); });
-  fixture.transport.block_get = true;
+  fixture.transport.block_after_first_reply = true;
   std::optional<bool> joined;
   std::thread join([&] { joined = collector.Join(); });
-  fixture.transport.WaitForGet();
-  ASSERT_TRUE(fixture.transport
-                  .Put("sitos/buffers/session/durable/buffered", Bytes({3}), {"zenoh/bytes"}, {})
-                  .IsOk());
-  fixture.transport.ReleaseGet();
+  fixture.transport.WaitForFirstReply();
+  const auto buffered_result = fixture.transport.Put("sitos/buffers/session/durable/buffered",
+                                                     Bytes({3}), {"zenoh/bytes"}, {});
+  fixture.transport.ReleaseFirstReply();
   join.join();
+  ASSERT_TRUE(buffered_result.IsOk());
   ASSERT_TRUE(joined.has_value());
   ASSERT_TRUE(*joined);
   ASSERT_TRUE(
@@ -310,11 +455,12 @@ TEST(BufferLateJoinTest, OrdersMaterializedBufferedAndLiveSamples) {
 TEST(BufferLateJoinTest, DurableLateJoinDoesNotLoseDistinctKeys) {
   LateJoinFixture fixture;
   fixture.Start();
-  for (const auto key : {"a", "b", "c"}) {
-    ASSERT_TRUE(fixture.transport
-                    .Put("sitos/buffers/session/durable/" + std::string(key), Bytes({1}),
-                         {"zenoh/bytes"}, {})
-                    .IsOk());
+  const std::map<std::string, std::vector<std::byte>> expected{
+      {"sitos/buffers/session/durable/a", Bytes({1})},
+      {"sitos/buffers/session/durable/b", Bytes({2})},
+      {"sitos/buffers/session/durable/c", Bytes({3})}};
+  for (const auto& [key, payload] : expected) {
+    ASSERT_TRUE(fixture.transport.Put(key, payload, {"zenoh/bytes"}, {}).IsOk());
   }
 
   std::vector<Observation> observed;
@@ -322,17 +468,28 @@ TEST(BufferLateJoinTest, DurableLateJoinDoesNotLoseDistinctKeys) {
       fixture.transport, "sitos/buffers/session/durable/**",
       [&](const Observation& observation) { observed.push_back(observation); });
   ASSERT_TRUE(collector.Join());
-  ASSERT_TRUE(
-      fixture.transport.Put("sitos/buffers/session/durable/a", Bytes({1}), {"zenoh/bytes"}, {})
-          .IsOk());
-  ASSERT_TRUE(
-      fixture.transport.Put("sitos/buffers/session/durable/b", Bytes({2}), {"zenoh/bytes"}, {})
-          .IsOk());
+  ASSERT_EQ(observed.size(), expected.size());
+  std::map<std::string, Observation> actual;
+  for (const auto& observation : observed) {
+    ASSERT_TRUE(actual.emplace(observation.key, observation).second);
+  }
+  ASSERT_EQ(actual.size(), expected.size());
+  for (const auto& [key, payload] : expected) {
+    ASSERT_EQ(actual.at(key).payload, payload);
+    EXPECT_EQ(actual.at(key).encoding, "zenoh/bytes");
+  }
+
+  const auto duplicate =
+      fixture.transport.Put("sitos/buffers/session/durable/a", Bytes({1}), {"zenoh/bytes"}, {});
+  EXPECT_TRUE(duplicate.IsOk());
+  EXPECT_FALSE(collector.Failed());
+  EXPECT_EQ(observed.size(), expected.size());
+
+  const auto conflict =
+      fixture.transport.Put("sitos/buffers/session/durable/b", Bytes({9}), {"zenoh/bytes"}, {});
+  EXPECT_TRUE(conflict.IsOk());
   EXPECT_TRUE(collector.Failed());
-  ASSERT_EQ(observed.size(), 3u);
-  EXPECT_EQ(observed[0].payload, Bytes({1}));
-  EXPECT_EQ(observed[1].payload, Bytes({1}));
-  EXPECT_EQ(observed[2].payload, Bytes({1}));
+  EXPECT_EQ(observed.size(), expected.size());
 }
 
 TEST(BufferLateJoinTest, FailureInvokesNoObserverAndCleansUp) {
@@ -355,6 +512,15 @@ TEST(BufferLateJoinTest, FailureInvokesNoObserverAndCleansUp) {
     EXPECT_TRUE(collector.Failed());
   }
   fixture.transport.declaration_failure = false;
+  fixture.transport.query_failure = true;
+  {
+    LateJoinCollector collector(
+        fixture.transport, "sitos/buffers/session/durable/**",
+        [&](const Observation& observation) { observed.push_back(observation); });
+    EXPECT_FALSE(collector.Join());
+    EXPECT_TRUE(collector.Failed());
+  }
+  fixture.transport.query_failure = false;
   fixture.transport.fail_after_replies = 1;
   {
     LateJoinCollector collector(
@@ -364,10 +530,28 @@ TEST(BufferLateJoinTest, FailureInvokesNoObserverAndCleansUp) {
     EXPECT_TRUE(collector.Failed());
   }
   fixture.transport.fail_after_replies = -1;
-  ASSERT_TRUE(
-      fixture.transport
-          .Put("sitos/buffers/session/durable/after-destroy", Bytes({9}), {"zenoh/bytes"}, {})
-          .IsOk());
+
+  fixture.transport.park_copied_callbacks = true;
+  std::thread publish;
+  {
+    LateJoinCollector collector(
+        fixture.transport, "sitos/buffers/session/durable/**",
+        [&](const Observation& observation) { observed.push_back(observation); });
+    ASSERT_TRUE(collector.Join());
+    observed.clear();
+    publish = std::thread([&] {
+      static_cast<void>(fixture.transport.Put("sitos/buffers/session/durable/copied", Bytes({8}),
+                                              {"zenoh/bytes"}, {}));
+    });
+    fixture.transport.WaitForCopiedCallbacks();
+  }
+  fixture.transport.ReleaseCopiedCallbacks();
+  publish.join();
+  EXPECT_TRUE(observed.empty());
+
+  const auto after_destroy = fixture.transport.Put("sitos/buffers/session/durable/after-destroy",
+                                                   Bytes({9}), {"zenoh/bytes"}, {});
+  EXPECT_TRUE(after_destroy.IsOk());
   EXPECT_TRUE(observed.empty());
 }
 
