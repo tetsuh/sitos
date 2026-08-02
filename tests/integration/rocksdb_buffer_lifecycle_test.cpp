@@ -175,14 +175,22 @@ class ScopedRoot {
 
 class ThreadScope {
  public:
-  explicit ThreadScope(std::shared_ptr<GateState> gates) : gates_(std::move(gates)) {}
+  explicit ThreadScope(std::shared_ptr<GateState> gates) : gates_(std::move(gates)) {
+    threads_.reserve(4);
+  }
 
   ~ThreadScope() {
     Release();
     JoinAll();
   }
 
-  void Add(std::thread& thread) { threads_.push_back(&thread); }
+  template <typename Function>
+  void Start(Function&& function) {
+    if (threads_.size() == threads_.capacity()) {
+      throw std::logic_error("RocksDB lifecycle test exceeded thread-scope capacity");
+    }
+    threads_.emplace_back(std::forward<Function>(function));
+  }
 
   void Release() {
     {
@@ -195,16 +203,16 @@ class ThreadScope {
   }
 
   void JoinAll() {
-    for (auto* thread : threads_) {
-      if (thread->joinable()) {
-        thread->join();
+    for (auto& thread : threads_) {
+      if (thread.joinable()) {
+        thread.join();
       }
     }
   }
 
  private:
   std::shared_ptr<GateState> gates_;
-  std::vector<std::thread*> threads_;
+  std::vector<std::thread> threads_;
 };
 
 bool WaitForMaterialization(std::chrono::milliseconds timeout,
@@ -213,6 +221,14 @@ bool WaitForMaterialization(std::chrono::milliseconds timeout,
   return gates->condition.wait_for(lock, timeout, [&] {
     return gates->put_entered > 0 && gates->get_entered > 0 && gates->list_entered > 0;
   });
+}
+
+bool EnsureDirectory(const std::filesystem::path& path) {
+  std::error_code error;
+  std::filesystem::create_directories(path, error);
+  if (error) return false;
+  const bool directory = std::filesystem::is_directory(path, error);
+  return directory && !error;
 }
 
 }  // namespace
@@ -245,22 +261,19 @@ TEST(RocksDBBufferLifecycleTest, CloseReleasesEngineBeforeReturn) {
   std::optional<sitos::Result<void>> get_result;
   std::optional<sitos::Result<void>> list_result;
   ThreadScope threads(gates);
-  std::thread put([&] {
+  threads.Start([&] {
     put_result = transport.PutSample("sitos/buffers/session/durable/key", {std::byte{7}});
   });
-  threads.Add(put);
-  std::thread get([&] {
+  threads.Start([&] {
     get_result = transport.Get(
         "sitos/buffers/session/durable/key", [](auto, auto, auto) { return true; },
         std::chrono::seconds(1));
   });
-  threads.Add(get);
-  std::thread list([&] {
+  threads.Start([&] {
     list_result = transport.Get(
         "sitos/buffers/session/durable/**", [](auto, auto, auto) { return true; },
         std::chrono::seconds(1));
   });
-  threads.Add(list);
 
   if (!WaitForMaterialization(std::chrono::seconds(5), gates)) {
     threads.Release();
@@ -271,11 +284,10 @@ TEST(RocksDBBufferLifecycleTest, CloseReleasesEngineBeforeReturn) {
 
   std::optional<sitos::Result<void>> close_result;
   std::atomic<bool> close_done = false;
-  std::thread close([&] {
+  threads.Start([&] {
     close_result = node.CloseSession("session");
     close_done.store(true, std::memory_order_release);
   });
-  threads.Add(close);
   const bool closing_seen =
       sitos::storage_node_test_access::StorageNodeTestAccess::WaitForClosing(node, "session");
   const bool close_done_while_blocked = close_done.load(std::memory_order_acquire);
@@ -320,11 +332,13 @@ TEST(RocksDBBufferLifecycleTest, SameSidRecreationUsesFreshEngine) {
                                                            std::make_shared<GateState>(),
                                                            std::make_shared<bool>(false)));
              }}));
+  ASSERT_TRUE(EnsureDirectory(first_root));
   ASSERT_TRUE(node.CreateSession("session", {.durable_buffers = true}).IsOk());
   ASSERT_TRUE(transport.PutSample("sitos/buffers/session/durable/key", {std::byte{7}}).IsOk());
   ASSERT_TRUE(node.CloseSession("session").IsOk());
   EXPECT_GT(std::filesystem::remove_all(first_root), 0u);
   EXPECT_FALSE(std::filesystem::exists(first_root));
+  ASSERT_TRUE(EnsureDirectory(second_root));
 
   ASSERT_TRUE(node.CreateSession("session", {.durable_buffers = true}).IsOk());
   int replies = 0;
