@@ -148,12 +148,14 @@ Conventions:
      independent [ADR-0032]
    - buffer DELETEs and control routes → reject as unsupported in v0.4
 3. Session lifecycle (a conceptual responsibility implemented inside StorageNode):
-   - `CreateSession(sid, options)`: reserve a `Creating` Session record, create the snapshot,
-     overlay, metadata, capabilities, and one durable engine through the host factory only when
-     enabled; roll back every resource on failure, then transition the record to `Active`
-   - `CloseSession(sid)`: transition the record to `Closing`, close its admission gate, wait for
-     every admitted callback or operation, destroy its durable engine, and release all other
-     resources before returning [F10, ADR-0032]
+   - `StorageNode::CreateSession(sid, options)`: reserve a `Creating` Session record, create the
+     snapshot, overlay, metadata, capabilities, and one durable engine through the host factory
+     only when enabled; roll back every resource on failure, then transition to `Active`
+   - `StorageNode::CloseSession(sid)`: transition the record to `Closing`, close its admission
+     gate, wait for admitted callbacks or operations, destroy its durable engine, and release all
+     other resources before returning [F10, ADR-0032]
+   - `StorageNode::ActiveSessions()`: return the active Session ids in unspecified order; return
+     an empty list when the node is stopped.
 
 Earlier diagrams and design discussions may call this responsibility `SessionController`. It is a
 conceptual responsibility inside the process that owns a `StorageNode`, not a public constructible

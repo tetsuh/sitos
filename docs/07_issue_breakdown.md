@@ -590,7 +590,7 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 * Evidence: executable/process cases and combined-platform execution are co-developed integration
   coverage; the configure guard is compile/contract RED only when asserted before implementation;
   CI wiring and documentation reconciliation are N/A for behavioral RED.
-* Depends on: #15, #18
+* Depends on: #8, #15, #18, #19, #121
 
 ### #32 Python examples
 * Milestone: v0.4

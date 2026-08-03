@@ -150,16 +150,23 @@ bool ReadConfig(const std::string& path, std::string& content) {
   return !content.empty() && !input.bad();
 }
 
-template <typename T>
-void ReportFailure(std::string_view operation, const sitos::Result<T>& result) {
-  std::cerr << operation << " failed (status=" << static_cast<int>(result.StatusCode());
-  if (!result.Message().empty()) std::cerr << ", " << result.Message();
+const auto ReportFailure = [](std::string_view operation, const auto& result) {
+  std::string line = std::string(operation) +
+                     " failed (status=" + std::to_string(static_cast<int>(result.StatusCode()));
+  const std::string_view message = result.Message();
+  if (!message.empty()) line += ", " + std::string(message);
   if (!result.IsOk()) {
     const auto& cause = result.Error();
-    if (cause) std::cerr << ", cause=" << cause.category().name() << ':' << cause.value();
+    if (cause) {
+      line += ", cause=";
+      line += cause.category().name();
+      line += ':';
+      line += std::to_string(cause.value());
+    }
   }
-  std::cerr << ")\n";
-}
+  line += ')';
+  std::cerr << line << '\n';
+};
 
 using TransportResult = sitos::Result<std::unique_ptr<sitos::Transport>>;
 
