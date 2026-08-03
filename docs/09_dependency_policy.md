@@ -164,6 +164,9 @@ Validation targets:
 * wire fixtures (`PayloadV1GoldenFixtures`, `BatchV1GoldenFixture`)
 * `RawZenohClientCanPutAndGet`
 * `RawZenohClientCanSendBatch`
+* `RawZenohClientCanUseMixedSessionBuffers`
+* `RawZenohDurableLateJoinPreservesDistinctKeys`
+* `RawZenohBufferInteropFixtureBoundaries`
 
 If latest stable fails:
 

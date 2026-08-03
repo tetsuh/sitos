@@ -302,7 +302,11 @@ node-retained ephemeral state.
 - `RocksDBBufferLifecycleTest.SameSidRecreationUsesFreshEngine`
 
 These tests verify C03/C06 raw-client interoperability and the process-isolated durable late-join
-boundary. The final stage also owns combined Zenoh-ON/RocksDB-ON package and CI evidence.
+boundary. The raw tests run against `sitos_raw_zenoh_buffer_fixture`, a process-isolated fixture
+that keeps one Transport and uses bounded command/readiness handshakes. The final stage also owns
+combined Zenoh-ON/RocksDB-ON package and CI evidence, relocated installed consumers without
+executing `RocksDBEngine::Open`, and wheel/installed-artifact guards rejecting both buffer fixture
+executable basenames with and without `.exe`.
 
 ## 5.2 Lifecycle sanitizer runs
 
@@ -317,7 +321,7 @@ cmake -S . -B build/tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/tsan
 lifecycle_filter="StorageNodeLifecycleTest|StorageNodeSessionTest|"
 lifecycle_filter="${lifecycle_filter}StorageNodeSessionLifecycleTest|StorageNodeBufferLifecycleTest|"
-lifecycle_filter="${lifecycle_filter}StorageNodeBufferRoutingTest|StorageNodeBufferApiTest|StorageNodeBatchTest|"
+lifecycle_filter="${lifecycle_filter}StorageNodeBufferRoutingTest|StorageNodeBufferApiTest|BufferLateJoinTest|StorageNodeBatchTest|"
 lifecycle_filter="${lifecycle_filter}TransportGetCompletionTest|ParamStoreSubscribeTest|"
 lifecycle_filter="${lifecycle_filter}ParamCacheTest|ParamCacheReadTest|"
 lifecycle_filter="${lifecycle_filter}SessionViewTest|SessionViewFixture"

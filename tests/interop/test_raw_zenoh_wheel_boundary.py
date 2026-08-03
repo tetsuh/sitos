@@ -18,7 +18,12 @@ def _load_wheel_validator():
 
 @pytest.mark.parametrize(
     "member",
-    ["sitos/sitos_raw_zenoh_fixture", "sitos/sitos_raw_zenoh_fixture.exe"],
+    [
+        "sitos/sitos_raw_zenoh_fixture",
+        "sitos/sitos_raw_zenoh_fixture.exe",
+        "sitos/sitos_raw_zenoh_buffer_fixture",
+        "sitos/sitos_raw_zenoh_buffer_fixture.exe",
+    ],
 )
 def test_wheel_validator_rejects_raw_zenoh_fixture(member: str) -> None:
     with pytest.raises(RuntimeError, match="forbidden wheel entry"):

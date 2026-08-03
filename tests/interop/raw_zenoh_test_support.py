@@ -176,6 +176,21 @@ class FixtureProcess:
             f"CREATE_SESSION {self.session_id}", f"SESSION_OK {self.session_id}"
         )
 
+    def create_buffer_session(
+        self, session_id: str | None = None, mode: str = "both"
+    ) -> str:
+        sid = self.session_id if session_id is None else session_id
+        suffix = "" if mode == "both" else f" {mode}"
+        self.command(
+            f"CREATE_BUFFER_SESSION {sid}{suffix}",
+            f"BUFFER_SESSION_OK {sid}",
+        )
+        return sid
+
+    def close_session(self, session_id: str | None = None) -> None:
+        sid = self.session_id if session_id is None else session_id
+        self.command(f"CLOSE_SESSION {sid}", f"CLOSED {sid}")
+
     def open_raw_session(self) -> zenoh.Session:
         config = zenoh.Config.from_json5(
             json.dumps(

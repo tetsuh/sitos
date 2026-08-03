@@ -35,6 +35,8 @@ FORBIDDEN_BASENAMES = (
     "sitos_python_param_store_fixture.exe",
     "sitos_raw_zenoh_fixture",
     "sitos_raw_zenoh_fixture.exe",
+    "sitos_raw_zenoh_buffer_fixture",
+    "sitos_raw_zenoh_buffer_fixture.exe",
 )
 
 

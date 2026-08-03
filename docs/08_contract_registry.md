@@ -56,7 +56,7 @@ open decision (`—` when settled); implementers and consumers are listed separa
 | `AckAttachmentV1` (17-byte acknowledged-operation UUIDv4 attachment) | Normative | Planned | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | #14, #17; Fence reuse by #106, #107 |
 | Acknowledgement result Encoding (`sitos.v1.ack`, canonical `zenoh/bytes;sitos.v1.ack`) | Normative | Planned | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | #14, #17; Fence reuse by #106, #107 |
 | Same-publisher in-band fence marker | Planned | Planned | — (pending Accepted #106 ADR; row registered by #115 / PR #116) | #106 → ADR | consumers #99, #107 |
-| `buffers/<sid>/{durable\|ephemeral}/<key>` value scope (plain opaque bytes) | Normative | Planned | [ADR-0032](adr/0032-mixed-session-buffer-routes.md) | — | #56; fences via #107 |
+| `buffers/<sid>/{durable\|ephemeral}/<key>` value scope (plain opaque bytes) | Normative | Implemented | [ADR-0032](adr/0032-mixed-session-buffer-routes.md) | — | #56; fences via #107 |
 
 ## 3. Stable identifiers
 
