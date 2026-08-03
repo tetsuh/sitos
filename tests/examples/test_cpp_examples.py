@@ -237,6 +237,12 @@ class Child:
                 raise AssertionError(f"readiness timeout; {self.diagnostics()}") from error
             if line is None:
                 code = self.process.poll()
+                if code is None:
+                    try:
+                        waited_code = self.process.wait(timeout=_remaining(deadline))
+                    except subprocess.TimeoutExpired:
+                        waited_code = None
+                    code = waited_code if waited_code is not None else self.process.returncode
                 raise ChildExitedBeforeReady(code, self.diagnostics())
             if line != expected:
                 raise AssertionError(f"unexpected stdout line {line!r}; {self.diagnostics()}")
