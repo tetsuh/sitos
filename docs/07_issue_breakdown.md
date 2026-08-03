@@ -578,12 +578,19 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 ### #31 C++ examples and demo binary sitobolon
 * Milestone: v0.4
 * References: [00] §4, [06] §1
-* Implementation targets: `examples/cpp/quickstart.cpp`, `examples/cpp/sitobolon.cpp`,
-  `examples/cpp/CMakeLists.txt`
-* Scope: C++ quickstart, standalone StorageNode executable
-  `sitobolon` (engine selected by config file)
-* Acceptance criteria: C++ examples are built and run in CI
-* Depends on: #15, #18
+* Implementation targets: `CMakeLists.txt`, `examples/cpp/CMakeLists.txt`,
+  `examples/cpp/quickstart.cpp`, `examples/cpp/sitobolon.cpp`,
+  `tests/examples/test_cpp_examples.py`, and existing CI/vcpkg/docs seams
+* Scope: default-OFF C++ quickstart tutorial and standalone StorageNode executable
+  `sitobolon`, with complete JSON5 pass-through and InMemory/RocksDB engine selection.
+  Examples require Zenoh and are never installed.
+* Acceptance criteria: standard Linux/Windows jobs run the four non-RocksDB CTests;
+  combined Zenoh+RocksDB vcpkg lanes run all five fixed CTests and prove example binaries are absent
+  from the install. The process driver uses bounded, no-sleep readiness and signal cleanup.
+* Evidence: executable/process cases and combined-platform execution are co-developed integration
+  coverage; the configure guard is compile/contract RED only when asserted before implementation;
+  CI wiring and documentation reconciliation are N/A for behavioral RED.
+* Depends on: #8, #15, #18, #19, #121
 
 ### #32 Python examples
 * Milestone: v0.4

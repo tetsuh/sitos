@@ -20,6 +20,10 @@ function(run_checked)
   endif()
 endfunction()
 
+# The combined acceptance driver is an existing test dependency. Resolve it in
+# this outer validator and pass the exact interpreter into the combined cache.
+find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+
 set(_manifest "${SITOS_SOURCE_DIR}/vcpkg.json")
 if(NOT EXISTS "${_manifest}")
   message(FATAL_ERROR
@@ -98,7 +102,8 @@ set(_combined_build "${_work_dir}/sitos-combined-build")
 run_checked(
   "${CMAKE_COMMAND}" -S "${SITOS_SOURCE_DIR}" -B "${_combined_build}"
   ${_generator_args} -DCMAKE_BUILD_TYPE=Release
-  -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=ON -DSITOS_WITH_ROCKSDB=ON
+  -DSITOS_BUILD_TESTS=ON -DSITOS_BUILD_EXAMPLES=ON -DSITOS_WITH_ZENOH=ON -DSITOS_WITH_ROCKSDB=ON
+  "-DPython3_EXECUTABLE=${Python3_EXECUTABLE}"
   "-DCMAKE_TOOLCHAIN_FILE=${_toolchain}"
   "-DVCPKG_MANIFEST_DIR=${SITOS_SOURCE_DIR}"
   -DVCPKG_MANIFEST_FEATURES=rocksdb
@@ -110,10 +115,16 @@ string(CONCAT _combined_test_regex
   "StorageNodeBufferApiTest|StorageNodeBufferLifecycleTest|StorageNodeBufferRoutingTest|"
   "BufferLateJoinTest|RawZenohClientCanUseMixedSessionBuffers|"
   "RawZenohDurableLateJoinPreservesDistinctKeys|RawZenohBufferInteropFixtureBoundaries|"
-  "RocksDBBufferLifecycleTest")
+  "RocksDBBufferLifecycleTest|CppQuickstartRuns|SitobolonHelpDocumentsOptions|"
+  "SitobolonRejectsInvalidArguments|SitobolonStartsAndStopsCleanly|"
+  "SitobolonRocksDbReleasesPath")
 run_checked(
   "${CMAKE_CTEST_COMMAND}" --test-dir "${_combined_build}" --output-on-failure
   --no-tests=error --timeout 60 -R "${_combined_test_regex}")
+run_checked(
+  "${Python3_EXECUTABLE}"
+  "${SITOS_SOURCE_DIR}/tests/examples/test_cpp_examples.py"
+  ctest-contract --build "${_combined_build}" --rocksdb-built)
 
 set(_combined_prefix "${_work_dir}/sitos-combined-prefix")
 set(_combined_relocated_prefix "${_work_dir}/sitos-combined-relocated-prefix")
@@ -123,6 +134,12 @@ run_checked(
   "${CMAKE_COMMAND}" "-DSITOS_PREFIX=${_combined_prefix}"
   "-DSITOS_INSTALL_LIBDIR=lib"
   -P "${SITOS_SOURCE_DIR}/tests/package/check_clean_install.cmake")
+file(GLOB_RECURSE _installed_examples LIST_DIRECTORIES false
+  "${_combined_prefix}/quickstart" "${_combined_prefix}/quickstart.exe"
+  "${_combined_prefix}/sitobolon" "${_combined_prefix}/sitobolon.exe")
+if(_installed_examples)
+  message(FATAL_ERROR "Combined install unexpectedly contains example executables: ${_installed_examples}")
+endif()
 run_checked("${CMAKE_COMMAND}" -E copy_directory "${_combined_prefix}" "${_combined_relocated_prefix}")
 run_checked(
   "${CMAKE_COMMAND}" "-DSITOS_PREFIX=${_combined_relocated_prefix}"

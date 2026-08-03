@@ -41,6 +41,10 @@ endif()
 # Only required when building tests or examples that use the transport layer.
 option(SITOS_WITH_ZENOH "Download and link prebuilt zenoh-c" OFF)
 
+if(SITOS_BUILD_EXAMPLES AND NOT SITOS_WITH_ZENOH)
+  message(FATAL_ERROR "SITOS_BUILD_EXAMPLES requires SITOS_WITH_ZENOH=ON")
+endif()
+
 if(SITOS_WITH_ZENOH)
   include(cmake/zenohc.cmake)
 endif()
@@ -194,6 +198,10 @@ endif()
 if(SITOS_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+if(SITOS_BUILD_EXAMPLES)
+  add_subdirectory(examples/cpp)
 endif()
 
 if(SITOS_BUILD_BENCHMARKS)

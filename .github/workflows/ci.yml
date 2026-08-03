@@ -52,8 +52,14 @@ jobs:
           python3 -m pip install --break-system-packages --only-binary=:all: \
             --require-hashes -r tests/interop/requirements.txt
 
+      - name: Verify examples require Zenoh
+        run: python tests/examples/test_cpp_examples.py configure-guard --source . --build build/issue31-zenoh-off --generator Ninja
+
       - name: Configure
-        run: cmake --preset dev-linux
+        run: cmake --preset dev-linux -DSITOS_BUILD_EXAMPLES=ON
+
+      - name: Verify example CTest contract
+        run: python tests/examples/test_cpp_examples.py ctest-contract --build build/dev-linux
 
       - name: Build
         run: cmake --build --preset dev-linux
@@ -196,7 +202,9 @@ jobs:
           $vcvars = "$vsPath\VC\Auxiliary\Build\vcvars64.bat"
           $commands = @(
             "call `"$vcvars`""
-            "cmake --preset dev-windows -DPython3_EXECUTABLE=`"$python`""
+            "python tests/examples/test_cpp_examples.py configure-guard --source . --build build/issue31-zenoh-off --generator Ninja"
+            "cmake --preset dev-windows -DPython3_EXECUTABLE=`"$python`" -DSITOS_BUILD_EXAMPLES=ON"
+            "python tests/examples/test_cpp_examples.py ctest-contract --build build/dev-windows"
             "cmake --build --preset dev-windows"
             "ctest --preset dev-windows"
           ) -join " && "

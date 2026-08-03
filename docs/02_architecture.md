@@ -19,7 +19,7 @@ Requirement IDs ([01_requirements.md](01_requirements.md)) are referenced as [F.
  │   │   └──────────────────┘   └───────────────────────┘     │   │
  │   │                                                        │   │
  │  ParamStore (write / List API)                             │   │
- │  SessionController (session creation/destruction)          │   │
+ │  session lifecycle (StorageNode API)                       │   │
  └────────────────────────────────────────────────────────────┘   │
                                                                    │
  ┌─ Subscriber process (e.g., compute worker) ×N ───────────┐      │
@@ -40,7 +40,7 @@ Requirement IDs ([01_requirements.md](01_requirements.md)) are referenced as [F.
 | `StorageNode` | Zenoh queryable/subscriber ↔ engine; owns Session lifecycles | zenoh, StorageEngine |
 | `ParamStore` | Client API: typed Put/Get/List/Delete/Subscribe. Wraps a zenoh session | zenoh |
 | `ParamCache` | Subscriber-side read cache. Initial fetch + delta subscription + zero-copy Get | zenoh |
-| `SessionController` | Session create, snapshot, buffers, and destroy (owner process) | StorageNode |
+| Session lifecycle | Conceptual responsibility inside the StorageNode-owning process; use `StorageNode::CreateSession`, `CloseSession`, and `ActiveSessions` | StorageNode |
 | `SessionView` | Host-process read-only view that resolves session overlay → snapshot | StorageNode |
 
 **Design principle**: `engine/` does not know about zenoh. `ParamStore`/`ParamCache` do not
@@ -147,13 +147,19 @@ Conventions:
    - buffer PUTs → capability admission and durable write-once handling; Zenoh fanout is
      independent [ADR-0032]
    - buffer DELETEs and control routes → reject as unsupported in v0.4
-3. Session lifecycle (via SessionController):
-   - `CreateSession(sid, options)`: reserve a `Creating` Session record, create the snapshot,
-     overlay, metadata, capabilities, and one durable engine through the host factory only when
-     enabled; roll back every resource on failure, then transition the record to `Active`
-   - `CloseSession(sid)`: transition the record to `Closing`, close its admission gate, wait for
-     every admitted callback or operation, destroy its durable engine, and release all other
-     resources before returning [F10, ADR-0032]
+3. Session lifecycle (a conceptual responsibility implemented inside StorageNode):
+   - `StorageNode::CreateSession(sid, options)`: reserve a `Creating` Session record, create the
+     snapshot, overlay, metadata, capabilities, and one durable engine through the host factory
+     only when enabled; roll back every resource on failure, then transition to `Active`
+   - `StorageNode::CloseSession(sid)`: transition the record to `Closing`, close its admission
+     gate, wait for admitted callbacks or operations, destroy its durable engine, and release all
+     other resources before returning [F10, ADR-0032]
+   - `StorageNode::ActiveSessions()`: return the active Session ids in unspecified order; return
+     an empty list when the node is stopped.
+
+Earlier diagrams and design discussions may call this responsibility `SessionController`. It is a
+conceptual responsibility inside the process that owns a `StorageNode`, not a public constructible
+C++ type. Applications use the `StorageNode` session methods above.
 
 ### 4.2 Data Structures
 
