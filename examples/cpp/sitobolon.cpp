@@ -206,7 +206,8 @@ void SignalHandler(int) {
   const int descriptor = g_signal_pipe;
   if (descriptor >= 0) {
     const char notification = 's';
-    (void)write(descriptor, &notification, 1);
+    const ssize_t write_result = ::write(descriptor, &notification, 1);
+    (void)write_result;
   }
   errno = saved_errno;
 }

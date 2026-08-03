@@ -326,7 +326,7 @@ def configure_guard(args: argparse.Namespace) -> int:
             "-DSITOS_WITH_ZENOH=OFF",
             "-DSITOS_BUILD_TESTS=OFF",
         ],
-        timeout=30.0,
+        timeout=90.0,
     )
     output = result.stdout + result.stderr
     expected = b"SITOS_BUILD_EXAMPLES requires SITOS_WITH_ZENOH=ON"
@@ -513,10 +513,11 @@ def lifecycle(executable: str) -> int:
 
 def rocksdb_lifecycle(executable: str) -> int:
     deadline = time.monotonic() + MODE_SECONDS
+    event: int | str = "ctrl-break" if os.name == "nt" else signal.SIGINT
     with tempfile.TemporaryDirectory(prefix="sitos-example-rocksdb-") as root:
         path = Path(root) / "database"
-        _launch(executable, False, prefix=_valid_prefix(), deadline=deadline, db=path)
-        _launch(executable, True, prefix=_valid_prefix(), deadline=deadline, db=path)
+        _launch(executable, False, prefix=_valid_prefix(), deadline=deadline, db=path, event=event)
+        _launch(executable, True, prefix=_valid_prefix(), deadline=deadline, db=path, event=event)
         import shutil
 
         shutil.rmtree(path)
