@@ -342,6 +342,29 @@ repeat the ASan/UBSan configuration with `-DSITOS_WITH_ZENOH=ON` and run the lif
 integration targets. The CI sanitizer job uses zenoh OFF to keep TSan independent of
 zenoh runtime internals.
 
+## 5.3 C++ examples and demo validation
+
+The C++ examples are opt-in: `SITOS_BUILD_EXAMPLES` remains OFF by default, requires
+`SITOS_WITH_ZENOH=ON`, and neither `quickstart` nor `sitobolon` is installed. `quickstart` is an
+in-process public-API tutorial. `sitobolon` is a standalone StorageNode process with an InMemory
+engine by default and an optional RocksDB engine when that support is built; its complete Zenoh
+JSON5 configuration is passed through unchanged.
+
+Example builds register these exact CTests: `CppQuickstartRuns`,
+`SitobolonHelpDocumentsOptions`, `SitobolonRejectsInvalidArguments`, and
+`SitobolonStartsAndStopsCleanly`; `SitobolonRocksDbReleasesPath` is additionally registered with
+RocksDB. Each has a 60-second timeout, and real local Zenoh process tests run serially. Standard
+Linux and Windows jobs run the four non-RocksDB tests. The combined Zenoh+RocksDB vcpkg lanes run
+all five and assert that installation contains neither example executable. The Python driver uses
+only the standard library and bounded process/readiness handling; platform-specific Windows
+console-control evidence is obtained in the hosted Windows job.
+
+Evidence classification is explicit: the five executable/process cases are co-developed integration
+coverage; the examples-enabled/Zenoh-OFF guard is compile/contract RED only when its assertion is
+run before the guard; combined-platform execution is co-developed integration coverage; CI wiring
+and documentation reconciliation are N/A for behavioral RED. This records evidence classes without
+claiming chronology for work that was co-developed.
+
 ## 6. CI (GitHub Actions)
 
 | workflow | Trigger | Contents |
