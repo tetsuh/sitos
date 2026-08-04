@@ -11,6 +11,7 @@ from typing import Any
 
 _ENCODING = "zenoh/bytes;sitos.v1"
 _PAYLOAD = bytes([2]) + struct.pack("<d", 240.0)
+_DP_HEX = float(240.0).hex()
 _DEADLINE = 8.0
 _PREFIX_CHUNK = re.compile(r"^[A-Za-z0-9_.-]+$")
 
@@ -67,7 +68,8 @@ def run(prefix: str) -> int:
                     raise RuntimeError("payload-v1 bytes differ from expected DP value")
                 if encoding != _ENCODING:
                     raise RuntimeError(f"unexpected encoding: {encoding}")
-                if payload[0] != 2 or struct.unpack("<d", payload[1:])[0] != 240.0:
+                decoded = struct.unpack("<d", payload[1:])[0]
+                if payload[0] != 2 or decoded.hex() != _DP_HEX:
                     raise RuntimeError("payload-v1 DP decode mismatch")
                 verified = True
                 break

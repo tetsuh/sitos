@@ -41,6 +41,17 @@ MARKERS = {
 CASE_SECONDS = 60.0
 
 
+def _import_roots(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.partition(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            roots.add(node.module.partition(".")[0])
+    return roots
+
+
 def _pid_alive(pid: int) -> bool:
     """Treat unknown or access-denied process state as alive."""
     if pid <= 0:
@@ -387,6 +398,32 @@ class PythonExampleContractTest(unittest.TestCase):
         self.assertIn("zenoh_config_json=None", quickstart)
         self.assertIn("FAILURE_ENV", numpy)
         self.assertIn("FAILURE_VALUE", numpy)
+        self.assertEqual(
+            _import_roots(REQUIRED["quickstart"]),
+            {
+                "__future__",
+                "multiprocessing",
+                "os",
+                "sitos",
+                "sys",
+                "time",
+                "typing",
+                "uuid",
+            },
+        )
+        self.assertEqual(
+            _import_roots(REQUIRED["numpy-lut"]),
+            {
+                "__future__",
+                "multiprocessing",
+                "numpy",
+                "os",
+                "quickstart",
+                "sitos",
+                "sys",
+                "uuid",
+            },
+        )
 
     def test_near_expiry_does_not_spawn_a_coordinator(self) -> None:
         with mock.patch("subprocess.Popen") as popen:
@@ -446,15 +483,10 @@ class PythonExampleContractTest(unittest.TestCase):
 
     def test_raw_example_has_no_sitos_or_numpy_import(self) -> None:
         path = REQUIRED["raw-zenoh"]
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        roots: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                roots.update(alias.name.partition(".")[0] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                roots.add(node.module.partition(".")[0])
-        self.assertNotIn("sitos", roots)
-        self.assertNotIn("numpy", roots)
+        self.assertEqual(
+            _import_roots(path),
+            {"__future__", "importlib", "re", "struct", "sys", "time", "typing", "zenoh"},
+        )
         source = path.read_text(encoding="utf-8")
         self.assertIn("--prefix", source)
         self.assertIn("zenoh/bytes;sitos.v1", source)

@@ -500,7 +500,8 @@ def main() -> int:
         cache_args_factory=lambda sid, key: (prefix, sid, key),
         put_args_factory=lambda sid, key, value: (f"session/{sid}", key, value),
         check_command="GET",
-        observe=lambda result: result == 240.0,
+        observe=lambda result: isinstance(result, float)
+        and result.hex() == float(240.0).hex(),
         marker="PYTHON_QUICKSTART_OK",
     )
 
