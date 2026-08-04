@@ -561,6 +561,32 @@ class PythonExampleContractTest(unittest.TestCase):
         self.assertEqual(values, (1.5, -2.25, 3.75, 0.5))
         self.assertEqual(namespace["_GOLDEN_BYTES"], struct.pack("<4f", *values))
 
+        class View:
+            def __init__(self, pointer: int) -> None:
+                self.__array_interface__ = {"data": (pointer, True)}
+
+        first_old, first_new = View(1), View(2)
+        stable_first, stable_second = View(3), View(3)
+
+        class Cache:
+            def __init__(self) -> None:
+                self.views = iter((first_old, first_new, stable_first, stable_second))
+
+            def get_array(self, _key: str, *, dtype: object) -> View:
+                del dtype
+                return next(self.views)
+
+        fake_numpy = types.SimpleNamespace(
+            shares_memory=lambda left, right: (
+                left.__array_interface__["data"][0]
+                == right.__array_interface__["data"][0]
+            )
+        )
+        pair = namespace["_stable_views"](
+            Cache(), "key", object(), fake_numpy, LookupError
+        )
+        self.assertEqual(pair, (stable_first, stable_second))
+
     def test_raw_runtime_guard_and_key_are_independent(self) -> None:
         path = REQUIRED["raw-zenoh"]
         namespace: dict[str, object] = {}

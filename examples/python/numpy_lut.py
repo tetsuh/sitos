@@ -17,6 +17,23 @@ _VALUES = (1.5, -2.25, 3.75, 0.5)
 _GOLDEN_BYTES = bytes.fromhex("0000c03f000010c0000070400000003f")
 
 
+def _stable_views(cache, key, dtype, np, not_found):
+    """Return two views of one stable cache entry despite in-flight replacement."""
+    for _ in range(8):
+        try:
+            candidate = cache.get_array(key, dtype=dtype)
+        except not_found:
+            return None
+        repeated = cache.get_array(key, dtype=dtype)
+        same_pointer = (
+            candidate.__array_interface__["data"][0]
+            == repeated.__array_interface__["data"][0]
+        )
+        if same_pointer and np.shares_memory(candidate, repeated):
+            return candidate, repeated
+    return None
+
+
 def _writer_worker(
     connection: Connection, prefix: str, sid: str, key: str
 ) -> None:
@@ -89,12 +106,16 @@ def _cache_worker(
                 ):
                     connection.send(("RETRY", ""))
             elif command == "CHECK":
-                try:
-                    first = cache.get_array(key, dtype=np.dtype("<f4"))
-                except sitos.NotFoundError:
-                    connection.send(("MISS", ""))
+                # An identical resubmission can replace the cache entry between
+                # two reads. Retry locally, without another PUT, until both
+                # arrays demonstrably view one stable cached value.
+                pair = _stable_views(
+                    cache, key, np.dtype("<f4"), np, sitos.NotFoundError
+                )
+                if pair is None:
+                    connection.send(("RETRY", ""))
                     continue
-                second = cache.get_array(key, dtype=np.dtype("<f4"))
+                first, second = pair
                 if first.ndim != 1 or first.shape != (4,):
                     raise AssertionError(f"unexpected LUT shape: {first.shape}")
                 if first.dtype != np.dtype("<f4") or second.dtype != np.dtype("<f4"):
@@ -108,9 +129,9 @@ def _cache_worker(
                 if first.flags.writeable or second.flags.writeable:
                     raise AssertionError("cached views must be read-only")
                 if first.__array_interface__["data"][0] != second.__array_interface__["data"][0]:
-                    raise AssertionError("repeated views do not share their data pointer")
+                    raise AssertionError("stable repeated views changed data pointer")
                 if not np.shares_memory(first, second):
-                    raise AssertionError("repeated views do not share memory")
+                    raise AssertionError("stable repeated views do not share memory")
                 try:
                     first[0] = 99.0
                 except ValueError:
