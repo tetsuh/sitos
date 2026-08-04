@@ -170,6 +170,24 @@ by `items` remains usable after session close or node stop; subsequent reads thr
 callbacks, spans, NumPy, and zero-copy APIs are intentionally not part of SessionView.
 Large binary values use the disk-backed buffers API, not the session overlay or ParamCache.
 
+### 2.5 Source-only examples (Issue #32)
+
+The repository provides `examples/python/quickstart.py`, `examples/python/numpy_lut.py`, and
+`examples/python/raw_zenoh.py` as source-only tutorials. They are not installed into the wheel and do not add package entry points.
+The quickstart and LUT examples use `multiprocessing.get_context("spawn")`: the coordinator owns
+no sitos object, and separate node, writer, and cache processes each own at most one Zenoh session.
+Independent `StorageNode`, `ParamStore`, and `ParamCache` objects in one process remain unsupported
+with the pinned zenoh-c 1.9.0 runtime. The examples use default local discovery, unique prefixes and
+session IDs, bounded Pipe handshakes, and failure-safe child cleanup. A successful `put` is only a
+submission; examples resubmit the identical value while independently observing the expected result.
+
+`numpy_lut.py` uses a caller-supplied `<f4` dtype and demonstrates a one-dimensional read-only
+zero-copy view over cached BYTES. Payload v1 does not transport shape or dtype metadata, and the
+example makes no inference or zero-copy submission claim. `raw_zenoh.py` requires the test/example
+installation `eclipse-zenoh==1.9.0`, uses only Zenoh, `struct`, and the standard library in its raw
+role, and verifies the canonical `zenoh/bytes;sitos.v1` payload-v1 representation without importing
+`sitos`. The raw dependency is not a `sitos` runtime dependency.
+
 ## 3. GIL and Thread Design [P04]
 
 * zenoh threads in the C++ core do not acquire the GIL

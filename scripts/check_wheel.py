@@ -26,6 +26,8 @@ FORBIDDEN_TOKENS = (
     "benchmark",
     "build/",
     "/build/",
+    "examples/",
+    "/examples/",
 )
 FORBIDDEN_SUFFIXES = (".a", ".lib", ".h", ".hh", ".hpp", ".cmake")
 FORBIDDEN_BASENAMES = (
@@ -37,6 +39,10 @@ FORBIDDEN_BASENAMES = (
     "sitos_raw_zenoh_fixture.exe",
     "sitos_raw_zenoh_buffer_fixture",
     "sitos_raw_zenoh_buffer_fixture.exe",
+    "quickstart.py",
+    "numpy_lut.py",
+    "raw_zenoh.py",
+    "test_python_examples.py",
 )
 
 

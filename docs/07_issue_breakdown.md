@@ -594,12 +594,28 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 
 ### #32 Python examples
 * Milestone: v0.4
-* References: [05], [06] §1
+* References: [05] §§2.3–2.5, [06] §§1, 4.1
+* Prerequisites complete: #23, #24, #25, #27, #29, and milestone gate #121
 * Implementation targets: `examples/python/quickstart.py`, `examples/python/numpy_lut.py`,
-  `examples/python/raw_zenoh.py`
-* Scope: Python quickstart, NumPy LUT sample, zenoh-python raw interop sample
-* Acceptance criteria: Python examples are run in CI
-* Depends on: #23, #24, #27, #29
+  `examples/python/raw_zenoh.py`, `tests/examples/test_python_examples.py`,
+  `.github/workflows/ci.yml`, `.github/workflows/wheels.yml`, `scripts/check_wheel.py`,
+  `docs/05_api_python.md`, `docs/06_build_test_packaging.md`, and this file
+* Scope: source-only process-isolated public-API quickstart and NumPy LUT examples, plus a raw
+  Zenoh 1.9.0 payload-v1 interoperability example. Each networked process owns at most one
+  Zenoh session; default discovery, unique identifiers, bounded handshakes, submission-only
+  resubmission/observation, and failure-safe cleanup are mandatory.
+* Acceptance criteria: source Linux and repaired CPython 3.12 Linux/Rocky/Windows wheel tiers run
+  all three examples and the bounded failure-cleanup case; NumPy verifies fixed `<f4` bytes and
+  read-only repeated zero-copy views; raw Zenoh verifies exact payload-v1 bytes and canonical
+  `zenoh/bytes;sitos.v1`; wheel contents contain none of the source-only examples or helpers.
+* TDD evidence: missing-script/contract assertions are compile/contract RED only under
+  DEC-32-TDD-CLASSIFICATION-001 Option A; process, discovery, cleanup, NumPy, raw, and
+  cross-platform behavior are co-developed integration coverage, with no fabricated behavioral
+  RED. CI/docs/packaging-only work is N/A where no executable precondition applies.
+* Packaging: examples and test helpers are not installed or included in wheels; `numpy>=2.0`
+  remains the existing runtime dependency and `eclipse-zenoh==1.9.0` remains test/example-only.
+  No public API, wire/control protocol, dependency manifest, CMake install rule, ADR, or Contract
+  Registry row changes.
 
 ### #33 Benchmark CI and performance requirement verification
 * Milestone: v0.4
