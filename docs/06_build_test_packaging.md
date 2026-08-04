@@ -203,7 +203,7 @@ does not require Rust, CMake, Ninja, or a C++ compiler.
 
 The standard wheel runtime dependency is `numpy>=2.0`.
 
-## 4.1 Python examples and repaired-wheel validation
+### 4.1 Python examples and repaired-wheel validation
 
 Issue #32's three Python examples are source-only and remain outside CMake install components,
 wheel metadata, and runtime dependencies. `tests/examples/test_python_examples.py` is a

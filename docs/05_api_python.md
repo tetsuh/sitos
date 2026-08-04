@@ -170,7 +170,7 @@ by `items` remains usable after session close or node stop; subsequent reads thr
 callbacks, spans, NumPy, and zero-copy APIs are intentionally not part of SessionView.
 Large binary values use the disk-backed buffers API, not the session overlay or ParamCache.
 
-## 2.5 Source-only examples (Issue #32)
+### 2.5 Source-only examples (Issue #32)
 
 The repository provides `examples/python/quickstart.py`, `examples/python/numpy_lut.py`, and
 `examples/python/raw_zenoh.py` as source-only tutorials. They are not installed into the wheel and do not add package entry points.

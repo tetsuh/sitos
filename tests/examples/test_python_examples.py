@@ -696,11 +696,10 @@ class PythonExampleExecutionTest(unittest.TestCase):
         failure_record = re.compile(
             r"^SITOS_EXAMPLE_TEST_FAILURE cache ([1-9][0-9]*) test-injected cache startup failure$"
         )
-        deadline = time.monotonic() + CASE_SECONDS
         for name in ("quickstart", "numpy-lut"):
             result = _run_script(
                 name,
-                deadline=deadline,
+                deadline=time.monotonic() + CASE_SECONDS,
                 environment={"SITOS_EXAMPLE_TEST_FAIL": "cache-before-open"},
             )
             self.assertEqual(result.returncode, 70, result.stderr)
@@ -726,7 +725,7 @@ class PythonExampleExecutionTest(unittest.TestCase):
             self.assertTrue(all(not _pid_alive(pid) for pid in pids.values()))
             invalid = _run_script(
                 name,
-                deadline=deadline,
+                deadline=time.monotonic() + CASE_SECONDS,
                 environment={"SITOS_EXAMPLE_TEST_FAIL": "invalid"},
             )
             self.assertEqual(invalid.returncode, 2, invalid.stderr)
