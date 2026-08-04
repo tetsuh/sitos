@@ -114,6 +114,12 @@ jobs:
           python3 -m pytest \
             tests/python/test_storage_node.py tests/python/test_storage_node_gil.py -q
           python3 -m pytest tests/python/test_storage_node_live.py -q
+          SITOS_EXAMPLE_KEEP_PYTHONPATH=1 python3 tests/examples/test_python_examples.py quickstart
+          SITOS_EXAMPLE_KEEP_PYTHONPATH=1 python3 tests/examples/test_python_examples.py numpy-lut
+          python3 -m pip install --break-system-packages --only-binary=:all: --require-hashes \
+            -r tests/interop/requirements.txt
+          SITOS_EXAMPLE_KEEP_PYTHONPATH=1 python3 tests/examples/test_python_examples.py raw-zenoh
+          SITOS_EXAMPLE_KEEP_PYTHONPATH=1 python3 tests/examples/test_python_examples.py failure-cleanup
           rm -f python/sitos/_sitos*.so
 
   lifecycle-sanitizers:

@@ -203,6 +203,28 @@ does not require Rust, CMake, Ninja, or a C++ compiler.
 
 The standard wheel runtime dependency is `numpy>=2.0`.
 
+## 4.1 Python examples and repaired-wheel validation
+
+Issue #32's three Python examples are source-only and remain outside CMake install components,
+wheel metadata, and runtime dependencies. `tests/examples/test_python_examples.py` is a
+standard-library acceptance driver with fixed `quickstart`, `numpy-lut`, `raw-zenoh`,
+`failure-cleanup`, and `wheel-boundary` cases. Every process case uses an absolute monotonic
+60-second bound, `spawn`, collision-safe identifiers, bounded handshakes, and graceful/terminate/
+kill cleanup with child reaping. The private source-test seam
+`SITOS_EXAMPLE_TEST_FAIL=cache-before-open` is the only induced-failure input; it is not a public
+API or installed feature.
+
+The source Linux Python lane runs the examples against the source-built binding. Repaired CPython
+3.12 Linux, Rocky Linux compatibility, and Windows wheel lanes execute from outside the checkout
+with checkout import paths removed. Quickstart runs before the hash-locked raw interoperability
+requirements are installed, proving it needs only the wheel's declared runtime dependencies;
+NumPy and raw Zenoh then run with the existing `tests/interop/requirements.txt` lock. Wheel
+inspection rejects examples, the acceptance driver, fixtures, and build artifacts. The raw example
+is co-developed interoperability coverage; process behavior, discovery, cleanup, NumPy views, and
+cross-platform execution are co-developed integration coverage. The missing-script preflight is
+truthful compile/contract RED under Issue #32's TDD decision, not behavioral RED; workflow,
+packaging-policy, and documentation-only edits are N/A where no executable precondition applies.
+
 ## 5. Test strategy
 
 | Layer | Framework | Target | Run in CI |

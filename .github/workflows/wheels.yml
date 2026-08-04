@@ -65,12 +65,25 @@ jobs:
         run: |
           set -eu
           tests_dir="$PWD/tests/python"
+          examples_driver="$PWD/tests/examples/test_python_examples.py"
           for wheel in wheelhouse/*.whl; do
             python scripts/check_wheel.py "$wheel" --platform linux
             docker run --rm -v "$PWD:/project" -w /project "$CIBW_MANYLINUX_X86_64_IMAGE" \
               auditwheel show "$wheel" | tee "${wheel}.auditwheel.txt"
             grep --fixed-strings "manylinux_2_28_x86_64" "${wheel}.auditwheel.txt"
             sha256sum "$wheel" | tee "${wheel}.sha256"
+            quick_venv="$(mktemp -d)"
+            python -m venv "$quick_venv"
+            quick_requirements="$(mktemp)"
+            awk '/^numpy==/{print; getline; print; getline; print; exit}' \
+              .github/wheel-tools-requirements.txt > "$quick_requirements"
+            test "$(wc -l < "$quick_requirements")" -eq 3
+            env -u LD_LIBRARY_PATH -u PYTHONPATH "$quick_venv/bin/python" -m pip install \
+              --only-binary=:all: --require-hashes -r "$quick_requirements"
+            env -u LD_LIBRARY_PATH -u PYTHONPATH "$quick_venv/bin/python" -m pip install \
+              --no-deps --only-binary=:all: "$wheel"
+            (cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH "$quick_venv/bin/python" \
+              "$examples_driver" quickstart)
             venv="$(mktemp -d)"
             python -m venv "$venv"
             env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" -m pip install \
@@ -79,6 +92,15 @@ jobs:
             # --no-deps keeps every fetched dependency under the reviewed hash lock.
             env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" -m pip install \
               --no-deps --only-binary=:all: "$wheel"
+            env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" -m pip install \
+              --only-binary=:all: --require-hashes -r tests/interop/requirements.txt
+            (cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" \
+              "$examples_driver" numpy-lut)
+            (cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" \
+              "$examples_driver" raw-zenoh)
+            (cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" \
+              "$examples_driver" failure-cleanup)
+            "$venv/bin/python" "$examples_driver" wheel-boundary --wheel "$wheel"
             (cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" \
               -m pytest "$tests_dir/test_import.py" "$tests_dir/test_param_value.py" \
               "$tests_dir/test_numpy_zero_copy.py" "$tests_dir/test_param_store.py" \
@@ -92,7 +114,7 @@ jobs:
               --python "$venv/bin/python" --tests-dir "$tests_dir"
             docker run --rm -v "$PWD:/project:ro" -w /tmp \
               rockylinux/rockylinux@sha256:e372170ca8630f0f03e9b70fdd0bf4a3ce3426b0de7cdba615f06337389de176 \
-              bash -ceu 'dnf -y install python3.12 python3.12-pip; python3.12 -m venv /tmp/sitos-wheel; /tmp/sitos-wheel/bin/python -m pip install --only-binary=:all: --require-hashes -r /project/.github/wheel-tools-requirements.txt; sha256sum /project/'"${wheel}"'; /tmp/sitos-wheel/bin/python -m pip install --no-deps --only-binary=:all: /project/'"${wheel}"'; cd /tmp; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python -m pytest /project/tests/python/test_import.py /project/tests/python/test_param_value.py /project/tests/python/test_numpy_zero_copy.py /project/tests/python/test_param_store.py /project/tests/python/test_param_cache.py /project/tests/python/test_param_cache_live.py -q; env -u LD_LIBRARY_PATH -u PYTHONPATH SITOS_PYTHON_NODE_LIVE=1 /tmp/sitos-wheel/bin/python -m pytest /project/tests/python/test_storage_node.py /project/tests/python/test_storage_node_gil.py -q; env -u LD_LIBRARY_PATH -u PYTHONPATH SITOS_PYTHON_NODE_LIVE=1 /tmp/sitos-wheel/bin/python -m pytest /project/tests/python/test_storage_node_live.py -q'
+              bash -ceu 'dnf -y install python3.12 python3.12-pip; awk "/^numpy==/{print; getline; print; getline; print; exit}" /project/.github/wheel-tools-requirements.txt > /tmp/quick-requirements.txt; test "$(wc -l < /tmp/quick-requirements.txt)" -eq 3; python3.12 -m venv /tmp/sitos-quick; /tmp/sitos-quick/bin/python -m pip install --only-binary=:all: --require-hashes -r /tmp/quick-requirements.txt; sha256sum /project/'"${wheel}"'; /tmp/sitos-quick/bin/python -m pip install --no-deps --only-binary=:all: /project/'"${wheel}"'; cd /tmp; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-quick/bin/python /project/tests/examples/test_python_examples.py quickstart; python3.12 -m venv /tmp/sitos-wheel; /tmp/sitos-wheel/bin/python -m pip install --only-binary=:all: --require-hashes -r /project/.github/wheel-tools-requirements.txt; /tmp/sitos-wheel/bin/python -m pip install --no-deps --only-binary=:all: /project/'"${wheel}"'; /tmp/sitos-wheel/bin/python -m pip install --only-binary=:all: --require-hashes -r /project/tests/interop/requirements.txt; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python /project/tests/examples/test_python_examples.py numpy-lut; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python /project/tests/examples/test_python_examples.py raw-zenoh; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python /project/tests/examples/test_python_examples.py failure-cleanup; /tmp/sitos-wheel/bin/python /project/tests/examples/test_python_examples.py wheel-boundary --wheel /project/'"${wheel}"'; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python -m pytest /project/tests/python/test_import.py /project/tests/python/test_param_value.py /project/tests/python/test_numpy_zero_copy.py /project/tests/python/test_param_store.py /project/tests/python/test_param_cache.py /project/tests/python/test_param_cache_live.py -q; env -u LD_LIBRARY_PATH -u PYTHONPATH SITOS_PYTHON_NODE_LIVE=1 /tmp/sitos-wheel/bin/python -m pytest /project/tests/python/test_storage_node.py /project/tests/python/test_storage_node_gil.py -q; env -u LD_LIBRARY_PATH -u PYTHONPATH SITOS_PYTHON_NODE_LIVE=1 /tmp/sitos-wheel/bin/python -m pytest /project/tests/python/test_storage_node_live.py -q'
           done
       # actions/upload-artifact v6.0.0
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
@@ -127,13 +149,25 @@ jobs:
           persist-credentials: false
       - name: Install hash-locked wheel tools
         shell: pwsh
-        run: 'python -m pip install --only-binary=:all: --require-hashes -r .github/wheel-tools-requirements.txt'
+        run: |
+          $ErrorActionPreference = "Stop"
+          & python -m pip install --only-binary=:all: --require-hashes -r .github/wheel-tools-requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw "wheel-tool installation failed: $LASTEXITCODE" }
       - name: Build and repair wheel
         shell: pwsh
-        run: python -m cibuildwheel --output-dir wheelhouse python
+        run: |
+          $ErrorActionPreference = "Stop"
+          & python -m cibuildwheel --output-dir wheelhouse python
+          if ($LASTEXITCODE -ne 0) { throw "cibuildwheel failed: $LASTEXITCODE" }
       - name: Validate contents, native dependencies, and clean installation
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          function Invoke-Native {
+            param([Parameter(Mandatory = $true)][string]$Command, [Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+            & $Command @Arguments
+            if ($LASTEXITCODE -ne 0) { throw "native command failed ($LASTEXITCODE): $Command $Arguments" }
+          }
           $vsRoots = @(
             "${env:ProgramFiles(x86)}\Microsoft Visual Studio",
             "$env:ProgramFiles\Microsoft Visual Studio"
@@ -143,22 +177,47 @@ jobs:
           } | Select-Object -First 1
           if ($null -eq $dumpbin) { throw "dumpbin.exe was not found" }
           $env:Path = "$($dumpbin.DirectoryName);$env:Path"
+          $repoRoot = (Resolve-Path .).Path
           $tests = (Resolve-Path tests\python).Path
           $typingValidator = (Resolve-Path scripts\validate_mypy_consumers.py).Path
           Get-ChildItem wheelhouse\*.whl | ForEach-Object {
-            python scripts/check_wheel.py $_.FullName --platform windows
-            delvewheel show $_.FullName | Tee-Object -FilePath "$($_.FullName).delvewheel.txt"
+            Invoke-Native python scripts/check_wheel.py $_.FullName --platform windows
+            Invoke-Native delvewheel show $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "delvewheel show failed" }
             Get-FileHash -Algorithm SHA256 $_.FullName | Format-List | Out-File "$($_.FullName).sha256"
-            $venv = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())
-            python -m venv $venv
+            $quickRequirements = Join-Path $env:RUNNER_TEMP "sitos-numpy-requirements.txt"
+            $wheelRequirements = Get-Content .github\wheel-tools-requirements.txt
+            $numpyIndex = 0..($wheelRequirements.Count - 1) | Where-Object { $wheelRequirements[$_] -like "numpy==*" } | Select-Object -First 1
+            if ($null -eq $numpyIndex) { throw "numpy requirement was not found in wheel-tools-requirements.txt" }
+            $numpyRequirements = $wheelRequirements[$numpyIndex..($numpyIndex + 2)]
+            if ($numpyRequirements.Count -ne 3) { throw "numpy requirement extraction did not produce three lines" }
+            Set-Content -Path $quickRequirements -Value $numpyRequirements -Encoding utf8
             Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
-            & "$venv\Scripts\python.exe" -m pip install --only-binary=:all: --require-hashes -r .github\wheel-tools-requirements.txt
-            # This generated local wheel has no pre-build hash. Its SHA-256 is recorded above;
-            # --no-deps keeps every fetched dependency under the reviewed hash lock.
-            & "$venv\Scripts\python.exe" -m pip install --no-deps --only-binary=:all: $_.FullName
+            $quickVenv = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())
+            Invoke-Native python -m venv $quickVenv
+            Invoke-Native "$quickVenv\Scripts\python.exe" -m pip install --only-binary=:all: --require-hashes -r $quickRequirements
+            Invoke-Native "$quickVenv\Scripts\python.exe" -m pip install --no-deps --only-binary=:all: $_.FullName
             Push-Location $env:RUNNER_TEMP
             try {
-              & "$venv\Scripts\python.exe" -m pytest `
+              Invoke-Native "$quickVenv\Scripts\python.exe" "$tests\..\examples\test_python_examples.py" quickstart
+            } finally {
+              Pop-Location
+            }
+            $venv = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())
+            Invoke-Native python -m venv $venv
+            Invoke-Native "$venv\Scripts\python.exe" -m pip install --only-binary=:all: --require-hashes -r .github\wheel-tools-requirements.txt
+            # This generated local wheel has no pre-build hash. Its SHA-256 is recorded above;
+            # --no-deps keeps every fetched dependency under the reviewed hash lock.
+            Invoke-Native "$venv\Scripts\python.exe" -m pip install --no-deps --only-binary=:all: $_.FullName
+            Push-Location $env:RUNNER_TEMP
+            try {
+              Invoke-Native "$venv\Scripts\python.exe" "$tests\..\examples\test_python_examples.py" quickstart
+              Invoke-Native "$venv\Scripts\python.exe" -m pip install --only-binary=:all: --require-hashes -r "$repoRoot\tests\interop\requirements.txt"
+              Invoke-Native "$venv\Scripts\python.exe" "$tests\..\examples\test_python_examples.py" numpy-lut
+              Invoke-Native "$venv\Scripts\python.exe" "$tests\..\examples\test_python_examples.py" raw-zenoh
+              Invoke-Native "$venv\Scripts\python.exe" "$tests\..\examples\test_python_examples.py" failure-cleanup
+              Invoke-Native "$venv\Scripts\python.exe" "$tests\..\examples\test_python_examples.py" wheel-boundary --wheel $_.FullName
+              Invoke-Native "$venv\Scripts\python.exe" -m pytest `
                 "$tests\test_import.py" `
                 "$tests\test_param_value.py" `
                 "$tests\test_numpy_zero_copy.py" `
@@ -166,13 +225,13 @@ jobs:
                 "$tests\test_param_cache.py" `
                 "$tests\test_param_cache_live.py" -q
               $env:SITOS_PYTHON_NODE_LIVE = "1"
-              & "$venv\Scripts\python.exe" -m pytest `
+              Invoke-Native "$venv\Scripts\python.exe" -m pytest `
                 "$tests\test_storage_node.py" `
                 "$tests\test_storage_node_gil.py" -q
-              & "$venv\Scripts\python.exe" -m pytest "$tests\test_storage_node_live.py" -q
+              Invoke-Native "$venv\Scripts\python.exe" -m pytest "$tests\test_storage_node_live.py" -q
               $env:PYTHONPATH = $null
               $env:MYPYPATH = $null
-              python $typingValidator `
+              Invoke-Native python $typingValidator `
                 --python "$venv\Scripts\python.exe" --tests-dir $tests
             } finally {
               Pop-Location
