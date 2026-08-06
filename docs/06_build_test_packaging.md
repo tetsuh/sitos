@@ -234,7 +234,7 @@ packaging-policy, and documentation-only edits are N/A where no executable preco
 | multiprocess | gtest + spawn | Attach/delivery/crash recovery with real process isolation | Always (Linux) / nightly (Windows) |
 | interop | pytest + zenoh-python | Read/write using only the wire specification ([03]) without the sitos library [C03] | Always |
 | python | pytest | API parity, NumPy zero-copy (writeable=False, base-buffer identity), GIL (concurrent get inside callback) | Always |
-| bench | Google Benchmark | N01 (cache Get), N02 (TakeSnapshot), N08 (session start), N09 (delivery latency) | nightly + regression comparison in PR comments |
+| bench | Google Benchmark plus the source-only process driver | N01 local ParamCache reads, N02 native RocksDB snapshots, N08 complete session startup/fetch, N09 cross-process visibility/control RTT/callback throughput | opt-in `bench` pull request, nightly, and manual; job summary and 90-day artifacts, no PR comments |
 
 **Contract-test principle**: Write the `StorageEngine` test suite against the abstraction, in a
 form reusable for InMemory/RocksDB/(future user engines) [X01].
@@ -393,7 +393,7 @@ claiming chronology for work that was co-developed.
 |---|---|---|
 | `ci.yml` | PR/push | Windows (MSVC) + Linux (gcc, clang) builds; unit + integration + python + interop; clang-format/clang-tidy; mypy |
 | `wheels.yml` | PR / push / manual | cibuildwheel build and repaired-wheel validation; publication is Issue #35 |
-| `bench.yml` | nightly / label | Run benchmarks and comment baseline comparisons |
+| `bench.yml` | nightly / manual / `bench` label | Run the two Release benchmark trees, validate deterministic evidence, render Decimal-based comparisons, append the report to the job summary, and retain raw artifacts for 90 days. Hosted timing and historical results are informational. |
 | `dependency-upgrade.yml` | nightly / manual | Build and interop tests with the minimum supported and latest stable zenoh versions. Details: [09_dependency_policy.md](09_dependency_policy.md) |
 | `docs.yml` | push main | Doxygen + Sphinx → GitHub Pages |
 

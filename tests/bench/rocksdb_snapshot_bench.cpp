@@ -4,7 +4,9 @@
 #include <benchmark/benchmark.h>
 
 #include <atomic>
+#include <cstddef>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -21,24 +23,37 @@ std::filesystem::path MakePath() {
 void TakeSnapshot(benchmark::State& state) {
   const auto path = MakePath();
   auto result = sitos::RocksDBEngine::Open(path.string());
-  if (!result.IsOk()) state.SkipWithError("RocksDBEngine::Open failed");
-  auto engine = result.IsOk() ? std::move(result).Value() : nullptr;
-  if (engine != nullptr) {
-    const std::vector<std::byte> value{std::byte{0x01}};
-    for (int i = 0; i < state.range(0); ++i) {
-      engine->Put("key/" + std::to_string(i), value);
+  if (!result.IsOk()) {
+    state.SkipWithError("RocksDBEngine::Open failed");
+    return;
+  }
+  auto engine = std::move(result).Value();
+  const std::vector<std::byte> value{std::byte{0x01}};
+  for (int i = 0; i < state.range(0); ++i) {
+    if (!engine->Put("key/" + std::to_string(i), value)) {
+      state.SkipWithError("RocksDBEngine::Put failed");
+      engine.reset();
+      std::error_code error;
+      std::filesystem::remove_all(path, error);
+      return;
     }
-    for (auto _ : state) {
-      static_cast<void>(_);
-      benchmark::DoNotOptimize(engine->TakeSnapshot());
+  }
+  for (auto _ : state) {
+    static_cast<void>(_);
+    auto snapshot = engine->TakeSnapshot();
+    if (!snapshot) {
+      state.SkipWithError("RocksDBEngine::TakeSnapshot returned null");
+      break;
     }
+    benchmark::DoNotOptimize(snapshot.get());
   }
   engine.reset();
   std::error_code error;
   std::filesystem::remove_all(path, error);
+  if (error) state.SkipWithError("RocksDB cleanup failed");
 }
 
 }  // namespace
 
-BENCHMARK(TakeSnapshot)->Args({1000})->Args({100000});
+BENCHMARK(TakeSnapshot)->Name("N02/TakeSnapshot")->Args({1000})->Args({100000});
 BENCHMARK_MAIN();

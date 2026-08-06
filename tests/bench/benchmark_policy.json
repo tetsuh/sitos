@@ -1,0 +1,59 @@
+{
+  "schema_version": "benchmark-v1",
+  "policy_version": "N01-N02-N08-N09-V1",
+  "runner_policy": "github-hosted-ubuntu-informational",
+  "actual_thresholds": "none—not established",
+  "threshold_rationale": "No stable runner or demonstrated variance bounds exist; hosted timing and historical comparisons remain informational.",
+  "statistics": {
+    "google_benchmark": {"repetitions": 5, "min_time_seconds": 1, "aggregate": "median", "exclude_outliers": false},
+    "N08": {"warmup": 1, "samples": 5, "statistics": ["median", "min", "max", "mad"], "exclude_outliers": false},
+    "N09": {"warmup": 20, "repetitions": 5, "samples_per_repetition": 200, "statistics": ["median", "p95", "min", "max", "mad"], "exclude_outliers": false},
+    "control_rtt": {"warmup": 20, "repetitions": 5, "samples_per_repetition": 200, "statistics": ["median", "p95", "min", "max", "mad"], "exclude_outliers": false},
+    "callback_throughput": {"warmup": 1, "trials": 5, "active_seconds": 2, "statistics": ["median", "mad"], "exclude_outliers": false}
+  },
+  "numeric_rules": {
+    "duration_unit": "nanoseconds-integer",
+    "decimal_input": "exact-lexeme-decimal",
+    "rounding": "round-half-even",
+    "published_ns_places": 6,
+    "published_throughput_places": 3,
+    "p95": "nearest-rank-ceil-0.95n-minus-one",
+    "percentage_delta": "(result-reference)/abs(reference)*100",
+    "zero_reference": "absolute-delta-only; percentage null reason zero-reference"
+  },
+  "scenarios": {
+    "N01": {"scenario_ids": ["N01"], "classification": "informational", "target": "inherited #19 local WSL2 references"},
+    "N02": {"scenario_ids": ["N02"], "classification": "informational", "target": null},
+    "N08": {"scenario_ids": ["N08_SESSION_START_V1"], "classification": "informational", "target_ns": 1000000000},
+    "N09": {"scenario_ids": ["N09_VISIBILITY_S64_V1", "N09_CONTROL_RTT_V1", "N09_CALLBACK_THROUGHPUT_S64_1P_V1", "N09_CALLBACK_THROUGHPUT_S64_4P_V1"], "classification": "informational", "target_ns": 10000000}
+  },
+  "workload_identity": {
+    "N08_scalar_formula": "i * 104729 - 500000000",
+    "N08_lut_bytes": 100000000,
+    "N08_lut_sha256": "7975a2b50c79617f9a7d0e02702cb2c0fa533dd083fc999e6316c852fc06f2aa",
+    "N09_value_formula": "0x13579bdf00000000 + i",
+    "fixture_change": "new scenario version and incomparable partition"
+  },
+  "provenance": {
+    "source_kinds": ["owner-local", "reviewed-pr-provenance", "scheduled", "manual", "pull-request"],
+    "new_measurements_require": ["run_url", "source_artifact_sha256"],
+    "legacy_exception": "#19 owner-local record may use null run_url/source_artifact_sha256 with unavailable—not retained"
+  },
+  "workflow": {
+    "timeout_minutes": 180,
+    "retention_days": 90,
+    "permissions": {"contents": "read"},
+    "events": ["schedule", "workflow_dispatch", "pull_request"],
+    "pull_request_label": "bench",
+    "build_trees": ["release-zenoh-off", "release-zenoh-rocksdb-on"],
+    "actions": ["actions/checkout", "actions/cache/restore", "actions/upload-artifact"]
+  },
+  "baseline": {
+    "states": ["initialization-pending", "complete"],
+    "initial_mode": "no-reference allowed only during initialization-pending",
+    "final_mode": "require-complete-reference",
+    "incompatible_partition": "incomparable",
+    "compatible_partition": "delta-only",
+    "workflow_writes_baseline": false
+  }
+}

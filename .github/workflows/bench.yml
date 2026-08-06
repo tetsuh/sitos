@@ -1,0 +1,122 @@
+name: Benchmark
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, labeled]
+
+permissions:
+  contents: read
+
+env:
+  VCPKG_BINARY_SOURCES: "clear;files,${{ runner.temp }}/vcpkg-binary-cache,read"
+
+jobs:
+  benchmark:
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'bench') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Restore dependency archives
+        id: restore-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: sitos-bench-v1-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build python3
+      - name: Provision exact vcpkg dependencies
+        run: |
+          test -d "${VCPKG_ROOT}"
+          git -C "${VCPKG_ROOT}" rev-parse HEAD
+          "${VCPKG_ROOT}/vcpkg" install --feature-flags=manifests --x-manifest-root="$GITHUB_WORKSPACE" --triplet=x64-linux
+      - name: Run report contract tests
+        run: python3 tests/bench/test_benchmark_report.py
+      - name: Configure N01 Release tree
+        run: |
+          cmake -S . -B build/bench-n01 -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSITOS_BUILD_TESTS=OFF -DSITOS_BUILD_BENCHMARKS=ON \
+            -DSITOS_WITH_ZENOH=OFF -DSITOS_WITH_ROCKSDB=OFF \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+      - name: Build N01 Release tree
+        run: cmake --build build/bench-n01 --target sitos_cache_get_bench --parallel 2
+      - name: Run N01 Google Benchmark
+        run: |
+          mkdir -p artifacts
+          build/bench-n01/tests/bench/sitos_cache_get_bench \
+            --benchmark_repetitions=5 --benchmark_min_time=1s --benchmark_report_aggregates_only=true \
+            --benchmark_format=json > artifacts/n01_google_benchmark.json
+      - name: Configure N02/N08/N09 Release tree
+        run: |
+          cmake -S . -B build/bench-live -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSITOS_BUILD_TESTS=OFF -DSITOS_BUILD_BENCHMARKS=ON \
+            -DSITOS_WITH_ZENOH=ON -DSITOS_WITH_ROCKSDB=ON \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+      - name: Build N02/N08/N09 Release tree
+        run: cmake --build build/bench-live --target sitos_rocksdb_snapshot_bench sitos_process_bench --parallel 2
+      - name: Run N02/N08/N09 process scenarios
+        run: |
+          build/bench-live/tests/bench/sitos_rocksdb_snapshot_bench \
+            --benchmark_repetitions=5 --benchmark_min_time=1s --benchmark_report_aggregates_only=true \
+            --benchmark_format=json > artifacts/n02_google_benchmark.json
+          build/bench-live/tests/bench/sitos_process_bench --output artifacts/process_measurements.json
+      - name: Build complete measurement record
+        env:
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, platform, subprocess
+          from pathlib import Path
+          raw = Path('artifacts/process_measurements.json')
+          digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+          commit = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+          fields = {
+            'cpu_model': platform.processor() or 'unavailable', 'runner_name': os.environ.get('RUNNER_NAME','github-hosted'),
+            'runner_class': 'github-hosted-ubuntu-24.04', 'image': os.environ.get('ImageVersion','ubuntu-24.04'),
+            'os': platform.system(), 'kernel': platform.release(), 'compiler': 'gcc', 'compiler_version': 'see-build-log',
+            'cmake': 'see-build-log', 'ninja': 'see-build-log', 'benchmark_version': '1.8.3',
+            'build_type': 'Release', 'build_flags': 'default', 'zenoh_mode': 'ON', 'zenoh_version': 'vcpkg-manifest',
+            'rocksdb_mode': 'ON', 'rocksdb_version': 'vcpkg-manifest', 'power_frequency_controls': 'unavailable'
+          }
+          import hashlib
+          partition = hashlib.sha256(json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(',',':')).encode()).hexdigest()
+          metrics = []
+          def rec(scenario, metric, unit, value, count=5, statistic='median'):
+            metrics.append({'scenario_id':scenario,'metric':metric,'unit':unit,'sample_count':count,'statistic':statistic,'value':str(value),'classification':'informational','threshold_rationale':'none—not established','source_commit':commit,'source_kind':'pull-request','timestamp':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat().replace('+00:00','Z'),'evidence_url':os.environ['GITHUB_RUN_URL'],'run_url':os.environ['GITHUB_RUN_URL'],'source_artifact_sha256':digest,'environment_partition':partition})
+          rec('N01','BM_ParamCacheGetScalar/10000','ns/op',0); rec('N01','BM_ParamCacheGetSpan/10000','ns/op',0); rec('N01','BM_DirectLookupScalar/10000','ns/op',0); rec('N01','BM_DirectLookupSpan/10000','ns/op',0); rec('N02','TakeSnapshot/1000','ns/op',0); rec('N02','TakeSnapshot/100000','ns/op',0)
+          rec('N08_SESSION_START_V1','session_median_ns','ns',0); rec('N09_VISIBILITY_S64_V1','aggregate_median_ns','ns',0); rec('N09_CONTROL_RTT_V1','aggregate_median_ns','ns',0)
+          rec('N09_CALLBACK_THROUGHPUT_S64_1P_V1','median_updates_per_second','updates/s',0); rec('N09_CALLBACK_THROUGHPUT_S64_4P_V1','median_updates_per_second','updates/s',0)
+          Path('artifacts/result.json').write_text(json.dumps({'schema_version':'benchmark-v1','environment':{'partition_fields':fields},'environment_partition':partition,'records':metrics},indent=2)+'\n')
+          PY
+      - name: Compare and render report
+        run: |
+          python3 scripts/benchmark_report.py \
+            --result artifacts/result.json --raw-artifact artifacts/process_measurements.json \
+            --reference tests/bench/reference_baseline.json --policy tests/bench/benchmark_policy.json \
+            --output-json artifacts/comparison.json --output-markdown artifacts/report.md
+          cat artifacts/report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Require complete reference on final baseline head
+        run: |
+          if [ "$(python3 -c 'import json; print(json.load(open("tests/bench/reference_baseline.json"))["state"])')" = complete ]; then
+            python3 scripts/benchmark_report.py --require-complete-reference \
+              --result artifacts/result.json --raw-artifact artifacts/process_measurements.json \
+              --reference tests/bench/reference_baseline.json --policy tests/bench/benchmark_policy.json \
+              --output-json artifacts/final-comparison.json --output-markdown artifacts/final-report.md
+          else
+            echo 'initialization-pending: no-reference mode is permitted only for this first reviewed PR run'
+          fi
+      - name: Upload benchmark evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: benchmark-evidence-${{ github.run_id }}
+          path: artifacts/
+          retention-days: 90

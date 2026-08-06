@@ -620,10 +620,10 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 ### #33 Benchmark CI and performance requirement verification
 * Milestone: v0.4
 * References: [01] N01–N02, N08–N09, [06] §4–5
-* Implementation targets: `tests/bench/*.cpp`, `.github/workflows/bench.yml`
-* Scope: bench workflow, baseline management, N08/N09 measurement scenarios
-* Acceptance criteria: nightly bench runs and produces comparison reports against requirement values
-* Depends on: #8, #18, #19
+* Implementation targets: `.github/workflows/bench.yml`, `tests/bench/CMakeLists.txt`, `tests/bench/process_bench.cpp`, `tests/bench/benchmark_policy.json`, `tests/bench/reference_baseline.json`, `scripts/benchmark_report.py`, `tests/bench/test_benchmark_report.py`, `tests/bench/rocksdb_snapshot_bench.cpp`, `docs/06_build_test_packaging.md`, `docs/07_issue_breakdown.md`
+* Scope: opt-in read-only benchmark workflow, inherited N01/N02 validation, process-isolated N08/N09 scenarios, versioned policy/reference artifacts, deterministic Decimal comparison/reporting, and job-summary/artifact retention
+* Acceptance criteria: direct `bench`-labeled pull requests, nightly, and manual Ubuntu runs configure/build/run the separate Release trees, verify complete scenario evidence, render reports, and retain raw artifacts for 90 days; hosted timing and historical comparisons remain informational and deterministic failures block
+* Dependencies: #8, #18, #19, #121; Contract Registry: N/A; ADRs: ADR-0004 and ADR-0024 apply, no new ADR
 
 ### #34 Documentation site
 * Milestone: v1.0
