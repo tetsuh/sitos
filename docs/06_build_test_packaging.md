@@ -234,7 +234,7 @@ packaging-policy, and documentation-only edits are N/A where no executable preco
 | multiprocess | gtest + spawn | Attach/delivery/crash recovery with real process isolation | Always (Linux) / nightly (Windows) |
 | interop | pytest + zenoh-python | Read/write using only the wire specification ([03]) without the sitos library [C03] | Always |
 | python | pytest | API parity, NumPy zero-copy (writeable=False, base-buffer identity), GIL (concurrent get inside callback) | Always |
-| bench | Google Benchmark | N01 (cache Get), N02 (TakeSnapshot), N08 (session start), N09 (delivery latency) | nightly + regression comparison in PR comments |
+| bench | Google Benchmark plus the source-only process driver | N01 local ParamCache reads, N02 native RocksDB snapshots, N08 complete session startup/fetch, N09 cross-process visibility/control RTT/callback throughput | opt-in `bench` pull request, nightly, and manual; job summary and 90-day artifacts, no PR comments |
 
 **Contract-test principle**: Write the `StorageEngine` test suite against the abstraction, in a
 form reusable for InMemory/RocksDB/(future user engines) [X01].
@@ -393,7 +393,7 @@ claiming chronology for work that was co-developed.
 |---|---|---|
 | `ci.yml` | PR/push | Windows (MSVC) + Linux (gcc, clang) builds; unit + integration + python + interop; clang-format/clang-tidy; mypy |
 | `wheels.yml` | PR / push / manual | cibuildwheel build and repaired-wheel validation; publication is Issue #35 |
-| `bench.yml` | nightly / label | Run benchmarks and comment baseline comparisons |
+| `bench.yml` | nightly / manual / `bench` label | Run the two Release benchmark trees, validate deterministic evidence, render Decimal-based comparisons, append the report to the job summary, and retain raw artifacts for 90 days. Hosted timing and historical results are informational. |
 | `dependency-upgrade.yml` | nightly / manual | Build and interop tests with the minimum supported and latest stable zenoh versions. Details: [09_dependency_policy.md](09_dependency_policy.md) |
 | `docs.yml` | push main | Doxygen + Sphinx → GitHub Pages |
 
@@ -411,5 +411,29 @@ claiming chronology for work that was co-developed.
   Future: vcpkg / conan registry registration
 * Pre-publication checklist: intellectual-property and export-control review, check for inclusion
   of company-specific information, LICENSE (Apache-2.0) / NOTICE / third-party license list
+
+## 9. Benchmark operational procedure (Issue #33)
+
+`bench.yml` is a read-only normal `pull_request` workflow. The `bench` label opts a PR into
+execution; scheduled and manually dispatched runs are post-merge coverage. The workflow uses
+contents-read permissions, pinned actions, no checkout credentials, no cache save, and retained
+raw artifacts. It never edits `reference_baseline.json`.
+
+The benchmark produces separate Release trees for N01 (Zenoh/RocksDB OFF) and N02/N08/N09
+(Zenoh/RocksDB ON). Raw Google Benchmark JSON and process measurements are immutable evidence.
+N08 has one warmup and five measured sessions; N09 visibility and control have 20 warmups and
+five repetitions of 200 samples; throughput has one warmup and five measured two-second trials
+for one and four producers. Reports use exact Decimal statistics (median, p95, min, max, MAD,
+count) and retain scenario, repetition, environment partition, and target status.
+
+Every result record carries its supporting artifact digest, source commit/head, event source,
+URLs, environment partition, null actual threshold/tolerance with rationale, and classification.
+A compatible reference yields `delta-only`; a different partition yields `incomparable`; absent
+reference is `no-reference` only during initialization-pending. First-stage baseline seeding
+requires a complete reviewed PR artifact and owner provenance review. The initial reviewed source
+is PR #150 head `369de06222f46077721c92a4a0cf741d3f3e07c5`, Actions run `31239887666`, as
+approved by `DEC-33-SEED-PROVENANCE-001`; its 108 records accompany the four retained Issue #19
+records in the complete baseline. Final mode requires complete-reference validation. No workflow
+or benchmark process performs automatic baseline updates.
 
 (END OF DOCUMENT)

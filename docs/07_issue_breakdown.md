@@ -620,10 +620,10 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 ### #33 Benchmark CI and performance requirement verification
 * Milestone: v0.4
 * References: [01] N01–N02, N08–N09, [06] §4–5
-* Implementation targets: `tests/bench/*.cpp`, `.github/workflows/bench.yml`
-* Scope: bench workflow, baseline management, N08/N09 measurement scenarios
-* Acceptance criteria: nightly bench runs and produces comparison reports against requirement values
-* Depends on: #8, #18, #19
+* Implementation targets: `.github/workflows/bench.yml`, `tests/bench/CMakeLists.txt`, `tests/bench/process_bench.cpp`, `tests/bench/benchmark_policy.json`, `tests/bench/reference_baseline.json`, `scripts/benchmark_report.py`, `tests/bench/test_benchmark_report.py`, `tests/bench/rocksdb_snapshot_bench.cpp`, `docs/06_build_test_packaging.md`, `docs/07_issue_breakdown.md`
+* Scope: opt-in read-only benchmark workflow, inherited N01/N02 validation, process-isolated N08/N09 scenarios, versioned policy/reference artifacts, deterministic Decimal comparison/reporting, and job-summary/artifact retention
+* Acceptance criteria: direct `bench`-labeled pull requests, nightly, and manual Ubuntu runs configure/build/run the separate Release trees, verify complete scenario evidence, render reports, and retain raw artifacts for 90 days; hosted timing and historical comparisons remain informational and deterministic failures block
+* Dependencies: #8, #18, #19, #121; Contract Registry: N/A; ADRs: ADR-0004 and ADR-0024 apply, no new ADR
 
 ### #34 Documentation site
 * Milestone: v1.0
@@ -674,5 +674,32 @@ and the AC verification results.
 
 Legacy API compatibility layers and migration work for specific products are proprietary-side work,
 so they are not included in this Issue list.
+
+## Issue #33 benchmark evidence and review procedure
+
+Issue #33 owns N01/N02/N08/N09 scenario identity, workload formulas, evidence schema, Decimal
+statistics, environment partitions, and report status. N01 OFF/OFF evidence must not share a
+partition with live ON/ON N02/N08/N09 evidence. Any fixture or topology change requires a new
+scenario version and cannot silently update a reference.
+
+The retained pre-implementation TDD evidence consists only of compile/contract RED for missing
+artifacts and comparator `NotImplementedError` behavioral RED. No initialization-pending behavioral
+RED was retained. `DEC-33-TDD-EXCEPTION-001` records the owner disposition: the missing evidence is
+not fabricated or reclassified, and initialization-path tests are review-driven regression coverage.
+
+The second-stage checked-in baseline transition is independently test-first. Before the production
+baseline edit, `test_policy_and_workload_fences` required `state: complete` and failed because the
+repository still contained `state: initialization-pending`; the preserved compile/contract RED has
+SHA-256 `93e3e7cdebb02083535a644ff84f4538e5743066b063c4e6603d440cff1263e8`.
+
+A labeled read-only PR run is the first-stage seed. It must complete all scenarios, preserve raw
+JSON and process artifacts, validate exact counts/deadlines/formulas, and publish no baseline
+mutation. The owner approved PR #150 head `369de06222f46077721c92a4a0cf741d3f3e07c5`
+and Actions run `31239887666` as the initial reviewed provenance in
+`DEC-33-SEED-PROVENANCE-001`. The subsequent commit records all 108 reviewed references together
+with the four retained Issue #19 records; final-mode CI rejects initialization-pending or missing
+references. Incompatible partitions are reported as `incomparable`, compatible references as
+`delta-only`, and absent references as transient `no-reference` only during the seed stage.
+Scheduled/manual execution is post-merge operational coverage, not pre-merge authorization.
 
 (END OF DOCUMENT)
