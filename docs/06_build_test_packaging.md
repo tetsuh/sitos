@@ -412,4 +412,26 @@ claiming chronology for work that was co-developed.
 * Pre-publication checklist: intellectual-property and export-control review, check for inclusion
   of company-specific information, LICENSE (Apache-2.0) / NOTICE / third-party license list
 
+## 9. Benchmark operational procedure (Issue #33)
+
+`bench.yml` is a read-only normal `pull_request` workflow. The `bench` label opts a PR into
+execution; scheduled and manually dispatched runs are post-merge coverage. The workflow uses
+contents-read permissions, pinned actions, no checkout credentials, no cache save, and retained
+raw artifacts. It never edits `reference_baseline.json`.
+
+The benchmark produces separate Release trees for N01 (Zenoh/RocksDB OFF) and N02/N08/N09
+(Zenoh/RocksDB ON). Raw Google Benchmark JSON and process measurements are immutable evidence.
+N08 has one warmup and five measured sessions; N09 visibility and control have 20 warmups and
+five repetitions of 200 samples; throughput has one warmup and five measured two-second trials
+for one and four producers. Reports use exact Decimal statistics (median, p95, min, max, MAD,
+count) and retain scenario, repetition, environment partition, and target status.
+
+Every result record carries its supporting artifact digest, source commit/head, event source,
+URLs, environment partition, null actual threshold/tolerance with rationale, and classification.
+A compatible reference yields `delta-only`; a different partition yields `incomparable`; absent
+reference is `no-reference` only during initialization-pending. First-stage baseline seeding
+requires a complete reviewed PR artifact and owner provenance review. A later commit records the
+reviewed reference, then final mode requires complete-reference validation. No workflow or
+benchmark process performs automatic baseline updates.
+
 (END OF DOCUMENT)

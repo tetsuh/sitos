@@ -675,4 +675,25 @@ and the AC verification results.
 Legacy API compatibility layers and migration work for specific products are proprietary-side work,
 so they are not included in this Issue list.
 
+## Issue #33 benchmark evidence and review procedure
+
+Issue #33 owns N01/N02/N08/N09 scenario identity, workload formulas, evidence schema, Decimal
+statistics, environment partitions, and report status. N01 OFF/OFF evidence must not share a
+partition with live ON/ON N02/N08/N09 evidence. Any fixture or topology change requires a new
+scenario version and cannot silently update a reference.
+
+The retained TDD evidence consists only of compile/contract RED for missing artifacts and comparator
+NotImplementedError behavioral RED. No initialization-pending behavioral RED was retained; this is an
+irrecoverable governance decision requiring explicit owner disposition and must not be fabricated or
+reclassified.
+
+A labeled read-only PR run is the first-stage seed. It must complete all scenarios, preserve raw
+JSON and process artifacts, validate exact counts/deadlines/formulas, and publish no baseline
+mutation. An owner reviews the artifact URL, commit/head, environment metadata, and supporting
+SHA-256 digests. A subsequent commit records complete reviewed references; final-mode CI rejects
+initialization-pending or missing references. Incompatible partitions are reported as
+`incomparable`, compatible references as `delta-only`, and absent references as transient
+`no-reference` only during the seed stage. Scheduled/manual execution is post-merge operational
+coverage, not pre-merge authorization.
+
 (END OF DOCUMENT)
