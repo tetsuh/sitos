@@ -11,9 +11,6 @@ on:
 permissions:
   contents: read
 
-env:
-  VCPKG_BINARY_SOURCES: "clear;files,${{ runner.temp }}/vcpkg-binary-cache,read"
-
 jobs:
   benchmark:
     if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'bench') }}
@@ -22,7 +19,12 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Verify benchmark source ref
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
       - name: Restore dependency archives
         id: restore-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -32,14 +34,20 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build python3
+          sudo apt-get install -y cmake ninja-build python3 python3-pytest
       - name: Provision exact vcpkg dependencies
+        env:
+          VCPKG_BINARY_SOURCES: "clear;files,${{ runner.temp }}/vcpkg-binary-cache,read"
         run: |
-          test -d "${VCPKG_ROOT}"
-          git -C "${VCPKG_ROOT}" rev-parse HEAD
-          "${VCPKG_ROOT}/vcpkg" install --feature-flags=manifests --x-manifest-root="$GITHUB_WORKSPACE" --triplet=x64-linux
+          baseline="$(python3 -c 'import json; print(json.load(open("vcpkg.json"))["builtin-baseline"])')"
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" checkout --detach "$baseline"
+          test "$(git -C "$RUNNER_TEMP/vcpkg" rev-parse HEAD)" = "$baseline"
+          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/vcpkg/vcpkg" install --feature-flags=manifests --x-feature=rocksdb --x-manifest-root="$GITHUB_WORKSPACE" --triplet=x64-linux
       - name: Run report contract tests
-        run: python3 tests/bench/test_benchmark_report.py
+        run: python3 -m pytest -q tests/bench/test_benchmark_report.py
       - name: Configure N01 Release tree
         run: |
           cmake -S . -B build/bench-n01 -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -59,7 +67,9 @@ jobs:
           cmake -S . -B build/bench-live -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DSITOS_BUILD_TESTS=OFF -DSITOS_BUILD_BENCHMARKS=ON \
             -DSITOS_WITH_ZENOH=ON -DSITOS_WITH_ROCKSDB=ON \
-            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_MANIFEST_DIR="$GITHUB_WORKSPACE" -DVCPKG_MANIFEST_FEATURES=rocksdb \
+            -DVCPKG_TARGET_TRIPLET=x64-linux -DVCPKG_INSTALLED_DIR="$RUNNER_TEMP/vcpkg-installed"
       - name: Build N02/N08/N09 Release tree
         run: cmake --build build/bench-live --target sitos_rocksdb_snapshot_bench sitos_process_bench --parallel 2
       - name: Run N02/N08/N09 process scenarios
@@ -74,32 +84,134 @@ jobs:
         run: |
           python3 - <<'PY'
           import hashlib, json, os, platform, subprocess
+          from decimal import Decimal
           from pathlib import Path
-          raw = Path('artifacts/process_measurements.json')
-          digest = hashlib.sha256(raw.read_bytes()).hexdigest()
+          raw_path = Path('artifacts/process_measurements.json')
+          raw = json.loads(raw_path.read_text(), parse_float=Decimal, parse_int=Decimal)
+          required_execution = {'N08','N09','N09_CONTROL_RTT_V1','N09_CALLBACK_THROUGHPUT_S64_1P_V1','N09_CALLBACK_THROUGHPUT_S64_4P_V1'}
+          if set(raw.get('scenario_execution', {})) != required_execution or any(raw['scenario_execution'][x] != 'completed' for x in required_execution): raise SystemExit('scenario execution matrix mismatch')
+          n01_json = json.loads(Path('artifacts/n01_google_benchmark.json').read_text(), parse_float=Decimal, parse_int=Decimal)
+          n02_json = json.loads(Path('artifacts/n02_google_benchmark.json').read_text(), parse_float=Decimal, parse_int=Decimal)
+          digest = hashlib.sha256(raw_path.read_bytes()).hexdigest()
+          n01_digest = hashlib.sha256(Path('artifacts/n01_google_benchmark.json').read_bytes()).hexdigest()
+          n02_digest = hashlib.sha256(Path('artifacts/n02_google_benchmark.json').read_bytes()).hexdigest()
           commit = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+          try:
+            cpuinfo_lines = Path('/proc/cpuinfo').read_text(encoding='utf-8').splitlines()
+          except OSError as exc:
+            raise SystemExit(f'cannot read /proc/cpuinfo: {exc}')
+          cpu_models = [line.split(':', 1)[1].strip() for line in cpuinfo_lines if line.startswith('model name') and ':' in line]
+          if not cpu_models or not cpu_models[0] or any(model != cpu_models[0] or any(ord(char) < 32 for char in model) for model in cpu_models):
+            raise SystemExit('missing or inconsistent /proc/cpuinfo model name')
+          cpu_model = cpu_models[0]
+          compiler_version = subprocess.check_output(['g++','-dumpfullversion','-dumpversion'], text=True).strip()
+          cmake_version = subprocess.check_output(['cmake','--version'], text=True).splitlines()[0]
+          ninja_version = subprocess.check_output(['ninja','--version'], text=True).strip()
+          vcpkg_list = subprocess.check_output([os.path.join(os.environ['VCPKG_ROOT'],'vcpkg'),'list'], text=True)
+          def dependency_version(name):
+            rows = [line.split()[1] for line in vcpkg_list.splitlines() if line.startswith(name + ':')]
+            if len(rows) != 1: raise SystemExit('missing unique dependency version: ' + name)
+            return rows[0]
           fields = {
-            'cpu_model': platform.processor() or 'unavailable', 'runner_name': os.environ.get('RUNNER_NAME','github-hosted'),
+            'cpu_model': cpu_model, 'runner_name': os.environ.get('RUNNER_NAME','github-hosted'),
             'runner_class': 'github-hosted-ubuntu-24.04', 'image': os.environ.get('ImageVersion','ubuntu-24.04'),
-            'os': platform.system(), 'kernel': platform.release(), 'compiler': 'gcc', 'compiler_version': 'see-build-log',
-            'cmake': 'see-build-log', 'ninja': 'see-build-log', 'benchmark_version': '1.8.3',
-            'build_type': 'Release', 'build_flags': 'default', 'zenoh_mode': 'ON', 'zenoh_version': 'vcpkg-manifest',
-            'rocksdb_mode': 'ON', 'rocksdb_version': 'vcpkg-manifest', 'power_frequency_controls': 'unavailable'
+            'os': platform.system(), 'kernel': platform.release(), 'compiler': 'gcc', 'compiler_version': compiler_version,
+            'cmake': cmake_version, 'ninja': ninja_version, 'benchmark_version': '1.8.3',
+            'build_type': 'Release', 'build_flags': 'default', 'zenoh_mode': 'ON', 'zenoh_version': '1.9.0',
+            'rocksdb_mode': 'ON', 'rocksdb_version': dependency_version('rocksdb'), 'power_frequency_controls': 'unavailable'
           }
-          import hashlib
           partition = hashlib.sha256(json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(',',':')).encode()).hexdigest()
+          n01_fields = dict(fields, zenoh_mode='OFF', zenoh_version='disabled', rocksdb_mode='OFF', rocksdb_version='disabled')
+          n01_partition = hashlib.sha256(json.dumps(n01_fields, ensure_ascii=False, sort_keys=True, separators=(',',':')).encode()).hexdigest()
+          now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat().replace('+00:00','Z')
+          source_kind = {'pull_request':'pull-request','workflow_dispatch':'manual','schedule':'scheduled'}.get(os.environ.get('GITHUB_EVENT_NAME'), 'unknown')
+          if source_kind == 'unknown': raise SystemExit('unsupported event source')
           metrics = []
-          def rec(scenario, metric, unit, value, count=5, statistic='median'):
-            metrics.append({'scenario_id':scenario,'metric':metric,'unit':unit,'sample_count':count,'statistic':statistic,'value':str(value),'classification':'informational','threshold_rationale':'none—not established','source_commit':commit,'source_kind':'pull-request','timestamp':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat().replace('+00:00','Z'),'evidence_url':os.environ['GITHUB_RUN_URL'],'run_url':os.environ['GITHUB_RUN_URL'],'source_artifact_sha256':digest,'environment_partition':partition})
-          rec('N01','BM_ParamCacheGetScalar/10000','ns/op',0); rec('N01','BM_ParamCacheGetSpan/10000','ns/op',0); rec('N01','BM_DirectLookupScalar/10000','ns/op',0); rec('N01','BM_DirectLookupSpan/10000','ns/op',0); rec('N02','TakeSnapshot/1000','ns/op',0); rec('N02','TakeSnapshot/100000','ns/op',0)
-          rec('N08_SESSION_START_V1','session_median_ns','ns',0); rec('N09_VISIBILITY_S64_V1','aggregate_median_ns','ns',0); rec('N09_CONTROL_RTT_V1','aggregate_median_ns','ns',0)
-          rec('N09_CALLBACK_THROUGHPUT_S64_1P_V1','median_updates_per_second','updates/s',0); rec('N09_CALLBACK_THROUGHPUT_S64_4P_V1','median_updates_per_second','updates/s',0)
+          def values(xs):
+            if not xs: raise SystemExit('missing benchmark samples')
+            return [Decimal(str(x)) for x in xs]
+          def median(xs):
+            xs = sorted(xs); n = len(xs)
+            return xs[n//2] if n % 2 else (xs[n//2-1] + xs[n//2]) / 2
+          requirement_ids = {'N01':'I33-N01','N02':'I33-N02','N08_SESSION_START_V1':'I33-N08','N09_VISIBILITY_S64_V1':'I33-N09','N09_CONTROL_RTT_V1':'I33-N09','N09_CALLBACK_THROUGHPUT_S64_1P_V1':'I33-THROUGHPUT','N09_CALLBACK_THROUGHPUT_S64_4P_V1':'I33-THROUGHPUT'}
+          def rec(scenario, metric, unit, value, count, statistic='median', artifact_digest=digest, record_partition=partition, record_source_kind=source_kind, record_fields=fields, direction='lower-is-better', target_status='informational', artifact_name='process_measurements', artifact_kind='process-json'):
+            targets = {'N08_SESSION_START_V1': Decimal('1000000000'), 'N09_VISIBILITY_S64_V1': Decimal('10000000'), 'N09_CONTROL_RTT_V1': Decimal('10000000')}
+            target_metric = (scenario == 'N08_SESSION_START_V1' and metric == 'session_median_ns' and statistic == 'median') or (scenario == 'N09_VISIBILITY_S64_V1' and metric == 'aggregate_median_ns' and statistic == 'median')
+            if scenario in targets and target_metric and direction == 'lower-is-better':
+              target_status = 'meets-target' if Decimal(value) < targets[scenario] else 'exceeds-target'
+            places = 3 if unit == 'updates/s' else 6
+            rendered = format(Decimal(value).quantize(Decimal(1).scaleb(-places)), 'f')
+            metrics.append({'schema_version':'benchmark-v1','scenario_id':scenario,'metric':metric,'unit':unit,'sample_count':count,'statistic':statistic,'value':rendered,'classification':'informational','requirement_id':requirement_ids[scenario],'threshold_rationale':'none—not established; hosted timing remains informational','actual_threshold':None,'tolerance':None,'direction':direction,'target_applicability': target_metric,'target_status':target_status,'source_commit':commit,'source_kind':record_source_kind,'timestamp':now,'evidence_url':os.environ['GITHUB_RUN_URL'],'run_url':os.environ['GITHUB_RUN_URL'],'source_artifact_sha256':artifact_digest,'source_artifact':artifact_name,'artifact_kind':artifact_kind,'environment_class':('N01-OFF-OFF' if scenario == 'N01' else 'LIVE-ON-ON'),'environment_partition':record_partition,'environment':{'partition_fields':record_fields}})
+          def stats(scenario, metric, unit, xs, include_p95=True, direction='lower-is-better'):
+            xs = values(xs); med = median(xs); ordered = sorted(xs)
+            mad_value = median([abs(x-med) for x in xs])
+            rec(scenario, metric, unit, med, len(xs), 'median', direction=direction)
+            if include_p95:
+              p95_value = ordered[min(len(ordered)-1, (len(ordered)*95+99)//100-1)]
+              rec(scenario, metric, unit, p95_value, len(xs), 'p95', direction=direction)
+            rec(scenario, metric, unit, min(xs), len(xs), 'min', direction=direction); rec(scenario, metric, unit, max(xs), len(xs), 'max', direction=direction); rec(scenario, metric, unit, mad_value, len(xs), 'MAD', direction=direction)
+          def bench(data, name):
+            rows = [row for row in data.get('benchmarks',[]) if row.get('name') == name + '_median']
+            if len(rows) != 1: raise SystemExit(f'missing unique median aggregate: {name}')
+            row = rows[0]
+            value = row.get('real_time', row.get('cpu_time'))
+            if not isinstance(value, Decimal): raise SystemExit('benchmark numeric precision lost')
+            return value
+          n01_values = {}
+          for name in ('BM_ParamCacheGetScalar/10000','BM_ParamCacheGetSpan/10000','BM_DirectLookupScalar/10000','BM_DirectLookupSpan/10000'):
+            n01_values[name] = bench(n01_json, name)
+            rec('N01', name, 'ns/op', n01_values[name], 5, artifact_digest=n01_digest, artifact_name='n01_google_benchmark', artifact_kind='google-benchmark-json', record_partition=n01_partition, record_fields=n01_fields)
+          rec('N01','Scalar_ratio_cache_over_direct','ratio',n01_values['BM_ParamCacheGetScalar/10000']/n01_values['BM_DirectLookupScalar/10000'],5, artifact_digest=n01_digest, artifact_name='n01_google_benchmark', artifact_kind='google-benchmark-json', record_partition=n01_partition, record_fields=n01_fields)
+          rec('N01','Span_ratio_cache_over_direct','ratio',n01_values['BM_ParamCacheGetSpan/10000']/n01_values['BM_DirectLookupSpan/10000'],5, artifact_digest=n01_digest, artifact_name='n01_google_benchmark', artifact_kind='google-benchmark-json', record_partition=n01_partition, record_fields=n01_fields)
+          n02_values = {}
+          for name in ('TakeSnapshot/1000','TakeSnapshot/100000'):
+            n02_values[name] = bench(n02_json, name)
+            rec('N02', name, 'ns/op', n02_values[name], 5, artifact_digest=n02_digest, artifact_name='n02_google_benchmark', artifact_kind='google-benchmark-json')
+          rec('N02','snapshot_100000_over_1000_ratio','ratio',n02_values['TakeSnapshot/100000']/n02_values['TakeSnapshot/1000'],5, artifact_digest=n02_digest, artifact_name='n02_google_benchmark', artifact_kind='google-benchmark-json')
+          def positive_int(x):
+            return not isinstance(x, bool) and isinstance(x, (int, Decimal)) and x == int(x) and int(x) > 0
+          n08_samples = raw.get('n08_samples_ns',[])
+          if len(n08_samples) != 5 or any(not positive_int(x) for x in n08_samples): raise SystemExit('N08 sample shape mismatch')
+          stats('N08_SESSION_START_V1','session_median_ns','ns', n08_samples, include_p95=False)
+          visibility_groups = raw.get('n09_visibility_samples_ns',[])
+          control_groups = raw.get('n09_control_rtt_samples_ns',[])
+          if len(visibility_groups) != 5 or any(len(group) != 200 or any(not positive_int(x) for x in group) for group in visibility_groups): raise SystemExit('N09 visibility shape mismatch')
+          if len(control_groups) != 5 or any(len(group) != 200 or any(not positive_int(x) for x in group) for group in control_groups): raise SystemExit('N09 control shape mismatch')
+          stats('N09_VISIBILITY_S64_V1','aggregate_median_ns','ns',[x for group in visibility_groups for x in group])
+          stats('N09_CONTROL_RTT_V1','aggregate_median_ns','ns',[x for group in control_groups for x in group])
+          for index, group in enumerate(visibility_groups, 1): stats('N09_VISIBILITY_S64_V1',f'repetition_{index}_ns','ns',group)
+          for index, group in enumerate(control_groups, 1): stats('N09_CONTROL_RTT_V1',f'repetition_{index}_ns','ns',group)
+          throughput_values = {}
+          for scenario in ('N09_CALLBACK_THROUGHPUT_S64_1P_V1','N09_CALLBACK_THROUGHPUT_S64_4P_V1'):
+            counts = raw.get(scenario + '_counts'); elapsed = raw.get(scenario + '_elapsed_ns')
+            if not counts or not elapsed or len(counts) != 5 or len(elapsed) != 5: raise SystemExit('missing required callback throughput evidence: ' + scenario)
+            if any(isinstance(c, bool) or isinstance(e, bool) or getattr(c, 'as_tuple', lambda:None)().exponent != 0 or getattr(e, 'as_tuple', lambda:None)().exponent != 0 or int(c) <= 0 or int(e) <= 0 for c,e in zip(counts, elapsed)): raise SystemExit('invalid callback throughput evidence: ' + scenario)
+            samples = [Decimal(int(c)) * Decimal(1000000000) / Decimal(int(e)) for c,e in zip(counts, elapsed)]
+            throughput_values[scenario] = samples
+            xs = values(samples)
+            rec(scenario,'median_updates_per_second','updates/s',median(xs),len(xs),'median',direction='higher-is-better')
+            rec(scenario,'median_updates_per_second','updates/s',median([abs(x-median(xs)) for x in xs]),len(xs),'MAD',direction='higher-is-better')
+            for index, (count, elapsed, rate) in enumerate(zip(counts, elapsed, samples), 1):
+              rec(scenario,f'trial_{index}_count','count',int(count),1,'value',direction='higher-is-better')
+              rec(scenario,f'trial_{index}_elapsed_ns','ns',int(elapsed),1,'value',direction='lower-is-better')
+              rec(scenario,f'trial_{index}_updates_per_second','updates/s',rate,1,'value',direction='higher-is-better')
+          ratio = median(throughput_values['N09_CALLBACK_THROUGHPUT_S64_4P_V1']) / median(throughput_values['N09_CALLBACK_THROUGHPUT_S64_1P_V1'])
+          rec('N09_CALLBACK_THROUGHPUT_S64_4P_V1','four_to_one_ratio','ratio',ratio,5, direction='higher-is-better')
+          from collections import Counter
+          matrix = json.loads(Path('tests/bench/benchmark_policy.json').read_text())['record_matrix']
+          matrix_fields = ('scenario_id','metric','statistic','unit','sample_count','direction','requirement_id','target_applicability','source_artifact','artifact_kind','environment_class','classification','threshold_rationale','actual_threshold','tolerance','schema_version')
+          matrix_keys = [tuple(x[f] for f in matrix_fields) for x in matrix]
+          record_keys = [tuple(x[f] for f in matrix_fields) for x in metrics]
+          if len(record_keys) != len(set(record_keys)) or Counter(matrix_keys) != Counter(record_keys): raise SystemExit('generated record matrix mismatch')
+          Path('artifacts/environment.json').write_text(json.dumps({'schema_version':'benchmark-v1','environments':{'N01':{'partition_fields':n01_fields,'environment_partition':n01_partition},'live':{'partition_fields':fields,'environment_partition':partition}}},indent=2)+'\n')
           Path('artifacts/result.json').write_text(json.dumps({'schema_version':'benchmark-v1','environment':{'partition_fields':fields},'environment_partition':partition,'records':metrics},indent=2)+'\n')
           PY
       - name: Compare and render report
         run: |
           python3 scripts/benchmark_report.py \
+            --artifact-root "${{ github.workspace }}" \
             --result artifacts/result.json --raw-artifact artifacts/process_measurements.json \
+            --raw-artifact artifacts/n01_google_benchmark.json --raw-artifact artifacts/n02_google_benchmark.json \
             --reference tests/bench/reference_baseline.json --policy tests/bench/benchmark_policy.json \
             --output-json artifacts/comparison.json --output-markdown artifacts/report.md
           cat artifacts/report.md >> "$GITHUB_STEP_SUMMARY"
@@ -107,7 +219,9 @@ jobs:
         run: |
           if [ "$(python3 -c 'import json; print(json.load(open("tests/bench/reference_baseline.json"))["state"])')" = complete ]; then
             python3 scripts/benchmark_report.py --require-complete-reference \
+              --artifact-root "${{ github.workspace }}" \
               --result artifacts/result.json --raw-artifact artifacts/process_measurements.json \
+              --raw-artifact artifacts/n01_google_benchmark.json --raw-artifact artifacts/n02_google_benchmark.json \
               --reference tests/bench/reference_baseline.json --policy tests/bench/benchmark_policy.json \
               --output-json artifacts/final-comparison.json --output-markdown artifacts/final-report.md
           else
