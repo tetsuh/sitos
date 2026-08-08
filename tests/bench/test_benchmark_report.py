@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import shutil
@@ -213,7 +214,11 @@ def _validate_workflow_contract(text: str) -> None:
     assert "'zenoh_mode': 'ON', 'zenoh_version': '1.9.0'" in measurement
     assert '-DSITOS_WITH_ZENOH=ON' in by_name['Configure N02/N08/N09 Release tree']['run'] and '-DSITOS_WITH_ROCKSDB=ON' in by_name['Configure N02/N08/N09 Release tree']['run']
     assert 'artifacts/n01_google_benchmark.json' in by_name['Run N01 Google Benchmark']['run']
-    assert '--artifact-root "${{ github.workspace }}"' in by_name['Require complete reference on final baseline head']['run']
+    final_reference = by_name['Require complete reference on final baseline head']['run']
+    assert '--artifact-root "${{ github.workspace }}"' in final_reference
+    assert final_reference.count('--require-complete-reference') == 1
+    assert 'initialization-pending' not in final_reference
+    assert 'if [' not in final_reference
     assert 'artifacts/n02_google_benchmark.json' in by_name['Run N02/N08/N09 process scenarios']['run'] and 'artifacts/process_measurements.json' in by_name['Run N02/N08/N09 process scenarios']['run']
     compare = by_name['Compare and render report']['run']
     assert compare.count('--artifact-root "${{ github.workspace }}"') == 1
@@ -267,6 +272,7 @@ def test_workflow_mutations_are_rejected() -> None:
     document = yaml.safe_load(workflow); document["jobs"]["benchmark"]["steps"][6]["run"] = "cmake --build build --target wrong"; mutations.append(document)
     document = yaml.safe_load(workflow); document["jobs"]["benchmark"]["steps"][6]["run"] = document["jobs"]["benchmark"]["steps"][6]["run"].replace('SITOS_WITH_ZENOH=OFF','SITOS_WITH_ZENOH=ON'); mutations.append(document)
     document = yaml.safe_load(workflow); document["jobs"]["benchmark"]["steps"][13]["run"] = document["jobs"]["benchmark"]["steps"][13]["run"].replace('--raw-artifact artifacts/process_measurements.json','--raw-artifact artifacts/wrong.json'); mutations.append(document)
+    document = yaml.safe_load(workflow); next(step for step in document["jobs"]["benchmark"]["steps"] if step.get("name") == "Require complete reference on final baseline head")["run"] = "if [ initialization-pending ]; then echo skip; fi"; mutations.append(document)
     document = yaml.safe_load(workflow); document["jobs"]["benchmark"]["steps"][-1]["if"] = "true"; mutations.append(document)
     document = yaml.safe_load(workflow); document["jobs"]["benchmark"]["steps"][3]["env"] = {"TOKEN":"${{ secrets.X }}"}; mutations.append(document)
     document = yaml.safe_load(workflow); document["jobs"]["benchmark"]["steps"][8]["run"] = document["jobs"]["benchmark"]["steps"][8]["run"].replace('--benchmark_report_aggregates_only=true',''); mutations.append(document)
@@ -390,6 +396,15 @@ def test_policy_and_workload_fences() -> None:
         == "AMD EPYC 7763 64-Core Processor"
         for record in reviewed
     )
+    bench_cmake = (ROOT / "tests/bench/CMakeLists.txt").read_text(encoding="utf-8")
+    process_target = re.search(
+        r"if\(SITOS_WITH_ZENOH AND SITOS_WITH_ROCKSDB\)\s+"
+        r"add_executable\(sitos_process_bench process_bench\.cpp\)\s+"
+        r"target_link_libraries\(sitos_process_bench PRIVATE sitos::sitos\)\s+"
+        r"sitos_enable_warnings\(sitos_process_bench\)\s+endif\(\)",
+        bench_cmake,
+    )
+    assert process_target is not None
     source = (ROOT / "tests/bench/process_bench.cpp").read_text(encoding="utf-8")
     assert "n08/v1/scalar/" in source and "n09/v1/value/" in source
     assert 'store.Put("session/" + sid' in source

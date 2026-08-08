@@ -217,16 +217,12 @@ jobs:
           cat artifacts/report.md >> "$GITHUB_STEP_SUMMARY"
       - name: Require complete reference on final baseline head
         run: |
-          if [ "$(python3 -c 'import json; print(json.load(open("tests/bench/reference_baseline.json"))["state"])')" = complete ]; then
-            python3 scripts/benchmark_report.py --require-complete-reference \
-              --artifact-root "${{ github.workspace }}" \
-              --result artifacts/result.json --raw-artifact artifacts/process_measurements.json \
-              --raw-artifact artifacts/n01_google_benchmark.json --raw-artifact artifacts/n02_google_benchmark.json \
-              --reference tests/bench/reference_baseline.json --policy tests/bench/benchmark_policy.json \
-              --output-json artifacts/final-comparison.json --output-markdown artifacts/final-report.md
-          else
-            echo 'initialization-pending: no-reference mode is permitted only for this first reviewed PR run'
-          fi
+          python3 scripts/benchmark_report.py --require-complete-reference \
+            --artifact-root "${{ github.workspace }}" \
+            --result artifacts/result.json --raw-artifact artifacts/process_measurements.json \
+            --raw-artifact artifacts/n01_google_benchmark.json --raw-artifact artifacts/n02_google_benchmark.json \
+            --reference tests/bench/reference_baseline.json --policy tests/bench/benchmark_policy.json \
+            --output-json artifacts/final-comparison.json --output-markdown artifacts/final-report.md
       - name: Upload benchmark evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
