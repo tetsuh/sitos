@@ -430,8 +430,10 @@ Every result record carries its supporting artifact digest, source commit/head, 
 URLs, environment partition, null actual threshold/tolerance with rationale, and classification.
 A compatible reference yields `delta-only`; a different partition yields `incomparable`; absent
 reference is `no-reference` only during initialization-pending. First-stage baseline seeding
-requires a complete reviewed PR artifact and owner provenance review. A later commit records the
-reviewed reference, then final mode requires complete-reference validation. No workflow or
-benchmark process performs automatic baseline updates.
+requires a complete reviewed PR artifact and owner provenance review. The initial reviewed source
+is PR #150 head `369de06222f46077721c92a4a0cf741d3f3e07c5`, Actions run `31239887666`, as
+approved by `DEC-33-SEED-PROVENANCE-001`; its 108 records accompany the four retained Issue #19
+records in the complete baseline. Final mode requires complete-reference validation. No workflow
+or benchmark process performs automatic baseline updates.
 
 (END OF DOCUMENT)

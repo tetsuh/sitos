@@ -682,18 +682,24 @@ statistics, environment partitions, and report status. N01 OFF/OFF evidence must
 partition with live ON/ON N02/N08/N09 evidence. Any fixture or topology change requires a new
 scenario version and cannot silently update a reference.
 
-The retained TDD evidence consists only of compile/contract RED for missing artifacts and comparator
-NotImplementedError behavioral RED. No initialization-pending behavioral RED was retained; this is an
-irrecoverable governance decision requiring explicit owner disposition and must not be fabricated or
-reclassified.
+The retained pre-implementation TDD evidence consists only of compile/contract RED for missing
+artifacts and comparator `NotImplementedError` behavioral RED. No initialization-pending behavioral
+RED was retained. `DEC-33-TDD-EXCEPTION-001` records the owner disposition: the missing evidence is
+not fabricated or reclassified, and initialization-path tests are review-driven regression coverage.
+
+The second-stage checked-in baseline transition is independently test-first. Before the production
+baseline edit, `test_policy_and_workload_fences` required `state: complete` and failed because the
+repository still contained `state: initialization-pending`; the preserved compile/contract RED has
+SHA-256 `93e3e7cdebb02083535a644ff84f4538e5743066b063c4e6603d440cff1263e8`.
 
 A labeled read-only PR run is the first-stage seed. It must complete all scenarios, preserve raw
 JSON and process artifacts, validate exact counts/deadlines/formulas, and publish no baseline
-mutation. An owner reviews the artifact URL, commit/head, environment metadata, and supporting
-SHA-256 digests. A subsequent commit records complete reviewed references; final-mode CI rejects
-initialization-pending or missing references. Incompatible partitions are reported as
-`incomparable`, compatible references as `delta-only`, and absent references as transient
-`no-reference` only during the seed stage. Scheduled/manual execution is post-merge operational
-coverage, not pre-merge authorization.
+mutation. The owner approved PR #150 head `369de06222f46077721c92a4a0cf741d3f3e07c5`
+and Actions run `31239887666` as the initial reviewed provenance in
+`DEC-33-SEED-PROVENANCE-001`. The subsequent commit records all 108 reviewed references together
+with the four retained Issue #19 records; final-mode CI rejects initialization-pending or missing
+references. Incompatible partitions are reported as `incomparable`, compatible references as
+`delta-only`, and absent references as transient `no-reference` only during the seed stage.
+Scheduled/manual execution is post-merge operational coverage, not pre-merge authorization.
 
 (END OF DOCUMENT)

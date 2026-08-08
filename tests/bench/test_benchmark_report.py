@@ -338,9 +338,58 @@ def test_policy_and_workload_fences() -> None:
     matrix = policy["record_matrix"]
     assert len(matrix) >= 50 and len({(x["scenario_id"], x["metric"], x["statistic"], x["unit"]) for x in matrix}) == len(matrix)
     reference = json.loads((ROOT / "tests/bench/reference_baseline.json").read_text(encoding="utf-8"))
-    assert all(record["environment_partition"] == "342337392f3685845495bc954eef94a27c18679503392288529ca77c4820a18d" for record in reference["records"])
-    assert all(record["timestamp"] == "2026-07-19T14:46:04Z" for record in reference["records"])
-    assert all(record["legacy_provenance_reason"] == "unavailable—not retained" for record in reference["records"])
+    assert reference["state"] == "complete"
+    assert reference["baseline_version"] == "N01-N02-N08-N09-V1"
+    legacy = [record for record in reference["records"] if record["source_kind"] == "owner-local"]
+    reviewed = [
+        record
+        for record in reference["records"]
+        if record["source_kind"] == "reviewed-pr-provenance"
+    ]
+    assert len(legacy) == 4
+    assert len(reviewed) == len(matrix) == 108
+    assert len(reference["records"]) == len(legacy) + len(reviewed)
+    assert all(
+        record["environment_partition"]
+        == "342337392f3685845495bc954eef94a27c18679503392288529ca77c4820a18d"
+        for record in legacy
+    )
+    assert all(record["timestamp"] == "2026-07-19T14:46:04Z" for record in legacy)
+    assert all(record["legacy_provenance_reason"] == "unavailable—not retained" for record in legacy)
+    identity = lambda record: (
+        record["scenario_id"],
+        record["metric"],
+        record["statistic"],
+        record["unit"],
+    )
+    assert {identity(record) for record in reviewed} == {identity(record) for record in matrix}
+    assert all(
+        record["source_commit"] == "369de06222f46077721c92a4a0cf741d3f3e07c5"
+        and record["timestamp"] == "2026-08-08T05:11:50.688553Z"
+        and record["run_url"] == "https://github.com/tetsuh/sitos/actions/runs/31239887666"
+        and record["evidence_url"] == record["run_url"]
+        and record.get("legacy_provenance_reason") is None
+        for record in reviewed
+    )
+    expected_digests = {
+        "n01_google_benchmark": "d6b8b75a2abbf6b6ff6cb3cc7c9e47345087950761889554ef05875c15cb82cb",
+        "n02_google_benchmark": "03aa58be118492d1b4330bcad1403ff002a0dd67fca192eb55bc483ee24b36c1",
+        "process_measurements": "8400c0b0acdb5bd934b977bef99d257c8c1d960931cce05ce440c55ce0202e20",
+    }
+    assert all(
+        record["source_artifact_sha256"] == expected_digests[record["source_artifact"]]
+        for record in reviewed
+    )
+    expected_partitions = {
+        "N01-OFF-OFF": "07ec24a70892fc90d5e6a659252b7d32febae6ca1da667d702c7702a7b7df093",
+        "LIVE-ON-ON": "c948c35a31e00de66519157dd4c40d7b1ea5a29627b76a8c3160da974f51721c",
+    }
+    assert all(
+        record["environment_partition"] == expected_partitions[record["environment_class"]]
+        and record["environment"]["partition_fields"]["cpu_model"]
+        == "AMD EPYC 7763 64-Core Processor"
+        for record in reviewed
+    )
     source = (ROOT / "tests/bench/process_bench.cpp").read_text(encoding="utf-8")
     assert "n08/v1/scalar/" in source and "n09/v1/value/" in source
     assert 'store.Put("session/" + sid' in source
