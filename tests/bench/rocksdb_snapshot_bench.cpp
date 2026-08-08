@@ -55,5 +55,5 @@ void TakeSnapshot(benchmark::State& state) {
 
 }  // namespace
 
-BENCHMARK(TakeSnapshot)->Name("N02/TakeSnapshot")->Args({1000})->Args({100000});
+BENCHMARK(TakeSnapshot)->Name("TakeSnapshot")->Args({1000})->Args({100000});
 BENCHMARK_MAIN();
