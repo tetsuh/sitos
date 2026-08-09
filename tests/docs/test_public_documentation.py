@@ -63,7 +63,9 @@ class _OrdinarySegment:
 
 _FENCE_OPEN = re.compile(r"^( {0,3})(`{3,}|~{3,})(.*)$")
 _REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[[^\n]*\]:")
-_MULTILINE_LINK = re.compile(r"(?:!?)\[[^\n]*\][ \t]*\n[ \t]*\(")
+_MULTILINE_LINK = re.compile(
+    r"(?:!?)\[[^\r\n]*\][ \t]*(?:\r\n|\r|\n)[ \t]*\("
+)
 _AUTOLINK = re.compile(r"<[A-Za-z][A-Za-z0-9+.-]*:[^<>\n]*>")
 _RAW_LINK_HTML = re.compile(r"<(?i:a|img)(?=[\t\n\v\f\r />])")
 _LINK_TOKEN = re.compile(r"(!?)\[([^\[\]\\\n]*)\]\(([^()\\\t\n\v\f\r ]+)\)")
@@ -377,6 +379,8 @@ continues here``
             "collapsed reference": "[label][]\n",
             "reference definition": "[id]: target.md\n",
             "multiline link": "[label]\n(target.md)\n",
+            "CRLF multiline link": "[label]\r\n(target.md)\r\n",
+            "CR multiline link": "[label]\r(target.md)\r",
             "multiline escaped label": "[bad\\\\label]\n(target.md)\n",
             "multiline escaped alt": "![bad\\\\alt]\n(target.png)\n",
             "form-feed physical line prefix": "\f    [x](bad destination.md)\n",
