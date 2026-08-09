@@ -65,7 +65,7 @@ _FENCE_OPEN = re.compile(r"^( {0,3})(`{3,}|~{3,})(.*)$")
 _REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[[^\n]*\]:")
 _MULTILINE_LINK = re.compile(r"(?:!?)\[[^\n]*\][ \t]*\n[ \t]*\(")
 _AUTOLINK = re.compile(r"<[A-Za-z][A-Za-z0-9+.-]*:[^<>\n]*>")
-_RAW_LINK_HTML = re.compile(r"<(?i:a|img)(?=[\t\n\f\r />])")
+_RAW_LINK_HTML = re.compile(r"<(?i:a|img)(?=[\t\n\v\f\r />])")
 _LINK_TOKEN = re.compile(r"(!?)\[([^\[\]\\\n]*)\]\(([^()\\\t\n\v\f\r ]+)\)")
 _BRACKET_RUN = re.compile(r"`+")
 
@@ -363,8 +363,10 @@ continues here``
             "multiline nested alt": "![outer[alt]]\n(target.png)\n",
             "autolink": "<https://github.com/tetsuh/sitos>\n",
             "raw anchor": '<a href="target.md">x</a>\n',
+            "vertical-tab raw anchor": '<a\vhref="target.md">x</a>\n',
             "multiline raw anchor": '<a\n href="target.md">x</a>\n',
             "raw image": '<img src="target.png">\n',
+            "vertical-tab raw image": '<img\vsrc="target.png">\n',
             "linked image": "[![alt](badge.svg)](target.md)\n",
             "nested label": "[outer[inner](target.md)\n",
             "nested closing label": "[outer]inner](target.md)\n",
