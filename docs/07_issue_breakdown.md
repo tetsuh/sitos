@@ -625,13 +625,20 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 * Acceptance criteria: direct `bench`-labeled pull requests, nightly, and manual Ubuntu runs configure/build/run the separate Release trees, verify complete scenario evidence, render reports, and retain raw artifacts for 90 days; hosted timing and historical comparisons remain informational and deterministic failures block
 * Dependencies: #8, #18, #19, #121; Contract Registry: N/A; ADRs: ADR-0004 and ADR-0024 apply, no new ADR
 
-### #34 Documentation site
+### #34 Public documentation cleanup
 * Milestone: v1.0
-* References: [06] §5, §7
-* Implementation targets: `docs/`, `Doxyfile`, `docs/conf.py`, `.github/workflows/docs.yml`
-* Scope: Doxygen/Sphinx, completed README, CONTRIBUTING, docs.yml
-* Acceptance criteria: docs.yml green. Public documents do not reference private documents
-* Depends on: #1
+* References: [00] §5, [06] §1/§6/§7, and the canonical GitHub Issue #34 specification
+* Implementation targets: `README.md`, `CONTRIBUTING.md`, the compatibility workflow pointer,
+  public-document navigation files, and `tests/docs/test_public_documentation.py`
+* Scope: complete the repository-rendered Markdown entry points, make `CONTRIBUTING.md` the
+  canonical workflow, reconcile the roadmap/build documents, and enforce local links plus the
+  approved public-host allowlist with a standard-library offline contract test. Generated API
+  references, documentation hosting, publication workflows, and API comment/docstring expansion
+  are excluded
+* Acceptance criteria: the documentation contract test is green; README build commands,
+  quickstarts, component overview, and CI badge are current; public links are repository-bound or
+  use an approved host; all repository-owned workflow references use `CONTRIBUTING.md`
+* Depends on: #1 (completed)
 
 ### #35 Release / publication readiness
 * Milestone: v1.0

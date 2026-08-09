@@ -5,7 +5,7 @@ project.
 
 ## Essential Pointers
 
-- Development workflow: [docs/development_workflow.md](docs/development_workflow.md)
+- Development workflow: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Issue breakdown: [docs/07_issue_breakdown.md](docs/07_issue_breakdown.md)
 - Requirements: [docs/01_requirements.md](docs/01_requirements.md)
 - Build / test / packaging: [docs/06_build_test_packaging.md](docs/06_build_test_packaging.md)
@@ -40,4 +40,4 @@ project.
    [docs/07_issue_breakdown.md](docs/07_issue_breakdown.md).
 2. Confirm that the owner has declared evolving design scope ready when required.
 3. Read the referenced design sections and related ADRs from [docs/adr/](docs/adr/).
-4. Follow the full workflow and TDD steps in `docs/development_workflow.md`.
+4. Follow the full workflow and TDD steps in `CONTRIBUTING.md`.

@@ -23,7 +23,7 @@ sitos/
   examples/
     cpp/                      # quickstart, storage_node demo (binary name: sitobolon)
     python/
-  docs/                       # English design documents + Doxygen/Sphinx
+  docs/                       # English Markdown design and operations documents
   .github/workflows/
 ```
 
@@ -395,7 +395,10 @@ claiming chronology for work that was co-developed.
 | `wheels.yml` | PR / push / manual | cibuildwheel build and repaired-wheel validation; publication is Issue #35 |
 | `bench.yml` | nightly / manual / `bench` label | Run the two Release benchmark trees, validate deterministic evidence, render Decimal-based comparisons, append the report to the job summary, and retain raw artifacts for 90 days. Hosted timing and historical results are informational. |
 | `dependency-upgrade.yml` | nightly / manual | Build and interop tests with the minimum supported and latest stable zenoh versions. Details: [09_dependency_policy.md](09_dependency_policy.md) |
-| `docs.yml` | push main | Doxygen + Sphinx → GitHub Pages |
+
+Public documentation is repository-rendered Markdown. The offline standard-library contract test is
+`python3 tests/docs/test_public_documentation.py -v`; there is no generated-documentation or
+hosted-site workflow.
 
 ## 7. Quality gates
 
