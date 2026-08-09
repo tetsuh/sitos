@@ -63,7 +63,7 @@ class _OrdinarySegment:
 
 _FENCE_OPEN = re.compile(r"^( {0,3})(`{3,}|~{3,})(.*)$")
 _REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[[^\n]*\]:")
-_MULTILINE_LINK = re.compile(r"(?:!?)\[[^\[\]\\\n]*\][ \t]*\n[ \t]*\(")
+_MULTILINE_LINK = re.compile(r"(?:!?)\[[^\n]*\][ \t]*\n[ \t]*\(")
 _AUTOLINK = re.compile(r"<[A-Za-z][A-Za-z0-9+.-]*:[^<>\n]*>")
 _RAW_LINK_HTML = re.compile(r"<(?i:a|img)(?=[\t\n\f\r />])")
 _LINK_TOKEN = re.compile(r"(!?)\[([^\[\]\\\n]*)\]\(([^()\\\t\n\v\f\r ]+)\)")
@@ -357,6 +357,10 @@ continues here``
             "collapsed reference": "[label][]\n",
             "reference definition": "[id]: target.md\n",
             "multiline link": "[label]\n(target.md)\n",
+            "multiline escaped label": "[bad\\\\label]\n(target.md)\n",
+            "multiline escaped alt": "![bad\\\\alt]\n(target.png)\n",
+            "multiline nested label": "[outer[inner]]\n(target.md)\n",
+            "multiline nested alt": "![outer[alt]]\n(target.png)\n",
             "autolink": "<https://github.com/tetsuh/sitos>\n",
             "raw anchor": '<a href="target.md">x</a>\n',
             "multiline raw anchor": '<a\n href="target.md">x</a>\n',
