@@ -70,8 +70,27 @@ _LINK_TOKEN = re.compile(r"(!?)\[([^\[\]\\\n]*)\]\(([^()\\\t\n\v\f\r ]+)\)")
 _BRACKET_RUN = re.compile(r"`+")
 
 
+def _physical_lines(text: str) -> list[str]:
+    lines: list[str] = []
+    start = 0
+    index = 0
+    while index < len(text):
+        if text[index] in "\r\n":
+            end = index + 1
+            if text[index] == "\r" and end < len(text) and text[end] == "\n":
+                end += 1
+            lines.append(text[start:end])
+            start = end
+            index = end
+        else:
+            index += 1
+    if start < len(text):
+        lines.append(text[start:])
+    return lines
+
+
 def _ordinary_segments(text: str, source: Path) -> list[_OrdinarySegment]:
-    lines = text.splitlines(keepends=True)
+    lines = _physical_lines(text)
     segments: list[_OrdinarySegment] = []
     ordinary: list[str] = []
     ordinary_first = 1
@@ -176,7 +195,8 @@ def parse_markdown(source: Path, text: str) -> list[MarkdownToken]:
         if _RAW_LINK_HTML.search(masked):
             raise DocumentationContractError(f"{source}: raw HTML links/images are unsupported")
 
-        for offset, line in enumerate(masked.splitlines(), start=0):
+        for offset, physical_line in enumerate(_physical_lines(masked), start=0):
+            line = physical_line.rstrip("\r\n")
             line_number = segment.first_line + offset
             if _REFERENCE_DEFINITION.search(line):
                 raise DocumentationContractError(
@@ -359,6 +379,8 @@ continues here``
             "multiline link": "[label]\n(target.md)\n",
             "multiline escaped label": "[bad\\\\label]\n(target.md)\n",
             "multiline escaped alt": "![bad\\\\alt]\n(target.png)\n",
+            "form-feed physical line prefix": "\f    [x](bad destination.md)\n",
+            "vertical-tab physical line prefix": "\v    [x](bad destination.md)\n",
             "multiline nested label": "[outer[inner]]\n(target.md)\n",
             "multiline nested alt": "![outer[alt]]\n(target.png)\n",
             "autolink": "<https://github.com/tetsuh/sitos>\n",
