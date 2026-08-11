@@ -80,9 +80,10 @@ repository as a general-purpose library not limited to CT reconstruction.
 | [08_contract_registry.md](08_contract_registry.md) | Public | Public contract registry: index of wire surfaces and stable identifiers |
 | [09_dependency_policy.md](09_dependency_policy.md) | Public | Dependency and zenoh compatibility policy |
 | [10_adr_process.md](10_adr_process.md) | Public | ADR writing and operation rules (to be moved to docs/adr/README.md) |
-| [development_workflow.md](development_workflow.md) | Public | Branching strategy, TiDD, and TDD operation rules (to be moved to CONTRIBUTING) |
+| [CONTRIBUTING.md](../CONTRIBUTING.md) | Public | Canonical branching strategy, TiDD, TDD, and contribution workflow |
 
-All documents listed above are public and maintained under `docs/` in the sitos repository.
+All documents listed above are public Markdown maintained in the sitos repository. Design and
+operations documents live under `docs/`; the contributor workflow lives at the repository root.
 Public documents must not contain references to non-public documents.
 
 ## 6. Record of Major Decisions (ADR Summary)

@@ -32,10 +32,10 @@ so it cannot diverge from the specifications it points to.
    ADR, so it cannot remain tentative without a tracked owner. A proposal Issue must hand off to an
    ADR: the row's **Contract status becomes `Normative` only when that owning ADR is Accepted** — a
    proposal Issue alone never makes a row normative. Forward-written specification sections carry the
-   banner described in [development_workflow.md](development_workflow.md) §7.4 until that event.
+   banner described in [CONTRIBUTING.md](../CONTRIBUTING.md) §7.4 until that event.
 4. When a milestone is assembled, the new and changed surfaces of its issues are checked against
    this registry as part of the milestone design review
-   ([development_workflow.md](development_workflow.md) §7); any unregistered surface is added as a
+   ([CONTRIBUTING.md](../CONTRIBUTING.md) §7); any unregistered surface is added as a
    Planned row during that gate.
 
 ## 2. Wire surfaces
