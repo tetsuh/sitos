@@ -206,6 +206,7 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         trigger = yaml_block(workflow, "on", 0)
         linux = yaml_block(workflow, "linux", 2)
         windows = yaml_block(workflow, "windows", 2)
+        latest = yaml_block(workflow, "latest-compatible", 2)
         testpypi = yaml_block(workflow, "publish-testpypi", 2)
         pypi = yaml_block(workflow, "publish-pypi", 2)
         assert_all_actions_pinned(self, workflow)
@@ -218,6 +219,11 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         self.assertIn("- testpypi", trigger)
         self.assertNotIn("- pypi", trigger)
         self.assertNotIn("release_ref:", trigger)
+        self.assertNotRegex(code, r"(?m)^permissions:\n  contents: read$")
+        for validation_job in (linux, windows, latest):
+            permissions_block = yaml_block(validation_job, "permissions", 4)
+            self.assertIn("contents: read", permissions_block)
+            self.assertNotIn("contents: write", permissions_block)
 
         linux_upload = yaml_action_step(
             linux, "actions/upload-artifact", UPLOAD_ARTIFACT_SHA
