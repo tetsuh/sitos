@@ -1,0 +1,78 @@
+sitos
+Copyright 2026 Tetsuya Hayashi
+
+This product is licensed under the Apache License, Version 2.0. See LICENSE.
+
+The following inventory records direct third-party components used by this
+repository. Components identified as build, test, optional, or template inputs
+are listed for provenance even when they are not distributed in the standard
+Python wheel.
+
+Eclipse zenoh-c 1.9.0
+- Role: linked transport runtime; one runtime is bundled in the standard wheel.
+- Source: https://github.com/eclipse-zenoh/zenoh-c
+- License: EPL-2.0 OR Apache-2.0.
+- Repository copies: third_party/zenoh-c/LICENSE,
+  third_party/zenoh-c/NOTICE.md, python/licenses/LICENSE-zenoh-c, and
+  python/licenses/NOTICE-zenoh-c.md.
+
+RocksDB 11.1.2
+- Role: optional C++ storage backend provisioned through the non-default vcpkg
+  feature; absent from standard Python wheels.
+- Source: https://github.com/facebook/rocksdb
+- License: GPL-2.0 OR Apache-2.0.
+
+nanobind 2.9.2
+- Role: Python extension build dependency.
+- Source: https://github.com/wjakob/nanobind
+- License: BSD-3-Clause.
+
+scikit-build-core 0.10.7
+- Role: Python wheel build backend; not bundled in the standard wheel.
+- Source: https://github.com/scikit-build/scikit-build-core
+- License: Apache-2.0.
+
+NumPy 2.0.0
+- Role: minimum Python build and runtime dependency; installed separately and
+  not bundled in the standard wheel.
+- Source: https://github.com/numpy/numpy
+- License: BSD-3-Clause for the NumPy project. NumPy distributions contain
+  additional third-party license information supplied by NumPy.
+
+Eclipse zenoh Python API (eclipse-zenoh) 1.9.0
+- Role: interoperability test dependency; not bundled in the standard wheel.
+- Source: https://github.com/eclipse-zenoh/zenoh-python
+- License: EPL-2.0 OR Apache-2.0.
+
+pytest 8.3.3
+- Role: interoperability test runner; not bundled in the standard wheel.
+- Source: https://github.com/pytest-dev/pytest
+- License: MIT.
+
+GoogleTest 1.14.0
+- Role: test-only dependency fetched when tests are enabled.
+- Source: https://github.com/google/googletest
+- License: BSD-3-Clause.
+
+Google Benchmark 1.8.3
+- Role: benchmark-only dependency fetched when benchmarks are enabled.
+- Source: https://github.com/google/benchmark
+- License: Apache-2.0.
+
+github/gitignore templates
+- Role: source material for .gitignore, imported in local commit 6fb8f99e.
+- Source: https://github.com/github/gitignore
+- License: CC0-1.0.
+- The exact upstream revision was not recorded when the templates were
+  combined; the repository header identifies the C++, CMake, and Python source
+  templates.
+
+gitattributes/gitattributes templates
+- Role: source material for .gitattributes, imported in local commit 6fb8f99e.
+- Source: https://github.com/gitattributes/gitattributes
+- License: MIT.
+- The exact upstream revision was not recorded when the Common, C++, CMake, and
+  Python templates were combined.
+
+This inventory does not change the license of sitos or any third-party work.
+Refer to each upstream project for its complete license terms and notices.

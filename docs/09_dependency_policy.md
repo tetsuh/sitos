@@ -212,6 +212,12 @@ and final #56; they add no dependency and do not change the transport adapter bo
 As with zenoh, monitor RocksDB and Python packaging with locked versions + latest CI.
 However, RocksDB is optional and must not impair availability of the standard wheel.
 
+Issue #35 publishes only the RocksDB-OFF Linux CPython 3.12 standard wheel. Windows remains a
+non-publishing validation target. No `sitos-rocksdb` package or Python extra is defined: the public
+Python API currently exposes only `InMemoryEngine`, so a RocksDB wheel would provide no supported
+selection path. A separate wheel is reconsidered only with an approved public Python RocksDB API or
+concrete persistence/performance requirement. C++ consumers retain the opt-in vcpkg route below.
+
 ### 7.1 Optional vcpkg foundation
 
 The root `vcpkg.json` is the sole source of the vcpkg executable and built-in registry pin. Its

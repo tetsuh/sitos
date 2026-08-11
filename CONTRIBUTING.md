@@ -202,9 +202,21 @@ the Issue side may remain unchecked when closed).
 ## 6. Release Flow
 
 1. All required issues for the release boundary (the table at the beginning of
-   [07]) are closed
-2. release-please generates the CHANGELOG and version PR from Conventional Commits
-3. Merge the version PR → tag → `wheels.yml` publishes to PyPI
+   [07]) are closed, and the owner accepts the archived IP, license,
+   company-information, export-control, and package-name review.
+2. Before the first production release, manually publish the Linux CPython 3.12 standard wheel to
+   TestPyPI and verify the exact published wheel in an isolated environment. TestPyPI is a
+   validation service, not a user distribution channel.
+3. release-please generates `CHANGELOG.md` and a version PR from Conventional Commits. CMake owns
+   the shared C++/Python version. Before 1.0, fixes bump patch, features and breaking changes bump
+   minor, and moving to 1.0 requires an explicit owner decision.
+4. The version PR follows the normal review, green-CI, and current-head owner merge authorization
+   rules. Automation never approves or merges it.
+5. Merging the authorized version PR creates the `v*` tag and GitHub Release. The tag-triggered
+   `wheels.yml` validates Linux and Windows, publishes only the RocksDB-OFF Linux CPython 3.12
+   wheel to PyPI through OIDC, and retains Windows as non-publishing validation.
+6. A RocksDB wheel, prebuilt C++ static/shared archives, and crates.io publication require separate
+   approved scope; none is part of the initial MVP release automation.
 
 ## 7. Milestone Design Review (horizontal pass)
 

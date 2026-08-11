@@ -30,6 +30,7 @@ install.components = ["python"]
 [tool.scikit-build.wheel]
 license-files = [
   "../LICENSE",
+  "../NOTICE",
   "licenses/LICENSE-zenoh-c",
   "licenses/NOTICE-zenoh-c.md",
 ]
