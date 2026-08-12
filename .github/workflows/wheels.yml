@@ -372,40 +372,60 @@ jobs:
           import os
           import re
           import zipfile
+          from email.parser import BytesParser
           from pathlib import Path
 
+          version_component = r"(?:0|[1-9][0-9]*)"
+          canonical_version = rf"{version_component}\.{version_component}\.{version_component}"
+          canonical_tag = rf"v{canonical_version}"
+
           tag = os.environ["RELEASE_TAG"]
-          if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag) is None:
+          if re.fullmatch(canonical_tag, tag) is None:
               raise SystemExit(f"release tag is not canonical SemVer: {tag}")
           expected = tag.removeprefix("v")
 
           cmake = Path("CMakeLists.txt").read_text(encoding="utf-8")
+          project_commands = re.findall(r"(?im)^[ \t]*project[ \t]*\(", cmake)
           cmake_versions = re.findall(
-              r"(?m)^project\(sitos VERSION ([0-9]+\.[0-9]+\.[0-9]+)\b", cmake
+              rf"(?im)^[ \t]*project[ \t]*\([ \t]*sitos[ \t]+VERSION[ \t]+"
+              rf"({canonical_version})(?=[ \t]|\))",
+              cmake,
           )
-          if len(cmake_versions) != 1:
-              raise SystemExit("CMake does not contain exactly one sitos project version")
+          if len(project_commands) != 1 or len(cmake_versions) != 1:
+              raise SystemExit("CMake must contain one canonical sitos project version")
 
           manifest = json.loads(
-              Path(".release-please-manifest.json").read_text(encoding="utf-8")
+              Path(".release-please-manifest.json").read_text(encoding="utf-8"),
+              object_pairs_hook=lambda pairs: pairs,
           )
-          if set(manifest) != {"."} or not isinstance(manifest["."], str):
+          if (
+              not isinstance(manifest, list)
+              or len(manifest) != 1
+              or not isinstance(manifest[0], tuple)
+              or len(manifest[0]) != 2
+              or manifest[0][0] != "."
+              or not isinstance(manifest[0][1], str)
+          ):
               raise SystemExit("release-please manifest must contain one root package version")
-          manifest_version = manifest["."]
+          manifest_version = manifest[0][1]
 
           wheels = list(Path("dist").glob("*.whl"))
           if len(wheels) != 1:
               raise SystemExit(f"expected one Linux wheel, found {len(wheels)}")
+          if not wheels[0].name.startswith(f"sitos-{expected}-"):
+              raise SystemExit(f"wheel filename does not match {tag}: {wheels[0].name}")
+          expected_metadata = f"sitos-{expected}.dist-info/METADATA"
           with zipfile.ZipFile(wheels[0]) as wheel:
               metadata_names = [
                   name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")
               ]
-              if len(metadata_names) != 1:
-                  raise SystemExit("wheel does not contain exactly one METADATA file")
-              metadata = wheel.read(metadata_names[0]).decode("utf-8")
-          wheel_versions = re.findall(r"(?m)^Version: ([^\r\n]+)$", metadata)
-          if len(wheel_versions) != 1:
-              raise SystemExit("wheel METADATA does not contain exactly one version")
+              if metadata_names != [expected_metadata]:
+                  raise SystemExit("wheel does not contain the expected sitos METADATA file")
+              metadata = BytesParser().parsebytes(wheel.read(expected_metadata))
+          wheel_names = metadata.get_all("Name", [])
+          wheel_versions = metadata.get_all("Version", [])
+          if wheel_names != ["sitos"] or len(wheel_versions) != 1:
+              raise SystemExit("wheel METADATA must contain one sitos name and version")
 
           versions = {
               "CMake": cmake_versions[0],

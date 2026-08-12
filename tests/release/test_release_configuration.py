@@ -29,6 +29,11 @@ UPLOAD_ARTIFACT_SHA = "b7c566a772e6b6bfb58ed0dc250532a479d7789f"
 CHECKOUT_SHA = "08c6903cd8c0fde910a37f88322edcfb5dd907a8"
 RELEASE_TOKEN_SECRET = "RELEASE_PLEASE_TOKEN"
 ROOT_COMMIT = "e8230fa407e4b5f82b63d7c0593aff57c0a2e0d1"
+CANONICAL_VERSION = (
+    r"(?:0|[1-9][0-9]*)\."
+    r"(?:0|[1-9][0-9]*)\."
+    r"(?:0|[1-9][0-9]*)"
+)
 
 
 def read(path: Path) -> str:
@@ -173,7 +178,9 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         cmake = read(CMAKE)
         version_lines = [line for line in cmake.splitlines() if "project(sitos VERSION" in line]
         self.assertEqual(len(version_lines), 1)
-        version_match = re.search(r"VERSION ([0-9]+\.[0-9]+\.[0-9]+)\b", version_lines[0])
+        version_match = re.search(
+            rf"VERSION ({CANONICAL_VERSION})(?= |\))", version_lines[0]
+        )
         self.assertIsNotNone(version_match)
         cmake_version = version_match.group(1)
         self.assertIn("x-release-please-version", version_lines[0])
@@ -182,7 +189,10 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         pyproject = tomllib.loads(read(PYPROJECT))
         provider = pyproject["tool"]["scikit-build"]["metadata"]["version"]
         self.assertEqual(provider["input"], "../CMakeLists.txt")
-        self.assertIn("project\\(sitos VERSION", provider["regex"])
+        self.assertEqual(
+            provider["regex"],
+            rf"project\(sitos VERSION (?P<value>{CANONICAL_VERSION})(?=[ )])",
+        )
 
         config = json.loads(read(RELEASE_CONFIG))
         self.assertEqual(config["bootstrap-sha"], ROOT_COMMIT)
@@ -316,7 +326,8 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         self.assertNotIn("repository-url: https://test.pypi.org/legacy/", pypi)
         self.assertIn("Verify release version provenance", pypi)
         self.assertIn("RELEASE_TAG: ${{ github.ref_name }}", pypi)
-        self.assertIn('re.fullmatch(r"v[0-9]+\\.[0-9]+\\.[0-9]+", tag)', pypi)
+        self.assertIn('re.fullmatch(canonical_tag, tag)', pypi)
+        self.assertIn("object_pairs_hook=lambda pairs: pairs", pypi)
         self.assertIn('"CMake": cmake_versions[0]', pypi)
         self.assertIn('"release-please manifest": manifest_version', pypi)
         self.assertIn('"wheel metadata": wheel_versions[0]', pypi)
@@ -328,37 +339,102 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         pypi = yaml_block(read(WHEELS), "publish-pypi", 2)
         script = yaml_named_run(pypi, "Verify release version provenance")
 
+        def verify(
+            *,
+            tag: str = "v0.1.0",
+            cmake: str = "project(sitos VERSION 0.1.0 LANGUAGES CXX)\n",
+            manifest: str = '{".": "0.1.0"}',
+            wheel_filename_version: str = "0.1.0",
+            dist_info_version: str = "0.1.0",
+            metadata_versions: tuple[tuple[str, str], ...] = (("Version", "0.1.0"),),
+        ) -> subprocess.CompletedProcess[str]:
+            directory = tempfile.TemporaryDirectory()
+            self.addCleanup(directory.cleanup)
+            root = Path(directory.name)
+            (root / "dist").mkdir()
+            (root / "CMakeLists.txt").write_text(cmake, encoding="utf-8")
+            (root / ".release-please-manifest.json").write_text(manifest, encoding="utf-8")
+            metadata = "Metadata-Version: 2.2\nName: sitos\n" + "".join(
+                f"{field}: {version}\n" for field, version in metadata_versions
+            )
+            wheel = root / "dist" / f"sitos-{wheel_filename_version}-cp312-cp312-linux.whl"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr(
+                    f"sitos-{dist_info_version}.dist-info/METADATA", metadata
+                )
+            return subprocess.run(
+                ["bash", "-eu", "-o", "pipefail", "-c", script],
+                cwd=root,
+                env={"PATH": "/usr/bin:/bin", "RELEASE_TAG": tag},
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+
         cases = (
-            ("equal", "v0.1.0", "0.1.0", "0.1.0", "0.1.0", True),
-            ("stale manifest", "v0.1.0", "0.1.0", "0.0.0", "0.1.0", False),
-            ("CMake mismatch", "v0.1.0", "0.2.0", "0.1.0", "0.1.0", False),
-            ("wheel mismatch", "v0.1.0", "0.1.0", "0.1.0", "0.2.0", False),
-            ("noncanonical tag", "release-0.1.0", "0.1.0", "0.1.0", "0.1.0", False),
+            ("equal", {}, True),
+            ("stale manifest", {"manifest": '{".": "0.0.0"}'}, False),
+            (
+                "CMake mismatch",
+                {"cmake": "project(sitos VERSION 0.2.0 LANGUAGES CXX)\n"},
+                False,
+            ),
+            (
+                "four-component CMake version",
+                {"cmake": "project(sitos VERSION 0.1.0.1 LANGUAGES CXX)\n"},
+                False,
+            ),
+            (
+                "duplicate CMake project",
+                {
+                    "cmake": "project(sitos VERSION 0.1.0 LANGUAGES CXX)\n"
+                    "  PROJECT(sitos VERSION 9.9.9 LANGUAGES CXX)\n"
+                },
+                False,
+            ),
+            (
+                "wheel metadata mismatch",
+                {"metadata_versions": (("Version", "0.2.0"),)},
+                False,
+            ),
+            (
+                "wheel filename mismatch",
+                {"wheel_filename_version": "9.9.9"},
+                False,
+            ),
+            (
+                "dist-info mismatch",
+                {"dist_info_version": "9.9.9"},
+                False,
+            ),
+            (
+                "case-varied duplicate metadata version",
+                {"metadata_versions": (("Version", "0.1.0"), ("version", "9.9.9"))},
+                False,
+            ),
+            (
+                "duplicate manifest root",
+                {"manifest": '{".": "0.0.0", ".": "0.1.0"}'},
+                False,
+            ),
+            ("noncanonical tag", {"tag": "release-0.1.0"}, False),
+            (
+                "leading-zero tag",
+                {
+                    "tag": "v00.1.0",
+                    "cmake": "project(sitos VERSION 00.1.0 LANGUAGES CXX)\n",
+                    "manifest": '{".": "00.1.0"}',
+                    "wheel_filename_version": "00.1.0",
+                    "dist_info_version": "00.1.0",
+                    "metadata_versions": (("Version", "00.1.0"),),
+                },
+                False,
+            ),
         )
-        for name, tag, cmake, manifest, wheel, succeeds in cases:
-            with self.subTest(case=name), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                (root / "dist").mkdir()
-                (root / "CMakeLists.txt").write_text(
-                    f"project(sitos VERSION {cmake} LANGUAGES CXX)\n", encoding="utf-8"
-                )
-                (root / ".release-please-manifest.json").write_text(
-                    json.dumps({".": manifest}), encoding="utf-8"
-                )
-                with zipfile.ZipFile(root / "dist" / f"sitos-{wheel}.whl", "w") as archive:
-                    archive.writestr(
-                        f"sitos-{wheel}.dist-info/METADATA",
-                        f"Metadata-Version: 2.2\nName: sitos\nVersion: {wheel}\n",
-                    )
-                result = subprocess.run(
-                    ["bash", "-eu", "-o", "pipefail", "-c", script],
-                    cwd=root,
-                    env={"PATH": "/usr/bin:/bin", "RELEASE_TAG": tag},
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    check=False,
-                )
+        for name, arguments, succeeds in cases:
+            with self.subTest(case=name):
+                result = verify(**arguments)
                 if succeeds:
                     self.assertEqual(result.returncode, 0, result.stdout)
                 else:
