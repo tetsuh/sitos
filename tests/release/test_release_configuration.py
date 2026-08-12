@@ -5,8 +5,11 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import tempfile
 import tomllib
 import unittest
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,6 +26,7 @@ RELEASE_PLEASE_SHA = "45996ed1f6d02564a971a2fa1b5860e934307cf7"
 PYPI_PUBLISH_SHA = "dc37677b2e1c63e2034f94d8a5b11f265b73ba33"
 DOWNLOAD_ARTIFACT_SHA = "018cc2cf5baa6db3ef3c5f8a56943fffe632ef53"
 UPLOAD_ARTIFACT_SHA = "b7c566a772e6b6bfb58ed0dc250532a479d7789f"
+CHECKOUT_SHA = "08c6903cd8c0fde910a37f88322edcfb5dd907a8"
 RELEASE_TOKEN_SECRET = "RELEASE_PLEASE_TOKEN"
 ROOT_COMMIT = "e8230fa407e4b5f82b63d7c0593aff57c0a2e0d1"
 
@@ -77,6 +81,30 @@ def yaml_action_step(text: str, owner_repo: str, sha: str) -> str:
             end = index
             break
     return "\n".join(lines[start:end])
+
+
+def yaml_named_run(text: str, name: str) -> str:
+    """Return the shell body for one uniquely named workflow step."""
+    lines = yaml_code(text).splitlines()
+    expected = f"- name: {name}"
+    starts = [index for index, line in enumerate(lines) if line.strip() == expected]
+    if len(starts) != 1:
+        raise AssertionError(f"expected one {expected!r} step, found {len(starts)}")
+    start = starts[0]
+    step_indent = len(lines[start]) - len(lines[start].lstrip(" "))
+    run = next(
+        index
+        for index in range(start + 1, len(lines))
+        if lines[index].strip() == "run: |"
+    )
+    body_indent = len(lines[run]) - len(lines[run].lstrip(" ")) + 2
+    body: list[str] = []
+    for line in lines[run + 1 :]:
+        leading = len(line) - len(line.lstrip(" "))
+        if leading <= step_indent:
+            break
+        body.append(line[body_indent:])
+    return "\n".join(body) + "\n"
 
 
 def assert_full_sha_action(test: unittest.TestCase, text: str, owner_repo: str, sha: str) -> None:
@@ -251,7 +279,12 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
                 )
                 self.assertIn("name: sitos-wheel-linux-cp312", download_step)
                 self.assertNotIn("sitos-wheel-windows", job)
-                self.assertNotIn("actions/checkout", job)
+                if environment == "testpypi":
+                    self.assertNotIn("actions/checkout", job)
+                else:
+                    checkout_step = yaml_action_step(job, "actions/checkout", CHECKOUT_SHA)
+                    self.assertIn("persist-credentials: false", checkout_step)
+                    assert_full_sha_action(self, job, "actions/checkout", CHECKOUT_SHA)
                 self.assertEqual(
                     job.count(f"uses: actions/download-artifact@{DOWNLOAD_ARTIFACT_SHA}"), 1
                 )
@@ -281,13 +314,55 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         )
         self.assertNotIn("workflow_dispatch", pypi)
         self.assertNotIn("repository-url: https://test.pypi.org/legacy/", pypi)
-        self.assertIn("Verify release tag matches wheel metadata", pypi)
+        self.assertIn("Verify release version provenance", pypi)
         self.assertIn("RELEASE_TAG: ${{ github.ref_name }}", pypi)
         self.assertIn('re.fullmatch(r"v[0-9]+\\.[0-9]+\\.[0-9]+", tag)', pypi)
-        self.assertIn('f"Version: {expected}\\n"', pypi)
+        self.assertIn('"CMake": cmake_versions[0]', pypi)
+        self.assertIn('"release-please manifest": manifest_version', pypi)
+        self.assertIn('"wheel metadata": wheel_versions[0]', pypi)
         self.assertEqual(code.count("id-token: write"), 2)
         self.assertEqual(code.count("name: sitos-wheel-linux-cp312"), 3)
         self.assertIn('SITOS_WITH_ROCKSDB = "OFF"', read(PYPROJECT))
+
+    def test_release_version_provenance_verifier(self) -> None:
+        pypi = yaml_block(read(WHEELS), "publish-pypi", 2)
+        script = yaml_named_run(pypi, "Verify release version provenance")
+
+        cases = (
+            ("equal", "v0.1.0", "0.1.0", "0.1.0", "0.1.0", True),
+            ("stale manifest", "v0.1.0", "0.1.0", "0.0.0", "0.1.0", False),
+            ("CMake mismatch", "v0.1.0", "0.2.0", "0.1.0", "0.1.0", False),
+            ("wheel mismatch", "v0.1.0", "0.1.0", "0.1.0", "0.2.0", False),
+            ("noncanonical tag", "release-0.1.0", "0.1.0", "0.1.0", "0.1.0", False),
+        )
+        for name, tag, cmake, manifest, wheel, succeeds in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "dist").mkdir()
+                (root / "CMakeLists.txt").write_text(
+                    f"project(sitos VERSION {cmake} LANGUAGES CXX)\n", encoding="utf-8"
+                )
+                (root / ".release-please-manifest.json").write_text(
+                    json.dumps({".": manifest}), encoding="utf-8"
+                )
+                with zipfile.ZipFile(root / "dist" / f"sitos-{wheel}.whl", "w") as archive:
+                    archive.writestr(
+                        f"sitos-{wheel}.dist-info/METADATA",
+                        f"Metadata-Version: 2.2\nName: sitos\nVersion: {wheel}\n",
+                    )
+                result = subprocess.run(
+                    ["bash", "-eu", "-o", "pipefail", "-c", script],
+                    cwd=root,
+                    env={"PATH": "/usr/bin:/bin", "RELEASE_TAG": tag},
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                )
+                if succeeds:
+                    self.assertEqual(result.returncode, 0, result.stdout)
+                else:
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
 
     def test_release_documentation_policy(self) -> None:
         contributing = read(ROOT / "CONTRIBUTING.md")

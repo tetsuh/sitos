@@ -354,16 +354,21 @@ jobs:
       contents: read
       id-token: write
     steps:
+      # actions/checkout v5.0.0
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
       # actions/download-artifact v6.0.0
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
         with:
           name: sitos-wheel-linux-cp312
           path: dist
-      - name: Verify release tag matches wheel metadata
+      - name: Verify release version provenance
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           python3 - <<'PY'
+          import json
           import os
           import re
           import zipfile
@@ -372,6 +377,22 @@ jobs:
           tag = os.environ["RELEASE_TAG"]
           if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag) is None:
               raise SystemExit(f"release tag is not canonical SemVer: {tag}")
+          expected = tag.removeprefix("v")
+
+          cmake = Path("CMakeLists.txt").read_text(encoding="utf-8")
+          cmake_versions = re.findall(
+              r"(?m)^project\(sitos VERSION ([0-9]+\.[0-9]+\.[0-9]+)\b", cmake
+          )
+          if len(cmake_versions) != 1:
+              raise SystemExit("CMake does not contain exactly one sitos project version")
+
+          manifest = json.loads(
+              Path(".release-please-manifest.json").read_text(encoding="utf-8")
+          )
+          if set(manifest) != {"."} or not isinstance(manifest["."], str):
+              raise SystemExit("release-please manifest must contain one root package version")
+          manifest_version = manifest["."]
+
           wheels = list(Path("dist").glob("*.whl"))
           if len(wheels) != 1:
               raise SystemExit(f"expected one Linux wheel, found {len(wheels)}")
@@ -382,9 +403,19 @@ jobs:
               if len(metadata_names) != 1:
                   raise SystemExit("wheel does not contain exactly one METADATA file")
               metadata = wheel.read(metadata_names[0]).decode("utf-8")
-          expected = tag.removeprefix("v")
-          if f"Version: {expected}\n" not in metadata:
-              raise SystemExit(f"wheel metadata version does not match {tag}")
+          wheel_versions = re.findall(r"(?m)^Version: ([^\r\n]+)$", metadata)
+          if len(wheel_versions) != 1:
+              raise SystemExit("wheel METADATA does not contain exactly one version")
+
+          versions = {
+              "CMake": cmake_versions[0],
+              "release-please manifest": manifest_version,
+              "wheel metadata": wheel_versions[0],
+          }
+          mismatches = {name: version for name, version in versions.items() if version != expected}
+          if mismatches:
+              details = ", ".join(f"{name}={version}" for name, version in mismatches.items())
+              raise SystemExit(f"release versions do not match {tag}: {details}")
           PY
       # pypa/gh-action-pypi-publish v1.14.2
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
