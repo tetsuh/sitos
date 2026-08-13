@@ -21,6 +21,7 @@ RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release-please.yml"
 RELEASE_CONFIG = ROOT / ".github" / "release-please-config.json"
 RELEASE_MANIFEST = ROOT / ".release-please-manifest.json"
 INTEROP_REQUIREMENTS = ROOT / "tests" / "interop" / "requirements.in"
+WHEEL_TOOLS_REQUIREMENTS = ROOT / ".github" / "wheel-tools-requirements.txt"
 
 RELEASE_PLEASE_SHA = "45996ed1f6d02564a971a2fa1b5860e934307cf7"
 PYPI_PUBLISH_SHA = "dc37677b2e1c63e2034f94d8a5b11f265b73ba33"
@@ -152,6 +153,51 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
                 self.assertIn(component, notice)
                 for anchor in anchors:
                     self.assertIn(anchor, notice)
+        wheel_tooling = {
+            "cibuildwheel": (
+                "Python wheel build and repair orchestration tool; not bundled in the standard wheel.",
+                "https://github.com/pypa/cibuildwheel",
+                "BSD-2-Clause",
+            ),
+            "mypy": (
+                "strict external wheel consumer validation tool; not bundled in the standard wheel.",
+                "https://github.com/python/mypy",
+                "MIT",
+            ),
+            "delvewheel": (
+                "Windows wheel repair tool; not bundled in the standard wheel.",
+                "https://github.com/adang1345/delvewheel",
+                "MIT",
+            ),
+            "pytest": (
+                "wheel validation test runner; not bundled in the standard wheel.",
+                "https://github.com/pytest-dev/pytest",
+                "MIT",
+            ),
+        }
+        versions = {}
+        for line in read(WHEEL_TOOLS_REQUIREMENTS).splitlines():
+            match = re.match(r"^(cibuildwheel|mypy|delvewheel|pytest)==([^\s]+)(?:\s|$)", line)
+            if match:
+                self.assertNotIn(match.group(1), versions)
+                versions[match.group(1)] = match.group(2)
+        self.assertEqual(set(versions), set(wheel_tooling))
+        records = [" ".join(record.split()) for record in notice.split("\n\n")]
+        for component, (role, source, license_name) in wheel_tooling.items():
+            with self.subTest(component=component):
+                version = versions[component]
+                record = next(
+                    (
+                        record
+                        for record in records
+                        if record.startswith(f"{component} {version} ")
+                    ),
+                    "",
+                )
+                self.assertTrue(record, component)
+                self.assertIn(f"- Role: {role}", record)
+                self.assertIn(f"- Source: {source}", record)
+                self.assertIn(f"- License: {license_name}", record)
         self.assertIn("upstream revision was not recorded", notice)
 
         pyproject = tomllib.loads(read(PYPROJECT))

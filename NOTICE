@@ -32,6 +32,23 @@ scikit-build-core 0.10.7
 - Source: https://github.com/scikit-build/scikit-build-core
 - License: Apache-2.0.
 
+cibuildwheel 4.1.0
+- Role: Python wheel build and repair orchestration tool; not bundled in the
+  standard wheel.
+- Source: https://github.com/pypa/cibuildwheel
+- License: BSD-2-Clause.
+
+mypy 1.18.2
+- Role: strict external wheel consumer validation tool; not bundled in the
+  standard wheel.
+- Source: https://github.com/python/mypy
+- License: MIT.
+
+delvewheel 1.13.0
+- Role: Windows wheel repair tool; not bundled in the standard wheel.
+- Source: https://github.com/adang1345/delvewheel
+- License: MIT.
+
 NumPy 2.0.0
 - Role: minimum Python build and runtime dependency; installed separately and
   not bundled in the standard wheel.
@@ -46,6 +63,11 @@ Eclipse zenoh Python API (eclipse-zenoh) 1.9.0
 
 pytest 8.3.3
 - Role: interoperability test runner; not bundled in the standard wheel.
+- Source: https://github.com/pytest-dev/pytest
+- License: MIT.
+
+pytest 9.0.3
+- Role: wheel validation test runner; not bundled in the standard wheel.
 - Source: https://github.com/pytest-dev/pytest
 - License: MIT.
 
