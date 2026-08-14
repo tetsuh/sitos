@@ -32,6 +32,11 @@ scikit-build-core 0.10.7
 - Source: https://github.com/scikit-build/scikit-build-core
 - License: Apache-2.0.
 
+build 1.2.2
+- Role: Python wheel build frontend; not bundled in the standard wheel.
+- Source: https://github.com/pypa/build
+- License: MIT.
+
 cibuildwheel 4.1.0
 - Role: Python wheel build and repair orchestration tool; not bundled in the
   standard wheel.
@@ -43,6 +48,11 @@ mypy 1.18.2
   standard wheel.
 - Source: https://github.com/python/mypy
 - License: MIT.
+
+packaging 26.2
+- Role: wheel metadata validation library; not bundled in the standard wheel.
+- Source: https://github.com/pypa/packaging
+- License: Apache-2.0 OR BSD-2-Clause.
 
 delvewheel 1.13.0
 - Role: Windows wheel repair tool; not bundled in the standard wheel.

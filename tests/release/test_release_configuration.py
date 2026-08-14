@@ -154,6 +154,11 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
                 for anchor in anchors:
                     self.assertIn(anchor, notice)
         wheel_tooling = {
+            "build": (
+                "Python wheel build frontend; not bundled in the standard wheel.",
+                "https://github.com/pypa/build",
+                "MIT",
+            ),
             "cibuildwheel": (
                 "Python wheel build and repair orchestration tool; not bundled in the standard wheel.",
                 "https://github.com/pypa/cibuildwheel",
@@ -163,6 +168,11 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
                 "strict external wheel consumer validation tool; not bundled in the standard wheel.",
                 "https://github.com/python/mypy",
                 "MIT",
+            ),
+            "packaging": (
+                "wheel metadata validation library; not bundled in the standard wheel.",
+                "https://github.com/pypa/packaging",
+                "Apache-2.0 OR BSD-2-Clause",
             ),
             "delvewheel": (
                 "Windows wheel repair tool; not bundled in the standard wheel.",
@@ -177,7 +187,10 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         }
         versions = {}
         for line in read(WHEEL_TOOLS_REQUIREMENTS).splitlines():
-            match = re.match(r"^(cibuildwheel|mypy|delvewheel|pytest)==([^\s]+)(?:\s|$)", line)
+            match = re.match(
+                r"^(build|cibuildwheel|mypy|packaging|delvewheel|pytest)==([^\s]+)(?:\s|$)",
+                line,
+            )
             if match:
                 self.assertNotIn(match.group(1), versions)
                 versions[match.group(1)] = match.group(2)
