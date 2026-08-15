@@ -642,12 +642,23 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 
 ### #35 Release / publication readiness
 * Milestone: v1.0
-* References: [06] §7
-* Implementation targets: `NOTICE`, `.github/release-please-config.json`, `pyproject.toml`
-* Scope: NOTICE, complete the pre-publication checklist, reserve PyPI/crates names, release-please,
-  and add publication to the non-publishing wheel validation owned by Issue #22
-* Acceptance criteria: All checklist items completed, dry-run publish to TestPyPI succeeds
-* Depends on: M4 completed, #34
+* References: [01] C04/P03, [06] §4/§6/§8, [09] §7, and `CONTRIBUTING.md` §6
+* Implementation targets: `NOTICE`, `.github/workflows/wheels.yml`,
+  `.github/workflows/release-please.yml`, `.github/release-please-config.json`,
+  `.release-please-manifest.json`, `CMakeLists.txt`, `python/pyproject.toml`,
+  `tests/release/test_release_configuration.py`, `CONTRIBUTING.md`,
+  `docs/06_build_test_packaging.md`, `docs/07_issue_breakdown.md`, and directly applicable
+  dependency/publication policy documentation
+* Scope: root third-party inventory; test-first release contracts; repository-scoped
+  release-please token; shared CMake/Python semantic versioning; manual OIDC TestPyPI validation;
+  and release-tag OIDC publication of only the RocksDB-OFF Linux CPython 3.12 wheel. Windows remains
+  non-publishing validation. Production PyPI publication waits for an owner-authorized release PR
+* Acceptance criteria: offline release contract tests pass; existing wheel validation remains
+  green; one manual TestPyPI `0.1.0` publish and isolated install succeeds; the PR archives the
+  owner-reviewed pre-publication checklist and deferred first-release operations
+* Excludes: nightly TestPyPI publication, production publication during Issue #35, RocksDB or
+  Windows wheels, prebuilt C++ archives, and crates.io reservation
+* Depends on: v0.3 completed, #34; Contract Registry: N/A; ADR: N/A
 
 ### #109 Align the roadmap and retire the optional HTTP gateway
 * Milestone: v0.5

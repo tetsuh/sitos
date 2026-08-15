@@ -30,6 +30,7 @@ install.components = ["python"]
 [tool.scikit-build.wheel]
 license-files = [
   "../LICENSE",
+  "../NOTICE",
   "licenses/LICENSE-zenoh-c",
   "licenses/NOTICE-zenoh-c.md",
 ]
@@ -44,7 +45,7 @@ SITOS_WITH_ZENOH = "ON"
 [tool.scikit-build.metadata.version]
 provider = "scikit_build_core.metadata.regex"
 input = "../CMakeLists.txt"
-regex = "project\\(sitos VERSION (?P<value>[0-9]+\\.[0-9]+\\.[0-9]+)"
+regex = "project\\(sitos VERSION (?P<value>(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*))(?=[ )])"
 
 [tool.cibuildwheel]
 build = ["cp312-*"]

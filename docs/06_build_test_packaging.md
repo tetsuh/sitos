@@ -151,8 +151,15 @@ deploy `zenohc.dll` or `libzenohc.so` at runtime.
 ## 4. Build (Python wheel)
 
 Issue #22 owns non-publishing wheel build and validation. Issue #35 owns PyPI/TestPyPI
-publication. The wheel build uses the repository root CMake project through the `python/`
-`pyproject.toml`:
+publication. TestPyPI publication is manual validation only; normal pull requests, `main` pushes,
+and schedules never publish. A canonical `v*` tag push is the sole production workflow trigger. A
+tag push requests the protected `pypi` environment before job execution, and the workflow does not
+prove that release-please created the tag. The owner verifies the version PR, GitHub Release, and
+tag commit before approving the environment. After owner approval, the job verifies exact version
+agreement among the tag, CMake, release-please manifest, and wheel. Both publication paths use OIDC
+Trusted Publishing, wait for Linux and Windows validation, and publish only the RocksDB-OFF Linux
+CPython 3.12 wheel. Windows remains a non-publishing validation target.
+The wheel build uses the repository root CMake project through the `python/` `pyproject.toml`:
 
 ```sh
 python -m build --wheel python --outdir dist
@@ -201,7 +208,9 @@ the check derives the CMake version and rejects RocksDB, GoogleTest, GoogleMock,
 and build-tree artifacts and requires `_sitos` plus exactly one zenoh-c runtime. The installed wheel
 does not require Rust, CMake, Ninja, or a C++ compiler.
 
-The standard wheel runtime dependency is `numpy>=2.0`.
+The standard wheel runtime dependency is `numpy>=2.0`. Wheel license metadata includes the root
+`LICENSE` and `NOTICE` plus the bundled zenoh-c license and notice. No standard wheel contains
+RocksDB; a Python RocksDB API and wheel require a separate approved Issue.
 
 ### 4.1 Python examples and repaired-wheel validation
 
@@ -392,7 +401,7 @@ claiming chronology for work that was co-developed.
 | workflow | Trigger | Contents |
 |---|---|---|
 | `ci.yml` | PR/push | Windows (MSVC) + Linux (gcc, clang) builds; unit + integration + python + interop; clang-format/clang-tidy; mypy |
-| `wheels.yml` | PR / push / manual | cibuildwheel build and repaired-wheel validation; publication is Issue #35 |
+| `wheels.yml` | PR / `main` or `v*` push / manual / schedule | cibuildwheel build and repaired-wheel validation; manual TestPyPI and release-tag PyPI publication are OIDC-gated |
 | `bench.yml` | nightly / manual / `bench` label | Run the two Release benchmark trees, validate deterministic evidence, render Decimal-based comparisons, append the report to the job summary, and retain raw artifacts for 90 days. Hosted timing and historical results are informational. |
 | `dependency-upgrade.yml` | nightly / manual | Build and interop tests with the minimum supported and latest stable zenoh versions. Details: [09_dependency_policy.md](09_dependency_policy.md) |
 
@@ -409,11 +418,48 @@ hosted-site workflow.
 
 ## 8. Release
 
-* Semantic versioning [C04]. C++ and Python use the same version
-* Artifacts: GitHub Release (source + prebuilt static/shared libraries), PyPI wheel.
-  Future: vcpkg / conan registry registration
-* Pre-publication checklist: intellectual-property and export-control review, check for inclusion
-  of company-specific information, LICENSE (Apache-2.0) / NOTICE / third-party license list
+* Semantic versioning [C04]. CMake is the single C++/Python version source. The first public
+  release is `v0.1.0`; before 1.0, fixes bump patch and features or breaking changes bump minor.
+  Moving to 1.0 requires an explicit owner decision.
+* release-please derives `CHANGELOG.md` and the version PR from Conventional Commits. The version
+  PR receives normal CI and wheel validation and requires current-head owner merge authorization;
+  automation does not approve or merge it.
+* Merging the authorized version PR is the expected path that creates the tag and GitHub Release
+  with GitHub-generated source archives. A canonical `v*` tag requests the protected `pypi`
+  environment before the publication job starts. The owner verifies the version PR, GitHub Release,
+  and tag commit before environment approval because the workflow does not authenticate the tag
+  creator. After approval, the job confirms exact version agreement among the tag, CMake,
+  release-please manifest, and wheel before publishing the validated Linux CPython 3.12 standard
+  wheel. Windows remains validation-only.
+* Before the first production release, an owner manually dispatches the protected `testpypi`
+  publication path and verifies installation of the exact published wheel. Nightly TestPyPI
+  publication is prohibited, and TestPyPI is not a user distribution channel.
+* Standard wheels are RocksDB-OFF. RocksDB wheels, prebuilt C++ static/shared archives, vcpkg/conan
+  registry publication, and a Rust crate are future separately approved work. The `sitos` name is
+  not reserved on crates.io without a real Rust API.
+* The pre-publication checklist records intellectual-property, license, export-control,
+  company-information, package-name, and release-boundary review. Root `NOTICE` inventories the
+  direct bundled, linked, optional, build/test, and template-derived components in Issue #35.
+
+### 8.1 Publication credentials and first-release operations
+
+`RELEASE_PLEASE_TOKEN` is a fine-grained PAT limited to this repository with Contents, Pull
+requests, and Issues read/write permissions. It exists only so release-please-created PR and tag
+events trigger their normal workflows; PyPI credentials never use it. Rotate it before expiry.
+Workflows use SHA-pinned actions and never approve or merge a PR.
+
+Configure Trusted Publishers with owner `tetsuh`, repository `sitos`, workflow `wheels.yml`, and
+matching `testpypi` or `pypi` environment names. The environments are approval boundaries. Before
+the first release, manually dispatch `wheels.yml` with `publish_target=testpypi`. Record the Linux
+validation job's wheel SHA-256, download the exact `sitos==0.1.0` wheel from TestPyPI without
+dependencies, and compare the downloaded wheel's SHA-256 with that recorded value. Install its
+dependencies from production PyPI, install the exact downloaded wheel with `--no-deps`, and verify
+`import sitos` outside the checkout. Do not use TestPyPI as a dependency index.
+
+The owner archives these results in the Issue #35 PR together with the IP, license,
+company-information, export-control, package-name, and release-boundary review. Production `pypi`
+environment approval and the release-please version-PR merge remain deferred until the owner
+accepts the first public release boundary.
 
 ## 9. Benchmark operational procedure (Issue #33)
 
