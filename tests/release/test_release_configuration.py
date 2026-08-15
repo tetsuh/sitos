@@ -259,6 +259,7 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         self.assertEqual(package["release-type"], "simple")
         self.assertEqual(package["package-name"], "sitos")
         self.assertEqual(package["changelog-path"], "CHANGELOG.md")
+        self.assertEqual(package["initial-version"], "0.1.0")
         self.assertIs(package["include-v-in-tag"], True)
         self.assertIs(package["bump-minor-pre-major"], True)
         self.assertIs(package["bump-patch-for-minor-pre-major"], False)
