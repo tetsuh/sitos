@@ -363,7 +363,7 @@ jobs:
         with:
           name: sitos-wheel-linux-cp312
           path: dist
-      - name: Verify release version provenance
+      - name: Verify release version consistency
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |

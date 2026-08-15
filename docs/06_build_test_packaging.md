@@ -152,9 +152,13 @@ deploy `zenohc.dll` or `libzenohc.so` at runtime.
 
 Issue #22 owns non-publishing wheel build and validation. Issue #35 owns PyPI/TestPyPI
 publication. TestPyPI publication is manual validation only; normal pull requests, `main` pushes,
-and schedules never publish. A release-please `v*` tag is the sole production trigger. Both
-publication paths use OIDC Trusted Publishing, wait for Linux and Windows validation, and publish
-only the RocksDB-OFF Linux CPython 3.12 wheel. Windows remains a non-publishing validation target.
+and schedules never publish. A canonical `v*` tag push is the sole production workflow trigger. A
+tag push requests the protected `pypi` environment before job execution, and the workflow does not
+prove that release-please created the tag. The owner verifies the version PR, GitHub Release, and
+tag commit before approving the environment. After owner approval, the job verifies exact version
+agreement among the tag, CMake, release-please manifest, and wheel. Both publication paths use OIDC
+Trusted Publishing, wait for Linux and Windows validation, and publish only the RocksDB-OFF Linux
+CPython 3.12 wheel. Windows remains a non-publishing validation target.
 The wheel build uses the repository root CMake project through the `python/` `pyproject.toml`:
 
 ```sh
@@ -420,9 +424,13 @@ hosted-site workflow.
 * release-please derives `CHANGELOG.md` and the version PR from Conventional Commits. The version
   PR receives normal CI and wheel validation and requires current-head owner merge authorization;
   automation does not approve or merge it.
-* Merging the authorized version PR creates the tag and GitHub Release with GitHub-generated source
-  archives. The tag-triggered wheel workflow publishes the validated Linux CPython 3.12 standard
-  wheel to PyPI through the protected `pypi` environment. Windows remains validation-only.
+* Merging the authorized version PR is the expected path that creates the tag and GitHub Release
+  with GitHub-generated source archives. A canonical `v*` tag requests the protected `pypi`
+  environment before the publication job starts. The owner verifies the version PR, GitHub Release,
+  and tag commit before environment approval because the workflow does not authenticate the tag
+  creator. After approval, the job confirms exact version agreement among the tag, CMake,
+  release-please manifest, and wheel before publishing the validated Linux CPython 3.12 standard
+  wheel. Windows remains validation-only.
 * Before the first production release, an owner manually dispatches the protected `testpypi`
   publication path and verifies installation of the exact published wheel. Nightly TestPyPI
   publication is prohibited, and TestPyPI is not a user distribution channel.

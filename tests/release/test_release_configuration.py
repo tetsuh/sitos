@@ -383,7 +383,10 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         )
         self.assertNotIn("workflow_dispatch", pypi)
         self.assertNotIn("repository-url: https://test.pypi.org/legacy/", pypi)
-        self.assertIn("Verify release version provenance", pypi)
+        verifier_marker = "      - name: Verify release version consistency"
+        publisher_marker = f"      - uses: pypa/gh-action-pypi-publish@{PYPI_PUBLISH_SHA}"
+        self.assertIn(verifier_marker, pypi)
+        self.assertLess(pypi.index(verifier_marker), pypi.index(publisher_marker))
         self.assertIn("RELEASE_TAG: ${{ github.ref_name }}", pypi)
         self.assertIn('re.fullmatch(canonical_tag, tag)', pypi)
         self.assertIn("object_pairs_hook=lambda pairs: pairs", pypi)
@@ -394,9 +397,9 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         self.assertEqual(code.count("name: sitos-wheel-linux-cp312"), 3)
         self.assertIn('SITOS_WITH_ROCKSDB = "OFF"', read(PYPROJECT))
 
-    def test_release_version_provenance_verifier(self) -> None:
+    def test_release_version_consistency_verifier(self) -> None:
         pypi = yaml_block(read(WHEELS), "publish-pypi", 2)
-        script = yaml_named_run(pypi, "Verify release version provenance")
+        script = yaml_named_run(pypi, "Verify release version consistency")
 
         def verify(
             *,
@@ -524,6 +527,26 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
             r"nightly TestPyPI[^.]{0,80}(?:enabled|scheduled|required)",
         )
         self.assertNotRegex(build_doc, r"prebuilt static/shared")
+        self.assertIn(
+            "does not prove that release-please created the tag",
+            normalized,
+        )
+        self.assertIn(
+            "version PR, GitHub Release, and tag commit before approving",
+            normalized,
+        )
+        self.assertIn(
+            "tag push requests the protected `pypi` environment before job execution",
+            normalized,
+        )
+        self.assertIn(
+            "After owner approval, the job verifies exact version agreement",
+            normalized,
+        )
+        self.assertNotIn(
+            "A release-please `v*` tag is the sole production trigger",
+            combined,
+        )
 
 
 if __name__ == "__main__":

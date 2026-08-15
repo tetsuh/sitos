@@ -212,9 +212,13 @@ the Issue side may remain unchecked when closed).
    minor, and moving to 1.0 requires an explicit owner decision.
 4. The version PR follows the normal review, green-CI, and current-head owner merge authorization
    rules. Automation never approves or merges it.
-5. Merging the authorized version PR creates the `v*` tag and GitHub Release. The tag-triggered
-   `wheels.yml` validates Linux and Windows, publishes only the RocksDB-OFF Linux CPython 3.12
-   wheel to PyPI through OIDC, and retains Windows as non-publishing validation.
+5. Merging the authorized version PR is the expected path that creates the `v*` tag and GitHub
+   Release. A tag push requests the protected `pypi` environment before job execution, but the
+   workflow does not prove that release-please created the tag. The owner verifies the version PR,
+   GitHub Release, and tag commit before approving the environment. After owner approval, the job
+   verifies exact version agreement among the canonical tag, CMake, release-please manifest, and
+   wheel. Only then is the RocksDB-OFF Linux CPython 3.12 wheel published through OIDC; Windows
+   remains non-publishing validation.
 6. A RocksDB wheel, prebuilt C++ static/shared archives, and crates.io publication require separate
    approved scope; none is part of the initial MVP release automation.
 
