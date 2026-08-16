@@ -286,11 +286,27 @@ reject unrelated interoperable writes.
 
 The receiver dispatch lane atomically admits at most 256 participating callback entries, assigns
 each admitted entry a ticket, and invokes component callbacks in ticket order. It uses fixed
-counters and permits, not an unbounded sample queue. An entry arriving at the full bound is rejected
-immediately: covered data is not applied and a later marker observes a missing sequence as
-`OutcomeUnknown`; an unadmitted marker creates no completion and its caller can only reach
-`Timeout`. Rejection records only bounded diagnostics and does not promise later correlation to an
-unretained UUID.
+counters and permits, not an unbounded sample queue. Classification, entry admission, and overflow
+proof are serialized under the receiver registration lease. When covered data arrives at the full
+bound, it is not applied, but before rejection returns a synchronous rejection-proof transaction
+must update an existing receiver lane or create one within its normal bound. It first raises
+`highest_observed_sequence`, then applies the normal sequence disposition without application:
+a stale sequence latches `Error` at that sequence, an expected sequence latches `OutcomeUnknown` at
+that sequence, and a future sequence latches `OutcomeUnknown` at the earlier missing expected
+sequence. This transaction holds no dispatch entry and is serialized one at a time with admission,
+so overflow cannot create another unbounded queue or callback set.
+
+If the identifiable data belongs to a new StorageNode Publisher UUID and the 4096-lane registry is
+also full, the transaction cannot retain that UUID. It instead sets one O(1)
+`unretained_rejection` poison bit on the matching active `(sid, durable|ephemeral)` scope. A first
+marker for any absent lane in that scope must consult the bit; even an empty-prefix marker then
+returns `OutcomeUnknown` rather than claiming that no positive sequence crossed. The bit clears only
+with that Session/class state at CloseSession or Stop. ParamCache has one fixed lane per Attach
+generation and therefore records an identifiable overflow directly in that lane. If lifecycle
+cleanup prevents either proof transaction, the receiver cannot later complete a marker from that
+registration. An unadmitted marker creates no completion and its caller can only reach `Timeout`.
+Attachment-free and otherwise nonparticipating writes neither set this poison nor consume dispatch
+capacity.
 
 Undeclare or session close stops dispatch admission, rejects new entries, and quiesces admitted
 callbacks before destroying dispatch state. Therefore a marker whose ticket follows a covered data
@@ -339,7 +355,7 @@ Receiver rules are monotonic and fail closed:
 | first marker processing has through above completed prefix | fail at the first missing or unprovable sequence |
 | retained duplicate token after later data | return the original immutable ADR-0028 result before applying the order test |
 
-For first marker processing, success requires both
+For first marker processing on a retained lane, success requires both
 `completed_through == through_sequence` and
 `highest_observed_sequence <= through_sequence`, with no retained failure whose sequence is at or
 below `through_sequence`. A lower completed prefix is a missing-sequence failure. A higher completed
@@ -347,8 +363,10 @@ prefix or highest observed sequence proves that excluded later data crossed befo
 returns `OutcomeUnknown` with `failed_sequence = UINT64_MAX`; an out-of-prefix sequence cannot be
 named in ADR-0028. A failure above the marker's through value remains retained for later Fences but
 cannot be selected as this Fence's sequence failure; its earlier observation still triggers the
-marker-order rule. Token duplicate lookup precedes this order test so a retained duplicate always
-returns its original immutable result.
+marker-order rule. An absent-lane empty-prefix success additionally requires that the active
+StorageNode Session/class scope have no `unretained_rejection` poison; a set bit returns
+`OutcomeUnknown` with the failed-sequence sentinel. Token duplicate lookup precedes every current
+lane or scope order test so a retained duplicate always returns its original immutable result.
 
 A first failure is retained for the identity's lifetime. Because later Fence values name an absolute
 prefix, a successful or failed Fence does not clear it. Recovery after a covered failure requires a
@@ -385,10 +403,13 @@ options and receipt mapping.
 
 Each receiver lane stores its next expected sequence, highest observed identifiable sequence, and
 first failure: sequence, Status, and bounded sanitized message. `highest_observed_sequence` is
-updated before duplicate, gap, or application disposition, so rejected later data cannot disappear
-from marker-order proof. First failure wins. Later failures are counted only in a bounded diagnostic
-counter and cannot replace it. A sequence whose processing returned failure still advances the
-expected sequence because its terminal processing point is known; a gap does not.
+updated before duplicate, gap, application, or dispatch-overflow disposition, so rejected later
+data cannot disappear from marker-order proof. If no new StorageNode lane can be retained, the
+Session/class `unretained_rejection` poison preserves the weaker but sufficient fact that an absent
+lane cannot prove an empty prefix. First failure wins. Later failures are counted only in a bounded
+diagnostic counter and cannot replace it. A sequence whose processing returned failure still
+advances the expected sequence because its terminal processing point is known; a gap or
+pre-processing rejection does not.
 
 For StorageNode targets, only remotely observed outcomes become ADR-0028 `AckResultV1`. Fence
 results always use `operation_kind = fence`, `applied_count = 0`, `failed_index = UINT32_MAX`, the
@@ -404,7 +425,8 @@ Messages use ADR-0028's bounded sanitized UTF-8 rules.
 | cache decode/internal failure before effect | direct local waiter `Error` | local delivery | waiter through | first sequence N, local only |
 | cache failure after possible effect | direct local waiter `OutcomeUnknown` | local delivery | waiter through | first sequence N, local only |
 | cache marker unobserved by deadline | local `Timeout` with latest native cause; no AckResult | local delivery | waiter through | N/A |
-| empty valid buffer Fence with no crossed positive sequence | AckResult `Ok`; no barrier or lane allocation | requested applied or durable synced | 0 | `UINT64_MAX` |
+| empty valid buffer Fence with no crossed positive sequence and no applicable unretained-rejection poison | AckResult `Ok`; no barrier or lane allocation | requested applied or durable synced | 0 | `UINT64_MAX` |
+| empty buffer Fence in a poisoned absent-lane Session/class scope | AckResult `OutcomeUnknown`; no barrier or lane allocation | requested applied or durable synced | 0 | `UINT64_MAX` |
 | marker overtaken by excluded later data | AckResult `OutcomeUnknown` order violation | requested | marker through | `UINT64_MAX` |
 | all buffer sequences applied | AckResult `Ok` | applied | marker through | `UINT64_MAX` |
 | durable barrier completes | AckResult `Ok` | synced | marker through | `UINT64_MAX` |
@@ -434,6 +456,7 @@ preserves the latest local/native cause but never pretends that a remote result 
 | Transport receiver dispatch entries | 256 admitted per Transport; fixed ticket counters | callback return, undeclare, session close, or Stop |
 | initiating ParamCache receiver lane | 1 per Attach generation | Detach, move-assignment cleanup, destruction, or Transport close |
 | receiver sequence proof | O(1) per lane: next expected, highest observed, first failure | lane cleanup only |
+| unretained StorageNode rejection proof | 1 poison bit per active Session/class | matching CloseSession or Stop |
 | ParamCache local Fence waiter | 1 | completion, timeout, Detach, or destruction |
 | StorageNode buffer Publisher lanes | 4096 node-wide | matching CloseSession, Stop, or node destruction |
 | Processing Fence token | 1 per Publisher lane | immutable completion or StorageNode Stop |
@@ -441,12 +464,15 @@ preserves the latest local/native cause but never pretends that a remote result 
 | diagnostics | fixed counters plus existing bounded messages | state cleanup |
 
 StorageNode never evicts an admitted live lane merely to admit a new identity. At the 4096-lane
-limit, sequence 1 for a new attached buffer Publisher is rejected before engine mutation and only a
-bounded diagnostic is retained. A later marker for that unretained UUID is indistinguishable from a
-missing first publication and returns `OutcomeUnknown` with `failed_sequence = 1` when
-`through_sequence > 0`. Attachment-free ADR-0032 traffic remains unaffected. A crashed Publisher
-can consume one lane until CloseSession or Stop; this liveness cost is accepted to avoid unbounded
-state and unsafe identity reuse.
+limit, sequence 1 for a new attached buffer Publisher is rejected before engine mutation, a bounded
+diagnostic is retained, and the matching Session/class `unretained_rejection` bit is set before the
+rejection returns. A later marker for that unretained UUID is indistinguishable from a missing first
+publication and returns `OutcomeUnknown` with `failed_sequence = 1` when `through_sequence > 0`; an
+empty marker for an absent lane in the poisoned scope returns `OutcomeUnknown` with the sentinel.
+Attachment-free ADR-0032 traffic remains unaffected. A crashed Publisher can consume one lane until
+CloseSession or Stop, and one rejected identity can conservatively poison empty absent-lane Fences in
+that scope for the same lifetime. These liveness costs are accepted to avoid unbounded state,
+unsafe identity reuse, or false Fence success.
 
 Detach, ParamCache destination move-assignment cleanup, ParamCache destruction, receiver undeclare,
 or Transport close cancels a registered local waiter with `Status::Disconnected`, then quiesces
@@ -518,13 +544,16 @@ Receiver and StorageNode transitions are exact:
 | lane active | stale/duplicate sequence | update highest observed; first failure latch | no reapply; `Error` at stale sequence |
 | lane active | future sequence | update highest observed before rejection; first failure latch | no apply; `OutcomeUnknown` at next expected |
 | lane active/failed | first marker | next expected, highest observed, first failure | require exact completed prefix and no higher observation before cache completion or token/result |
+| lane absent | empty first buffer marker and unretained-rejection poison | scope poison bit | `OutcomeUnknown` with failed-sequence sentinel; no barrier or lane allocation |
 | lane active/failed | retained duplicate token | immutable ADR-0028 result | return original result before current-state order checks |
 | marker token absent | valid buffer marker | `Processing` token and fingerprint | complete exactly once to immutable AckResult |
 | token Processing | duplicate marker | original token unchanged | no second processing; query has no result yet |
 | token Completed | same fingerprint | immutable result | return existing result; no repeated apply/sync |
 | token Completed | different fingerprint | original result | collision rejection and bounded diagnostic |
 | token evicted | late duplicate | no retained identity guarantee | ADR-0028 permits fresh observation; no resubmission by supported client |
-| dispatch full | covered data or marker callback | bounded diagnostic only | data unprocessed then gap; marker unobserved then timeout |
+| dispatch full | identifiable covered data with retainable lane proof | highest observation plus normal stale/expected/future failure disposition updated synchronously | data unprocessed; later first marker cannot succeed across the rejection |
+| dispatch and new-lane registry full | identifiable covered data for absent buffer lane | Session/class poison plus bounded diagnostic | data unprocessed; positive or empty absent-lane marker fails `OutcomeUnknown` |
+| dispatch full | marker callback | bounded diagnostic only | marker unobserved; caller reaches `Timeout` |
 
 Lifecycle transitions are exact:
 
@@ -532,7 +561,7 @@ Lifecycle transitions are exact:
 |---|---|---|
 | cache Detach or destination cleanup | reject new callbacks; waiter `Disconnected` | quiesce, clear one lane and receiver UUID |
 | receiver undeclare/Transport close | reject dispatch; waiter `Disconnected` | quiesce 256-entry lane and callback state |
-| CloseSession from Active | admitted marker finishes; new marker sees Closing `InvalidArgument` | quiesce then remove matching buffer lanes |
+| CloseSession from Active | admitted marker finishes; new marker sees Closing `InvalidArgument` | quiesce then remove matching buffer lanes and Session/class poison bits |
 | StorageNode Stop before marker observation | no AckResult; caller `Timeout` | quiesce then clear lane/token/result state |
 | StorageNode Stop after token claim | admitted callback publishes exactly one immutable `Error` or `OutcomeUnknown` by invocation boundary | Stop quiesces it, then clears state; client may still time out before observing it |
 | process/receiver restart | old UUID/token has no state; caller `Timeout` | new generation starts empty |
@@ -542,11 +571,13 @@ Lifecycle transitions are exact:
 
 Issue #158 must first use deterministic fake-Transport tests for concurrent Put/PutBatch/Push/Fence
 linearization, empty prefix before and after sequence 1, maximum sequence, overflow, gap, reorder,
-marker through 7 after completed sequence 8, marker through N after rejected sequence N+2, retained
-token duplicate after later data, synchronized marker overtake, duplicate, collision, malformed
-versions, synchronous loopback, multiple Publisher
-isolation and fixed receiver binding, one-pending-Fence rejection, every failure-matrix row, dispatch
-and 4096-lane limits, attachment-free dispatch bypass, timeout/late non-revival, no resubmission, and
+marker through 7 after completed sequence 8, marker through N after rejected sequence N+2, dispatch
+overflow for existing-lane stale, expected, and future sequences followed by markers through N and N-1, retained token duplicate after
+later data, synchronized marker overtake, duplicate, collision, malformed versions, synchronous
+loopback, multiple Publisher isolation and fixed receiver binding, one-pending-Fence rejection,
+every failure-matrix row, dispatch and 4096-lane limits, a new-lane rejection at both limits followed
+by positive and empty absent-lane markers, poison isolation and lifecycle cleanup, attachment-free
+dispatch bypass, timeout/late non-revival, no resubmission, and
 Detach/CloseSession/Stop/move/destruction quiescence.
 
 Linux and Windows process-isolated Zenoh tests must cover minimum 1.9.0 and the current supported 1.x
