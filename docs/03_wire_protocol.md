@@ -26,12 +26,12 @@ A standard zenoh client can interoperate with sitos simply by following this spe
   and `<key>` reuse the existing grammar. The route requires the corresponding explicit Session
   capability. Payloads are plain `zenoh/bytes`, with no sitos schema or type tag.
 * Buffer value routes support no inline `:batch`, `:fence`, snapshot, or other control segment.
-  Proposed ADR-0029 plans Fence markers in a disjoint `meta/fence/**` namespace; they are never
-  buffer values. Buffer values remain disjoint from ParamStore, ParamCache, ParamSubscription, and
-  SessionView [ADR-0032].
+  Accepted ADR-0029 defines Fence markers in a disjoint `meta/fence/**` namespace; #158 owns their
+  planned implementation. They are never buffer values. Buffer values remain disjoint from
+  ParamStore, ParamCache, ParamSubscription, and SessionView [ADR-0032].
 
-> **Planned, not yet normative:** Proposed ADR-0029 reserves these marker routes. They enter the
-> normative key space only when the ADR is Accepted.
+> **Normative design; implementation planned:** Accepted ADR-0029 reserves these marker routes;
+> #158 owns their production implementation.
 >
 > ```text
 > <prefix>/meta/fence/cache/<sid>/<receiver-uuid>/<publisher-uuid>/<through>
@@ -120,9 +120,9 @@ zenoh/bytes;sitos.v1.batch    (base/session batch, §5)
 zenoh/bytes                   (durable or ephemeral buffer value)
 ```
 
-> **Planned, not yet normative:** Proposed ADR-0029 reserves
-> `zenoh/bytes;sitos.v1.fence` for the same-publisher Fence marker in §6.1. It becomes an
-> authoritative route Encoding only when the ADR is Accepted.
+> **Normative design; implementation planned:** Accepted ADR-0029 reserves
+> `zenoh/bytes;sitos.v1.fence` as the authoritative same-publisher Fence marker Encoding in §6.1;
+> #158 owns its production implementation.
 
 Base, session, and snapshot parameter payload-v1 values use
 `zenoh/bytes;sitos.v1`. Base and session batch values use
@@ -271,8 +271,8 @@ must finalize how callers observe that ambiguity.
 
 ### 6.1 Same-publisher Fence control
 
-> **Planned, not yet normative:** Proposed ADR-0029 owns this contract. It becomes normative only
-> when the ADR is Accepted; production implementation and executable qualification belong to #158.
+> **Normative design; implementation planned:** Accepted ADR-0029 owns this contract; production
+> implementation and executable qualification belong to #158.
 
 Covered data retains its existing key, payload, and route Encoding and carries the exact ordering
 attachment below. An absent attachment is an ordinary write outside a sitos Fence prefix.

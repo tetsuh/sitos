@@ -263,10 +263,10 @@ before returning and retains no Session record or other resource after enumerati
 
 ### 4.3 Consistency Model
 
-> **Planned, not yet normative:** Proposed ADR-0029 owns the same-publisher Fence mechanism below.
-> It becomes normative only when the ADR is Accepted; #158 owns production implementation.
+> **Normative design; implementation planned:** Accepted ADR-0029 owns the same-publisher Fence
+> mechanism below; #158 owns production implementation.
 
-* Same-publisher Fence ordering is not inferred from a Zenoh session alone. Proposed ADR-0029 defines a
+* Same-publisher Fence ordering is not inferred from a Zenoh session alone. ADR-0029 defines a
   sitos logical Publisher as a serialized UUIDv4-and-sequence lane whose covered data and marker
   use one Fence-capable Transport generation, reliable delivery, `Block` congestion control,
   identical `Data` priority, and non-express submission. Multiple logical Publishers may share a
