@@ -402,7 +402,7 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 * Acceptance criteria: applied and synchronized receipts, failure and timeout propagation,
   publisher isolation, restart behavior, C++/Python API parity, contiguous NumPy input, and payload
   lifetime safety
-* Depends on: #27, #56, #105, #158; ADR-0029 becomes the normative ordering authority when Accepted
+* Depends on: #27, #56, #105, #158; Accepted ADR-0029 is the normative ordering authority
 
 ### #108 Restart-safe retained-session catalog
 * Milestone: v0.5
@@ -482,7 +482,7 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
   wait only for the initiating cache subscriber, not peers or StorageNode acknowledgements
 * Acceptance criteria: prior local writes observed, later writes excluded, timeout/error mapping,
   concurrent waiter isolation, and Detach/move/destruction quiescence
-* Depends on: #19, #158; ADR-0029 becomes the normative ordering authority when Accepted
+* Depends on: #19, #158; Accepted ADR-0029 is the normative ordering authority
 
 ### #21 SessionView (host-process facade)
 * Milestone: v0.2
