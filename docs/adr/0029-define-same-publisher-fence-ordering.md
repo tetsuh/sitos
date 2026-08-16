@@ -587,7 +587,7 @@ Receiver and StorageNode transitions are exact:
 | token evicted | late duplicate | no retained identity guarantee | ADR-0028 permits fresh observation; no resubmission by supported client |
 | dispatch full | identifiable valid covered data with retainable lane proof | highest observation plus normal stale/expected/future failure disposition updated synchronously | data unprocessed; later first marker cannot succeed across the rejection |
 | dispatch full | malformed candidate with retainable lane proof | malformed sequence-specific or lane-global `Error` disposition updated synchronously | data unprocessed; later first marker cannot succeed across the rejection |
-| dispatch and new-lane registry full | identifiable covered data for absent buffer lane | Session/class poison plus bounded diagnostic; no UUID or sequence retained | data unprocessed; positive absent-lane marker fails at missing 1, empty marker uses sentinel |
+| new-lane registry full, with or without dispatch capacity | identifiable covered data for absent buffer lane | Session/class poison plus bounded diagnostic; no UUID or sequence retained | data unprocessed; positive absent-lane marker fails at missing 1, empty marker uses sentinel |
 | dispatch full | marker callback | bounded diagnostic only | marker unobserved; caller reaches `Timeout` |
 
 Lifecycle transitions are exact:
@@ -613,8 +613,9 @@ token duplicate after later data, synchronized marker overtake, duplicate, colli
 recoverable sequence, UUID only, or neither, including dispatch-overflow, retainable, and
 capacity-poison paths, synchronous loopback, multiple Publisher isolation and fixed receiver binding, one-pending-Fence rejection,
 every failure-matrix row, dispatch and 4096-lane limits, new-lane sequence-1, future-sequence, and
-UUID-only rejections at both limits followed by empty, positive-below-observation, and positive
-through markers that verify poison never names N, poison isolation and lifecycle cleanup, attachment-free
+UUID-only rejections with registry-only exhaustion and with both limits exhausted, followed by
+empty, positive-below-observation, and positive through markers that verify poison never names N,
+poison isolation and lifecycle cleanup, attachment-free
 dispatch bypass, timeout/late non-revival, no resubmission, and
 Detach/CloseSession/Stop/move/destruction quiescence.
 
