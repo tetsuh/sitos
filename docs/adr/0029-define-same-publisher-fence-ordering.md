@@ -37,12 +37,16 @@ One logical Publisher is one move-only sitos-owned lane state containing:
 * one retained local possible-submission diagnostic; and
 * the Transport generation used for every covered data publication and marker.
 
-The UUID is not caller-selectable, a credential, an ACL, or a Zenoh entity id. It is probabilistically
-unique (collision-resistant) across live and restarted processes through random UUIDv4 generation. A
-supported caller cannot reuse or spoof it. If raw traffic or another generated Publisher collides with
-an existing UUID, stale, duplicate, or unexpected sequence rules
-poison that receiver lane; the original identity is not replaced. Raw Zenoh writers can still cause
-denial or injection on writable routes, so Fence adds ordering evidence rather than authentication.
+The UUID is not caller-selectable, a credential, an ACL, or a Zenoh entity id. Random UUIDv4
+generation makes it probabilistically distinct (collision-resistant), not collision-impossible, across
+live and restarted processes. A supported caller cannot intentionally reuse or spoof it. Receiver state
+has no discriminator beyond the bound Publisher UUID, so an accidental generated UUID collision is not
+directly detectable. The ordering guarantee is therefore conditional on generated Publisher UUIDs
+being distinct. Stale, duplicate, unexpected, or malformed sequence observations, including those
+caused by raw traffic or a collision, poison that receiver lane and fail closed; same-UUID traffic presenting
+the next valid sequence is indistinguishable and is not authenticated. Raw Zenoh writers can still
+cause denial or injection on writable routes, so Fence adds ordering evidence rather than
+authentication.
 
 Move construction transfers the same state and identity. Non-concurrent move assignment first
 closes the destination admission, atomically completes its waiter with `Disconnected`, quiesces its
@@ -50,17 +54,19 @@ admitted calls, and then transfers the source state. A moved-from Publisher is d
 an object concurrently with one of its calls is an unsupported caller data race. Destruction closes
 admission, atomically completes its waiter with `Disconnected`, waits admitted calls to quiesce,
 and then releases the identity. Session close or Transport-generation replacement uses the same
-cancel-before-quiesce order. No identity, sequence, waiter, or failure state is persisted or reused
-after process restart.
+cancel-before-quiesce order. No lane state, sequence, waiter, or failure state is persisted or
+intentionally reused after process restart; each fresh identity remains subject to the UUID non-collision
+condition above.
 
 The Publisher UUID is distinct from every per-Fence ADR-0028 correlation token. Its receiver
 binding is fixed at creation and cannot be changed or reused for another target, SID, class, or
 Attach generation. A public object spanning multiple receiver bindings owns a separate internal
 Publisher UUID/sequence lane for each binding. Move transfers the binding unchanged.
 
-Multiple logical Publishers may share one Fence-capable Transport or Zenoh session because their
-UUID and sequence states remain separate. Their calls may interleave, and no cross-Publisher order
-is promised. One logical Publisher may not split its data and marker across Transport generations
+Multiple logical Publishers with distinct generated UUIDs may share one Fence-capable Transport or
+Zenoh session because their UUID and sequence states remain separate under the non-collision condition.
+Their calls may interleave, and no cross-Publisher order is promised. One logical Publisher may not
+split its data and marker across Transport generations
 or Zenoh sessions.
 
 ### Covered-data attachment
@@ -342,8 +348,8 @@ normative sitos contract.
 | Topology or QoS | Fence outcome |
 |---|---|
 | One logical Publisher on one session | supported under the required profile |
-| Multiple logical Publishers sharing one session | supported; UUID/sequence lanes isolate them |
-| Different logical Publishers on distinct sessions | supported independently; no cross-session order |
+| Multiple logical Publishers sharing one session | supported when generated UUIDs differ; UUID/sequence lanes isolate them |
+| Different logical Publishers on distinct sessions | supported independently under the same UUID non-collision condition; no cross-session order |
 | One logical Publisher split across sessions/generations | rejected before marker submission |
 | Publisher and receiver sharing one session | supported; waiter prepublication handles loopback |
 | Distinct publisher and receiver sessions | supported when the receiver has a reliable compatible path |
@@ -459,7 +465,7 @@ that row according to the ordered marker algorithm above. Messages use ADR-0028'
 | marker overtaken by excluded later data with no selectable lane-global or in-prefix first failure | AckResult `OutcomeUnknown` order violation | requested | marker through | `UINT64_MAX` |
 | all buffer sequences applied | AckResult `Ok` | applied | marker through | `UINT64_MAX` |
 | durable barrier completes | AckResult `Ok` | synced | marker through | `UINT64_MAX` |
-| malformed data with recoverable valid N, stale/duplicate data including dispatch-overflow stale N, or collision at N, when N is within the marker prefix | AckResult `Error` | requested | marker through | N |
+| malformed data with recoverable valid N or stale/duplicate data including dispatch-overflow stale N, when N is within the marker prefix | AckResult `Error` | requested | marker through | N |
 | malformed data with recoverable UUID but no valid nonzero sequence, and a retainable lane | AckResult `Error` | requested | marker through | `UINT64_MAX` |
 | missing, unprovable, or expected/future valid-data dispatch rejection sequence N, when N is within the marker prefix | AckResult `OutcomeUnknown` | requested | marker through | N |
 | positive marker for an absent buffer lane, whether the Session/class scope is poisoned or not | AckResult `OutcomeUnknown` | requested | marker through greater than 0 | 1 |
@@ -610,9 +616,12 @@ linearization, empty prefix before and after sequence 1, maximum sequence, overf
 marker through 7 after completed sequence 8, marker through N after rejected sequence N+2, dispatch
 overflow for existing-lane stale, expected, and future sequences followed by markers through N and
 N-1, overlaps between an in-prefix first failure and a higher completed/observed sequence, retained
-token duplicate after later data, synchronized marker overtake, duplicate, collision, malformed candidates with a
-recoverable sequence, UUID only, or neither, including dispatch-overflow, retainable, and
-capacity-poison paths, synchronous loopback, multiple Publisher isolation and fixed receiver binding, one-pending-Fence rejection,
+token duplicate after later data, synchronized marker overtake, duplicate, detected same-UUID
+stale/gap conflicts, malformed candidates with a recoverable sequence, UUID only, or neither,
+including dispatch-overflow, retainable, and capacity-poison paths, forced same-UUID next-expected
+raw injection that confirms the documented indistinguishability and non-authentication boundary,
+synchronous loopback, multiple Publisher isolation under distinct generated UUIDs and fixed receiver
+binding, one-pending-Fence rejection,
 every failure-matrix row, dispatch and 4096-lane limits, new-lane sequence-1, future-sequence, and
 UUID-only rejections with registry-only exhaustion and with both limits exhausted, followed by
 empty, positive-below-observation, and positive through markers that verify poison never names N,
@@ -643,8 +652,8 @@ not weaken the normative sitos proof above.
 
 ## Consequences
 
-* Good: UUID and sequence metadata prove Publisher isolation and detect gaps without changing user
-  keys, parameter payloads, or ADR-0032 buffer bytes.
+* Good: under the generated-UUID non-collision condition, UUID and sequence metadata prove Publisher
+  isolation and detect gaps without changing user keys, parameter payloads, or ADR-0032 buffer bytes.
 * Good: direct cache completion and StorageNode AckResult completion prove the intended receiver
   rather than a sender queue drain or unrelated acknowledgement.
 * Good: ADR-0028 remains the only Fence token, result, retention, query, and polling protocol.
@@ -653,6 +662,10 @@ not weaken the normative sitos proof above.
   backpressure and head-of-line latency.
 * Bad: a gap, duplicate, unsupported QoS profile, lane-cap exhaustion, or Publisher crash fails
   closed and can require a new Publisher identity or Session lifecycle cleanup.
+* Bad: a receiver cannot distinguish an accidental generated UUID collision, or raw traffic using the
+  same UUID and next valid sequence, from the intended Publisher. UUIDv4 makes the supported-caller
+  risk collision-resistant rather than impossible; Fence is conditional on non-collision and is not
+  authentication.
 * Bad: v1 cannot combine per-data ADR-0028 acknowledgement and Fence-lane metadata on one sample.
 * Neutral: Fence is ordering evidence, not authentication, exactly-once delivery, a peer barrier,
   or automatic retry.
@@ -673,7 +686,8 @@ not weaken the normative sitos proof above.
 * **Session identity as Publisher identity** — rejected because unrelated logical Publishers may
   share a session and no stable identity is exposed through the Transport abstraction.
 * **Generated logical UUID** — selected because it is transport-independent, move-stable, and
-  restart-distinct.
+  probabilistically restart-distinct; collision resistance is sufficient for the supported-caller
+  identity condition but is not an absolute uniqueness guarantee.
 * **Attachment-carried lane metadata** — selected because payload-carried metadata would change
   parameter v1 or opaque buffer values, and key-carried metadata would change user routes.
 * **Unstable Zenoh SourceInfo/Publisher ids** — rejected by the dependency isolation policy and the

@@ -298,11 +298,14 @@ existing `meta/ack/<uuid>` query contract. The marker route identifies the recei
 Publisher, requested durability, and covered sequence without changing parameter or buffer values.
 
 A valid Fence requires one serialized logical Publisher lane and the ADR-0029 reliable,
-`Block`/`Data`/non-express profile for data and marker. Success requires contiguous receiver
-processing through `<through>`, not marker arrival. A missing, reordered, duplicate, malformed, or
+`Block`/`Data`/non-express profile for data and marker. The ordering guarantee is conditional on
+generated Publisher UUIDs being distinct: a receiver cannot distinguish same-UUID traffic that
+presents the next valid sequence. Under that condition, success requires contiguous receiver
+processing through `<through>`, not marker arrival; a missing, reordered, duplicate, malformed, or
 unprovable covered sequence fails closed and is never reported as success. Multiple logical
-Publishers may share a session but have independent UUID/sequence lanes; no cross-Publisher order is
-claimed. See ADR-0029 for exact validation, lifecycle, bounded-state, result, and topology rules.
+Publishers may share a session but have independent UUID/sequence lanes only under the same
+collision-resistant non-collision condition; no cross-Publisher order is claimed. See ADR-0029 for
+exact validation, lifecycle, bounded-state, result, and topology rules.
 
 ## 7. meta keys
 

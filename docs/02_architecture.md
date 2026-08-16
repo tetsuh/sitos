@@ -270,8 +270,9 @@ before returning and retains no Session record or other resource after enumerati
   sitos logical Publisher as a serialized UUIDv4-and-sequence lane whose covered data and marker
   use one Fence-capable Transport generation, reliable delivery, `Block` congestion control,
   identical `Data` priority, and non-express submission. Multiple logical Publishers may share a
-  Transport or session, but their lanes remain isolated and no cross-Publisher order is promised.
-  Unsupported or uninspectable QoS/topology is rejected rather than weakening the guarantee.
+  Transport or session, but their lanes remain isolated only under ADR-0029's collision-resistant
+  generated-UUID non-collision condition; no cross-Publisher order is promised. Unsupported or
+  uninspectable QoS/topology is rejected rather than weakening the guarantee.
 * `FenceLaneAttachmentV1` lets the designated receiver prove a contiguous covered sequence.
   Marker arrival alone cannot confirm a missing or reordered publication. The Transport's bounded
   FIFO callback-dispatch lane also prevents a marker entered after a data callback from completing
