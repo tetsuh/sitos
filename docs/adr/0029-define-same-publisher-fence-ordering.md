@@ -13,7 +13,7 @@ and control keys may have different delivery paths, and callback arrival does no
 processing completion. ADR-0032 also requires buffer keys and opaque `zenoh/bytes` values to remain
 unchanged. The contract therefore needs explicit Publisher identity and sequence evidence while
 reusing ADR-0028's acknowledgement token, result, retention, query, and deadline protocol. Issue
-#158 owns production implementation and executable qualification after this ADR is Accepted.
+#158 owns production implementation and executable qualification under this Accepted ADR.
 
 ## Decision
 
