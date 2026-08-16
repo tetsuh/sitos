@@ -37,9 +37,10 @@ One logical Publisher is one move-only sitos-owned lane state containing:
 * one retained local possible-submission diagnostic; and
 * the Transport generation used for every covered data publication and marker.
 
-The UUID is not caller-selectable, a credential, an ACL, or a Zenoh entity id. It is unique across
-live and restarted processes by random UUIDv4 generation. A supported caller cannot reuse or spoof
-it. If raw traffic collides with an existing UUID, stale, duplicate, or unexpected sequence rules
+The UUID is not caller-selectable, a credential, an ACL, or a Zenoh entity id. It is probabilistically
+unique (collision-resistant) across live and restarted processes through random UUIDv4 generation. A
+supported caller cannot reuse or spoof it. If raw traffic or another generated Publisher collides with
+an existing UUID, stale, duplicate, or unexpected sequence rules
 poison that receiver lane; the original identity is not replaced. Raw Zenoh writers can still cause
 denial or injection on writable routes, so Fence adds ordering evidence rather than authentication.
 
