@@ -44,11 +44,13 @@ poison that receiver lane; the original identity is not replaced. Raw Zenoh writ
 denial or injection on writable routes, so Fence adds ordering evidence rather than authentication.
 
 Move construction transfers the same state and identity. Non-concurrent move assignment first
-closes and quiesces the destination state, then transfers the source state. A moved-from Publisher
-is disconnected. Moving an object concurrently with one of its calls is an unsupported caller data
-race. Destruction closes admission, waits admitted calls, cancels its waiter, and releases the
-identity. Session close or Transport-generation replacement disconnects the Publisher. No identity,
-sequence, waiter, or failure state is persisted or reused after process restart.
+closes the destination admission, atomically completes its waiter with `Disconnected`, quiesces its
+admitted calls, and then transfers the source state. A moved-from Publisher is disconnected. Moving
+an object concurrently with one of its calls is an unsupported caller data race. Destruction closes
+admission, atomically completes its waiter with `Disconnected`, waits admitted calls to quiesce,
+and then releases the identity. Session close or Transport-generation replacement uses the same
+cancel-before-quiesce order. No identity, sequence, waiter, or failure state is persisted or reused
+after process restart.
 
 The Publisher UUID is distinct from every per-Fence ADR-0028 correlation token. Its receiver
 binding is fixed at creation and cannot be changed or reused for another target, SID, class, or
@@ -337,13 +339,16 @@ Receiver rules are monotonic and fail closed:
 | first marker processing has through above completed prefix | fail at the first missing or unprovable sequence |
 | retained duplicate token after later data | return the original immutable ADR-0028 result before applying the order test |
 
-For first marker processing, success requires `completed_through == through_sequence` and no
-retained failure whose sequence is at or below `through_sequence`. A lower completed prefix is a
-missing-sequence failure. A higher completed prefix proves that excluded later data overtook the
-marker and returns `OutcomeUnknown` with `failed_sequence = UINT64_MAX`; an out-of-prefix sequence
-cannot be named in ADR-0028. A failure above the marker's through value remains retained for later
-Fences but cannot be selected as this Fence's failure. Token duplicate lookup precedes this order
-test so a retained duplicate always returns its original immutable result.
+For first marker processing, success requires both
+`completed_through == through_sequence` and
+`highest_observed_sequence <= through_sequence`, with no retained failure whose sequence is at or
+below `through_sequence`. A lower completed prefix is a missing-sequence failure. A higher completed
+prefix or highest observed sequence proves that excluded later data crossed before the marker and
+returns `OutcomeUnknown` with `failed_sequence = UINT64_MAX`; an out-of-prefix sequence cannot be
+named in ADR-0028. A failure above the marker's through value remains retained for later Fences but
+cannot be selected as this Fence's sequence failure; its earlier observation still triggers the
+marker-order rule. Token duplicate lookup precedes this order test so a retained duplicate always
+returns its original immutable result.
 
 A first failure is retained for the identity's lifetime. Because later Fence values name an absolute
 prefix, a successful or failed Fence does not clear it. Recovery after a covered failure requires a
@@ -378,10 +383,12 @@ options and receipt mapping.
 
 ### Failure aggregation and result mapping
 
-Each receiver lane stores only its next expected sequence and its first failure: sequence, Status,
-and bounded sanitized message. First failure wins. Later failures are counted only in a bounded
-diagnostic counter and cannot replace it. A sequence whose processing returned failure still
-advances the expected sequence because its terminal processing point is known; a gap does not.
+Each receiver lane stores its next expected sequence, highest observed identifiable sequence, and
+first failure: sequence, Status, and bounded sanitized message. `highest_observed_sequence` is
+updated before duplicate, gap, or application disposition, so rejected later data cannot disappear
+from marker-order proof. First failure wins. Later failures are counted only in a bounded diagnostic
+counter and cannot replace it. A sequence whose processing returned failure still advances the
+expected sequence because its terminal processing point is known; a gap does not.
 
 For StorageNode targets, only remotely observed outcomes become ADR-0028 `AckResultV1`. Fence
 results always use `operation_kind = fence`, `applied_count = 0`, `failed_index = UINT32_MAX`, the
@@ -426,9 +433,9 @@ preserves the latest local/native cause but never pretends that a remote result 
 | sender Fence waiter/token | 1 per Publisher | result, timeout, cancellation, move-assignment cleanup, or destruction |
 | Transport receiver dispatch entries | 256 admitted per Transport; fixed ticket counters | callback return, undeclare, session close, or Stop |
 | initiating ParamCache receiver lane | 1 per Attach generation | Detach, move-assignment cleanup, destruction, or Transport close |
+| receiver sequence proof | O(1) per lane: next expected, highest observed, first failure | lane cleanup only |
 | ParamCache local Fence waiter | 1 | completion, timeout, Detach, or destruction |
 | StorageNode buffer Publisher lanes | 4096 node-wide | matching CloseSession, Stop, or node destruction |
-| first failure record | 1 per receiver lane | lane cleanup only |
 | Processing Fence token | 1 per Publisher lane | immutable completion or StorageNode Stop |
 | completed ACK results | existing ADR-0028 node-wide 4096 ring | completion-order eviction or Stop |
 | diagnostics | fixed counters plus existing bounded messages | state cleanup |
@@ -497,19 +504,21 @@ Publisher and local-waiter transitions are exact:
 | Fence pending | another Fence | existing waiter unchanged | definite local `InvalidArgument`/`operation_in_progress` |
 | Fence pending | valid cache completion or AckResult | decoded completion | completion wins over marker Put error; remove waiter |
 | Fence pending | deadline | latest local/native cause | `Timeout`; atomically remove waiter |
-| Fence pending | Detach/destruction/Transport close | none after quiescence | local `Disconnected`; late token ignored |
+| Fence pending | Detach/destruction/Transport close | waiter atomically removed before quiescence | local `Disconnected`; admitted call wakes, then cleanup waits; late token ignored |
 | Publisher closing | new call | none | `Disconnected`; no submission |
 
 Receiver and StorageNode transitions are exact:
 
 | State | Trigger | Retained state | Outcome and cleanup |
 |---|---|---|---|
-| lane absent | sequence 1 and capacity | next expected 1, then terminal result | create lane, process once, advance to 2 |
-| lane absent | sequence above 1 or marker through above 0 | no inferred application | `OutcomeUnknown`, first missing sequence 1 |
-| lane active | expected sequence | first failure if any | process once and advance after terminal processing |
-| lane active | stale/duplicate sequence | first failure latch | no reapply; `Error` at stale sequence |
-| lane active | future sequence | first failure latch | no apply; `OutcomeUnknown` at next expected |
-| lane active/failed | marker through completed prefix | first failure unchanged | evaluate immutable cache completion or claim token/result |
+| lane absent | sequence 1 and capacity | highest observed 1; next expected 1, then terminal result | create lane, process once, advance to 2 |
+| lane absent | sequence above 1 | highest observed incoming sequence; no inferred application | `OutcomeUnknown`, first missing sequence 1 |
+| lane absent | marker through above 0 | no inferred application | `OutcomeUnknown`, first missing sequence 1 |
+| lane active | expected sequence | update highest observed; first failure if any | process once and advance after terminal processing |
+| lane active | stale/duplicate sequence | update highest observed; first failure latch | no reapply; `Error` at stale sequence |
+| lane active | future sequence | update highest observed before rejection; first failure latch | no apply; `OutcomeUnknown` at next expected |
+| lane active/failed | first marker | next expected, highest observed, first failure | require exact completed prefix and no higher observation before cache completion or token/result |
+| lane active/failed | retained duplicate token | immutable ADR-0028 result | return original result before current-state order checks |
 | marker token absent | valid buffer marker | `Processing` token and fingerprint | complete exactly once to immutable AckResult |
 | token Processing | duplicate marker | original token unchanged | no second processing; query has no result yet |
 | token Completed | same fingerprint | immutable result | return existing result; no repeated apply/sync |
@@ -533,8 +542,9 @@ Lifecycle transitions are exact:
 
 Issue #158 must first use deterministic fake-Transport tests for concurrent Put/PutBatch/Push/Fence
 linearization, empty prefix before and after sequence 1, maximum sequence, overflow, gap, reorder,
-marker through 7 after completed sequence 8, retained token duplicate after later data, synchronized
-marker overtake, duplicate, collision, malformed versions, synchronous loopback, multiple Publisher
+marker through 7 after completed sequence 8, marker through N after rejected sequence N+2, retained
+token duplicate after later data, synchronized marker overtake, duplicate, collision, malformed
+versions, synchronous loopback, multiple Publisher
 isolation and fixed receiver binding, one-pending-Fence rejection, every failure-matrix row, dispatch
 and 4096-lane limits, attachment-free dispatch bypass, timeout/late non-revival, no resubmission, and
 Detach/CloseSession/Stop/move/destruction quiescence.
