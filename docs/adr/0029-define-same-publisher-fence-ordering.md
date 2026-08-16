@@ -77,9 +77,14 @@ offset  size  field
 
 The length must be exactly 25, the version must be 1, the UUID must have the RFC 4122 variant and
 version 4 bits, and sequence zero is invalid. Wrong length, unknown version, invalid UUID, or zero
-sequence is rejected before covered receiver application and poisons any unambiguously identified
-lane with `Status::Error`. If no Publisher can be identified, no lane advances. An absent attachment
-means an ordinary write that is not part of a sitos Fence prefix.
+sequence is rejected before covered receiver application. Malformed classification independently
+reports an unambiguously recoverable canonical Publisher UUID and, only for a version-1 candidate
+with all eight sequence bytes present, an optional valid nonzero sequence. A retainable identified
+lane latches `Status::Error` at that sequence when present; when only the UUID is recoverable, it
+latches a lane-global `Error` represented in ADR-0028 by `failed_sequence = UINT64_MAX`. The global
+failure applies to every through value. If the bounded receiver cannot retain a newly identified
+lane, the capacity-poison rule below applies instead. If no Publisher can be identified, no lane
+advances. An absent attachment means an ordinary write that is not part of a sitos Fence prefix.
 
 Route context disambiguates this 25-byte ordering attachment from ADR-0028's exact 17-byte
 `AckAttachmentV1`. Parameter Put/PutBatch covered for the initiating ParamCache use their existing
@@ -102,9 +107,9 @@ claimed by a sitos Fence.
 
 Issue #158 adds one transport-independent `FenceLaneMetadata` value containing the 16 UUID bytes and
 `uint64_t sequence`. `PutOptions` carries an optional valid `fence_lane`; `TransportSample` carries
-a tagged `FenceLaneObservation` of absent, valid metadata, or malformed candidate with any
-recoverable identity. The Put field is mutually exclusive with ADR-0028 per-data acknowledgement
-metadata. Only the adapter encodes/decodes the 25-byte form and classifies candidates; ParamCache
+a tagged `FenceLaneObservation` of absent, valid metadata, or malformed candidate with independently
+optional recoverable identity and valid nonzero v1 sequence. The Put field is mutually exclusive
+with ADR-0028 per-data acknowledgement metadata. Only the adapter encodes/decodes the 25-byte form and classifies candidates; ParamCache
 and StorageNode consume the typed observation and never raw zenoh-c types. This seam, its mocks, and
 its codec tests are mandatory #158 targets.
 
@@ -287,14 +292,20 @@ reject unrelated interoperable writes.
 The receiver dispatch lane atomically admits at most 256 participating callback entries, assigns
 each admitted entry a ticket, and invokes component callbacks in ticket order. It uses fixed
 counters and permits, not an unbounded sample queue. Classification, entry admission, and overflow
-proof are serialized under the receiver registration lease. When covered data arrives at the full
-bound, it is not applied, but before rejection returns a synchronous rejection-proof transaction
-must update an existing receiver lane or create one within its normal bound. It first raises
-`highest_observed_sequence`, then applies the normal sequence disposition without application:
-a stale sequence latches `Error` at that sequence, an expected sequence latches `OutcomeUnknown` at
-that sequence, and a future sequence latches `OutcomeUnknown` at the earlier missing expected
-sequence. This transaction holds no dispatch entry and is serialized one at a time with admission,
-so overflow cannot create another unbounded queue or callback set.
+proof are serialized under the receiver registration lease. When a valid covered-data observation
+arrives at the full bound, it is not applied, but before rejection returns a synchronous
+rejection-proof transaction must update an existing receiver lane or create one within its normal
+bound. It first raises `highest_observed_sequence`, then applies the normal sequence disposition
+without application: a stale sequence latches `Error` at that sequence, an expected sequence latches
+`OutcomeUnknown` at that sequence, and a future sequence latches `OutcomeUnknown` at the earlier
+missing expected sequence.
+
+A malformed candidate at the full dispatch bound uses the same synchronous proof transaction but
+retains the malformed-data disposition instead of the valid-data sequence-position disposition: a
+recoverable UUID and valid nonzero N raises `highest_observed_sequence` and latches `Error` at N;
+a recoverable UUID alone latches lane-global `Error` with the sentinel. This transaction holds no
+dispatch entry and is serialized one at a time with admission, so overflow cannot create another
+unbounded queue or callback set.
 
 If the identifiable data belongs to a new StorageNode Publisher UUID and the 4096-lane registry is
 also full, the transaction cannot retain that UUID. It instead sets one O(1)
@@ -349,7 +360,7 @@ Receiver rules are monotonic and fail closed:
 | sequence equals next expected | process once; then advance even when a terminal failure is latched |
 | sequence is below next expected | do not reapply; latch `Error` at that sequence |
 | sequence is above next expected | do not apply; latch `OutcomeUnknown` at the missing expected sequence |
-| malformed lane attachment | do not apply as covered data; latch `Error` only if the lane is identifiable |
+| malformed lane attachment | do not apply; for a retainable identified lane latch `Error` at recoverable valid N, or lane-global with the sentinel when only its UUID is recoverable |
 | lane already failed | do not restore success; later absolute prefixes retain the first failure |
 | first marker processing has through below completed prefix | later data overtook the marker; fail `OutcomeUnknown` with failed-sequence sentinel |
 | first marker processing has through above completed prefix | fail at the first missing or unprovable sequence |
@@ -357,9 +368,10 @@ Receiver rules are monotonic and fail closed:
 
 For first marker processing on a retained lane, success requires both
 `completed_through == through_sequence` and
-`highest_observed_sequence <= through_sequence`, with no retained failure whose sequence is at or
-below `through_sequence`. A lower completed prefix is a missing-sequence failure. A higher completed
-prefix or highest observed sequence proves that excluded later data crossed before the marker and
+`highest_observed_sequence <= through_sequence`, with no lane-global failure and no retained
+sequence failure at or below `through_sequence`. A lane-global failure returns its retained Status
+with `failed_sequence = UINT64_MAX` for every through value. A lower completed prefix is a
+missing-sequence failure. A higher completed prefix or highest observed sequence proves that excluded later data crossed before the marker and
 returns `OutcomeUnknown` with `failed_sequence = UINT64_MAX`; an out-of-prefix sequence cannot be
 named in ADR-0028. A failure above the marker's through value remains retained for later Fences but
 cannot be selected as this Fence's sequence failure; its earlier observation still triggers the
@@ -402,8 +414,10 @@ options and receipt mapping.
 ### Failure aggregation and result mapping
 
 Each receiver lane stores its next expected sequence, highest observed identifiable sequence, and
-first failure: sequence, Status, and bounded sanitized message. `highest_observed_sequence` is
-updated before duplicate, gap, application, or dispatch-overflow disposition, so rejected later
+first failure: valid nonzero sequence or lane-global sentinel, Status, and bounded sanitized message.
+The lane-global form participates in first-failure order and applies to every marker through value.
+`highest_observed_sequence` is updated before duplicate, gap, malformed-with-sequence, application,
+or dispatch-overflow disposition, so rejected later
 data cannot disappear from marker-order proof. If no new StorageNode lane can be retained, the
 Session/class `unretained_rejection` poison preserves the weaker but sufficient fact that an absent
 lane cannot prove an empty prefix. First failure wins. Later failures are counted only in a bounded
@@ -414,8 +428,10 @@ pre-processing rejection does not.
 For StorageNode targets, only remotely observed outcomes become ADR-0028 `AckResultV1`. Fence
 results always use `operation_kind = fence`, `applied_count = 0`, `failed_index = UINT32_MAX`, the
 requested durability, and the marker's `through_sequence`. A sequence-specific failure uses its
-nonzero sequence; a marker/global synchronization failure uses `failed_sequence = UINT64_MAX`.
-Messages use ADR-0028's bounded sanitized UTF-8 rules.
+nonzero sequence only when `1 <= N <= through_sequence`; a marker/global synchronization failure
+uses `failed_sequence = UINT64_MAX`. For every table row below that names sequence N, a retained
+N above the marker prefix is not selected: its higher observation instead uses the marker-overtake
+`OutcomeUnknown` row and the sentinel. Messages use ADR-0028's bounded sanitized UTF-8 rules.
 
 | Observation | Completion path / Status | Durability | `through_sequence` | `failed_sequence` |
 |---|---|---|---:|---:|
@@ -430,8 +446,9 @@ Messages use ADR-0028's bounded sanitized UTF-8 rules.
 | marker overtaken by excluded later data | AckResult `OutcomeUnknown` order violation | requested | marker through | `UINT64_MAX` |
 | all buffer sequences applied | AckResult `Ok` | applied | marker through | `UINT64_MAX` |
 | durable barrier completes | AckResult `Ok` | synced | marker through | `UINT64_MAX` |
-| malformed data/duplicate/collision at N | AckResult `Error` | requested | marker through | N |
-| missing, unprovable, dispatch-rejected, or unretained-capacity sequence N | AckResult `OutcomeUnknown` | requested | marker through | N |
+| malformed data with recoverable valid N, stale/duplicate data including dispatch-overflow stale N, or collision at N, when N is within the marker prefix | AckResult `Error` | requested | marker through | N |
+| malformed data with recoverable UUID but no valid nonzero sequence, and a retainable lane | AckResult `Error` | requested | marker through | `UINT64_MAX` |
+| missing, unprovable, expected/future valid-data dispatch rejection, or unretained-capacity sequence N, when N is within the marker prefix | AckResult `OutcomeUnknown` | requested | marker through | N |
 | missing Session | AckResult `NotFound` | requested | marker through | `UINT64_MAX` |
 | Creating/Closing Session | AckResult `InvalidArgument` | requested | marker through | `UINT64_MAX` |
 | disabled capability or write-once conflict at N | AckResult `InvalidArgument` | requested | marker through | N |
@@ -543,7 +560,9 @@ Receiver and StorageNode transitions are exact:
 | lane active | expected sequence | update highest observed; first failure if any | process once and advance after terminal processing |
 | lane active | stale/duplicate sequence | update highest observed; first failure latch | no reapply; `Error` at stale sequence |
 | lane active | future sequence | update highest observed before rejection; first failure latch | no apply; `OutcomeUnknown` at next expected |
-| lane active/failed | first marker | next expected, highest observed, first failure | require exact completed prefix and no higher observation before cache completion or token/result |
+| lane identifiable and retainable | malformed data with valid nonzero sequence N | highest observed N; first failure latch | no apply; `Error` at N |
+| lane identifiable and retainable | malformed data without valid nonzero sequence | lane-global first failure | no apply; `Error` with failed-sequence sentinel for every through value |
+| lane active/failed | first marker | next expected, highest observed, first failure | require exact completed prefix, no lane-global failure, and no higher observation before cache completion or token/result |
 | lane absent | empty first buffer marker and unretained-rejection poison | scope poison bit | `OutcomeUnknown` with failed-sequence sentinel; no barrier or lane allocation |
 | lane active/failed | retained duplicate token | immutable ADR-0028 result | return original result before current-state order checks |
 | marker token absent | valid buffer marker | `Processing` token and fingerprint | complete exactly once to immutable AckResult |
@@ -551,7 +570,8 @@ Receiver and StorageNode transitions are exact:
 | token Completed | same fingerprint | immutable result | return existing result; no repeated apply/sync |
 | token Completed | different fingerprint | original result | collision rejection and bounded diagnostic |
 | token evicted | late duplicate | no retained identity guarantee | ADR-0028 permits fresh observation; no resubmission by supported client |
-| dispatch full | identifiable covered data with retainable lane proof | highest observation plus normal stale/expected/future failure disposition updated synchronously | data unprocessed; later first marker cannot succeed across the rejection |
+| dispatch full | identifiable valid covered data with retainable lane proof | highest observation plus normal stale/expected/future failure disposition updated synchronously | data unprocessed; later first marker cannot succeed across the rejection |
+| dispatch full | malformed candidate with retainable lane proof | malformed sequence-specific or lane-global `Error` disposition updated synchronously | data unprocessed; later first marker cannot succeed across the rejection |
 | dispatch and new-lane registry full | identifiable covered data for absent buffer lane | Session/class poison plus bounded diagnostic | data unprocessed; positive or empty absent-lane marker fails `OutcomeUnknown` |
 | dispatch full | marker callback | bounded diagnostic only | marker unobserved; caller reaches `Timeout` |
 
@@ -573,8 +593,9 @@ Issue #158 must first use deterministic fake-Transport tests for concurrent Put/
 linearization, empty prefix before and after sequence 1, maximum sequence, overflow, gap, reorder,
 marker through 7 after completed sequence 8, marker through N after rejected sequence N+2, dispatch
 overflow for existing-lane stale, expected, and future sequences followed by markers through N and N-1, retained token duplicate after
-later data, synchronized marker overtake, duplicate, collision, malformed versions, synchronous
-loopback, multiple Publisher isolation and fixed receiver binding, one-pending-Fence rejection,
+later data, synchronized marker overtake, duplicate, collision, malformed candidates with a
+recoverable sequence, UUID only, or neither, including dispatch-overflow, retainable, and
+capacity-poison paths, synchronous loopback, multiple Publisher isolation and fixed receiver binding, one-pending-Fence rejection,
 every failure-matrix row, dispatch and 4096-lane limits, a new-lane rejection at both limits followed
 by positive and empty absent-lane markers, poison isolation and lifecycle cleanup, attachment-free
 dispatch bypass, timeout/late non-revival, no resubmission, and
