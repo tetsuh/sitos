@@ -311,8 +311,11 @@ If the identifiable data belongs to a new StorageNode Publisher UUID and the 409
 also full, the transaction cannot retain that UUID. It instead sets one O(1)
 `unretained_rejection` poison bit on the matching active `(sid, durable|ephemeral)` scope. A first
 marker for any absent lane in that scope must consult the bit; even an empty-prefix marker then
-returns `OutcomeUnknown` rather than claiming that no positive sequence crossed. The bit clears only
-with that Session/class state at CloseSession or Stop. ParamCache has one fixed lane per Attach
+returns `OutcomeUnknown` rather than claiming that no positive sequence crossed. The bit retains
+neither the rejected UUID nor its sequence and no later result may name that rejected sequence.
+For any absent lane, a positive marker instead fails at the independently unproven sequence 1;
+only an empty marker needs the poison and uses the sentinel. The bit clears only with that
+Session/class state at CloseSession or Stop. ParamCache has one fixed lane per Attach
 generation and therefore records an identifiable overflow directly in that lane. If lifecycle
 cleanup prevents either proof transaction, the receiver cannot later complete a marker from that
 registration. An unadmitted marker creates no completion and its caller can only reach `Timeout`.
@@ -425,8 +428,9 @@ The lane-global form participates in first-failure order and applies to every ma
 `highest_observed_sequence` is updated before duplicate, gap, malformed-with-sequence, application,
 or dispatch-overflow disposition, so rejected later
 data cannot disappear from marker-order proof. If no new StorageNode lane can be retained, the
-Session/class `unretained_rejection` poison preserves the weaker but sufficient fact that an absent
-lane cannot prove an empty prefix. First failure wins. Later failures are counted only in a bounded
+Session/class `unretained_rejection` poison preserves only the weaker but sufficient fact that an
+absent lane cannot prove an empty prefix. It retains no per-identity sequence evidence and never
+participates in the retained-N or marker-overtake rules. First failure wins. Later failures are counted only in a bounded
 diagnostic counter and cannot replace it. A sequence whose processing returned failure still
 advances the expected sequence because its terminal processing point is known; a gap or
 pre-processing rejection does not.
@@ -437,7 +441,8 @@ requested durability, and the marker's `through_sequence`. A sequence-specific f
 nonzero sequence only when `1 <= N <= through_sequence`; a marker/global synchronization failure
 uses `failed_sequence = UINT64_MAX`. For every table row below that names sequence N, a retained
 N above the marker prefix is not selected: its higher observation instead uses the marker-overtake
-`OutcomeUnknown` row and the sentinel. A lane-global or in-prefix first failure is selected before
+`OutcomeUnknown` row and the sentinel. Here, retained N means per-lane sequence proof; the
+Session/class poison retains and names no N. A lane-global or in-prefix first failure is selected before
 that row according to the ordered marker algorithm above. Messages use ADR-0028's bounded sanitized UTF-8 rules.
 
 | Observation | Completion path / Status | Durability | `through_sequence` | `failed_sequence` |
@@ -455,7 +460,8 @@ that row according to the ordered marker algorithm above. Messages use ADR-0028'
 | durable barrier completes | AckResult `Ok` | synced | marker through | `UINT64_MAX` |
 | malformed data with recoverable valid N, stale/duplicate data including dispatch-overflow stale N, or collision at N, when N is within the marker prefix | AckResult `Error` | requested | marker through | N |
 | malformed data with recoverable UUID but no valid nonzero sequence, and a retainable lane | AckResult `Error` | requested | marker through | `UINT64_MAX` |
-| missing, unprovable, expected/future valid-data dispatch rejection, or unretained-capacity sequence N, when N is within the marker prefix | AckResult `OutcomeUnknown` | requested | marker through | N |
+| missing, unprovable, or expected/future valid-data dispatch rejection sequence N, when N is within the marker prefix | AckResult `OutcomeUnknown` | requested | marker through | N |
+| positive marker for an absent buffer lane, whether the Session/class scope is poisoned or not | AckResult `OutcomeUnknown` | requested | marker through greater than 0 | 1 |
 | missing Session | AckResult `NotFound` | requested | marker through | `UINT64_MAX` |
 | Creating/Closing Session | AckResult `InvalidArgument` | requested | marker through | `UINT64_MAX` |
 | disabled capability or write-once conflict at N | AckResult `InvalidArgument` | requested | marker through | N |
@@ -488,11 +494,13 @@ preserves the latest local/native cause but never pretends that a remote result 
 | diagnostics | fixed counters plus existing bounded messages | state cleanup |
 
 StorageNode never evicts an admitted live lane merely to admit a new identity. At the 4096-lane
-limit, sequence 1 for a new attached buffer Publisher is rejected before engine mutation, a bounded
-diagnostic is retained, and the matching Session/class `unretained_rejection` bit is set before the
-rejection returns. A later marker for that unretained UUID is indistinguishable from a missing first
-publication and returns `OutcomeUnknown` with `failed_sequence = 1` when `through_sequence > 0`; an
-empty marker for an absent lane in the poisoned scope returns `OutcomeUnknown` with the sentinel.
+limit, any candidate for a new attached buffer Publisher is rejected before engine mutation, a
+bounded diagnostic is retained, and the matching Session/class `unretained_rejection` bit is set
+before the rejection returns. The bit does not retain whether that candidate carried sequence 1,
+a future valid sequence, or no recoverable sequence. A later positive marker for any absent lane is
+therefore evaluated only as a missing first publication and returns `OutcomeUnknown` with
+`failed_sequence = 1`; it does not attribute the result to the rejected candidate. An empty marker
+for an absent lane in the poisoned scope returns `OutcomeUnknown` with the sentinel.
 Attachment-free ADR-0032 traffic remains unaffected. A crashed Publisher can consume one lane until
 CloseSession or Stop, and one rejected identity can conservatively poison empty absent-lane Fences in
 that scope for the same lifetime. These liveness costs are accepted to avoid unbounded state,
@@ -579,7 +587,7 @@ Receiver and StorageNode transitions are exact:
 | token evicted | late duplicate | no retained identity guarantee | ADR-0028 permits fresh observation; no resubmission by supported client |
 | dispatch full | identifiable valid covered data with retainable lane proof | highest observation plus normal stale/expected/future failure disposition updated synchronously | data unprocessed; later first marker cannot succeed across the rejection |
 | dispatch full | malformed candidate with retainable lane proof | malformed sequence-specific or lane-global `Error` disposition updated synchronously | data unprocessed; later first marker cannot succeed across the rejection |
-| dispatch and new-lane registry full | identifiable covered data for absent buffer lane | Session/class poison plus bounded diagnostic | data unprocessed; positive or empty absent-lane marker fails `OutcomeUnknown` |
+| dispatch and new-lane registry full | identifiable covered data for absent buffer lane | Session/class poison plus bounded diagnostic; no UUID or sequence retained | data unprocessed; positive absent-lane marker fails at missing 1, empty marker uses sentinel |
 | dispatch full | marker callback | bounded diagnostic only | marker unobserved; caller reaches `Timeout` |
 
 Lifecycle transitions are exact:
@@ -604,8 +612,9 @@ N-1, overlaps between an in-prefix first failure and a higher completed/observed
 token duplicate after later data, synchronized marker overtake, duplicate, collision, malformed candidates with a
 recoverable sequence, UUID only, or neither, including dispatch-overflow, retainable, and
 capacity-poison paths, synchronous loopback, multiple Publisher isolation and fixed receiver binding, one-pending-Fence rejection,
-every failure-matrix row, dispatch and 4096-lane limits, a new-lane rejection at both limits followed
-by positive and empty absent-lane markers, poison isolation and lifecycle cleanup, attachment-free
+every failure-matrix row, dispatch and 4096-lane limits, new-lane sequence-1, future-sequence, and
+UUID-only rejections at both limits followed by empty, positive-below-observation, and positive
+through markers that verify poison never names N, poison isolation and lifecycle cleanup, attachment-free
 dispatch bypass, timeout/late non-revival, no resubmission, and
 Detach/CloseSession/Stop/move/destruction quiescence.
 
