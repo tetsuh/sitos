@@ -25,8 +25,18 @@ A standard zenoh client can interoperate with sitos simply by following this spe
 * `buffers/<sid>/{durable|ephemeral}/<key>`: route-selected session buffer values. `<sid>`
   and `<key>` reuse the existing grammar. The route requires the corresponding explicit Session
   capability. Payloads are plain `zenoh/bytes`, with no sitos schema or type tag.
-* Buffer routes support no `:batch`, `:fence`, snapshot, or other control namespace in v0.4.
-  They are disjoint from ParamStore, ParamCache, ParamSubscription, and SessionView [ADR-0032].
+* Buffer value routes support no inline `:batch`, `:fence`, snapshot, or other control segment.
+  Proposed ADR-0029 plans Fence markers in a disjoint `meta/fence/**` namespace; they are never
+  buffer values. Buffer values remain disjoint from ParamStore, ParamCache, ParamSubscription, and
+  SessionView [ADR-0032].
+
+> **Planned, not yet normative:** Proposed ADR-0029 reserves these marker routes. They enter the
+> normative key space only when the ADR is Accepted.
+>
+> ```text
+> <prefix>/meta/fence/cache/<sid>/<receiver-uuid>/<publisher-uuid>/<through>
+> <prefix>/meta/fence/buffer/<sid>/<durable|ephemeral>/<publisher-uuid>/<applied|synced>/<through>
+> ```
 
 ### 1.2 User-key grammar
 
@@ -109,6 +119,10 @@ zenoh/bytes;sitos.v1          (single parameter value)
 zenoh/bytes;sitos.v1.batch    (base/session batch, §5)
 zenoh/bytes                   (durable or ephemeral buffer value)
 ```
+
+> **Planned, not yet normative:** Proposed ADR-0029 reserves
+> `zenoh/bytes;sitos.v1.fence` for the same-publisher Fence marker in §6.1. It becomes an
+> authoritative route Encoding only when the ADR is Accepted.
 
 Base, session, and snapshot parameter payload-v1 values use
 `zenoh/bytes;sitos.v1`. Base and session batch values use
@@ -254,6 +268,41 @@ The planned behavior is one data submission followed by bounded polling:
 Clients that do not attach a token remain ack-less. Exhausted polling reports Timeout, which may
 mean that the write was applied but its bounded acknowledgement record was absent or evicted; #14
 must finalize how callers observe that ambiguity.
+
+### 6.1 Same-publisher Fence control
+
+> **Planned, not yet normative:** Proposed ADR-0029 owns this contract. It becomes normative only
+> when the ADR is Accepted; production implementation and executable qualification belong to #158.
+
+Covered data retains its existing key, payload, and route Encoding and carries the exact ordering
+attachment below. An absent attachment is an ordinary write outside a sitos Fence prefix.
+
+```text
+FenceLaneAttachmentV1 — exactly 25 bytes
+
+offset  size  field
+0       1     schema_version = 1
+1       16    logical Publisher UUIDv4 in RFC 4122 network order
+17      8     nonzero sequence_le
+```
+
+Fence markers use the `meta/fence/**` routes in §1, Encoding
+`zenoh/bytes;sitos.v1.fence`, and the exact one-byte payload `01`. UUID route chunks are lowercase
+canonical UUIDv4 text. `<through>` is canonical unsigned decimal in the `uint64_t` range; zero
+represents an empty covered prefix. `synced` is invalid for ephemeral buffers.
+
+Every marker carries ADR-0028's exact 17-byte `AckAttachmentV1`; that token is not repeated in the
+key or payload. Cache-target markers directly complete only the named ParamCache Attach generation
+and create no StorageNode result. Buffer-target markers create ADR-0028 `AckResultV1` through the
+existing `meta/ack/<uuid>` query contract. The marker route identifies the receiver target,
+Publisher, requested durability, and covered sequence without changing parameter or buffer values.
+
+A valid Fence requires one serialized logical Publisher lane and the ADR-0029 reliable,
+`Block`/`Data`/non-express profile for data and marker. Success requires contiguous receiver
+processing through `<through>`, not marker arrival. A missing, reordered, duplicate, malformed, or
+unprovable covered sequence fails closed and is never reported as success. Multiple logical
+Publishers may share a session but have independent UUID/sequence lanes; no cross-Publisher order is
+claimed. See ADR-0029 for exact validation, lifecycle, bounded-state, result, and topology rules.
 
 ## 7. meta keys
 
