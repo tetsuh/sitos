@@ -1,8 +1,8 @@
 # sitos — ADR Process
 
-Rules for writing and operating ADRs (Architecture Decision Records) in the
-sitos repository. Public document. In issue #1, this will be moved as
-`docs/adr/README.md`.
+Canonical rules for writing and operating ADRs (Architecture Decision Records) in the
+sitos repository. The sole comprehensive maintained ADR index is
+[adr/README.md](adr/README.md).
 
 ## 1. Purpose
 
@@ -15,7 +15,7 @@ sitos repository. Public document. In issue #1, this will be moved as
 
 ```
 docs/adr/
-  README.md                     # These rules (English)
+  README.md                     # Comprehensive maintained ADR index
   template.md                   # Template (§5)
   0001-use-zenoh-as-transport.md
   0002-embedded-storage-node.md
@@ -123,12 +123,18 @@ When in doubt, discuss “whether an ADR is needed” in PR review using the
 4. When implementation AI performs work, always include related ADRs in the
    prompt context
 
-## 8. Initial ADR Set
+## 8. Initial ADR Set and Index Maintenance
 
 At repository creation (issue #1), file D1 through D13 from
 [00_overview.md](00_overview.md) §6 as the following individual ADRs in English
-(Status: Accepted). After that, maintain the table in 00_overview §6 as an
-index to the ADRs.
+(Status: Accepted).
+
+Every ADR PR must update the sole comprehensive maintained index in
+[adr/README.md](adr/README.md), whose repository-root path is `docs/adr/README.md`. The index
+records each ADR's number, link, canonical H1 title, and normalized status; the numbered ADR file
+remains authoritative for its own status.
+[00_overview.md](00_overview.md) §6 is the historical D1 through D13 summary, not a comprehensive
+ADR index, and requires an update only when the high-level project overview itself changes.
 
 | ADR | Origin | Proposed title |
 |---|---|---|

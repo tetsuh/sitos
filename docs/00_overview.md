@@ -79,19 +79,20 @@ repository as a general-purpose library not limited to CT reconstruction.
 | [07_issue_breakdown.md](07_issue_breakdown.md) | Public | Milestones and proposed issue breakdown |
 | [08_contract_registry.md](08_contract_registry.md) | Public | Public contract registry: index of wire surfaces and stable identifiers |
 | [09_dependency_policy.md](09_dependency_policy.md) | Public | Dependency and zenoh compatibility policy |
-| [10_adr_process.md](10_adr_process.md) | Public | ADR writing and operation rules (to be moved to docs/adr/README.md) |
+| [10_adr_process.md](10_adr_process.md) | Public | Canonical ADR writing and operation rules |
+| [adr/README.md](adr/README.md) | Public | Sole comprehensive maintained ADR index |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Public | Canonical branching strategy, TiDD, TDD, and contribution workflow |
 
 All documents listed above are public Markdown maintained in the sitos repository. Design and
 operations documents live under `docs/`; the contributor workflow lives at the repository root.
 Public documents must not contain references to non-public documents.
 
-## 6. Record of Major Decisions (ADR Summary)
+## 6. Historical Record of Initial Major Decisions (D1-D13)
 
-The operation rules are in [10_adr_process.md](10_adr_process.md). At repository
-creation, D1 through D13 are filed in English as individual ADRs under
-`docs/adr/0001` through `0013`; after that, this table is maintained as an
-index to the ADRs.
+The operation rules are in [10_adr_process.md](10_adr_process.md). This table is the
+historical D1 through D13 summary from repository creation; it is not a comprehensive ADR index.
+The sole comprehensive maintained ADR index is [adr/README.md](adr/README.md). Update this summary
+only when the high-level project overview itself changes.
 
 | # | Decision | Rationale |
 |---|---|---|

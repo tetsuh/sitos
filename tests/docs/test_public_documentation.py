@@ -61,6 +61,22 @@ class _OrdinarySegment:
     first_line: int
 
 
+@dataclass(frozen=True)
+class _AdrRecord:
+    number: str
+    filename: str
+    title: str
+    status: str
+
+
+@dataclass(frozen=True)
+class _AdrIndexEntry:
+    number: str
+    filename: str
+    title: str
+    status: str
+
+
 _FENCE_OPEN = re.compile(r"^( {0,3})(`{3,}|~{3,})(.*)$")
 _REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[[^\n]*\]:")
 _MULTILINE_LINK = re.compile(
@@ -70,6 +86,20 @@ _AUTOLINK = re.compile(r"<[A-Za-z][A-Za-z0-9+.-]*:[^<>\n]*>")
 _RAW_LINK_HTML = re.compile(r"<(?i:a|img)(?=[\t\n\v\f\r />])")
 _LINK_TOKEN = re.compile(r"(!?)\[([^\[\]\\\n]*)\]\(([^()\\\t\n\v\f\r ]+)\)")
 _BRACKET_RUN = re.compile(r"`+")
+_ADR_FILENAME = re.compile(r"^(?P<number>[0-9]{4})-[a-z0-9.-]+\.md$")
+_ADR_HEADING = re.compile(r"^# ADR-(?P<number>[0-9]{4}): (?P<title>.+)$")
+_ADR_INDEX_ROW = re.compile(
+    r"^\| \[(?P<number>[0-9]{4})\]\((?P<filename>[^)]+)\) "
+    r"\| (?P<title>[^|]+) \| (?P<status>[^|]+) \|$"
+)
+_ADR_SECTION_STATUS = re.compile(r"(?ms)^## Status\s*\n\s*(?P<status>[^\n]+)")
+_ADR_LEGACY_STATUS = re.compile(r"(?m)^- Status:\s*(?P<status>[^\n]+)")
+_ADR_SIMPLE_STATUS = re.compile(
+    r"^(?P<status>Proposed|Accepted|Rejected|Deprecated)(?: — [0-9]{4}-[0-9]{2}-[0-9]{2})?$"
+)
+_ADR_SUPERSEDED_STATUS = re.compile(
+    r"^(?P<status>Superseded by ADR-[0-9]{4})(?: — [0-9]{4}-[0-9]{2}-[0-9]{2})?$"
+)
 
 
 def _physical_lines(text: str) -> list[str]:
@@ -316,6 +346,108 @@ def validate_destination(token: MarkdownToken, root: Path) -> Path | None:
     return resolve_local_target(token, root)
 
 
+def _normalize_adr_status(raw: str, source: Path) -> str:
+    status = raw.strip()
+    for pattern in (_ADR_SIMPLE_STATUS, _ADR_SUPERSEDED_STATUS):
+        match = pattern.fullmatch(status)
+        if match is not None:
+            return match.group("status")
+    raise DocumentationContractError(f"{source}: unsupported ADR status {status!r}")
+
+
+def _adr_records(root: Path) -> list[_AdrRecord]:
+    records: list[_AdrRecord] = []
+    for path in sorted((root / "docs/adr").glob("[0-9][0-9][0-9][0-9]-*.md")):
+        filename_match = _ADR_FILENAME.fullmatch(path.name)
+        if filename_match is None:
+            raise DocumentationContractError(f"{path}: malformed ADR filename")
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        heading_match = _ADR_HEADING.fullmatch(lines[0] if lines else "")
+        if heading_match is None:
+            raise DocumentationContractError(f"{path}: malformed ADR H1")
+        if heading_match.group("number") != filename_match.group("number"):
+            raise DocumentationContractError(f"{path}: ADR filename and H1 number differ")
+        status_match = _ADR_SECTION_STATUS.search(text) or _ADR_LEGACY_STATUS.search(text)
+        if status_match is None:
+            raise DocumentationContractError(f"{path}: missing ADR status")
+        records.append(
+            _AdrRecord(
+                number=filename_match.group("number"),
+                filename=path.name,
+                title=heading_match.group("title"),
+                status=_normalize_adr_status(status_match.group("status"), path),
+            )
+        )
+    if not records:
+        raise DocumentationContractError("docs/adr: no numbered ADR files found")
+    return records
+
+
+def _adr_index_entries(root: Path) -> list[_AdrIndexEntry]:
+    path = root / "docs/adr/README.md"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if "| ADR | Title | Status |" not in lines:
+        raise DocumentationContractError(f"{path}: missing ADR/Title/Status index header")
+    entries: list[_AdrIndexEntry] = []
+    for line_number, line in enumerate(lines, start=1):
+        if not line.startswith("| ["):
+            continue
+        match = _ADR_INDEX_ROW.fullmatch(line)
+        if match is None:
+            raise DocumentationContractError(f"{path}:{line_number}: malformed ADR index row")
+        entries.append(
+            _AdrIndexEntry(
+                number=match.group("number"),
+                filename=match.group("filename"),
+                title=match.group("title").strip(),
+                status=match.group("status").strip(),
+            )
+        )
+    if not entries:
+        raise DocumentationContractError(f"{path}: ADR index is empty")
+    return entries
+
+
+def validate_adr_index(root: Path) -> None:
+    """Require a complete, ordered ADR index whose metadata matches each ADR."""
+    records = _adr_records(root)
+    entries = _adr_index_entries(root)
+    expected_numbers = [record.number for record in records]
+    actual_numbers = [entry.number for entry in entries]
+    if actual_numbers != sorted(actual_numbers):
+        raise DocumentationContractError("docs/adr/README.md: ADR rows are not numerically ordered")
+    if len(actual_numbers) != len(set(actual_numbers)):
+        raise DocumentationContractError("docs/adr/README.md: duplicate ADR number")
+    filenames = [entry.filename for entry in entries]
+    if len(filenames) != len(set(filenames)):
+        raise DocumentationContractError("docs/adr/README.md: duplicate ADR target")
+    if actual_numbers != expected_numbers:
+        raise DocumentationContractError(
+            "docs/adr/README.md: ADR numbers do not match the repository inventory"
+        )
+
+    records_by_filename = {record.filename: record for record in records}
+    if set(filenames) != set(records_by_filename):
+        raise DocumentationContractError(
+            "docs/adr/README.md: ADR targets do not match the repository inventory"
+        )
+    for entry in entries:
+        record = records_by_filename[entry.filename]
+        if entry.number != record.number:
+            raise DocumentationContractError(
+                f"docs/adr/README.md: index number for {entry.filename} does not match"
+            )
+        if entry.title != record.title:
+            raise DocumentationContractError(
+                f"docs/adr/README.md: index title for ADR-{record.number} does not match"
+            )
+        if entry.status != record.status:
+            raise DocumentationContractError(
+                f"docs/adr/README.md: index status for ADR-{record.number} does not match"
+            )
+
+
 def markdown_corpus(root: Path) -> list[Path]:
     paths = {root / "README.md", root / "CONTRIBUTING.md", root / "AGENTS.md"}
     paths.update((root / ".github").glob("**/*.md"))
@@ -485,6 +617,69 @@ continues here``
 
 
 class PublicDocumentationTest(unittest.TestCase):
+    def test_adr_index_contract(self) -> None:
+        validate_adr_index(ROOT)
+        adr_index = (ROOT / "docs/adr/README.md").read_text(encoding="utf-8")
+        overview = (ROOT / "docs/00_overview.md").read_text(encoding="utf-8")
+        process = (ROOT / "docs/10_adr_process.md").read_text(encoding="utf-8")
+        self.assertIn("sole comprehensive maintained ADR index", adr_index)
+        self.assertIn("historical D1 through D13 summary", overview)
+        self.assertIn("not a comprehensive ADR index", overview)
+        self.assertIn("Every ADR PR must update", process)
+        self.assertIn("docs/adr/README.md", process)
+
+    def test_adr_index_contract_rejects_metadata_drift(self) -> None:
+        valid_index = """# Architecture Decision Records (ADRs)
+
+| ADR | Title | Status |
+|---|---|---|
+| [0001](0001-first-decision.md) | First decision | Accepted |
+| [0002](0002-second-decision.md) | Second decision | Superseded by ADR-0001 |
+"""
+        mutations = {
+            "missing": valid_index.replace(
+                "| [0002](0002-second-decision.md) | Second decision | "
+                "Superseded by ADR-0001 |\n",
+                "",
+            ),
+            "extra": valid_index
+            + "| [0003](0003-extra-decision.md) | Extra decision | Proposed |\n",
+            "duplicate": valid_index.replace(
+                "| [0002](0002-second-decision.md)",
+                "| [0001](0001-first-decision.md)",
+            ),
+            "misordered": valid_index.replace(
+                "| [0001](0001-first-decision.md) | First decision | Accepted |\n"
+                "| [0002](0002-second-decision.md) | Second decision | "
+                "Superseded by ADR-0001 |\n",
+                "| [0002](0002-second-decision.md) | Second decision | "
+                "Superseded by ADR-0001 |\n"
+                "| [0001](0001-first-decision.md) | First decision | Accepted |\n",
+            ),
+            "misnumbered": valid_index.replace("[0002]", "[0003]"),
+            "mistitled": valid_index.replace("Second decision", "Stale title"),
+            "stale status": valid_index.replace(
+                "Superseded by ADR-0001", "Accepted"
+            ),
+        }
+        for name, index in mutations.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                adr_directory = root / "docs/adr"
+                adr_directory.mkdir(parents=True)
+                (adr_directory / "README.md").write_text(index, encoding="utf-8")
+                (adr_directory / "0001-first-decision.md").write_text(
+                    "# ADR-0001: First decision\n\n## Status\n\n"
+                    "Accepted — 2026-01-01\n",
+                    encoding="utf-8",
+                )
+                (adr_directory / "0002-second-decision.md").write_text(
+                    "# ADR-0002: Second decision\n\n- Status: Superseded by ADR-0001\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaises(DocumentationContractError):
+                    validate_adr_index(root)
+
     def test_public_markdown_links(self) -> None:
         scanned = scan_corpus(ROOT)
         legacy = (ROOT / "docs/development_workflow.md").resolve(strict=True)
