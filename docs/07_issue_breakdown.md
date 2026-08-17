@@ -266,13 +266,18 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
   waiter seams, codecs, deterministic fake-Transport tests, Linux/Windows Zenoh integration, and
   sanitizer coverage frozen by #158's own readiness review
 * Scope: implement ADR-0029's generated Publisher lanes, lane attachment, target-aware marker,
-  bounded receiver dispatch/state, ParamCache local target, StorageNode buffer target, and exact
-  ADR-0028 result reuse. It adds no #99/#107 public API and no #105 durability semantics.
+  buffer Session-generation UUID binding, bounded receiver dispatch/state, ParamCache local target,
+  StorageNode buffer target, and exact ADR-0028 result reuse. It adds no #99/#107 public API and no
+  #105 durability semantics.
 * Acceptance criteria: concurrent prior/later ordering, multiple-Publisher isolation under distinct
-  generated UUIDs, the forced same-UUID indistinguishability boundary, gap/reorder/duplicate/
-  unknown-version failure, synchronous loopback, local versus remote outcomes, finite
-  admission, no resubmission, timeout/late non-revival, quiescent lifecycle, raw payload
-  transparency, and minimum/latest supported Zenoh qualification on Windows and Linux
+  generated UUIDs, the forced same-Publisher-UUID indistinguishability boundary, gap/reorder/
+  duplicate/unknown-version failure, synchronous loopback, local versus remote outcomes, finite
+  admission, no resubmission, forced ACK-token collision boundaries, timeout/late non-revival under
+  distinct tokens, Transport-generation terminal disconnection, same-SID recreation with delayed
+  old-marker, mismatched-generation rejection, and forced repeated Session-generation UUID collision,
+  lease-first versus Closing-first marker races,
+  quiescent lifecycle, raw payload transparency, and minimum/latest supported Zenoh qualification
+  on Windows and Linux
 * Depends on: ADR-0029 Accepted through #106 and ADR-0028 production substrate merged through #14.
   #105 is required only before synchronized Fence behavior can be enabled.
 * Contract Registry: implements the ADR-0029 marker and `FenceLaneAttachmentV1` rows without

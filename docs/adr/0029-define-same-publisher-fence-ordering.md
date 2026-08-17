@@ -30,7 +30,7 @@ One logical Publisher is one move-only sitos-owned lane state containing:
 
 * one internally generated canonical random UUIDv4;
 * one immutable receiver binding: cache `(sid, Attach-generation UUID)` or buffer
-  `(sid, durable|ephemeral)`;
+  `(sid, Session-generation UUID, durable|ephemeral)`;
 * one `uint64_t last_sequence`, initially zero, plus one exhausted flag;
 * one admission gate and one lane mutex;
 * at most one in-flight Fence token/waiter;
@@ -53,21 +53,25 @@ closes the destination admission, atomically completes its waiter with `Disconne
 admitted calls, and then transfers the source state. A moved-from Publisher is disconnected. Moving
 an object concurrently with one of its calls is an unsupported caller data race. Destruction closes
 admission, atomically completes its waiter with `Disconnected`, waits admitted calls to quiesce,
-and then releases the identity. Session close or Transport-generation replacement uses the same
-cancel-before-quiesce order. No lane state, sequence, waiter, or failure state is persisted or
-intentionally reused after process restart; each fresh identity remains subject to the UUID non-collision
-condition above.
+and then releases the identity. Session close uses the same cancel-before-quiesce order. A detected
+Transport-generation replacement also closes Publisher admission, atomically completes any waiter with `Disconnected`,
+quiesces admitted calls, and leaves that Publisher permanently disconnected. Every later data or Fence
+call returns `Disconnected` without invoking Transport. Resuming on the replacement generation requires
+a new Publisher with a new UUID and sequence lane. No lane state, sequence, waiter, or failure state is
+persisted or intentionally reused after process restart; each fresh identity remains subject to the UUID
+non-collision condition above.
 
-The Publisher UUID is distinct from every per-Fence ADR-0028 correlation token. Its receiver
-binding is fixed at creation and cannot be changed or reused for another target, SID, class, or
-Attach generation. A public object spanning multiple receiver bindings owns a separate internal
-Publisher UUID/sequence lane for each binding. Move transfers the binding unchanged.
+The Publisher UUID and each per-Fence ADR-0028 correlation token have separate logical roles and are
+generated independently; random UUIDv4 values are not guaranteed unequal. The Publisher's receiver
+binding is fixed at creation and cannot be changed or reused for another target, SID, class,
+Session generation, or Attach generation. A public object spanning multiple receiver bindings owns a
+separate internal Publisher UUID/sequence lane for each binding. Move transfers the binding unchanged.
 
 Multiple logical Publishers with distinct generated UUIDs may share one Fence-capable Transport or
 Zenoh session because their UUID and sequence states remain separate under the non-collision condition.
 Their calls may interleave, and no cross-Publisher order is promised. One logical Publisher may not
-split its data and marker across Transport generations
-or Zenoh sessions.
+split its data and marker across Transport generations or Zenoh sessions. A Transport-generation mismatch terminally disconnects that Publisher rather than migrating
+or resetting its lane in place.
 
 ### Covered-data attachment
 
@@ -127,16 +131,29 @@ Fence uses one common Encoding and payload schema with two target-specific route
 ```text
 <prefix>/meta/fence/cache/<sid>/<receiver-uuid>/<publisher-uuid>/<through>
 
-<prefix>/meta/fence/buffer/<sid>/<durable|ephemeral>/<publisher-uuid>/
-    <applied|synced>/<through>
+<prefix>/meta/fence/buffer/<sid>/<session-uuid>/<durable|ephemeral>/
+    <publisher-uuid>/<applied|synced>/<through>
 ```
 
 The line break in the buffer form is for display only. The wire key has no whitespace. `<sid>` uses
-the existing Session-id grammar. Both UUID chunks are lowercase canonical UUIDv4 text. `<through>`
+the existing Session-id grammar. Every UUID chunk is lowercase canonical UUIDv4 text. `<through>`
 is canonical unsigned decimal `0` or `[1-9][0-9]*` in the `uint64_t` range; leading zeros and signs
 are invalid. `synced` is invalid for `ephemeral`. The cache route has implicit local-delivery
 semantics and therefore no durability chunk. The receiver UUID identifies one ParamCache Attach
 generation and is generated and owned under the same UUID rules as Publisher identity.
+
+The buffer `session-uuid` identifies one successful `CreateSession` incarnation under the generated
+Session-UUID non-collision condition. StorageNode generates a random canonical UUIDv4 when a
+`Creating` Session commits to `Active`; same-SID recreation generates a fresh collision-resistant,
+not collision-impossible, value.
+The internal buffer Publisher binding obtains that UUID before its first covered submission and keeps
+it immutable. StorageNode atomically acquires the active Session admission by SID, then compares the
+route UUID with the admitted record before claiming the ACK token or evaluating the marker. A mismatch
+is stale-generation traffic: it is rejected with a bounded diagnostic and no AckResult. Under the
+ACK-token non-collision condition the caller can only reach `Timeout`; a token collision retains the
+ADR-0028 residual behavior described below. This does not prevent delayed old-generation data from being applied to a
+recreated same-SID Session; that isolation is outside the v1 Fence guarantee. The data attachment
+therefore remains exactly 25 bytes.
 
 The marker uses:
 
@@ -168,24 +185,32 @@ without a recoverable valid token no result can be created. For a cache marker, 
 completes only its matching waiter with `Status::Error`. A cache ignores buffer-target completion,
 a StorageNode ignores cache-target completion, and a cache with a different receiver UUID ignores
 the marker with a bounded diagnostic. A valid buffer marker for a missing Session produces
-`Status::NotFound`.
+`Status::NotFound`. A marker whose SID names an active Session but whose `session-uuid` does not match
+that admitted incarnation is instead rejected before token claim and creates no AckResult. It can only produce caller
+`Timeout` under the ACK-token non-collision condition.
 
-A duplicate retained buffer token follows ADR-0028: the same fingerprint never repeats processing
-and returns the immutable prior result; a different fingerprint is a collision. A late duplicate
-after ACK-result eviction has only ADR-0028's limited guarantees. A cache removes a token when its
+After a marker reaches token-registry lookup, a duplicate retained buffer token follows ADR-0028: the
+same fingerprint never repeats processing and returns the immutable prior result; a different
+fingerprint is a collision. Generated UUIDv4 ACK tokens are collision-resistant rather than
+collision-impossible, so waiter/result isolation is conditional on distinct generated tokens. A
+same-token, same-fingerprint collision is indistinguishable and returns the retained prior result; a
+different-fingerprint collision is rejected. A marker rejected before token claim does not perform
+this lookup, but an ACK query using a colliding token can still observe a pre-existing retained result.
+A late duplicate after ACK-result eviction has only ADR-0028's limited guarantees. A cache removes a token when its
 waiter completes or is cancelled, so duplicate or late markers with no matching waiter are ignored
-and cannot complete a newer call.
+when generated tokens differ. An accidental same-token replacement waiter remains a probabilistic
+residual risk; v1 does not change ADR-0028 or the wire format to eliminate it.
 
 Representative wire examples are normative:
 
 | Example | Outcome |
 |---|---|
 | `sitos/meta/fence/cache/s1/123e4567-e89b-42d3-a456-426614174000/8b8f3a62-7dd5-4c40-8a2b-28f71331fe41/7`, payload `01`, valid ACK attachment | valid cache marker through 7 |
-| `sitos/meta/fence/buffer/s1/durable/8b8f3a62-7dd5-4c40-8a2b-28f71331fe41/applied/7`, payload `01` | valid durable applied marker |
-| same buffer route with `synced/7` | valid durable synchronized marker after #105 capability exists |
+| `sitos/meta/fence/buffer/s1/6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab/durable/8b8f3a62-7dd5-4c40-8a2b-28f71331fe41/applied/7`, payload `01`, valid ACK attachment | valid durable applied marker for that Session generation |
+| same buffer route with `synced/7` and a valid ACK attachment | valid durable synchronized marker after #105 capability exists |
 | valid cache or buffer route ending `/0` | valid empty prefix; no receiver lane allocation |
 | route ending `/07`, `/-1`, or a value above `UINT64_MAX` | invalid noncanonical sequence |
-| `buffer/s1/ephemeral/.../synced/7` | invalid target/durability combination |
+| `buffer/s1/6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab/ephemeral/.../synced/7` | invalid target/durability combination |
 | UUID chunk with uppercase, non-v4 bits, or noncanonical text | invalid route |
 | 24- or 26-byte lane attachment, version 2, non-v4 UUID, or sequence zero | invalid covered-data attachment |
 | marker payload `02` or a payload length other than one | unsupported/malformed marker version |
@@ -360,8 +385,9 @@ normative sitos contract.
 
 ### Receiver sequence state and processing boundaries
 
-A receiver lane is keyed by its target plus Publisher UUID. Buffer lanes additionally include SID
-and durable/ephemeral class; cache lanes additionally include the receiver Attach generation.
+A receiver lane is keyed by its target plus Publisher UUID. Buffer lanes additionally include SID,
+the admitted Session-generation UUID, and durable/ephemeral class; cache lanes additionally include
+the receiver Attach generation.
 Receiver rules are monotonic and fail closed:
 
 | Observation | Receiver action |
@@ -412,7 +438,8 @@ directly completes the matching local waiter. It creates no StorageNode result a
 query.
 
 For the StorageNode buffer target, the processing point is completion of the existing callback-gate,
-route/Encoding/session/capability, Session-admission, and application path. Durable application
+route/Encoding/session/capability, matching Session-generation check, Session-admission, and
+application path. Durable application
 includes the write-once read/compare/write decision and the terminal engine outcome. Ephemeral
 application includes route, Encoding, active-Session, and capability admission; it proves no
 retention or peer delivery. The marker is serialized on the same receiver dispatch/application
@@ -470,6 +497,7 @@ that row according to the ordered marker algorithm above. Messages use ADR-0028'
 | missing, unprovable, or expected/future valid-data dispatch rejection sequence N, when N is within the marker prefix | AckResult `OutcomeUnknown` | requested | marker through | N |
 | positive marker for an absent buffer lane, whether the Session/class scope is poisoned or not | AckResult `OutcomeUnknown` | requested | marker through greater than 0 | 1 |
 | missing Session | AckResult `NotFound` | requested | marker through | `UINT64_MAX` |
+| active SID with mismatched Session-generation UUID | no token claim or new AckResult; under ACK-token non-collision caller `Timeout`, otherwise ADR-0028 may expose a pre-existing colliding result | requested | local through | N/A |
 | Creating/Closing Session | AckResult `InvalidArgument` | requested | marker through | `UINT64_MAX` |
 | disabled capability or write-once conflict at N | AckResult `InvalidArgument` | requested | marker through | N |
 | engine false/throw after invocation at N | AckResult `OutcomeUnknown` | requested | marker through | N |
@@ -521,19 +549,25 @@ return `Disconnected`.
 
 CloseSession rejects a buffer marker for an absent Session with `NotFound` and for a Creating or
 Closing Session with `InvalidArgument`; both use the failed-sequence sentinel unless a covered data
-sequence already owns the first failure. A marker already admitted while Active completes before
-CloseSession clears the lane because Close waits for admission quiescence. StorageNode Stop before
+sequence already owns the first failure. The marker's successful `AcquireActiveAdmission` lease is
+the linearization point against CloseSession: the Active check and lease acquisition are atomic under
+`session_mutex`. If the marker acquires the lease first, it completes marker processing and immutable
+AckResult creation before CloseSession returns and clears the lane. If CloseSession changes the record
+to `Closing` first, the later lease attempt does not touch a Publisher lane; with a valid recoverable token it claims that token only to publish the immutable
+`InvalidArgument` AckResult required by the failure matrix. StorageNode Stop before
 marker observation creates no result and the caller reaches `Timeout`. Stop after token claim uses
 ADR-0028's completion guard: `Error` before an engine or synchronization call, and
 `OutcomeUnknown` after such a call unless the callee proves a stronger result. Stop then clears lane,
 Processing, and Completed state.
 
 Undeclare and Transport close stop the bounded dispatch lane before callback-owned state is
-released. Receiver disappearance, restart, or an old cache receiver UUID produces no matching
-completion and therefore `Timeout`; old tokens, UUIDs, and late callbacks cannot revive after
-cleanup. A later Attach, Start, Session recreation, or process restart has new receiver/Publisher
-identities and cannot answer an old Fence. After a local cache-lane failure, supported recovery is a
-quiescent Detach followed by Attach, which creates new receiver and Publisher UUIDs; an Attach
+released. Under the corresponding receiver-generation and ACK-token non-collision conditions,
+receiver disappearance, restart, an old cache receiver UUID, or an old buffer Session-generation UUID
+produces no matching completion and therefore `Timeout`; old tokens, UUIDs, and late callbacks cannot
+revive after cleanup. A later Attach, Start, Session recreation, or process restart has fresh
+receiver/Publisher identities and cannot answer an old Fence under the receiver-generation,
+Publisher-UUID, and ACK-token non-collision conditions. After a local cache-lane failure, supported
+recovery is a quiescent Detach followed by Attach, which creates new receiver and Publisher UUIDs; an Attach
 generation never replaces its one retained lane in place.
 
 The lock/lease order is:
@@ -553,9 +587,11 @@ StorageNode receiver:
 Waiter, fence-lane, and token-registry locks are released before Transport calls, logging, external
 callbacks, engine calls, or #105 synchronization. Existing ADR-0032 rules still require releasing
 `session_mutex` before engine work. Timeout atomically removes/completes the current waiter. Because
-tokens are unique and late callbacks retain receiver-owned state rather than operation-owned stack
-state, late delivery can neither revive the call nor complete a replacement waiter. No callback may
-access operation-owned state after the operation returns.
+distinct generated tokens bind late callbacks to receiver-owned state rather than operation-owned
+stack state, late delivery cannot revive
+the call or complete a replacement waiter under the ACK-token non-collision condition. A forced
+same-token collision exercises the residual boundary above. No callback may access operation-owned
+state after the operation returns.
 
 ### State transitions
 
@@ -569,8 +605,9 @@ Publisher and local-waiter transitions are exact:
 | Fence pending | another Fence | existing waiter unchanged | definite local `InvalidArgument`/`operation_in_progress` |
 | Fence pending | valid cache completion or AckResult | decoded completion | completion wins over marker Put error; remove waiter |
 | Fence pending | deadline | latest local/native cause | `Timeout`; atomically remove waiter |
-| Fence pending | Detach/destruction/Transport close | waiter atomically removed before quiescence | local `Disconnected`; admitted call wakes, then cleanup waits; late token ignored |
-| Publisher closing | new call | none | `Disconnected`; no submission |
+| Fence pending | Detach/destruction/Transport close | waiter atomically removed before quiescence | local `Disconnected`; admitted call wakes, then cleanup waits; late token ignored under the token non-collision condition |
+| Publisher open or Fence pending | Transport-generation replacement or mismatch | admission closed; waiter atomically removed before quiescence | Publisher becomes permanently disconnected; every later call returns `Disconnected`; a new Publisher is required |
+| Publisher closing/disconnected | new call | none | `Disconnected`; no submission |
 
 Receiver and StorageNode transitions are exact:
 
@@ -603,10 +640,11 @@ Lifecycle transitions are exact:
 |---|---|---|
 | cache Detach or destination cleanup | reject new callbacks; waiter `Disconnected` | quiesce, clear one lane and receiver UUID |
 | receiver undeclare/Transport close | reject dispatch; waiter `Disconnected` | quiesce 256-entry lane and callback state |
-| CloseSession from Active | admitted marker finishes; new marker sees Closing `InvalidArgument` | quiesce then remove matching buffer lanes and Session/class poison bits |
+| CloseSession from Active | marker with an already acquired active-Session lease finishes; Closing-first lease attempt returns `InvalidArgument` | quiesce then remove matching generation's buffer lanes and Session/class poison bits |
+| Transport-generation replacement | close Publisher admission and complete its waiter with `Disconnected` | quiesce calls; keep Publisher terminally disconnected; resume only with a new UUID/sequence lane |
 | StorageNode Stop before marker observation | no AckResult; caller `Timeout` | quiesce then clear lane/token/result state |
 | StorageNode Stop after token claim | admitted callback publishes exactly one immutable `Error` or `OutcomeUnknown` by invocation boundary | Stop quiesces it, then clears state; client may still time out before observing it |
-| process/receiver restart | old UUID/token has no state; caller `Timeout` | new generation starts empty |
+| process/receiver restart | under all generated-UUID non-collision conditions, old UUID/token has no state and caller reaches `Timeout` | new generation starts empty |
 | late callback after cleanup | admission fails; no completion | cannot access operation-owned state |
 
 ### Qualification owned by Issue #158
@@ -626,7 +664,11 @@ every failure-matrix row, dispatch and 4096-lane limits, new-lane sequence-1, fu
 UUID-only rejections with registry-only exhaustion and with both limits exhausted, followed by
 empty, positive-below-observation, and positive through markers that verify poison never names N,
 poison isolation and lifecycle cleanup, attachment-free
-dispatch bypass, timeout/late non-revival, no resubmission, and
+dispatch bypass, timeout/late non-revival under distinct generated ACK tokens, forced same-token cache and buffer
+collision boundaries, no resubmission, Transport-generation replacement with permanent Publisher
+disconnection, delayed old markers across same-SID Session recreation, mismatched Session-generation
+rejection before token claim, forced repeated Session-generation UUID collision behavior, and
+lease-first versus Closing-first marker/CloseSession races, plus
 Detach/CloseSession/Stop/move/destruction quiescence.
 
 Linux and Windows process-isolated Zenoh tests must cover minimum 1.9.0 and the current supported 1.x
@@ -662,10 +704,14 @@ not weaken the normative sitos proof above.
   backpressure and head-of-line latency.
 * Bad: a gap, duplicate, unsupported QoS profile, lane-cap exhaustion, or Publisher crash fails
   closed and can require a new Publisher identity or Session lifecycle cleanup.
-* Bad: a receiver cannot distinguish an accidental generated UUID collision, or raw traffic using the
-  same UUID and next valid sequence, from the intended Publisher. UUIDv4 makes the supported-caller
-  risk collision-resistant rather than impossible; Fence is conditional on non-collision and is not
-  authentication.
+* Bad: a receiver cannot distinguish an accidental generated Publisher UUID collision, or raw traffic
+  using the same UUID and next valid sequence, from the intended Publisher. UUIDv4 makes the
+  supported-caller risk collision-resistant rather than impossible; Fence is conditional on
+  non-collision and is not authentication.
+* Bad: an accidental generated receiver-generation or ACK-token collision is also a probabilistic
+  residual risk. A repeated Session-generation UUID can make an old marker match a recreated SID. A
+  same-token, same-fingerprint buffer operation can return a retained prior result, and a same-token
+  cache marker can match a replacement waiter; a different-fingerprint retained collision is rejected.
 * Bad: v1 cannot combine per-data ADR-0028 acknowledgement and Fence-lane metadata on one sample.
 * Neutral: Fence is ordering evidence, not authentication, exactly-once delivery, a peer barrier,
   or automatic retry.

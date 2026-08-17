@@ -45,7 +45,7 @@ open decision (`—` when settled); implementers and consumers are listed separa
 
 | Surface | Contract | Implementation | Normative spec | Design authority | Implementer / consumers |
 |---|---|---|---|---|---|
-| Key space and keyexpr **path grammar** (`base/`, `session/<sid>/`, `snap/<sid>/`, `:batch` segment, `meta/**` route shapes) | Normative | Implemented | [03](03_wire_protocol.md) §1 | — | `src/key.cpp` |
+| Implemented key space and keyexpr **path grammar** (`base/`, `session/<sid>/`, `snap/<sid>/`, `buffers/<sid>/{durable\|ephemeral}/`, `:batch`, and `meta/session/<sid>`) | Normative | Implemented | [03](03_wire_protocol.md) §1 | — | `src/key.cpp` |
 | Operation-to-key mapping (Put/Get/List/Delete → key expressions) | Normative | Implemented | [03](03_wire_protocol.md) §3 | — | `src/key.cpp`, ParamStore |
 | Query semantics (single-key get, List enumeration, zero-reply, wildcard, read-only snap/session, unknown session) | Normative | Implemented | [03](03_wire_protocol.md) §4 | — | StorageNode routing |
 | Payload v1 (single value: type tag + LE body, canonical NaN; golden fixtures `tests/fixtures/payload_v1/`) | Normative | Implemented | [03](03_wire_protocol.md) §2.1 | — | `ParamValue` codec |
