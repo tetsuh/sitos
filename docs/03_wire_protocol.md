@@ -25,8 +25,18 @@ A standard zenoh client can interoperate with sitos simply by following this spe
 * `buffers/<sid>/{durable|ephemeral}/<key>`: route-selected session buffer values. `<sid>`
   and `<key>` reuse the existing grammar. The route requires the corresponding explicit Session
   capability. Payloads are plain `zenoh/bytes`, with no sitos schema or type tag.
-* Buffer routes support no `:batch`, `:fence`, snapshot, or other control namespace in v0.4.
-  They are disjoint from ParamStore, ParamCache, ParamSubscription, and SessionView [ADR-0032].
+* Buffer value routes support no inline `:batch`, `:fence`, snapshot, or other control segment.
+  Accepted ADR-0029 defines Fence markers in a disjoint `meta/fence/**` namespace; #158 owns their
+  planned implementation. They are never buffer values. Buffer values remain disjoint from
+  ParamStore, ParamCache, ParamSubscription, and SessionView [ADR-0032].
+
+> **Normative design; implementation planned:** Accepted ADR-0029 reserves these marker routes;
+> #158 owns their production implementation.
+>
+> ```text
+> <prefix>/meta/fence/cache/<sid>/<receiver-uuid>/<publisher-uuid>/<through>
+> <prefix>/meta/fence/buffer/<sid>/<session-uuid>/<durable|ephemeral>/<publisher-uuid>/<applied|synced>/<through>
+> ```
 
 ### 1.2 User-key grammar
 
@@ -109,6 +119,10 @@ zenoh/bytes;sitos.v1          (single parameter value)
 zenoh/bytes;sitos.v1.batch    (base/session batch, §5)
 zenoh/bytes                   (durable or ephemeral buffer value)
 ```
+
+> **Normative design; implementation planned:** Accepted ADR-0029 reserves
+> `zenoh/bytes;sitos.v1.fence` as the authoritative same-publisher Fence marker Encoding in §6.1;
+> #158 owns its production implementation.
 
 Base, session, and snapshot parameter payload-v1 values use
 `zenoh/bytes;sitos.v1`. Base and session batch values use
@@ -254,6 +268,55 @@ The planned behavior is one data submission followed by bounded polling:
 Clients that do not attach a token remain ack-less. Exhausted polling reports Timeout, which may
 mean that the write was applied but its bounded acknowledgement record was absent or evicted; #14
 must finalize how callers observe that ambiguity.
+
+### 6.1 Same-publisher Fence control
+
+> **Normative design; implementation planned:** Accepted ADR-0029 owns this contract; production
+> implementation and executable qualification belong to #158.
+
+Covered data retains its existing key, payload, and route Encoding and carries the exact ordering
+attachment below. An absent attachment is an ordinary write outside a sitos Fence prefix.
+
+```text
+FenceLaneAttachmentV1 — exactly 25 bytes
+
+offset  size  field
+0       1     schema_version = 1
+1       16    logical Publisher UUIDv4 in RFC 4122 network order
+17      8     nonzero sequence_le
+```
+
+Fence markers use the `meta/fence/**` routes in §1, Encoding
+`zenoh/bytes;sitos.v1.fence`, and the exact one-byte payload `01`. UUID route chunks are lowercase
+canonical UUIDv4 text. `<through>` is canonical unsigned decimal in the `uint64_t` range; zero
+represents an empty covered prefix. `synced` is invalid for ephemeral buffers. A buffer
+`session-uuid` is a generated random UUIDv4 that identifies one successful `CreateSession`
+incarnation under its collision-resistant non-collision condition; same-SID recreation generates a
+fresh value. StorageNode rejects a mismatched generation before ACK-token claim or marker completion;
+no AckResult is created, so under the ACK-token non-collision condition the caller can only time out. Covered-data
+`FenceLaneAttachmentV1` remains exactly 25 bytes, and delayed old-generation data isolation is not a
+v1 Fence guarantee.
+
+Every marker carries ADR-0028's exact 17-byte `AckAttachmentV1`; that token is not repeated in the
+key or payload. Cache-target markers directly complete only the named ParamCache Attach generation
+and create no StorageNode result. Buffer-target markers create ADR-0028 `AckResultV1` through the
+existing `meta/ack/<uuid>` query contract. The marker route identifies the receiver target and generation, Publisher, requested durability,
+and covered sequence without changing parameter or buffer values.
+
+A valid Fence requires one serialized logical Publisher lane and the ADR-0029 reliable,
+`Block`/`Data`/non-express profile for data and marker. The ordering guarantee is conditional on
+generated Publisher UUIDs being distinct: a receiver cannot distinguish same-UUID traffic that
+presents the next valid sequence. Under that condition, success requires contiguous receiver
+processing through `<through>`, not marker arrival; a missing, reordered, duplicate, malformed, or
+unprovable covered sequence fails closed and is never reported as success. Multiple logical
+Publishers may share a session but have independent UUID/sequence lanes only under the same
+collision-resistant non-collision condition; no cross-Publisher order is claimed. Generated UUIDv4
+ACK tokens are likewise collision-resistant rather than collision-impossible; distinct generated
+tokens are a waiter/result-isolation condition, and same-token collisions remain the residual risk
+defined by ADR-0029. A Transport-generation replacement permanently disconnects the existing
+Publisher and requires a new UUID/sequence lane. For buffer markers, successful atomic active-Session
+admission linearizes before CloseSession; a Closing-first attempt returns `InvalidArgument`. See
+ADR-0029 for exact validation, lifecycle, bounded-state, result, and topology rules.
 
 ## 7. meta keys
 

@@ -19,7 +19,7 @@ Milestone = release boundary).
 | **v0.2** | StorageNode/ParamStore/ParamCache work in C++ through same-process zenoh sessions | #2, #3, #9–#13, #15, #18, #19, #21 |
 | **v0.3** | Basic Python APIs work (InMemory, ParamStore, ParamCache, NumPy read) | #16, #22, #23, #24, #25, #27 |
 | **v0.4** | Cross-platform vcpkg foundation, RocksDB engine, process-isolated raw-Zenoh interop, session-scoped buffers, benchmarks, and C++/Python examples are in place | #122, #8, #29, #31, #32, #33, #139, #140, #141, #56 |
-| **v0.5** | Reliable and durable session-buffer delivery is ready for downstream application integration | #14, #17, #99, #105–#109 |
+| **v0.5** | Reliable and durable session-buffer delivery is ready for downstream application integration | #14, #17, #99, #105–#109, #158 |
 | **v1.0** | Public OSS quality, reconnect recovery, advanced Python extensions, raw batch/ack interop, documentation, and publication readiness are complete | #20, #26, #28, #30, #34, #35 |
 
 `ack`-related work (#14, #17) is useful, but implementation is heavy relative to initial value,
@@ -244,16 +244,44 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 * Acceptance criteria: integration tests — ack success/failure/timeout, Disconnected/Timeout when StorageNode is stopped
 * Depends on: #14, #15
 
-### #106 Shared same-publisher fence primitive
+### #106 Same-publisher Fence ordering ADR
 * Milestone: v0.5
-* References: [02] §8, [03] §6, [10] §6
-* Implementation targets: Transport/StorageNode internal control routing and deterministic
-  fake-Transport plus Zenoh integration tests
-* Scope: define one reusable in-band token and publisher-identity ordering primitive shared by
-  ParamCache local-delivery waits and buffer-application fences
-* Acceptance criteria: prior/later write ordering, publisher isolation, duplicate/late marker
-  handling, timeout, error preservation, and callback-quiescent lifecycle tests
-* Depends on: #14; requires an Accepted ADR before merge
+* References: ADR-0028, ADR-0029, ADR-0032, [02] §4.3, [03] §6.1, [10] §§2–7
+* Implementation targets: `docs/adr/0029-define-same-publisher-fence-ordering.md` and the five
+  directly affected ADR-index, architecture, wire, roadmap, and Contract Registry documents
+* Scope: decide the logical Publisher identity, 25-byte `FenceLaneAttachmentV1`, target-aware
+  in-band marker, sequence/linearization, QoS/topology, receiver processing, bounded failure,
+  lifecycle, and ADR-0028 reuse contracts. This Issue is documentation-only and closes with the
+  separate Accepted ADR PR; it authorizes no production code or executable test.
+* Acceptance criteria: a reviewed and Accepted ADR-0029 with consistent planning/registry status,
+  authoritative Zenoh evidence, exact wire/state/failure matrices, bounded-state accounting, and a
+  #158 qualification handoff
+* Depends on: Accepted ADR-0028 and ADR-0032. #14 does not block ADR acceptance; #159 and #160 track
+  separate documentation drift.
+
+### #158 Implement the same-publisher Fence primitive
+* Milestone: v0.5
+* References: ADR-0028, ADR-0029, ADR-0032, [02] §4.3, [03] §6.1
+* Implementation targets: internal Transport/StorageNode control routing, Publisher-lane and local
+  waiter seams, codecs, deterministic fake-Transport tests, Linux/Windows Zenoh integration, and
+  sanitizer coverage frozen by #158's own readiness review
+* Scope: implement ADR-0029's generated Publisher lanes, lane attachment, target-aware marker,
+  buffer Session-generation UUID binding, bounded receiver dispatch/state, ParamCache local target,
+  StorageNode buffer target, and exact ADR-0028 result reuse. It adds no #99/#107 public API and no
+  #105 durability semantics.
+* Acceptance criteria: concurrent prior/later ordering, multiple-Publisher isolation under distinct
+  generated UUIDs, the forced same-Publisher-UUID indistinguishability boundary, gap/reorder/
+  duplicate/unknown-version failure, synchronous loopback, local versus remote outcomes, finite
+  admission, no resubmission, forced ACK-token collision boundaries, timeout/late non-revival under
+  distinct tokens, Transport-generation terminal disconnection, same-SID recreation with delayed
+  old-marker, mismatched-generation rejection, and forced repeated Session-generation UUID collision,
+  lease-first versus Closing-first marker races,
+  quiescent lifecycle, raw payload transparency, and minimum/latest supported Zenoh qualification
+  on Windows and Linux
+* Depends on: ADR-0029 Accepted through #106 and ADR-0028 production substrate merged through #14.
+  #105 is required only before synchronized Fence behavior can be enabled.
+* Contract Registry: implements the ADR-0029 marker and `FenceLaneAttachmentV1` rows without
+  changing ADR-0028's normative ACK rows.
 
 ### #139 Mixed Session buffer key contract
 * Milestone: v0.4
@@ -364,13 +392,14 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 * Depends on: #8, #12, #29, #121, #139, #140, #141
 * F10 applies here as the Session resource-release principle: CloseSession releases the durable
   buffer engine and other owned resources after callback quiescence.
-* Boundaries: #105 owns durability barriers; #106 owns publisher fences; #107 owns applied and
-  synchronized BufferPublisher fences; #108 owns restart catalogs, retention, orphan handling,
+* Boundaries: ADR-0029/#106 owns the normative ordering design; #158 owns the shared production
+  Fence primitive; #105 owns durability barriers; #107 owns public applied and synchronized
+  BufferPublisher fences; #108 owns restart catalogs, retention, orphan handling,
   and deletion retry. #56 does not add those mechanisms or Python buffer APIs.
 
 ### #107 BufferPublisher applied and synchronized fences
 * Milestone: v0.5
-* References: ADR-0032, [02] §8, [04]
+* References: ADR-0029, ADR-0032, [02] §4.3, [04]
 * Implementation targets: C++ and Python BufferPublisher APIs plus deterministic/integration tests
   over `buffers/<sid>/{durable|ephemeral}/**`
 * Scope: explicit application-controlled `Push` plus applied or synchronized `Fence`; no automatic
@@ -379,7 +408,7 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 * Acceptance criteria: applied and synchronized receipts, failure and timeout propagation,
   publisher isolation, restart behavior, C++/Python API parity, contiguous NumPy input, and payload
   lifetime safety
-* Depends on: #27, #56, #105, #106
+* Depends on: #27, #56, #105, #158; Accepted ADR-0029 is the normative ordering authority
 
 ### #108 Restart-safe retained-session catalog
 * Milestone: v0.5
@@ -452,14 +481,14 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 
 ### #99 ParamCache local-delivery fence
 * Milestone: v0.5
-* References: [02] §5, [04] §4
+* References: ADR-0029, [02] §4.3/§5, [04] §4
 * Implementation targets: `include/sitos/param_cache.hpp`, `src/param_cache.cpp`, and deterministic
   fake-Transport plus Zenoh integration tests
 * Scope: expose `WaitForLocalDelivery(timeout)` using the shared same-publisher fence primitive;
   wait only for the initiating cache subscriber, not peers or StorageNode acknowledgements
 * Acceptance criteria: prior local writes observed, later writes excluded, timeout/error mapping,
   concurrent waiter isolation, and Detach/move/destruction quiescence
-* Depends on: #19, #106
+* Depends on: #19, #158; Accepted ADR-0029 is the normative ordering authority
 
 ### #21 SessionView (host-process facade)
 * Milestone: v0.2
@@ -679,8 +708,10 @@ Lane A (core):       #1 → #4 → #6 → #7 → #8 → #105
 Lane B (zenoh):      #2 → #3 → #9 → #10 → #11 → #12 → #18 → #19/#20
                                              ├→ #13 → #15/#16
                                              ├→ #14 → #17
-                                             │       └→ #106 → #99
-                                             └→ #56 → #107/#108
+                                             │       └────────→ #158
+                                             ├→ #106 (ADR) ──→ #158 → #99
+                                             └→ #56 ─────────→ #107/#108
+                                                  #105/#158 ─→ #107
 Lane C (Python):     #22 → #23 → #24 → #27 → #25
                      Advanced callbacks/engines: #26/#28 (v1.0)
 Lane D (quality):    #29/#30, #31/#32, #33, #34/#35 (as dependencies complete)

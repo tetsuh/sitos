@@ -263,8 +263,34 @@ before returning and retains no Session record or other resource after enumerati
 
 ### 4.3 Consistency Model
 
-* Write ordering: zenoh preserves the order of puts from the same publisher.
-  It does not guarantee ordering across different publishers (last-write-wins)
+> **Normative design; implementation planned:** Accepted ADR-0029 owns the same-publisher Fence
+> mechanism below; #158 owns production implementation.
+
+* Same-publisher Fence ordering is not inferred from a Zenoh session alone. ADR-0029 defines a
+  sitos logical Publisher as a serialized UUIDv4-and-sequence lane whose covered data and marker
+  use one Fence-capable Transport generation, reliable delivery, `Block` congestion control,
+  identical `Data` priority, and non-express submission. Multiple logical Publishers may share a
+  Transport or session, but their lanes remain isolated only under ADR-0029's collision-resistant
+  generated-UUID non-collision condition; no cross-Publisher order is promised. A detected Transport
+  generation change permanently disconnects the existing Publisher; resumption requires a new
+  Publisher UUID and sequence lane. Unsupported or uninspectable QoS/topology is rejected rather
+  than weakening the guarantee.
+* `FenceLaneAttachmentV1` lets the designated receiver prove a contiguous covered sequence.
+  Marker arrival alone cannot confirm a missing or reordered publication. The Transport's bounded
+  FIFO callback-dispatch lane also prevents a marker entered after a data callback from completing
+  before that callback's processing returns. Production implementation and executable
+  qualification remain planned under #158.
+* The local-delivery receiver boundary is completion of the initiating ParamCache Attach
+  generation's serialized decode/cache-mutation path; it is not peer delivery or StorageNode
+  acknowledgement. A buffer marker binds both SID and one generated active Session-generation UUID,
+  so under the receiver-generation UUID non-collision condition same-SID recreation cannot answer an
+  old marker. StorageNode rejects a mismatched generation
+  before ACK-token claim; delayed data isolation across recreation remains outside the Fence
+  guarantee. Successful atomic active-Session admission is the marker/CloseSession linearization
+  point: lease-first markers complete before Close returns, while Closing-first attempts return
+  `InvalidArgument`. The buffer receiver boundary is completion of StorageNode's serialized
+  route/session/capability and durable or ephemeral application path. Applied and synchronized
+  public receipts remain #107 scope, and synchronization composes with the #105 durability barrier.
 * Batch visibility: StorageNode validates all entries before the first write and
   prevents subscriber messages from interleaving with batch entries. Queries do
   not take `subscriber_mutex`, so a concurrent Get/List may observe a partially
