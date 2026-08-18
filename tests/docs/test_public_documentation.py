@@ -359,7 +359,7 @@ def _normalize_adr_status(raw: str, source: Path) -> str:
 
 def _adr_records(root: Path) -> list[_AdrRecord]:
     records: list[_AdrRecord] = []
-    for path in sorted((root / "docs/adr").glob("[0-9][0-9][0-9][0-9]-*.md")):
+    for path in sorted((root / "docs/adr").glob("[0-9]*.md")):
         filename_match = _ADR_FILENAME.fullmatch(path.name)
         if filename_match is None:
             raise DocumentationContractError(f"{path}: malformed ADR filename")
@@ -411,12 +411,18 @@ def _adr_index_entries(root: Path) -> list[_AdrIndexEntry]:
             raise DocumentationContractError(
                 f"{path}:{line_index + 1}: malformed ADR index row"
             )
+        title = match.group("title")
+        status = match.group("status")
+        if title != title.strip() or status != status.strip():
+            raise DocumentationContractError(
+                f"{path}:{line_index + 1}: malformed ADR index row"
+            )
         entries.append(
             _AdrIndexEntry(
                 number=match.group("number"),
                 filename=match.group("filename"),
-                title=match.group("title").strip(),
-                status=match.group("status").strip(),
+                title=title,
+                status=status,
             )
         )
     if not entries:
@@ -674,6 +680,18 @@ class PublicDocumentationTest(unittest.TestCase):
             + "|  [0001](0001-first-decision.md) | First decision | Accepted |\n",
             "omitted leading pipe": valid_index
             + "[0001](0001-first-decision.md) | First decision | Accepted |\n",
+            "title leading whitespace": valid_index.replace(
+                "| Second decision |", "|  Second decision |"
+            ),
+            "title trailing whitespace": valid_index.replace(
+                "Second decision |", "Second decision  |"
+            ),
+            "status leading whitespace": valid_index.replace(
+                "| Superseded by ADR-0001 |", "|  Superseded by ADR-0001 |"
+            ),
+            "status trailing whitespace": valid_index.replace(
+                "Superseded by ADR-0001 |", "Superseded by ADR-0001  |"
+            ),
             "misordered": valid_index.replace(
                 "| [0001](0001-first-decision.md) | First decision | Accepted |\n"
                 "| [0002](0002-second-decision.md) | Second decision | "
@@ -701,6 +719,30 @@ class PublicDocumentationTest(unittest.TestCase):
                 )
                 (adr_directory / "0002-second-decision.md").write_text(
                     "# ADR-0002: Second decision\n\n- Status: Superseded by ADR-0001\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaises(DocumentationContractError):
+                    validate_adr_index(root)
+
+    def test_adr_index_contract_rejects_malformed_numeric_filenames(self) -> None:
+        valid_index = """# Architecture Decision Records (ADRs)
+
+| ADR | Title | Status |
+|---|---|---|
+| [0001](0001-first-decision.md) | First decision | Accepted |
+"""
+        for filename in ("0034.md", "0034_bad.md"):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                adr_directory = root / "docs/adr"
+                adr_directory.mkdir(parents=True)
+                (adr_directory / "README.md").write_text(valid_index, encoding="utf-8")
+                (adr_directory / "0001-first-decision.md").write_text(
+                    "# ADR-0001: First decision\n\n## Status\n\nAccepted\n",
+                    encoding="utf-8",
+                )
+                (adr_directory / filename).write_text(
+                    "# ADR-0034: Hidden decision\n\n## Status\n\nProposed\n",
                     encoding="utf-8",
                 )
                 with self.assertRaises(DocumentationContractError):
