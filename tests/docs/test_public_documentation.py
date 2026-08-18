@@ -88,7 +88,8 @@ _LINK_TOKEN = re.compile(r"(!?)\[([^\[\]\\\n]*)\]\(([^()\\\t\n\v\f\r ]+)\)")
 _BRACKET_RUN = re.compile(r"`+")
 _ADR_FILENAME = re.compile(r"^(?P<number>[0-9]{4})-[a-z0-9.-]+\.md$")
 _ADR_HEADING = re.compile(r"^# ADR-(?P<number>[0-9]{4}): (?P<title>.+)$")
-_ADR_INDEX_ROW_CANDIDATE = re.compile(r"^ {0,3}\| \[")
+_ADR_INDEX_HEADER = "| ADR | Title | Status |"
+_ADR_INDEX_SEPARATOR = "|---|---|---|"
 _ADR_INDEX_ROW = re.compile(
     r"^\| \[(?P<number>[0-9]{4})\]\((?P<filename>[^)]+)\) "
     r"\| (?P<title>[^|]+) \| (?P<status>[^|]+) \|$"
@@ -388,15 +389,28 @@ def _adr_records(root: Path) -> list[_AdrRecord]:
 def _adr_index_entries(root: Path) -> list[_AdrIndexEntry]:
     path = root / "docs/adr/README.md"
     lines = path.read_text(encoding="utf-8").splitlines()
-    if "| ADR | Title | Status |" not in lines:
+    header_indexes = [
+        index for index, line in enumerate(lines) if line == _ADR_INDEX_HEADER
+    ]
+    if not header_indexes:
         raise DocumentationContractError(f"{path}: missing ADR/Title/Status index header")
+    if len(header_indexes) != 1:
+        raise DocumentationContractError(f"{path}: duplicate ADR/Title/Status index header")
+    header_index = header_indexes[0]
+    separator_index = header_index + 1
+    if separator_index >= len(lines) or lines[separator_index] != _ADR_INDEX_SEPARATOR:
+        raise DocumentationContractError(f"{path}: malformed ADR index separator")
+
     entries: list[_AdrIndexEntry] = []
-    for line_number, line in enumerate(lines, start=1):
-        if _ADR_INDEX_ROW_CANDIDATE.match(line) is None:
-            continue
+    for line_index in range(separator_index + 1, len(lines)):
+        line = lines[line_index]
+        if not line.strip():
+            break
         match = _ADR_INDEX_ROW.fullmatch(line)
         if match is None:
-            raise DocumentationContractError(f"{path}:{line_number}: malformed ADR index row")
+            raise DocumentationContractError(
+                f"{path}:{line_index + 1}: malformed ADR index row"
+            )
         entries.append(
             _AdrIndexEntry(
                 number=match.group("number"),
@@ -656,6 +670,10 @@ class PublicDocumentationTest(unittest.TestCase):
                 "Superseded by ADR-0001 |\n"
                 " | [0001](0001-first-decision.md) | First decision | Accepted |\n",
             ),
+            "alternate cell whitespace": valid_index
+            + "|  [0001](0001-first-decision.md) | First decision | Accepted |\n",
+            "omitted leading pipe": valid_index
+            + "[0001](0001-first-decision.md) | First decision | Accepted |\n",
             "misordered": valid_index.replace(
                 "| [0001](0001-first-decision.md) | First decision | Accepted |\n"
                 "| [0002](0002-second-decision.md) | Second decision | "
