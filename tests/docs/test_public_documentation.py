@@ -88,6 +88,7 @@ _LINK_TOKEN = re.compile(r"(!?)\[([^\[\]\\\n]*)\]\(([^()\\\t\n\v\f\r ]+)\)")
 _BRACKET_RUN = re.compile(r"`+")
 _ADR_FILENAME = re.compile(r"^(?P<number>[0-9]{4})-[a-z0-9.-]+\.md$")
 _ADR_HEADING = re.compile(r"^# ADR-(?P<number>[0-9]{4}): (?P<title>.+)$")
+_ADR_INDEX_ROW_CANDIDATE = re.compile(r"^ {0,3}\| \[")
 _ADR_INDEX_ROW = re.compile(
     r"^\| \[(?P<number>[0-9]{4})\]\((?P<filename>[^)]+)\) "
     r"\| (?P<title>[^|]+) \| (?P<status>[^|]+) \|$"
@@ -391,7 +392,7 @@ def _adr_index_entries(root: Path) -> list[_AdrIndexEntry]:
         raise DocumentationContractError(f"{path}: missing ADR/Title/Status index header")
     entries: list[_AdrIndexEntry] = []
     for line_number, line in enumerate(lines, start=1):
-        if not line.startswith("| ["):
+        if _ADR_INDEX_ROW_CANDIDATE.match(line) is None:
             continue
         match = _ADR_INDEX_ROW.fullmatch(line)
         if match is None:
@@ -647,6 +648,13 @@ class PublicDocumentationTest(unittest.TestCase):
             "duplicate": valid_index.replace(
                 "| [0002](0002-second-decision.md)",
                 "| [0001](0001-first-decision.md)",
+            ),
+            "indented duplicate": valid_index.replace(
+                "| [0002](0002-second-decision.md) | Second decision | "
+                "Superseded by ADR-0001 |\n",
+                "| [0002](0002-second-decision.md) | Second decision | "
+                "Superseded by ADR-0001 |\n"
+                " | [0001](0001-first-decision.md) | First decision | Accepted |\n",
             ),
             "misordered": valid_index.replace(
                 "| [0001](0001-first-decision.md) | First decision | Accepted |\n"
