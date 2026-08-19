@@ -86,7 +86,9 @@ _AUTOLINK = re.compile(r"<[A-Za-z][A-Za-z0-9+.-]*:[^<>\n]*>")
 _RAW_LINK_HTML = re.compile(r"<(?i:a|img)(?=[\t\n\v\f\r />])")
 _LINK_TOKEN = re.compile(r"(!?)\[([^\[\]\\\n]*)\]\(([^()\\\t\n\v\f\r ]+)\)")
 _BRACKET_RUN = re.compile(r"`+")
-_ADR_FILENAME = re.compile(r"^(?P<number>[0-9]{4})-[a-z0-9.-]+\.md$")
+_ADR_FILENAME = re.compile(
+    r"^(?P<number>[0-9]{4})-[a-z0-9]+(?:[-.][a-z0-9]+)*\.md$"
+)
 _ADR_HEADING = re.compile(r"^# ADR-(?P<number>[0-9]{4}): (?P<title>.+)$")
 _ADR_INDEX_HEADER = "| ADR | Title | Status |"
 _ADR_INDEX_SEPARATOR = "|---|---|---|"
@@ -725,20 +727,21 @@ class PublicDocumentationTest(unittest.TestCase):
                     validate_adr_index(root)
 
     def test_adr_index_contract_rejects_malformed_numeric_filenames(self) -> None:
-        valid_index = """# Architecture Decision Records (ADRs)
-
-| ADR | Title | Status |
-|---|---|---|
-| [0001](0001-first-decision.md) | First decision | Accepted |
-"""
-        for filename in ("0034.md", "0034_bad.md"):
+        for filename in (
+            "0034.md",
+            "0034_bad.md",
+            "0034--bad.md",
+            "0034-bad..name.md",
+        ):
             with self.subTest(filename=filename), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 adr_directory = root / "docs/adr"
                 adr_directory.mkdir(parents=True)
-                (adr_directory / "README.md").write_text(valid_index, encoding="utf-8")
-                (adr_directory / "0001-first-decision.md").write_text(
-                    "# ADR-0001: First decision\n\n## Status\n\nAccepted\n",
+                (adr_directory / "README.md").write_text(
+                    "# Architecture Decision Records (ADRs)\n\n"
+                    "| ADR | Title | Status |\n"
+                    "|---|---|---|\n"
+                    f"| [0034]({filename}) | Hidden decision | Proposed |\n",
                     encoding="utf-8",
                 )
                 (adr_directory / filename).write_text(
