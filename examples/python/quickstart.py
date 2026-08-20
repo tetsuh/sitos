@@ -316,11 +316,12 @@ def _cleanup(
         # Start every public close()/stop() before waiting for any one role.
         for label, process, connection in records:
             require_ack = label not in exempt
-            if require_ack and not process.is_alive():
+            alive = process.is_alive()
+            if require_ack and not alive:
                 ack_errors[label] = WorkerFailure(
                     f"{label}: no STOP acknowledgement; exit {process.exitcode}"
                 )
-            if connection is None or not process.is_alive():
+            if connection is None or not alive:
                 continue
             try:
                 connection.send(("STOP", ()))

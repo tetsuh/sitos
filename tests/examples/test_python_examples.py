@@ -645,6 +645,149 @@ class PythonExampleContractTest(unittest.TestCase):
             self.assertEqual(connection.sent, [("STOP", ())])
             self.assertTrue(connection.closed)
 
+    def test_cleanup_reports_exit_between_liveness_check_and_stop(self) -> None:
+        quickstart = _load_quickstart()
+        clock = _FakeClock()
+
+        class ExitBetweenChecksProcess(_FakeProcess):
+            def __init__(self) -> None:
+                super().__init__(clock)
+                self.is_alive_calls = 0
+
+            def is_alive(self) -> bool:
+                self.is_alive_calls += 1
+                if self.is_alive_calls == 1:
+                    return True
+                self._alive = False
+                self._exitcode = 0
+                return False
+
+        process = ExitBetweenChecksProcess()
+        connection = _FakeConnection(clock)
+
+        with mock.patch.object(quickstart.time, "monotonic", clock.monotonic):
+            failures = quickstart._cleanup(
+                [("writer", process, connection)],
+                deadline=2.0,
+            )
+
+        self.assertEqual(len(failures), 1)
+        self.assertRegex(failures[0], r"cleanup writer:.*exited with 0")
+        self.assertEqual(connection.sent, [("STOP", ())])
+        self.assertTrue(connection.closed)
+
+    def test_cleanup_rejects_ack_observed_after_shared_deadline(self) -> None:
+        quickstart = _load_quickstart()
+        clock = _FakeClock()
+        process = _FakeProcess(clock, natural_exit_at=1.01)
+        connection = _FakeConnection(
+            clock,
+            packet_at=1.01,
+            poll_overshoot=0.96,
+        )
+
+        with mock.patch.object(quickstart.time, "monotonic", clock.monotonic):
+            failures = quickstart._cleanup(
+                [("writer", process, connection)],
+                deadline=2.0,
+            )
+
+        self.assertEqual(len(failures), 1)
+        self.assertRegex(failures[0], r"cleanup writer:.*timed out waiting")
+        self.assertTrue(connection.received)
+        self.assertAlmostEqual(clock.now, 1.01)
+        self.assertFalse(process.is_alive())
+        self.assertEqual(process.terminate_calls, 0)
+        self.assertEqual(process.kill_calls, 0)
+        self.assertTrue(connection.closed)
+
+    def test_cleanup_escalates_and_reaps_all_survivors_by_phase(self) -> None:
+        quickstart = _load_quickstart()
+        clock = _FakeClock()
+        events: list[str] = []
+
+        class DeferredKillProcess(_FakeProcess):
+            def __init__(self, label: str) -> None:
+                super().__init__(
+                    clock,
+                    terminate_exits=False,
+                    kill_exits=False,
+                )
+                self.label = label
+                self.kill_requested = False
+
+            def terminate(self) -> None:
+                self.terminate_calls += 1
+                events.append(f"terminate:{self.label}")
+
+            def kill(self) -> None:
+                self.kill_calls += 1
+                self.kill_requested = True
+                events.append(f"kill:{self.label}")
+
+            def join(self, timeout: float) -> None:
+                self.join_calls.append(timeout)
+                phase = "kill" if self.kill_requested else "terminate"
+                events.append(f"{phase}-join:{self.label}")
+                if self.kill_requested:
+                    self._alive = False
+                    self._exitcode = -9
+                    clock.advance(min(timeout, 0.01))
+                else:
+                    clock.advance(timeout)
+
+        writer = DeferredKillProcess("writer")
+        cache = DeferredKillProcess("cache")
+        writer_connection = _FakeConnection(clock)
+        cache_connection = _FakeConnection(clock)
+
+        with mock.patch.object(quickstart.time, "monotonic", clock.monotonic):
+            failures = quickstart._cleanup(
+                [
+                    ("writer", writer, writer_connection),
+                    ("cache", cache, cache_connection),
+                ],
+                deadline=2.0,
+                allow_forced=True,
+            )
+
+        self.assertEqual(failures, [])
+        first_terminate_join = min(
+            index
+            for index, event in enumerate(events)
+            if event.startswith("terminate-join:")
+        )
+        last_terminate = max(
+            index
+            for index, event in enumerate(events)
+            if event.startswith("terminate:")
+        )
+        first_kill_join = min(
+            index
+            for index, event in enumerate(events)
+            if event.startswith("kill-join:")
+        )
+        last_kill = max(
+            index for index, event in enumerate(events) if event.startswith("kill:")
+        )
+        self.assertLess(last_terminate, first_terminate_join)
+        self.assertLess(last_kill, first_kill_join)
+        for process, connection in (
+            (writer, writer_connection),
+            (cache, cache_connection),
+        ):
+            self.assertFalse(process.is_alive())
+            self.assertEqual(process.terminate_calls, 1)
+            self.assertEqual(process.kill_calls, 1)
+            self.assertTrue(
+                any(
+                    event == f"kill-join:{process.label}"
+                    for event in events
+                )
+            )
+            self.assertTrue(connection.closed)
+        self.assertLessEqual(clock.now, 2.0 + 1e-9)
+
     def test_cleanup_polls_pending_acknowledgements_fairly(self) -> None:
         quickstart = _load_quickstart()
         clock = _FakeClock()
@@ -1149,6 +1292,9 @@ def _contract_methods(case: str) -> tuple[str, ...]:
         "test_pipe_failures_keep_stage_and_exit_diagnostics",
         "test_near_expiry_does_not_spawn_a_coordinator",
         "test_cleanup_requests_all_stops_before_shared_deadline_wait",
+        "test_cleanup_reports_exit_between_liveness_check_and_stop",
+        "test_cleanup_rejects_ack_observed_after_shared_deadline",
+        "test_cleanup_escalates_and_reaps_all_survivors_by_phase",
         "test_cleanup_polls_pending_acknowledgements_fairly",
         "test_wait_packet_rejects_ack_observed_after_deadline",
         "test_stop_reports_exit_pipe_and_invalid_ack_failures",
