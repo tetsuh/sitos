@@ -126,30 +126,38 @@ class _FakeConnection:
         packet_at: float | None = None,
         packet: tuple[str, object] = ("OK", ""),
         send_error: BaseException | None = None,
+        poll_overshoot: float = 0.0,
     ) -> None:
         self.clock = clock
         self.packet_at = packet_at
         self.packet = packet
         self.send_error = send_error
+        self.poll_overshoot = poll_overshoot
         self.sent: list[object] = []
+        self.send_times: list[float] = []
         self.closed = False
         self.received = False
+        self.recv_times: list[float] = []
 
     def send(self, value: object) -> None:
         if self.send_error is not None:
             raise self.send_error
         self.sent.append(value)
+        self.send_times.append(self.clock.now)
 
     def poll(self, wait: float = 0.0) -> bool:
+        actual_wait = wait + self.poll_overshoot
+        self.poll_overshoot = 0.0
         if self.packet_at is not None and not self.received:
-            if self.packet_at <= self.clock.now + wait:
+            if self.packet_at <= self.clock.now + actual_wait:
                 self.clock.advance(self.packet_at - self.clock.now)
                 return True
-        self.clock.advance(wait)
+        self.clock.advance(actual_wait)
         return False
 
     def recv(self) -> tuple[str, object]:
         self.received = True
+        self.recv_times.append(self.clock.now)
         return self.packet
 
     def close(self) -> None:
@@ -606,24 +614,91 @@ class PythonExampleContractTest(unittest.TestCase):
                 SendFailure(), process, "writer put", time.monotonic() + 1.0, "PUT"
             )
 
-    def test_cleanup_accepts_delayed_ack_within_graceful_budget(self) -> None:
+    def test_cleanup_requests_all_stops_before_shared_deadline_wait(self) -> None:
         quickstart = _load_quickstart()
         clock = _FakeClock()
-        process = _FakeProcess(clock, natural_exit_at=4.8)
-        connection = _FakeConnection(clock, packet_at=4.75)
+        writer = _FakeProcess(clock, natural_exit_at=5.8)
+        writer_connection = _FakeConnection(clock, packet_at=5.7)
+        cache = _FakeProcess(clock, natural_exit_at=0.2)
+        cache_connection = _FakeConnection(clock, packet_at=0.1)
 
         with mock.patch.object(quickstart.time, "monotonic", clock.monotonic):
             failures = quickstart._cleanup(
-                [("writer", process, connection)], deadline=10.0
+                [
+                    ("writer", writer, writer_connection),
+                    ("cache", cache, cache_connection),
+                ],
+                deadline=19.0,
             )
 
         self.assertEqual(failures, [])
-        self.assertFalse(process.is_alive())
-        self.assertEqual(process.exitcode, 0)
-        self.assertEqual(process.terminate_calls, 0)
-        self.assertEqual(process.kill_calls, 0)
-        self.assertEqual(connection.sent, [("STOP", ())])
-        self.assertTrue(connection.closed)
+        self.assertEqual(writer_connection.send_times, [0.0])
+        self.assertEqual(cache_connection.send_times, [0.0])
+        for process, connection in (
+            (writer, writer_connection),
+            (cache, cache_connection),
+        ):
+            self.assertFalse(process.is_alive())
+            self.assertEqual(process.exitcode, 0)
+            self.assertEqual(process.terminate_calls, 0)
+            self.assertEqual(process.kill_calls, 0)
+            self.assertEqual(connection.sent, [("STOP", ())])
+            self.assertTrue(connection.closed)
+
+    def test_cleanup_polls_pending_acknowledgements_fairly(self) -> None:
+        quickstart = _load_quickstart()
+        clock = _FakeClock()
+        writer = _FakeProcess(clock, natural_exit_at=0.3)
+        writer_connection = _FakeConnection(clock, packet_at=0.2)
+        cache = _FakeProcess(clock)
+        cache_connection = _FakeConnection(clock)
+
+        with mock.patch.object(quickstart.time, "monotonic", clock.monotonic):
+            failures = quickstart._cleanup(
+                [
+                    ("writer", writer, writer_connection),
+                    ("cache", cache, cache_connection),
+                ],
+                deadline=2.0,
+            )
+
+        self.assertEqual(len(failures), 1)
+        self.assertRegex(failures[0], r"cleanup cache:.*timed out waiting")
+        self.assertEqual(len(writer_connection.recv_times), 1)
+        self.assertLessEqual(writer_connection.recv_times[0], 0.25)
+        self.assertFalse(writer.is_alive())
+        self.assertEqual(writer.terminate_calls, 0)
+        self.assertEqual(cache.terminate_calls, 1)
+        self.assertFalse(cache.is_alive())
+        self.assertTrue(writer_connection.closed)
+        self.assertTrue(cache_connection.closed)
+
+    def test_wait_packet_rejects_ack_observed_after_deadline(self) -> None:
+        quickstart = _load_quickstart()
+        clock = _FakeClock()
+        process = _FakeProcess(clock)
+        connection = _FakeConnection(clock, packet_at=1.0)
+        clock.advance(1.01)
+
+        with self.assertRaisesRegex(TimeoutError, r"timed out waiting for writer"):
+            with mock.patch.object(quickstart.time, "monotonic", clock.monotonic):
+                quickstart._wait_packet(connection, process, "writer", 1.0)
+
+        self.assertFalse(connection.received)
+
+        clock = _FakeClock()
+        process = _FakeProcess(clock)
+        connection = _FakeConnection(
+            clock,
+            packet_at=1.01,
+            poll_overshoot=0.02,
+        )
+        clock.advance(0.99)
+        with self.assertRaisesRegex(TimeoutError, r"timed out waiting for writer"):
+            with mock.patch.object(quickstart.time, "monotonic", clock.monotonic):
+                quickstart._wait_packet(connection, process, "writer", 1.0)
+        self.assertTrue(connection.received)
+        self.assertAlmostEqual(clock.now, 1.01)
 
     def test_stop_reports_exit_pipe_and_invalid_ack_failures(self) -> None:
         quickstart = _load_quickstart()
@@ -1073,7 +1148,9 @@ def _contract_methods(case: str) -> tuple[str, ...]:
         "test_process_examples_declare_lifecycle_contract",
         "test_pipe_failures_keep_stage_and_exit_diagnostics",
         "test_near_expiry_does_not_spawn_a_coordinator",
-        "test_cleanup_accepts_delayed_ack_within_graceful_budget",
+        "test_cleanup_requests_all_stops_before_shared_deadline_wait",
+        "test_cleanup_polls_pending_acknowledgements_fairly",
+        "test_wait_packet_rejects_ack_observed_after_deadline",
         "test_stop_reports_exit_pipe_and_invalid_ack_failures",
         "test_stop_exhaustion_reaps_and_reports_missing_ack",
         "test_stop_allowed_fallback_reaps_after_terminate_or_kill",

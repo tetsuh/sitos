@@ -16,15 +16,11 @@ from typing import Any, Callable
 
 WORK_SECONDS = 30.0
 FAILURE_SECONDS = 15.0
-CHILD_GRACEFUL_STOP_SECONDS = 5.0
+# Cleanup sends STOP to every child before sharing one monotonic deadline.
+# The final second is reserved for process-wide terminate and kill phases.
+CLEANUP_SECONDS = 19.0
 TERMINATE_RESERVE_SECONDS = 0.5
 KILL_RESERVE_SECONDS = 0.5
-CHILD_CLEANUP_SECONDS = (
-    CHILD_GRACEFUL_STOP_SECONDS
-    + TERMINATE_RESERVE_SECONDS
-    + KILL_RESERVE_SECONDS
-)
-CLEANUP_SECONDS = 19.0
 FAILURE_ENV = "SITOS_EXAMPLE_TEST_FAIL"
 FAILURE_VALUE = "cache-before-open"
 FAILURE_MESSAGE = "test-injected cache startup failure"
@@ -163,6 +159,33 @@ def _cache_worker(connection: Connection, prefix: str, sid: str, key: str) -> No
             connection.close()
 
 
+def _poll_packet(
+    connection: Connection,
+    process: multiprocessing.Process,
+    label: str,
+    wait: float,
+) -> tuple[str, Any] | None:
+    try:
+        ready = connection.poll(wait)
+    except (BrokenPipeError, EOFError, OSError) as error:
+        raise WorkerFailure(
+            f"{label}: pipe poll failed; exit {process.exitcode}: {error}"
+        ) from error
+    if ready:
+        try:
+            status, value = connection.recv()
+        except (BrokenPipeError, EOFError, OSError) as error:
+            raise WorkerFailure(
+                f"{label}: pipe receive failed; exit {process.exitcode}: {error}"
+            ) from error
+        if status == "ERROR":
+            raise WorkerFailure(f"{label}: {value}")
+        return status, value
+    if not process.is_alive():
+        raise WorkerFailure(f"{label}: exited with {process.exitcode}")
+    return None
+
+
 def _wait_packet(
     connection: Connection,
     process: multiprocessing.Process,
@@ -171,24 +194,11 @@ def _wait_packet(
 ) -> tuple[str, Any]:
     while time.monotonic() < deadline:
         wait = min(0.05, max(0.0, deadline - time.monotonic()))
-        try:
-            ready = connection.poll(wait)
-        except (BrokenPipeError, EOFError, OSError) as error:
-            raise WorkerFailure(
-                f"{label}: pipe poll failed; exit {process.exitcode}: {error}"
-            ) from error
-        if ready:
-            try:
-                status, value = connection.recv()
-            except (BrokenPipeError, EOFError, OSError) as error:
-                raise WorkerFailure(
-                    f"{label}: pipe receive failed; exit {process.exitcode}: {error}"
-                ) from error
-            if status == "ERROR":
-                raise WorkerFailure(f"{label}: {value}")
-            return status, value
-        if not process.is_alive():
-            raise WorkerFailure(f"{label}: exited with {process.exitcode}")
+        packet = _poll_packet(connection, process, label, wait)
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"timed out waiting for {label}")
+        if packet is not None:
+            return packet
     raise TimeoutError(f"timed out waiting for {label}")
 
 
@@ -237,67 +247,19 @@ def _stop(
     require_ack: bool = True,
     allow_forced: bool = False,
 ) -> None:
-    ack_error: BaseException | None = None
-    escalation_errors: list[str] = []
-    forced = False
-    now = time.monotonic()
-    graceful_deadline = max(
-        now,
-        deadline - TERMINATE_RESERVE_SECONDS - KILL_RESERVE_SECONDS,
+    failures = _cleanup(
+        [(label, process, connection)],
+        deadline,
+        exempt=set() if require_ack else {label},
+        allow_forced=allow_forced,
     )
-    terminate_deadline = max(
-        graceful_deadline,
-        deadline - KILL_RESERVE_SECONDS,
-    )
-    try:
-        if require_ack and not process.is_alive():
-            ack_error = WorkerFailure(
-                f"{label}: no STOP acknowledgement; exit {process.exitcode}"
-            )
-        if connection is not None and process.is_alive():
-            try:
-                connection.send(("STOP", ()))
-                status, value = _wait_packet(
-                    connection,
-                    process,
-                    label,
-                    graceful_deadline,
-                )
-                if status != "OK" or value != "":
-                    raise WorkerFailure(f"{label}: invalid STOP response {status}: {value}")
-            except BaseException as error:
-                if require_ack:
-                    ack_error = WorkerFailure(
-                        f"{label}: STOP handshake failed; exit {process.exitcode}: {error}"
-                    )
-        _join_until(process, graceful_deadline)
-        if process.is_alive():
-            forced = True
-            try:
-                process.terminate()
-            except BaseException as error:
-                escalation_errors.append(f"terminate failed: {error}")
-            _join_until(process, terminate_deadline)
-        if process.is_alive() and hasattr(process, "kill"):
-            forced = True
-            try:
-                process.kill()
-            except BaseException as error:
-                escalation_errors.append(f"kill failed: {error}")
-        _join_until(process, deadline)
-        if process.is_alive():
-            details = (
-                f"; {'; '.join(escalation_errors)}" if escalation_errors else ""
-            )
-            raise WorkerFailure(f"{label}: child survived cleanup{details}")
-        if not (allow_forced and forced):
-            if ack_error is not None:
-                raise ack_error
-            if require_ack and process.exitcode != 0:
-                raise WorkerFailure(f"{label}: graceful cleanup exit {process.exitcode}")
-    finally:
-        if connection is not None:
-            connection.close()
+    if failures:
+        prefix = f"cleanup {label}: "
+        messages = [
+            failure[len(prefix) :] if failure.startswith(prefix) else failure
+            for failure in failures
+        ]
+        raise WorkerFailure("; ".join(messages))
 
 
 def _spawn(
@@ -323,27 +285,159 @@ def _spawn(
 
 
 def _cleanup(
-    children: list[tuple[str, multiprocessing.Process, Connection]],
+    children: list[
+        tuple[str, multiprocessing.Process, Connection | None]
+    ],
     deadline: float,
     *,
     exempt: set[str] | None = None,
     allow_forced: bool = False,
 ) -> list[str]:
-    failures = []
+    records = list(reversed(children))
+    failures: list[str] = []
     exempt = exempt or set()
-    for label, process, connection in reversed(children):
-        child_deadline = min(deadline, time.monotonic() + CHILD_CLEANUP_SECONDS)
-        try:
-            _stop(
-                process,
-                connection,
-                label,
-                child_deadline,
-                require_ack=label not in exempt,
-                allow_forced=allow_forced,
+    ack_errors: dict[str, BaseException] = {}
+    stop_sent: set[str] = set()
+    forced: set[str] = set()
+    escalation_errors: dict[str, list[str]] = {
+        label: [] for label, _process, _connection in records
+    }
+    now = time.monotonic()
+    graceful_deadline = max(
+        now,
+        deadline - TERMINATE_RESERVE_SECONDS - KILL_RESERVE_SECONDS,
+    )
+    terminate_deadline = max(
+        graceful_deadline,
+        deadline - KILL_RESERVE_SECONDS,
+    )
+
+    try:
+        # Start every public close()/stop() before waiting for any one role.
+        for label, process, connection in records:
+            require_ack = label not in exempt
+            if require_ack and not process.is_alive():
+                ack_errors[label] = WorkerFailure(
+                    f"{label}: no STOP acknowledgement; exit {process.exitcode}"
+                )
+            if connection is None or not process.is_alive():
+                continue
+            try:
+                connection.send(("STOP", ()))
+                stop_sent.add(label)
+            except BaseException as error:
+                if require_ack:
+                    ack_errors[label] = WorkerFailure(
+                        f"{label}: STOP handshake failed; "
+                        f"exit {process.exitcode}: {error}"
+                    )
+
+        # Poll all pending responses fairly under the shared deadline. One
+        # round consumes at most 50 ms, independent of the child count.
+        pending = [
+            (label, process, connection)
+            for label, process, connection in records
+            if label in stop_sent and connection is not None
+        ]
+        while pending and time.monotonic() < graceful_deadline:
+            next_pending: list[
+                tuple[str, multiprocessing.Process, Connection]
+            ] = []
+            wait_share = min(
+                0.05 / len(pending),
+                max(0.0, graceful_deadline - time.monotonic()),
             )
-        except BaseException as error:
-            failures.append(f"cleanup {label}: {error}")
+            for label, process, connection in pending:
+                remaining = graceful_deadline - time.monotonic()
+                if remaining <= 0.0:
+                    next_pending.append((label, process, connection))
+                    continue
+                try:
+                    packet = _poll_packet(
+                        connection,
+                        process,
+                        label,
+                        min(wait_share, remaining),
+                    )
+                    if time.monotonic() > graceful_deadline:
+                        next_pending.append((label, process, connection))
+                        continue
+                    if packet is None:
+                        next_pending.append((label, process, connection))
+                        continue
+                    status, value = packet
+                    if status != "OK" or value != "":
+                        raise WorkerFailure(
+                            f"{label}: invalid STOP response {status}: {value}"
+                        )
+                except BaseException as error:
+                    if label not in exempt:
+                        ack_errors[label] = WorkerFailure(
+                            f"{label}: STOP handshake failed; "
+                            f"exit {process.exitcode}: {error}"
+                        )
+            pending = next_pending
+        for label, process, _connection in pending:
+            if label not in exempt:
+                error = TimeoutError(f"timed out waiting for {label}")
+                ack_errors[label] = WorkerFailure(
+                    f"{label}: STOP handshake failed; "
+                    f"exit {process.exitcode}: {error}"
+                )
+
+        for _label, process, _connection in records:
+            _join_until(process, graceful_deadline)
+
+        # Escalate each phase for all survivors before waiting, so one stalled
+        # child cannot consume another child's terminate or kill opportunity.
+        for label, process, _connection in records:
+            if not process.is_alive():
+                continue
+            forced.add(label)
+            try:
+                process.terminate()
+            except BaseException as error:
+                escalation_errors[label].append(f"terminate failed: {error}")
+        for _label, process, _connection in records:
+            _join_until(process, terminate_deadline)
+
+        for label, process, _connection in records:
+            if not process.is_alive() or not hasattr(process, "kill"):
+                continue
+            forced.add(label)
+            try:
+                process.kill()
+            except BaseException as error:
+                escalation_errors[label].append(f"kill failed: {error}")
+        for _label, process, _connection in records:
+            _join_until(process, deadline)
+
+        for label, process, _connection in records:
+            if process.is_alive():
+                details = escalation_errors[label]
+                suffix = f"; {'; '.join(details)}" if details else ""
+                failures.append(
+                    f"cleanup {label}: {label}: child survived cleanup{suffix}"
+                )
+                continue
+            if allow_forced and label in forced:
+                continue
+            error = ack_errors.get(label)
+            if error is not None:
+                failures.append(f"cleanup {label}: {error}")
+            elif label not in exempt and process.exitcode != 0:
+                failures.append(
+                    f"cleanup {label}: {label}: "
+                    f"graceful cleanup exit {process.exitcode}"
+                )
+    finally:
+        for label, _process, connection in records:
+            if connection is None:
+                continue
+            try:
+                connection.close()
+            except BaseException as error:
+                failures.append(f"cleanup {label}: pipe close failed: {error}")
     return failures
 
 
