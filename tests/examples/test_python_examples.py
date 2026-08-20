@@ -41,6 +41,131 @@ MARKERS = {
 CASE_SECONDS = 60.0
 
 
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += max(0.0, seconds)
+
+
+class _FakeProcess:
+    def __init__(
+        self,
+        clock: _FakeClock,
+        *,
+        alive: bool = True,
+        exitcode: int = 0,
+        natural_exit_at: float | None = None,
+        terminate_exits: bool = True,
+        kill_exits: bool = True,
+        terminate_error: BaseException | None = None,
+        kill_error: BaseException | None = None,
+    ) -> None:
+        self.clock = clock
+        self._alive = alive
+        self._exitcode = None if alive else exitcode
+        self.natural_exit_at = natural_exit_at
+        self.natural_exitcode = exitcode
+        self.terminate_exits = terminate_exits
+        self.kill_exits = kill_exits
+        self.terminate_error = terminate_error
+        self.kill_error = kill_error
+        self.terminate_calls = 0
+        self.kill_calls = 0
+        self.join_calls: list[float] = []
+
+    def _refresh(self) -> None:
+        if (
+            self._alive
+            and self.natural_exit_at is not None
+            and self.clock.now >= self.natural_exit_at
+        ):
+            self._alive = False
+            self._exitcode = self.natural_exitcode
+
+    @property
+    def exitcode(self) -> int | None:
+        self._refresh()
+        return self._exitcode
+
+    def is_alive(self) -> bool:
+        self._refresh()
+        return self._alive
+
+    def join(self, timeout: float) -> None:
+        self.join_calls.append(timeout)
+        self.clock.advance(timeout)
+        self._refresh()
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+        if self.terminate_error is not None:
+            raise self.terminate_error
+        if self.terminate_exits:
+            self._alive = False
+            self._exitcode = -15
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        if self.kill_error is not None:
+            raise self.kill_error
+        if self.kill_exits:
+            self._alive = False
+            self._exitcode = -9
+
+
+class _FakeConnection:
+    def __init__(
+        self,
+        clock: _FakeClock,
+        *,
+        packet_at: float | None = None,
+        packet: tuple[str, object] = ("OK", ""),
+        send_error: BaseException | None = None,
+    ) -> None:
+        self.clock = clock
+        self.packet_at = packet_at
+        self.packet = packet
+        self.send_error = send_error
+        self.sent: list[object] = []
+        self.closed = False
+        self.received = False
+
+    def send(self, value: object) -> None:
+        if self.send_error is not None:
+            raise self.send_error
+        self.sent.append(value)
+
+    def poll(self, wait: float = 0.0) -> bool:
+        if self.packet_at is not None and not self.received:
+            if self.packet_at <= self.clock.now + wait:
+                self.clock.advance(self.packet_at - self.clock.now)
+                return True
+        self.clock.advance(wait)
+        return False
+
+    def recv(self) -> tuple[str, object]:
+        self.received = True
+        return self.packet
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _load_quickstart() -> types.ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "sitos_example_quickstart_contract", REQUIRED["quickstart"]
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _import_roots(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     roots: set[str] = set()
@@ -481,6 +606,179 @@ class PythonExampleContractTest(unittest.TestCase):
                 SendFailure(), process, "writer put", time.monotonic() + 1.0, "PUT"
             )
 
+    def test_cleanup_accepts_delayed_ack_within_graceful_budget(self) -> None:
+        quickstart = _load_quickstart()
+        clock = _FakeClock()
+        process = _FakeProcess(clock, natural_exit_at=4.8)
+        connection = _FakeConnection(clock, packet_at=4.75)
+
+        with mock.patch.object(quickstart.time, "monotonic", clock.monotonic):
+            failures = quickstart._cleanup(
+                [("writer", process, connection)], deadline=10.0
+            )
+
+        self.assertEqual(failures, [])
+        self.assertFalse(process.is_alive())
+        self.assertEqual(process.exitcode, 0)
+        self.assertEqual(process.terminate_calls, 0)
+        self.assertEqual(process.kill_calls, 0)
+        self.assertEqual(connection.sent, [("STOP", ())])
+        self.assertTrue(connection.closed)
+
+    def test_stop_reports_exit_pipe_and_invalid_ack_failures(self) -> None:
+        quickstart = _load_quickstart()
+
+        clock = _FakeClock()
+        process = _FakeProcess(clock, alive=False, exitcode=9)
+        connection = _FakeConnection(clock)
+        with self.assertRaisesRegex(
+            quickstart.WorkerFailure, r"no STOP acknowledgement; exit 9"
+        ):
+            with mock.patch.object(quickstart.time, "monotonic", clock.monotonic):
+                quickstart._stop(process, connection, "writer", 2.0)
+        self.assertFalse(process.is_alive())
+        self.assertTrue(connection.closed)
+
+        clock = _FakeClock()
+        process = _FakeProcess(clock, natural_exit_at=0.2)
+        connection = _FakeConnection(clock)
+        with self.assertRaisesRegex(
+            quickstart.WorkerFailure, r"STOP handshake failed.*exited with 0"
+        ):
+            with mock.patch.object(quickstart.time, "monotonic", clock.monotonic):
+                quickstart._stop(process, connection, "writer", 2.0)
+        self.assertEqual(connection.sent, [("STOP", ())])
+        self.assertFalse(process.is_alive())
+        self.assertEqual(process.terminate_calls, 0)
+        self.assertEqual(process.kill_calls, 0)
+        self.assertTrue(connection.closed)
+
+        clock = _FakeClock()
+        process = _FakeProcess(clock, natural_exit_at=0.2)
+        connection = _FakeConnection(clock, send_error=BrokenPipeError("closed"))
+        with self.assertRaisesRegex(
+            quickstart.WorkerFailure, r"STOP handshake failed.*closed"
+        ):
+            with mock.patch.object(quickstart.time, "monotonic", clock.monotonic):
+                quickstart._stop(process, connection, "writer", 2.0)
+        self.assertFalse(process.is_alive())
+        self.assertTrue(connection.closed)
+
+        clock = _FakeClock()
+        process = _FakeProcess(clock, natural_exit_at=0.2)
+        connection = _FakeConnection(
+            clock, packet_at=0.1, packet=("INVALID", "unexpected")
+        )
+        with self.assertRaisesRegex(
+            quickstart.WorkerFailure, r"invalid STOP response INVALID: unexpected"
+        ):
+            with mock.patch.object(quickstart.time, "monotonic", clock.monotonic):
+                quickstart._stop(process, connection, "writer", 2.0)
+        self.assertFalse(process.is_alive())
+        self.assertTrue(connection.closed)
+
+    def test_stop_exhaustion_reaps_and_reports_missing_ack(self) -> None:
+        quickstart = _load_quickstart()
+
+        clock = _FakeClock()
+        process = _FakeProcess(clock)
+        connection = _FakeConnection(clock)
+        with self.assertRaisesRegex(
+            quickstart.WorkerFailure, r"STOP handshake failed.*timed out waiting"
+        ):
+            with mock.patch.object(quickstart.time, "monotonic", clock.monotonic):
+                quickstart._stop(process, connection, "writer", 2.0)
+        self.assertFalse(process.is_alive())
+        self.assertEqual(process.terminate_calls, 1)
+        self.assertEqual(process.kill_calls, 0)
+        self.assertTrue(connection.closed)
+        self.assertLessEqual(clock.now, 2.0 + 1e-9)
+
+    def test_stop_allowed_fallback_reaps_after_terminate_or_kill(self) -> None:
+        quickstart = _load_quickstart()
+
+        for terminate_exits, expected_kills in ((True, 0), (False, 1)):
+            with self.subTest(terminate_exits=terminate_exits):
+                clock = _FakeClock()
+                process = _FakeProcess(clock, terminate_exits=terminate_exits)
+                connection = _FakeConnection(clock)
+                with mock.patch.object(
+                    quickstart.time, "monotonic", clock.monotonic
+                ):
+                    quickstart._stop(
+                        process,
+                        connection,
+                        "writer",
+                        2.0,
+                        allow_forced=True,
+                    )
+                self.assertFalse(process.is_alive())
+                self.assertEqual(process.terminate_calls, 1)
+                self.assertEqual(process.kill_calls, expected_kills)
+                self.assertTrue(connection.closed)
+                self.assertLessEqual(clock.now, 2.0 + 1e-9)
+
+    def test_stop_uses_kill_after_terminate_raises(self) -> None:
+        quickstart = _load_quickstart()
+        clock = _FakeClock()
+        process = _FakeProcess(
+            clock,
+            terminate_exits=False,
+            terminate_error=PermissionError("terminate denied"),
+        )
+        connection = _FakeConnection(clock)
+
+        with mock.patch.object(quickstart.time, "monotonic", clock.monotonic):
+            quickstart._stop(
+                process,
+                connection,
+                "writer",
+                2.0,
+                allow_forced=True,
+            )
+
+        self.assertFalse(process.is_alive())
+        self.assertEqual(process.terminate_calls, 1)
+        self.assertEqual(process.kill_calls, 1)
+        self.assertTrue(connection.closed)
+        self.assertLessEqual(clock.now, 2.0 + 1e-9)
+
+    def test_primary_failure_precedes_cleanup_diagnostics(self) -> None:
+        quickstart = _load_quickstart()
+        stderr = io.StringIO()
+        with (
+            mock.patch.dict(quickstart.os.environ, {}, clear=True),
+            mock.patch.object(
+                quickstart, "_spawn", side_effect=RuntimeError("primary failed")
+            ),
+            mock.patch.object(
+                quickstart,
+                "_cleanup",
+                return_value=["cleanup writer: forced cleanup failed"],
+            ),
+            contextlib.redirect_stderr(stderr),
+        ):
+            result = quickstart.run_example(
+                "test/prefix",
+                writer_target=lambda *_args: None,
+                writer_args_factory=lambda _sid, _key: (),
+                cache_target=lambda *_args: None,
+                cache_args_factory=lambda _sid, _key: (),
+                put_args_factory=lambda _sid, _key, _value: (),
+                check_command="GET",
+                observe=lambda _value: False,
+                marker="SHOULD_NOT_PRINT",
+            )
+
+        self.assertEqual(result, 1)
+        self.assertEqual(
+            stderr.getvalue().splitlines(),
+            [
+                "example failed: primary failed",
+                "cleanup: cleanup writer: forced cleanup failed",
+            ],
+        )
+
     def test_raw_example_has_no_sitos_or_numpy_import(self) -> None:
         path = REQUIRED["raw-zenoh"]
         self.assertEqual(
@@ -775,6 +1073,12 @@ def _contract_methods(case: str) -> tuple[str, ...]:
         "test_process_examples_declare_lifecycle_contract",
         "test_pipe_failures_keep_stage_and_exit_diagnostics",
         "test_near_expiry_does_not_spawn_a_coordinator",
+        "test_cleanup_accepts_delayed_ack_within_graceful_budget",
+        "test_stop_reports_exit_pipe_and_invalid_ack_failures",
+        "test_stop_exhaustion_reaps_and_reports_missing_ack",
+        "test_stop_allowed_fallback_reaps_after_terminate_or_kill",
+        "test_stop_uses_kill_after_terminate_raises",
+        "test_primary_failure_precedes_cleanup_diagnostics",
     )
     if case in {"quickstart", "failure-cleanup"}:
         return common + process_contracts

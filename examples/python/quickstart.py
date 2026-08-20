@@ -16,8 +16,15 @@ from typing import Any, Callable
 
 WORK_SECONDS = 30.0
 FAILURE_SECONDS = 15.0
-CLEANUP_SECONDS = 7.0
-CHILD_CLEANUP_SECONDS = 2.0
+CHILD_GRACEFUL_STOP_SECONDS = 5.0
+TERMINATE_RESERVE_SECONDS = 0.5
+KILL_RESERVE_SECONDS = 0.5
+CHILD_CLEANUP_SECONDS = (
+    CHILD_GRACEFUL_STOP_SECONDS
+    + TERMINATE_RESERVE_SECONDS
+    + KILL_RESERVE_SECONDS
+)
+CLEANUP_SECONDS = 19.0
 FAILURE_ENV = "SITOS_EXAMPLE_TEST_FAIL"
 FAILURE_VALUE = "cache-before-open"
 FAILURE_MESSAGE = "test-injected cache startup failure"
@@ -231,7 +238,17 @@ def _stop(
     allow_forced: bool = False,
 ) -> None:
     ack_error: BaseException | None = None
+    escalation_errors: list[str] = []
     forced = False
+    now = time.monotonic()
+    graceful_deadline = max(
+        now,
+        deadline - TERMINATE_RESERVE_SECONDS - KILL_RESERVE_SECONDS,
+    )
+    terminate_deadline = max(
+        graceful_deadline,
+        deadline - KILL_RESERVE_SECONDS,
+    )
     try:
         if require_ack and not process.is_alive():
             ack_error = WorkerFailure(
@@ -244,7 +261,7 @@ def _stop(
                     connection,
                     process,
                     label,
-                    min(deadline, time.monotonic() + 0.6),
+                    graceful_deadline,
                 )
                 if status != "OK" or value != "":
                     raise WorkerFailure(f"{label}: invalid STOP response {status}: {value}")
@@ -253,17 +270,26 @@ def _stop(
                     ack_error = WorkerFailure(
                         f"{label}: STOP handshake failed; exit {process.exitcode}: {error}"
                     )
-        _join_until(process, min(deadline, time.monotonic() + 0.4))
+        _join_until(process, graceful_deadline)
         if process.is_alive():
             forced = True
-            process.terminate()
-            _join_until(process, min(deadline, time.monotonic() + 0.4))
+            try:
+                process.terminate()
+            except BaseException as error:
+                escalation_errors.append(f"terminate failed: {error}")
+            _join_until(process, terminate_deadline)
         if process.is_alive() and hasattr(process, "kill"):
             forced = True
-            process.kill()
+            try:
+                process.kill()
+            except BaseException as error:
+                escalation_errors.append(f"kill failed: {error}")
         _join_until(process, deadline)
         if process.is_alive():
-            raise WorkerFailure(f"{label}: child survived cleanup")
+            details = (
+                f"; {'; '.join(escalation_errors)}" if escalation_errors else ""
+            )
+            raise WorkerFailure(f"{label}: child survived cleanup{details}")
         if not (allow_forced and forced):
             if ack_error is not None:
                 raise ack_error
