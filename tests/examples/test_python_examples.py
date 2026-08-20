@@ -569,6 +569,96 @@ class PythonExampleContractTest(unittest.TestCase):
         self.assertEqual(result.returncode, 124)
         popen.assert_not_called()
 
+    def test_failure_cleanup_uses_single_shared_deadline(self) -> None:
+        quickstart = _load_quickstart()
+        clock = _FakeClock()
+
+        class IdentifiedProcess(_FakeProcess):
+            def __init__(self, pid: int) -> None:
+                super().__init__(clock)
+                self.pid = pid
+
+        workers = [
+            (IdentifiedProcess(101), _FakeConnection(clock)),
+            (IdentifiedProcess(102), _FakeConnection(clock)),
+            (IdentifiedProcess(103), _FakeConnection(clock)),
+        ]
+        spawned = iter(workers)
+        cleanup_deadlines: list[float] = []
+
+        def cleanup(
+            children: list[tuple[str, _FakeProcess, _FakeConnection]],
+            deadline: float,
+            *,
+            exempt: set[str] | None = None,
+            allow_forced: bool = False,
+        ) -> list[str]:
+            self.assertEqual(
+                [label for label, _process, _connection in children],
+                ["node", "writer", "cache"],
+            )
+            self.assertEqual(exempt, {"cache"})
+            self.assertTrue(allow_forced)
+            cleanup_deadlines.append(deadline)
+            for _label, process, _connection in children:
+                process._alive = False
+                process._exitcode = 0
+            return []
+
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(quickstart.time, "monotonic", clock.monotonic),
+            mock.patch.object(
+                quickstart.multiprocessing, "get_context", return_value=object()
+            ),
+            mock.patch.object(
+                quickstart, "_spawn", side_effect=lambda *_args: next(spawned)
+            ),
+            mock.patch.object(quickstart, "_wait", return_value=None),
+            mock.patch.object(
+                quickstart,
+                "_wait_packet",
+                return_value=(
+                    "TEST_FAILURE",
+                    {"pid": 103, "message": quickstart.FAILURE_MESSAGE},
+                ),
+            ),
+            mock.patch.object(quickstart, "_cleanup", side_effect=cleanup),
+            contextlib.redirect_stderr(stderr),
+        ):
+            result = quickstart._run_failure(
+                "test/prefix",
+                writer_target=lambda *_args: None,
+                writer_args_factory=lambda _sid, _key: (),
+                cache_target=lambda *_args: None,
+                cache_args_factory=lambda _sid, _key: (),
+            )
+
+        self.assertEqual(result, 70, stderr.getvalue())
+        self.assertEqual(cleanup_deadlines, [quickstart.CLEANUP_SECONDS])
+        self.assertEqual(workers[2][0].join_calls, [])
+        self.assertIn(quickstart.FAILURE_CLEANUP_LINE, stderr.getvalue())
+
+    def test_exempt_cleanup_still_reports_abnormal_exit(self) -> None:
+        quickstart = _load_quickstart()
+        clock = _FakeClock()
+        process = _FakeProcess(clock, alive=False, exitcode=7)
+        connection = _FakeConnection(clock)
+
+        with mock.patch.object(quickstart.time, "monotonic", clock.monotonic):
+            failures = quickstart._cleanup(
+                [("cache", process, connection)],
+                deadline=2.0,
+                exempt={"cache"},
+                allow_forced=True,
+            )
+
+        self.assertEqual(
+            failures,
+            ["cleanup cache: cache: graceful cleanup exit 7"],
+        )
+        self.assertTrue(connection.closed)
+
     def test_raw_primary_and_cleanup_failures_are_both_preserved(self) -> None:
         with self.assertRaisesRegex(
             RuntimeError, r"raw failed; raw peer cleanup: cleanup failed"
@@ -1291,6 +1381,8 @@ def _contract_methods(case: str) -> tuple[str, ...]:
         "test_process_examples_declare_lifecycle_contract",
         "test_pipe_failures_keep_stage_and_exit_diagnostics",
         "test_near_expiry_does_not_spawn_a_coordinator",
+        "test_failure_cleanup_uses_single_shared_deadline",
+        "test_exempt_cleanup_still_reports_abnormal_exit",
         "test_cleanup_requests_all_stops_before_shared_deadline_wait",
         "test_cleanup_reports_exit_between_liveness_check_and_stop",
         "test_cleanup_rejects_ack_observed_after_shared_deadline",

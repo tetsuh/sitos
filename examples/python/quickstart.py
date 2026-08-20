@@ -426,7 +426,7 @@ def _cleanup(
             error = ack_errors.get(label)
             if error is not None:
                 failures.append(f"cleanup {label}: {error}")
-            elif label not in exempt and process.exitcode != 0:
+            elif process.exitcode != 0:
                 failures.append(
                     f"cleanup {label}: {label}: "
                     f"graceful cleanup exit {process.exitcode}"
@@ -478,9 +478,6 @@ def _run_failure(
             f"SITOS_EXAMPLE_TEST_FAILURE cache {value['pid']} {value['message']}",
             file=sys.stderr,
         )
-        process.join(1.0)
-        if process.is_alive() or process.exitcode != 0:
-            raise WorkerFailure("cache failure worker did not exit cleanly")
         failures = _cleanup(
             children,
             time.monotonic() + CLEANUP_SECONDS,
