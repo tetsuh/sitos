@@ -87,10 +87,12 @@ Result<void> Invalid(std::string message) {
   return Result<void>::Err(Status::InvalidArgument, std::move(message));
 }
 
-void PutLe(std::vector<std::byte>& out, std::uint64_t value, int size) {
+// Writes `size` little-endian bytes of `value` at `out[offset]` and returns the next offset.
+std::size_t PutLe(std::span<std::byte> out, std::size_t offset, std::uint64_t value, int size) {
   for (int i = 0; i < size; ++i) {
-    out.push_back(static_cast<std::byte>((value >> (8 * i)) & 0xFFu));
+    out[offset + static_cast<std::size_t>(i)] = static_cast<std::byte>((value >> (8 * i)) & 0xFFu);
   }
+  return offset + static_cast<std::size_t>(size);
 }
 
 std::uint64_t ReadLe(std::span<const std::byte> in, std::size_t offset, int size) {
@@ -240,18 +242,20 @@ Result<std::vector<std::byte>> EncodeAckResult(const AckResultV1& r) {
   if (auto valid = ValidateAckResult(r); !valid.IsOk()) {
     return Result<std::vector<std::byte>>::ErrFrom(valid);
   }
-  std::vector<std::byte> out;
-  out.reserve(kAckResultV1HeaderSize + r.message.size());
-  out.push_back(std::byte{kResultSchemaVersion});
-  out.push_back(static_cast<std::byte>(r.operation_kind));
-  out.push_back(static_cast<std::byte>(r.status));
-  out.push_back(static_cast<std::byte>(r.durability));
-  PutLe(out, r.applied_count, 4);
-  PutLe(out, r.failed_index, 4);
-  PutLe(out, r.through_sequence, 8);
-  PutLe(out, r.failed_sequence, 8);
-  PutLe(out, r.message.size(), 4);
-  for (unsigned char c : r.message) out.push_back(std::byte{c});
+  // Size the buffer once and write by index: the exact layout is known up front,
+  // and this also avoids a gcc 14 -O3 -Wfree-nonheap-object false positive on
+  // the reserve/push_back growth path.
+  std::vector<std::byte> out(kAckResultV1HeaderSize + r.message.size());
+  out[0] = std::byte{kResultSchemaVersion};
+  out[1] = static_cast<std::byte>(r.operation_kind);
+  out[2] = static_cast<std::byte>(r.status);
+  out[3] = static_cast<std::byte>(r.durability);
+  std::size_t offset = PutLe(out, 4, r.applied_count, 4);
+  offset = PutLe(out, offset, r.failed_index, 4);
+  offset = PutLe(out, offset, r.through_sequence, 8);
+  offset = PutLe(out, offset, r.failed_sequence, 8);
+  offset = PutLe(out, offset, r.message.size(), 4);
+  for (unsigned char c : r.message) out[offset++] = std::byte{c};
   return Result<std::vector<std::byte>>::Ok(std::move(out));
 }
 
