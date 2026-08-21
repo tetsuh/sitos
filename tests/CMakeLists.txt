@@ -68,6 +68,13 @@ target_compile_definitions(sitos_param_value_test PRIVATE
 sitos_enable_warnings(sitos_param_value_test)
 gtest_add_tests(TARGET sitos_param_value_test SOURCES unit/param_value_test.cpp)
 
+add_executable(sitos_ack_codec_test unit/ack_codec_test.cpp)
+target_link_libraries(sitos_ack_codec_test PRIVATE GTest::gtest_main sitos::sitos)
+target_compile_definitions(sitos_ack_codec_test PRIVATE
+  SITOS_ACK_FIXTURE_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/ack_v1")
+sitos_enable_warnings(sitos_ack_codec_test)
+gtest_add_tests(TARGET sitos_ack_codec_test SOURCES unit/ack_codec_test.cpp)
+
 add_executable(sitos_result_test unit/result_test.cpp)
 target_link_libraries(sitos_result_test PRIVATE GTest::gtest_main sitos::sitos)
 sitos_enable_warnings(sitos_result_test)
