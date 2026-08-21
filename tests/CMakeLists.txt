@@ -244,6 +244,15 @@ target_include_directories(sitos_ack_registry_test PRIVATE ${PROJECT_SOURCE_DIR}
 sitos_enable_warnings(sitos_ack_registry_test)
 gtest_add_tests(TARGET sitos_ack_registry_test SOURCES unit/ack_registry_test.cpp)
 
+add_executable(sitos_ack_client_test unit/ack_client_test.cpp)
+target_link_libraries(sitos_ack_client_test PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_ack_client_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+sitos_enable_warnings(sitos_ack_client_test)
+if(SITOS_WITH_ZENOH)
+  sitos_copy_zenohc(sitos_ack_client_test)
+endif()
+gtest_add_tests(TARGET sitos_ack_client_test SOURCES unit/ack_client_test.cpp)
+
 add_executable(sitos_storage_node_ack_test unit/storage_node_ack_test.cpp)
 target_link_libraries(sitos_storage_node_ack_test PRIVATE GTest::gtest_main sitos::sitos)
 target_include_directories(sitos_storage_node_ack_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
@@ -386,6 +395,15 @@ if(SITOS_WITH_ZENOH)
       ENVIRONMENT "SITOS_RAW_ZENOH_FIXTURE=$<TARGET_FILE:sitos_raw_zenoh_buffer_fixture>"
       RUN_SERIAL TRUE
       TIMEOUT 60)
+
+  add_executable(sitos_ack_integration_test
+    integration/ack_test.cpp)
+  target_link_libraries(sitos_ack_integration_test
+    PRIVATE GTest::gtest_main sitos::sitos)
+  target_include_directories(sitos_ack_integration_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+  sitos_enable_warnings(sitos_ack_integration_test)
+  sitos_copy_zenohc(sitos_ack_integration_test)
+  gtest_add_tests(TARGET sitos_ack_integration_test SOURCES integration/ack_test.cpp)
 
   add_executable(sitos_transport_test
     integration/transport_test.cpp)
