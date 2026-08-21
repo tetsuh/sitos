@@ -318,10 +318,9 @@ before returning and retains no Session record or other resource after enumerati
 
 `PutOptions::ack_token` and the typed `TransportSample::ack` observation exist in the Transport
 API under ADR-0028 and DEC-14-ACK-ATTACHMENT-001, together with the `AckAttachmentV1` and
-`AckResultV1` codecs. The `MetaAck` route behavior, StorageNode token lifecycle, and
-total-deadline helper are specified by ADR-0028 and remain Issue #14 implementation work, as
-recorded in `docs/03_wire_protocol.md` §6. Implementers must not treat the pseudocode as finalized
-acknowledgement behavior.
+`AckResultV1` codecs, the StorageNode token registry and completion ring, and the `MetaAck`
+route behavior (`docs/03_wire_protocol.md` §6). The total-deadline helper is specified by ADR-0028
+and remains Issue #14 implementation work. The pseudocode below omits the acknowledgement path.
 
 Pseudocode for implementers. StorageNode does not use the raw zenoh-c API directly; it goes through
 the `Transport` abstraction ([09_dependency_policy.md](09_dependency_policy.md) §3).

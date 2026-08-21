@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "sitos/storage_engine.hpp"
+#include "ack_registry.hpp"
 #include "sitos/storage_node.hpp"
 
 namespace sitos::storage_node_test_access {
@@ -78,7 +79,7 @@ class StorageNodeTestAccess {
       state = node.state_;
     }
     if (!state) return std::nullopt;
-    return state->ack_registry.Size();
+    return state->ack_registry->Size();
   }
 
   static bool TryLockSubscriberMutex(StorageNode& node) {

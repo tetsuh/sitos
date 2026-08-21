@@ -111,6 +111,8 @@ add_library(sitos STATIC
   src/param_value.cpp
   src/batch.cpp
   src/ack.cpp
+  src/ack_registry.cpp
+  src/sha256.cpp
   src/key.cpp
   src/storage_engine.cpp
   src/in_memory_engine.cpp

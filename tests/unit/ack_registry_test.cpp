@@ -66,12 +66,18 @@ AckFingerprint Fingerprint(std::string_view payload = "value") {
 
 AckResultV1 PutOk() {
   return AckResultV1{AckOperationKind::Put, Status::Ok, AckDurability::Applied, 1,
-                     kAckNoFailedIndex,    0,          kAckNoFailedSequence,  ""};
+                     kAckNoFailedIndex,     0,          kAckNoFailedSequence,   ""};
 }
 
 AckResultV1 PutError() {
-  return AckResultV1{AckOperationKind::Put, Status::Error, AckDurability::Applied, 0, 0, 0,
-                     kAckNoFailedSequence, ""};
+  return AckResultV1{AckOperationKind::Put,
+                     Status::Error,
+                     AckDurability::Applied,
+                     0,
+                     0,
+                     0,
+                     kAckNoFailedSequence,
+                     ""};
 }
 
 // ---------------------------------------------------------------------------
@@ -218,8 +224,7 @@ TEST(AckRegistryTest, ClearRemovesProcessingAndCompletedState) {
   EXPECT_EQ(registry.Size(), 0u);
   EXPECT_EQ(registry.ProcessingCount(), 0u);
   EXPECT_FALSE(registry.Find(Token(1)).has_value());
-  EXPECT_EQ(registry.Claim(Token(2), Fingerprint(), AckRegistry::kParameterLane),
-            Outcome::Admitted)
+  EXPECT_EQ(registry.Claim(Token(2), Fingerprint(), AckRegistry::kParameterLane), Outcome::Admitted)
       << "the lane is free again after Clear";
 }
 

@@ -6,8 +6,6 @@
 // collision handling, batch confirmed prefix, ring eviction, Stop clearing, and
 // concurrent recording/querying.
 
-#include "sitos/storage_node.hpp"
-
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -34,6 +32,7 @@
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/logging.hpp"
 #include "sitos/param_value.hpp"
+#include "sitos/storage_node.hpp"
 #include "storage_node_test_access.hpp"
 #include "transport/declaration_handle_test_access.hpp"
 
@@ -191,7 +190,8 @@ class FakeTransport final : public Transport {
   std::function<void(TransportQuery&)> query_callback;
 };
 
-std::vector<std::byte> MakeBatch(std::initializer_list<std::pair<std::string, ParamValue>> entries) {
+std::vector<std::byte> MakeBatch(
+    std::initializer_list<std::pair<std::string, ParamValue>> entries) {
   return EncodeBatch(
       std::span<const std::pair<std::string, ParamValue>>(entries.begin(), entries.size()));
 }
@@ -330,8 +330,9 @@ TEST(StorageNodeAckTest, FingerprintCollisionIsRejectedWithoutApplication) {
   h.Start();
   const AckToken token = h.Put("sitos/base/a");
   h.Put("sitos/base/b", token);  // same token, different key
-  h.transport.Deliver("sitos/base/a", TransportSample::Kind::Put, ParamValue(std::int64_t{7}).Encode(),
-                      kV1, token);  // same token and key, different payload
+  h.transport.Deliver("sitos/base/a", TransportSample::Kind::Put,
+                      ParamValue(std::int64_t{7}).Encode(), kV1,
+                      token);  // same token and key, different payload
 
   EXPECT_EQ(h.engine->Puts(), (std::vector<std::string>{"a"}));
   ExpectResult(h.QueryAck(token), AckOperationKind::Put, Status::Ok, 1, kAckNoFailedIndex);

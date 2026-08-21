@@ -52,7 +52,7 @@ open decision (`—` when settled); implementers and consumers are listed separa
 | zenoh Encoding identifiers and normalization (`kSitosV1`, `kSitosV1Batch`, legacy spelling, absent/unknown fallback) | Normative | Implemented | [03](03_wire_protocol.md) §2.2 | — | `include/sitos/transport.hpp` |
 | Batch v1 (`:batch` multi-entry payload) | Normative | Implemented | [03](03_wire_protocol.md) §5 | — | batch codec |
 | `meta/session/<sid>` reply (session metadata JSON) | Normative | Implemented | [03](03_wire_protocol.md) §7.1 | — | StorageNode meta route |
-| `meta/ack/<uuid>` **route behavior** (token lifecycle, AckResult payload, query semantics) | Normative | Planned | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | #14, #17; Fence reuse by #158, #107 |
+| `meta/ack/<uuid>` **route behavior** (token lifecycle, AckResult payload, query semantics) | Normative | Implemented | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | #14, #17; Fence reuse by #158, #107 |
 | `AckAttachmentV1` (17-byte acknowledged-operation UUIDv4 attachment) | Normative | Implemented | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | #14, #17; Fence reuse by #158, #107 |
 | Acknowledgement result Encoding (`sitos.v1.ack`, canonical `zenoh/bytes;sitos.v1.ack`) | Normative | Implemented | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | #14, #17; Fence reuse by #158, #107 |
 | Same-publisher in-band Fence marker (`meta/fence/**`, `sitos.v1.fence`) | Normative | Planned | [ADR-0029](adr/0029-define-same-publisher-fence-ordering.md) | — | #158; consumers #99, #107 |
@@ -70,7 +70,7 @@ Values that must remain stable across releases because callers persist, compare,
 | Python exception hierarchy (`sitos.SitosError` and current subclasses, Status mapping) | Normative | Implemented | [05](05_api_python.md) §2.1 | — | One registered class per name; mapping extends only when `Status` extends |
 | Python exception: `OutcomeUnknownError` | Normative | Implemented | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | Maps `Status::OutcomeUnknown` for C++/Python parity |
 | Session-id grammar (`<sid>`) | Normative | Implemented | [03](03_wire_protocol.md) §1 | — | `src/key.cpp` `IsValidSessionId`; grammar is never narrowed |
-| `meta/ack/<uuid>` route id grammar (lenient parser, `IsValidAckUuid`) | Planned | Implemented | not yet documented in [03](03_wire_protocol.md) §1 | #14 → ADR | parser-accepted de-facto grammar; to be documented normatively; #114 pending consolidation |
+| `meta/ack/<uuid>` route id grammar (lenient parser, `IsValidAckUuid`) | Normative | Implemented | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md); [03](03_wire_protocol.md) §6 | — | the route accepts the existing safe grammar, but only canonical lowercase UUIDv4 text names a result |
 | Generated correlation-id format (canonical UUIDv4) | Normative | Implemented | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | Internally generated; callers cannot provide tokens |
 | Fence result identifiers (`FenceDurability`, `FenceReceipt` fields) | Planned | Planned | — | #107 → ADR | public mapping reuses ADR-0028/ADR-0029 |
 | Session state-lost read result (overlay/snapshot lost after restart) | Planned | Planned | — | #108 → ADR | |

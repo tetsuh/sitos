@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <ctime>
 #include <format>
 #include <optional>
@@ -15,14 +16,35 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
+#include "ack_registry.hpp"
+#include "sitos/ack.hpp"
 #include "sitos/batch.hpp"
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/key.hpp"
 #include "sitos/param_value.hpp"
 
 namespace sitos {
+
+// Diagnostics are retained until the subscriber sequencer is released, so an
+// injected sink is never called while node application state is locked.
+struct SubscriberDiagnostic {
+  LogLevel level;
+  std::string_view message;
+};
+
+// Per-sample application progress observed by the ADR-0028 completion guard:
+// whether any engine call was invoked (OutcomeUnknown vs. Error on an exception)
+// and the confirmed batch prefix / entry being applied.
+struct AckApplyProgress {
+  AckOperationKind kind = AckOperationKind::Put;
+  bool engine_invoked = false;
+  std::uint32_t applied_count = 0;
+  std::uint32_t current_index = 0;
+};
+
 namespace {
 
 std::error_code InvalidArgument() { return std::make_error_code(std::errc::invalid_argument); }
@@ -139,13 +161,58 @@ constexpr std::string_view kBufferEncodingRejected = "buffer encoding rejected";
 constexpr std::string_view kBufferPutConflict = "durable buffer PUT conflicts with existing value";
 constexpr std::string_view kBufferPutFailed = "durable buffer PUT failed";
 constexpr std::string_view kBufferQueryFailed = "durable buffer query failed";
-
-struct SubscriberDiagnostic {
-  LogLevel level;
-  std::string_view message;
-};
+constexpr std::string_view kMalformedAckAttachment = "malformed ack attachment; sample rejected";
+constexpr std::string_view kAckTokenCollision = "ack token collision; sample rejected";
+constexpr std::string_view kAckLaneReentry = "ack lane reentry; sample rejected";
+constexpr std::string_view kAckUnsupportedOperation =
+    "acknowledgement not supported for this operation; sample rejected";
 
 using SubscriberDiagnostics = std::vector<SubscriberDiagnostic>;
+
+AckResultV1 MakeAckResult(AckOperationKind kind, Status status, std::uint32_t applied_count,
+                          std::uint32_t failed_index) {
+  return AckResultV1{kind, status, AckDurability::Applied, applied_count, failed_index, 0,
+                     kAckNoFailedSequence, ""};
+}
+
+// Definite rejection or uncertain outcome for a Put: applied_count 0, failed_index 0.
+AckResultV1 PutFailure(Status status) { return MakeAckResult(AckOperationKind::Put, status, 0, 0); }
+
+// Moves a Processing token to exactly one immutable Completed result, even when
+// application throws after the claim (ADR-0028 RAII completion guard).
+class AckCompletionGuard {
+ public:
+  AckCompletionGuard(AckRegistry& registry, AckToken token, AckApplyProgress& progress)
+      : registry_(registry), token_(token), progress_(progress) {}
+  ~AckCompletionGuard() {
+    if (done_) return;
+    // Before any engine invocation the failure is definite; afterwards the engine
+    // contract cannot prove that no mutation occurred.
+    if (!progress_.engine_invoked) {
+      const std::uint32_t failed_index =
+          progress_.kind == AckOperationKind::Batch ? kAckNoFailedIndex : 0;
+      registry_.Complete(token_, MakeAckResult(progress_.kind, Status::Error, 0, failed_index));
+      return;
+    }
+    const std::uint32_t failed_index =
+        progress_.kind == AckOperationKind::Batch ? progress_.current_index : 0;
+    registry_.Complete(token_, MakeAckResult(progress_.kind, Status::OutcomeUnknown,
+                                             progress_.applied_count, failed_index));
+  }
+  AckCompletionGuard(const AckCompletionGuard&) = delete;
+  AckCompletionGuard& operator=(const AckCompletionGuard&) = delete;
+
+  void Finish(AckResultV1 result) {
+    registry_.Complete(token_, std::move(result));
+    done_ = true;
+  }
+
+ private:
+  AckRegistry& registry_;
+  AckToken token_;
+  AckApplyProgress& progress_;
+  bool done_ = false;
+};
 
 bool IsBatchPut(const TransportSample& sample) {
   return sample.kind == TransportSample::Kind::Put && sample.encoding.id == Encoding::kSitosV1Batch;
@@ -176,16 +243,19 @@ BufferWriteOutcome ApplyDurableBufferWrite(StorageEngine& engine, const ParsedKe
 }
 
 // Applies a put/delete sample to a target engine (base engine or session
-// overlay), mirroring the wire-encoding rules for base writes. Diagnostics are
-// retained until the subscriber sequencer is released, so an injected sink is
-// never called while node application state is locked.
-void ApplyWrite(SubscriberDiagnostics& diagnostics, StorageEngine& target,
-                std::string_view relative_key, const TransportSample& sample) {
+// overlay), mirroring the wire-encoding rules for base writes. Returns the
+// typed ADR-0028 outcome: a boolean engine failure is OutcomeUnknown because the
+// current StorageEngine contract cannot prove that no mutation occurred.
+AckResultV1 ApplyWrite(SubscriberDiagnostics& diagnostics, StorageEngine& target,
+                       std::string_view relative_key, const TransportSample& sample,
+                       AckApplyProgress* progress) {
   if (sample.kind == TransportSample::Kind::Delete) {
+    if (progress != nullptr) progress->engine_invoked = true;
     if (!target.Delete(relative_key)) {
       diagnostics.push_back({LogLevel::kError, kSubscriberDeleteFailed});
+      return PutFailure(Status::OutcomeUnknown);
     }
-    return;
+    return MakeAckResult(AckOperationKind::Put, Status::Ok, 1, kAckNoFailedIndex);
   }
 
   Bytes value = sample.payload;
@@ -196,9 +266,12 @@ void ApplyWrite(SubscriberDiagnostics& diagnostics, StorageEngine& target,
     wrapped = ParamValue(std::move(bytes)).Encode();
     value = wrapped;
   }
+  if (progress != nullptr) progress->engine_invoked = true;
   if (!target.Put(relative_key, value)) {
     diagnostics.push_back({LogLevel::kError, kSubscriberPutFailed});
+    return PutFailure(Status::OutcomeUnknown);
   }
+  return MakeAckResult(AckOperationKind::Put, Status::Ok, 1, kAckNoFailedIndex);
 }
 
 struct EncodedBatchEntry {
@@ -206,32 +279,45 @@ struct EncodedBatchEntry {
   std::vector<std::byte> value;
 };
 
-// Validates and materializes every batch entry before the first engine write.
-// StorageEngine has no transactional API: failed writes are logged and later
-// validated entries are still attempted in their encoded order.
-void ApplyBatch(SubscriberDiagnostics& diagnostics, StorageEngine& target,
-                std::span<const std::byte> payload) {
+// Validates and materializes every batch entry before the first engine write,
+// then applies in caller order and stops at the first engine failure (ADR-0028;
+// PutBatch is not transactional). The result reports the confirmed prefix in
+// applied_count and the first failed entry in failed_index.
+AckResultV1 ApplyBatch(SubscriberDiagnostics& diagnostics, StorageEngine& target,
+                       std::span<const std::byte> payload,
+                       AckApplyProgress* progress) {
   auto decoded = DecodeBatch(payload);
   if (!decoded) {
     diagnostics.push_back({LogLevel::kWarning, kMalformedBatchPayload});
-    return;
+    return MakeAckResult(AckOperationKind::Batch, Status::InvalidArgument, 0, kAckNoFailedIndex);
   }
 
   std::vector<EncodedBatchEntry> entries;
   entries.reserve(decoded->size());
-  for (const auto& entry : *decoded) {
+  for (std::size_t i = 0; i < decoded->size(); ++i) {
+    const auto& entry = (*decoded)[i];
     if (!IsValidKey(entry.key)) {
       diagnostics.push_back({LogLevel::kWarning, kInvalidBatchEntry});
-      return;
+      return MakeAckResult(AckOperationKind::Batch, Status::InvalidArgument, 0,
+                           static_cast<std::uint32_t>(i));
     }
     entries.push_back({entry.key, entry.value.Encode()});
   }
 
-  for (const auto& entry : entries) {
-    if (!target.Put(entry.key, entry.value)) {
-      diagnostics.push_back({LogLevel::kError, kSubscriberPutFailed});
+  for (std::size_t i = 0; i < entries.size(); ++i) {
+    if (progress != nullptr) {
+      progress->current_index = static_cast<std::uint32_t>(i);
+      progress->engine_invoked = true;
     }
+    if (!target.Put(entries[i].key, entries[i].value)) {
+      diagnostics.push_back({LogLevel::kError, kSubscriberPutFailed});
+      return MakeAckResult(AckOperationKind::Batch, Status::OutcomeUnknown,
+                           static_cast<std::uint32_t>(i), static_cast<std::uint32_t>(i));
+    }
+    if (progress != nullptr) progress->applied_count = static_cast<std::uint32_t>(i + 1);
   }
+  return MakeAckResult(AckOperationKind::Batch, Status::Ok,
+                       static_cast<std::uint32_t>(entries.size()), kAckNoFailedIndex);
 }
 
 void EmitDiagnostics(const std::shared_ptr<LogSink>& log_sink,
@@ -279,6 +365,7 @@ Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Transport
   auto state = std::make_shared<State>(std::move(engine), std::move(config.prefix),
                                        std::move(config.log_sink),
                                        std::move(config.durable_buffer_engine_factory));
+  state->ack_registry = std::make_shared<AckRegistry>();
   const std::string declaration_key = state->prefix + "/**";
   auto queryable_result = transport.DeclareQueryable(
       declaration_key, [state](TransportQuery& query) { OnQuery(state, query); });
@@ -316,6 +403,10 @@ void StorageNode::Stop() noexcept {
   }
 
   state->DeactivateAndWait();
+
+  // ADR-0028: after callbacks have quiesced, Processing and Completed token state
+  // is dropped; a later Start never recovers old results.
+  state->ack_registry->Clear();
 
   // Stop is a quiescence boundary for the entire Session generation. Once
   // callbacks have drained, no Session admission can remain active; close and
@@ -537,78 +628,143 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
       // path prevents an ordinary write from becoming visible between batch
       // entries. Diagnostics are emitted only after releasing this lock.
       std::scoped_lock application_lock(state->subscriber_mutex);
-      const auto parsed = ParseKey(state->prefix, sample.key);
-      if (!parsed) {
-        diagnostics.push_back({LogLevel::kWarning, kUnsupportedSubscriberKey});
-      } else if (parsed->is_batch) {
-        // ParseKey only marks Base and Session paths as batch paths.
-        if (!IsBatchPut(sample)) {
-          diagnostics.push_back({LogLevel::kWarning, kInvalidBatchOperation});
-        } else if (parsed->kind == KeyKind::Base) {
-          ApplyBatch(diagnostics, *state->engine, sample.payload);
-        } else {
-          if (auto access = AcquireSession(state, parsed->sid);
-              !access.record || !access.admission.has_value()) {
-            diagnostics.push_back({LogLevel::kWarning, kUnknownSession});
-          } else {
-            ApplyBatch(diagnostics, *access.record->overlay, sample.payload);
-          }
-        }
-      } else if (parsed->kind == KeyKind::Buffer) {
-        if (sample.kind == TransportSample::Kind::Delete) {
-          diagnostics.emplace_back(LogLevel::kWarning, kBufferUnsupported);
-        } else if (!IsBufferBytes(sample)) {
-          diagnostics.emplace_back(LogLevel::kWarning, kBufferEncodingRejected);
-        } else if (auto access = AcquireSession(state, parsed->sid);
-                   !access.record || !access.admission.has_value()) {
-          diagnostics.emplace_back(LogLevel::kWarning, kUnknownSession);
-        } else if (!parsed->buffer_class.has_value()) {
-          diagnostics.emplace_back(LogLevel::kWarning, kBufferUnsupported);
-        } else if (*parsed->buffer_class == BufferClass::Ephemeral) {
-          if (!access.record->options.ephemeral_buffers) {
-            diagnostics.emplace_back(LogLevel::kWarning, kBufferCapabilityDisabled);
-          }
-        } else if (!access.record->options.durable_buffers || !access.record->durable_buffers) {
-          diagnostics.emplace_back(LogLevel::kWarning, kBufferCapabilityDisabled);
-        } else {
-          switch (ApplyDurableBufferWrite(*access.record->durable_buffers, *parsed, sample)) {
-            case BufferWriteOutcome::Conflict:
-              diagnostics.emplace_back(LogLevel::kWarning, kBufferPutConflict);
-              break;
-            case BufferWriteOutcome::Failed:
-              diagnostics.emplace_back(LogLevel::kError, kBufferPutFailed);
-              break;
-            case BufferWriteOutcome::Stored:
-              break;
-          }
-        }
+      if (std::holds_alternative<AckAttachmentMalformed>(sample.ack)) {
+        // ADR-0028: malformed acknowledgement metadata is rejected before application.
+        diagnostics.push_back({LogLevel::kWarning, kMalformedAckAttachment});
+      } else if (const auto* token = std::get_if<AckToken>(&sample.ack)) {
+        ApplyAcknowledgedSample(state, *token, sample, diagnostics);
       } else {
-        switch (parsed->kind) {
-          case KeyKind::Base:
-            ApplyWrite(diagnostics, *state->engine, parsed->relative_key, sample);
-            break;
-          case KeyKind::Session: {
-            if (auto access = AcquireSession(state, parsed->sid);
-                !access.record || !access.admission.has_value()) {
-              diagnostics.push_back({LogLevel::kWarning, kUnknownSession});
-            } else {
-              ApplyWrite(diagnostics, *access.record->overlay, parsed->relative_key, sample);
-            }
-            break;
-          }
-          case KeyKind::Snapshot:
-            diagnostics.push_back({LogLevel::kWarning, kReadOnlySnapshotKey});
-            break;
-          default:  // MetaSession, MetaAck (#14): not writable via subscriber.
-            diagnostics.push_back({LogLevel::kWarning, kUnsupportedSubscriberKey});
-            break;
-        }
+        ApplyParameterSample(state, sample, diagnostics, /*progress=*/nullptr);
       }
     }
     EmitDiagnostics(state->log_sink, diagnostics);
   } catch (...) {
     EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, kSubscriberCallbackFailed);
   }
+}
+
+AckResultV1 StorageNode::ApplyParameterSample(const std::shared_ptr<State>& state,
+                                              const TransportSample& sample,
+                                              std::vector<SubscriberDiagnostic>& diagnostics,
+                                              AckApplyProgress* progress) {
+  const bool acknowledged = progress != nullptr;
+  const auto parsed = ParseKey(state->prefix, sample.key);
+  if (!parsed) {
+    diagnostics.push_back({LogLevel::kWarning, kUnsupportedSubscriberKey});
+    return PutFailure(Status::InvalidKey);
+  }
+  if (parsed->is_batch) {
+    if (acknowledged) progress->kind = AckOperationKind::Batch;
+    // ParseKey only marks Base and Session paths as batch paths.
+    if (!IsBatchPut(sample)) {
+      diagnostics.push_back({LogLevel::kWarning, kInvalidBatchOperation});
+      return MakeAckResult(AckOperationKind::Batch, Status::InvalidArgument, 0, kAckNoFailedIndex);
+    }
+    if (parsed->kind == KeyKind::Base) {
+      return ApplyBatch(diagnostics, *state->engine, sample.payload, progress);
+    }
+    auto access = AcquireSession(state, parsed->sid);
+    if (!access.record || !access.admission.has_value()) {
+      diagnostics.push_back({LogLevel::kWarning, kUnknownSession});
+      return MakeAckResult(AckOperationKind::Batch, Status::NotFound, 0, kAckNoFailedIndex);
+    }
+    return ApplyBatch(diagnostics, *access.record->overlay, sample.payload, progress);
+  }
+  if (acknowledged && sample.kind == TransportSample::Kind::Delete) {
+    // Delete remains acknowledgement-free in v1 (ADR-0028).
+    diagnostics.push_back({LogLevel::kWarning, kAckUnsupportedOperation});
+    return PutFailure(Status::InvalidArgument);
+  }
+  if (parsed->kind == KeyKind::Buffer) {
+    if (acknowledged) {
+      diagnostics.push_back({LogLevel::kWarning, kAckUnsupportedOperation});
+      return PutFailure(Status::InvalidArgument);
+    }
+    if (sample.kind == TransportSample::Kind::Delete) {
+      diagnostics.emplace_back(LogLevel::kWarning, kBufferUnsupported);
+    } else if (!IsBufferBytes(sample)) {
+      diagnostics.emplace_back(LogLevel::kWarning, kBufferEncodingRejected);
+    } else if (auto access = AcquireSession(state, parsed->sid);
+               !access.record || !access.admission.has_value()) {
+      diagnostics.emplace_back(LogLevel::kWarning, kUnknownSession);
+    } else if (!parsed->buffer_class.has_value()) {
+      diagnostics.emplace_back(LogLevel::kWarning, kBufferUnsupported);
+    } else if (*parsed->buffer_class == BufferClass::Ephemeral) {
+      if (!access.record->options.ephemeral_buffers) {
+        diagnostics.emplace_back(LogLevel::kWarning, kBufferCapabilityDisabled);
+      }
+    } else if (!access.record->options.durable_buffers || !access.record->durable_buffers) {
+      diagnostics.emplace_back(LogLevel::kWarning, kBufferCapabilityDisabled);
+    } else {
+      switch (ApplyDurableBufferWrite(*access.record->durable_buffers, *parsed, sample)) {
+        case BufferWriteOutcome::Conflict:
+          diagnostics.emplace_back(LogLevel::kWarning, kBufferPutConflict);
+          break;
+        case BufferWriteOutcome::Failed:
+          diagnostics.emplace_back(LogLevel::kError, kBufferPutFailed);
+          break;
+        case BufferWriteOutcome::Stored:
+          break;
+      }
+    }
+    return PutFailure(Status::InvalidArgument);  // unused by the acknowledgement-free path
+  }
+  switch (parsed->kind) {
+    case KeyKind::Base:
+      return ApplyWrite(diagnostics, *state->engine, parsed->relative_key, sample, progress);
+    case KeyKind::Session: {
+      auto access = AcquireSession(state, parsed->sid);
+      if (!access.record || !access.admission.has_value()) {
+        diagnostics.push_back({LogLevel::kWarning, kUnknownSession});
+        return PutFailure(Status::NotFound);
+      }
+      return ApplyWrite(diagnostics, *access.record->overlay, parsed->relative_key, sample,
+                        progress);
+    }
+    case KeyKind::Snapshot:
+      diagnostics.push_back({LogLevel::kWarning, kReadOnlySnapshotKey});
+      return PutFailure(Status::ReadOnly);
+    default:  // MetaSession, MetaAck: not writable via subscriber.
+      diagnostics.push_back({LogLevel::kWarning, kUnsupportedSubscriberKey});
+      return PutFailure(Status::InvalidKey);
+  }
+}
+
+void StorageNode::ApplyAcknowledgedSample(const std::shared_ptr<State>& state,
+                                          const AckToken& token, const TransportSample& sample,
+                                          std::vector<SubscriberDiagnostic>& diagnostics) {
+  AckRegistry& registry = *state->ack_registry;
+  const auto parsed = ParseKey(state->prefix, sample.key);
+  const AckOperationKind kind =
+      parsed && parsed->is_batch ? AckOperationKind::Batch : AckOperationKind::Put;
+  const AckFingerprint fingerprint =
+      ComputeAckFingerprint(kind, sample.key, sample.encoding.id, sample.payload);
+
+  // The claim is the token linearization point; the registry mutex is released
+  // before any engine application.
+  switch (registry.Claim(token, fingerprint, AckRegistry::kParameterLane)) {
+    case AckRegistry::ClaimOutcome::DuplicateProcessing:
+    case AckRegistry::ClaimOutcome::DuplicateCompleted:
+      return;  // never repeat apply; the retained result answers queries
+    case AckRegistry::ClaimOutcome::Collision:
+      diagnostics.push_back({LogLevel::kWarning, kAckTokenCollision});
+      return;
+    case AckRegistry::ClaimOutcome::LaneBusy: {
+      diagnostics.push_back({LogLevel::kError, kAckLaneReentry});
+      const std::uint32_t failed_index = kind == AckOperationKind::Batch ? kAckNoFailedIndex : 0;
+      registry.RecordRejected(token, fingerprint,
+                              MakeAckResult(kind, Status::Error, 0, failed_index));
+      return;
+    }
+    case AckRegistry::ClaimOutcome::Admitted:
+      break;
+  }
+
+  AckApplyProgress progress;
+  progress.kind = kind;
+  AckCompletionGuard guard(registry, token, progress);
+  AckResultV1 result = ApplyParameterSample(state, sample, diagnostics, &progress);
+  guard.Finish(std::move(result));
 }
 
 void StorageNode::OnQuery(const std::shared_ptr<State>& state, TransportQuery& query) {
@@ -747,8 +903,20 @@ void StorageNode::ReplyBufferQuery(const std::shared_ptr<State>& state, Transpor
 
 void StorageNode::ReplyMetaQuery(const std::shared_ptr<State>& state, TransportQuery& query) {
   auto parsed = ParseKey(state->prefix, query.keyexpr);
-  // MetaAck (#14) is out of scope; only meta/session is answered here.
-  if (!parsed || parsed->kind != KeyKind::MetaSession) return;
+  if (!parsed) return;
+  if (parsed->kind == KeyKind::MetaAck) {
+    // ADR-0028: only canonical sitos-generated UUIDv4 text names a result; absent,
+    // Processing, evicted, and restart-lost tokens return zero replies.
+    const auto token = ParseAckToken(parsed->uuid);
+    if (!token) return;
+    const auto result = state->ack_registry->Find(*token);
+    if (!result) return;
+    auto encoded = EncodeAckResult(*result);
+    if (!encoded.IsOk()) return;
+    query.Reply(query.keyexpr, encoded.Value(), Encoding{std::string(Encoding::kSitosV1Ack)});
+    return;
+  }
+  if (parsed->kind != KeyKind::MetaSession) return;
 
   std::string json;
   std::optional<SessionRecord::AdmissionLease> admission;

@@ -252,11 +252,12 @@ Repeated N times thereafter:
 
 > **Normative design; implementation in progress:** Accepted ADR-0028 owns this contract. The
 > Transport boundary types, `AckAttachmentV1`, `AckResultV1`, the `sitos.v1.ack` Encoding, UUIDv4
-> tokens, and `Status::OutcomeUnknown` below are implemented under Issue #14
-> (DEC-14-ACK-ATTACHMENT-001). The StorageNode token lifecycle, `meta/ack/<uuid>` route behavior,
-> and the one-submit/total-deadline helper are specified normatively by ADR-0028 and remain #14
-> implementation work; Issue #17 owns the ParamStore `WriteOptions` policy layered on that contract.
-> No implementation may introduce a second acknowledgement format.
+> tokens, `Status::OutcomeUnknown`, the StorageNode token lifecycle (claim before mutation,
+> Processing/Completed registry with operation fingerprints, 4096-entry completion ring), and the
+> `meta/ack/<uuid>` route behavior below are implemented under Issue #14
+> (DEC-14-ACK-ATTACHMENT-001). The one-submit/total-deadline helper is specified normatively by
+> ADR-0028 and remains #14 implementation work; Issue #17 owns the ParamStore `WriteOptions` policy
+> layered on that contract. No implementation may introduce a second acknowledgement format.
 
 Acknowledged Put and PutBatch use one data submission followed by bounded result polling:
 
@@ -268,10 +269,20 @@ Acknowledged Put and PutBatch use one data submission followed by bounded result
    absent (an acknowledgement-free write), a valid token, or malformed. A malformed attachment
    (unknown version, wrong length, or non-v4 UUID) is rejected before application and recorded as a
    protocol error; it never creates a result.
-3. StorageNode claims the token before mutation, applies the operation, and retains an immutable
-   `AckResultV1` in a bounded 4096-entry completion ring so it can answer
-   `<prefix>/meta/ack/<uuid>` with Encoding `sitos.v1.ack`. Absent, Processing, evicted, and
-   restart-lost tokens return zero replies.
+3. StorageNode claims the token under its node-wide registry before mutation (the claim is the
+   token linearization point; the registry mutex is released before engine application), applies
+   the operation, and retains an immutable `AckResultV1` in a bounded 4096-entry completion-order
+   ring so it can answer `<prefix>/meta/ack/<uuid>` with the exact query key and Encoding
+   `sitos.v1.ack`. The route accepts the existing safe id grammar, but only canonical lowercase
+   sitos-generated UUIDv4 text names a result; absent, Processing, evicted, and restart-lost tokens
+   return zero replies. A duplicate token with the same process-local SHA-256 operation fingerprint
+   never repeats apply; a different fingerprint is a rejected collision that preserves the original
+   result. A definite validation rejection (unknown key, read-only snapshot, unknown session,
+   token on a Delete or buffer route, malformed batch) creates a typed failure result without
+   mutating storage; a boolean engine failure or an exception after the engine was invoked is
+   `OutcomeUnknown`. PutBatch applies in order and stops at the first engine failure, reporting the
+   confirmed prefix in `applied_count` and the failed entry in `failed_index`; the same stop-first
+   rule applies to acknowledgement-free batches. Stop clears all token state.
 4. The client polls only the acknowledgement query within one total deadline (query windows of
    `min(1000 ms, remaining)`, at least 100 ms apart, no attempt count) and never resubmits the data
    write. `Timeout` means no valid result was observed; none, some, or all effects may have
