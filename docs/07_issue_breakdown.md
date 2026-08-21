@@ -205,14 +205,20 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 
 ### #14 ack protocol
 * Milestone: v0.5
-* References: [03] §6, [02] §6.2
-* Implementation targets: `include/sitos/ack.hpp`, `src/ack.cpp`, `src/storage_node.cpp`,
+* References: ADR-0028, [03] §6, [02] §§4.4, 6.2, 7.2
+* Implementation targets: `include/sitos/ack.hpp`, `src/ack.cpp`, `include/sitos/transport.hpp`,
+  `src/transport/zenoh_transport.cpp`, `src/storage_node.cpp`, `tests/unit/ack_codec_test.cpp`,
   `tests/integration/ack_test.cpp`
-* Scope: ack ring buffer and `meta/ack/<uuid>` queryable plus one-submit/multiple-poll helper;
-  implementation is blocked until token attachment, batch outcome, and ambiguous Timeout are defined
-* Acceptance criteria: integration tests — ack round-trip, query-only retry, ring eviction, malformed
-  token rejection, and ack-less compatibility
-* Depends on: #11, #85, #86
+* Scope: ADR-0028 acknowledgement substrate — typed Transport boundary
+  (DEC-14-ACK-ATTACHMENT-001), `AckAttachmentV1`/`AckResultV1` codecs and UUIDv4 tokens,
+  `Status::OutcomeUnknown`, StorageNode token registry and 4096-entry completion ring answering
+  `meta/ack/<uuid>`, and the one-submit/total-deadline helper (DEC-14-ACK-CANCEL-001); decisions
+  are recorded on the Issue and implementation proceeds in slices (codecs/boundary → StorageNode →
+  helper)
+* Acceptance criteria: golden-byte and negative codec tests; real-Zenoh attachment round trip;
+  integration tests — ack round-trip, query-only retry, ring eviction, malformed-attachment and
+  duplicate/collision rejection, batch confirmed prefix, and ack-less compatibility
+* Depends on: #11, #85, #86 (all closed)
 
 ### #15 ParamStore: Put/Get/List/Delete
 * Milestone: v0.2

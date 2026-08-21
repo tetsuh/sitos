@@ -5,8 +5,6 @@
 // 17-byte AckAttachmentV1 attachment, the three-state attachment observation,
 // and the AckResultV1 wire codec (golden fixtures in tests/fixtures/ack_v1/).
 
-#include "sitos/ack.hpp"
-
 #include <gtest/gtest.h>
 
 #include <array>
@@ -24,6 +22,7 @@
 #include <variant>
 #include <vector>
 
+#include "sitos/ack.hpp"
 #include "sitos/status.hpp"
 #include "sitos/transport.hpp"
 
@@ -93,28 +92,29 @@ std::vector<std::byte> RawEncode(const AckResultV1& r, std::uint8_t version = 1)
 
 AckResultV1 PutOk() {
   return AckResultV1{AckOperationKind::Put, Status::Ok, AckDurability::Applied, 1,
-                     kAckNoFailedIndex,    0,          kAckNoFailedSequence,  ""};
+                     kAckNoFailedIndex,     0,          kAckNoFailedSequence,   ""};
 }
 
 AckResultV1 PutUnknown(std::string message = "") {
-  return AckResultV1{AckOperationKind::Put, Status::OutcomeUnknown, AckDurability::Applied, 0, 0,
-                     0, kAckNoFailedSequence, std::move(message)};
+  return AckResultV1{AckOperationKind::Put, Status::OutcomeUnknown, AckDurability::Applied, 0, 0, 0,
+                     kAckNoFailedSequence,  std::move(message)};
 }
 
 AckResultV1 BatchOk(std::uint32_t count) {
   return AckResultV1{AckOperationKind::Batch, Status::Ok, AckDurability::Applied, count,
-                     kAckNoFailedIndex,      0,          kAckNoFailedSequence,  ""};
+                     kAckNoFailedIndex,       0,          kAckNoFailedSequence,   ""};
 }
 
 AckResultV1 BatchFailed(Status status, std::uint32_t applied, std::uint32_t failed_index) {
-  return AckResultV1{AckOperationKind::Batch, status, AckDurability::Applied, applied, failed_index,
-                     0, kAckNoFailedSequence, ""};
+  return AckResultV1{
+      AckOperationKind::Batch, status, AckDurability::Applied, applied, failed_index, 0,
+      kAckNoFailedSequence,    ""};
 }
 
 AckResultV1 Fence(Status status, AckDurability durability, std::uint64_t through,
                   std::uint64_t failed_sequence, std::string message = "") {
-  return AckResultV1{AckOperationKind::Fence, status, durability, 0, kAckNoFailedIndex,
-                     through, failed_sequence, std::move(message)};
+  return AckResultV1{AckOperationKind::Fence, status,  durability,      0,
+                     kAckNoFailedIndex,       through, failed_sequence, std::move(message)};
 }
 
 // Asserts that both the encoder and the decoder reject the same invariant violation.
@@ -291,7 +291,8 @@ TEST(AckResultTest, GoldenFixtures) {
       {"result_batch_envelope_invalid", BatchFailed(Status::InvalidArgument, 0, kAckNoFailedIndex)},
       {"result_batch_entry_invalid", BatchFailed(Status::InvalidArgument, 0, 1)},
       {"result_batch_prefix_unknown", BatchFailed(Status::OutcomeUnknown, 2, 2)},
-      {"result_fence_synced_ok", Fence(Status::Ok, AckDurability::Synced, 42, kAckNoFailedSequence)},
+      {"result_fence_synced_ok",
+       Fence(Status::Ok, AckDurability::Synced, 42, kAckNoFailedSequence)},
       {"result_fence_failed_sequence",
        Fence(Status::Error, AckDurability::Applied, 5, 3, "lane 3 failed")},
   };
@@ -365,9 +366,9 @@ TEST(AckResultTest, RejectsUnknownEnumsAndWireForbiddenStatus) {
   ExpectInvalid(r, "Status 255");
 
   // Every allowlisted non-OK status is accepted for a put failure.
-  for (Status status : {Status::NotFound, Status::TypeMismatch, Status::Disconnected,
-                        Status::ReadOnly, Status::InvalidKey, Status::InvalidArgument,
-                        Status::Error, Status::OutcomeUnknown}) {
+  for (Status status :
+       {Status::NotFound, Status::TypeMismatch, Status::Disconnected, Status::ReadOnly,
+        Status::InvalidKey, Status::InvalidArgument, Status::Error, Status::OutcomeUnknown}) {
     r = PutUnknown();
     r.status = status;
     ExpectValid(r, "allowlisted status");
@@ -376,13 +377,13 @@ TEST(AckResultTest, RejectsUnknownEnumsAndWireForbiddenStatus) {
 
 TEST(AckResultTest, RejectsInvalidUtf8Message) {
   const std::vector<std::string> invalid = {
-      std::string("\xFF", 1),              // never valid
-      std::string("\xC0\x80", 2),          // overlong NUL
-      std::string("\xE0\x80\xAF", 3),      // overlong 3-byte
-      std::string("\xED\xA0\x80", 3),      // UTF-16 surrogate
-      std::string("\xF4\x90\x80\x80", 4),  // above U+10FFFF
-      std::string("\xE5\xA4", 2),          // truncated sequence
-      std::string("a\x80", 2),             // stray continuation
+      std::string("\xFF", 1),                  // never valid
+      std::string("\xC0\x80", 2),              // overlong NUL
+      std::string("\xE0\x80\xAF", 3),          // overlong 3-byte
+      std::string("\xED\xA0\x80", 3),          // UTF-16 surrogate
+      std::string("\xF4\x90\x80\x80", 4),      // above U+10FFFF
+      std::string("\xE5\xA4", 2),              // truncated sequence
+      std::string("a\x80", 2),                 // stray continuation
       std::string("\xF8\x88\x80\x80\x80", 5),  // 5-byte form
   };
   for (const auto& message : invalid) {

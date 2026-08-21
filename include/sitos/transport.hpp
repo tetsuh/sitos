@@ -7,6 +7,7 @@
 #ifndef SITOS_TRANSPORT_HPP
 #define SITOS_TRANSPORT_HPP
 
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <functional>
@@ -17,6 +18,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "sitos/result.hpp"
@@ -36,15 +38,45 @@ struct Encoding {
   static constexpr std::string_view kSitosV1 = "sitos.v1";
   /// The well-known encoding for batch sitos payloads.
   static constexpr std::string_view kSitosV1Batch = "sitos.v1.batch";
+  /// The well-known encoding for acknowledgement results (ADR-0028 AckResultV1).
+  static constexpr std::string_view kSitosV1Ack = "sitos.v1.ack";
 
   std::string id;
 };
 
+/// A sitos-generated acknowledgement correlation token: the 16 RFC 4122 bytes
+/// of a UUIDv4 in network order (ADR-0028). Tokens are correlation identifiers,
+/// not credentials; only sitos generates them (see GenerateAckToken in ack.hpp).
+struct AckToken {
+  std::array<std::byte, 16> bytes{};
+
+  bool operator==(const AckToken&) const = default;
+};
+
+/// The sample carried no acknowledgement attachment: an acknowledgement-free write.
+struct AckAttachmentAbsent {
+  bool operator==(const AckAttachmentAbsent&) const = default;
+};
+
+/// The sample carried an attachment that is not a valid AckAttachmentV1
+/// (unknown version, wrong length, or non-v4 UUID). Rejected before application.
+struct AckAttachmentMalformed {
+  bool operator==(const AckAttachmentMalformed&) const = default;
+};
+
+/// What the transport adapter observed about a sample's acknowledgement
+/// attachment (DEC-14-ACK-ATTACHMENT-001). Exactly one alternative holds; the
+/// adapter decodes the wire bytes so that StorageNode never sees them.
+using AckAttachmentObservation =
+    std::variant<AckAttachmentAbsent, AckToken, AckAttachmentMalformed>;
+
 /// Options for put/delete operations.
 struct PutOptions {
-  /// When set, the transport will report the ack token back via
-  /// TransportSample::ack_token so that higher layers can confirm delivery.
-  bool ack = false;
+  /// When set, the adapter attaches this helper-generated token as the exact
+  /// 17-byte AckAttachmentV1 so that StorageNode can acknowledge the write.
+  /// The adapter never invents a token. Delete is acknowledgement-free in v1
+  /// and rejects a token with Status::InvalidArgument.
+  std::optional<AckToken> ack_token;
 };
 
 /// A sample received from a subscriber or query.
@@ -55,7 +87,8 @@ struct TransportSample {
   /// Non-owning payload valid only for the callback that receives this sample.
   std::span<const std::byte> payload;
   Encoding encoding;
-  std::optional<std::string> ack_token;
+  /// Decoded acknowledgement attachment; AckAttachmentAbsent for ack-less samples.
+  AckAttachmentObservation ack;
   Kind kind;
 };
 

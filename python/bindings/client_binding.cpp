@@ -27,12 +27,15 @@ void RegisterClientExceptions(nb::module_& python_module) {
   static nb::exception<TimeoutError> timeout(python_module, "TimeoutError", base);
   static nb::exception<DisconnectedError> disconnected(python_module, "DisconnectedError", base);
   static nb::exception<ReadOnlyError> readonly(python_module, "ReadOnlyError", base);
+  static nb::exception<OutcomeUnknownError> outcome_unknown(python_module, "OutcomeUnknownError",
+                                                            base);
   python_module.attr("SitosError") = base;
   python_module.attr("NotFoundError") = not_found;
   python_module.attr("TypeMismatchError") = mismatch;
   python_module.attr("TimeoutError") = timeout;
   python_module.attr("DisconnectedError") = disconnected;
   python_module.attr("ReadOnlyError") = readonly;
+  python_module.attr("OutcomeUnknownError") = outcome_unknown;
 }
 
 [[noreturn]] void ThrowStatus(Status status, std::string_view message) {
@@ -51,6 +54,8 @@ void RegisterClientExceptions(nb::module_& python_module) {
       throw DisconnectedError(text);
     case PythonErrorKind::kReadOnly:
       throw ReadOnlyError(text);
+    case PythonErrorKind::kOutcomeUnknown:
+      throw OutcomeUnknownError(text);
     case PythonErrorKind::kSitosError:
       throw SitosError(text);
   }

@@ -33,6 +33,8 @@ class StatusCategory final : public std::error_category {
         return "invalid argument";
       case Status::Error:
         return "error";
+      case Status::OutcomeUnknown:
+        return "outcome unknown";
     }
     return "error";
   }

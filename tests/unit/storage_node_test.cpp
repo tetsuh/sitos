@@ -169,7 +169,7 @@ class FakeTransport final : public Transport {
   void InvokeSubscriber(std::string key, TransportSample::Kind kind,
                         std::vector<std::byte> payload, Encoding encoding) {
     if (!subscriber_callback) return;
-    TransportSample sample{std::move(key), payload, std::move(encoding), std::nullopt, kind};
+    TransportSample sample{std::move(key), payload, std::move(encoding), {}, kind};
     subscriber_callback(sample);
   }
 

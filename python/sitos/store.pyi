@@ -4,6 +4,7 @@ from typing import TypeAlias, TypeVar, overload
 from ._sitos import (
     DisconnectedError as DisconnectedError,
     NotFoundError as NotFoundError,
+    OutcomeUnknownError as OutcomeUnknownError,
     ParamInput as ParamInput,
     ParamValue as ParamValue,
     ReadOnlyError as ReadOnlyError,

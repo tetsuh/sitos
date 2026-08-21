@@ -73,7 +73,8 @@ queries, validates, sorts, and materializes owned `(relative_key, value)` pairs 
 an iterator.
 
 ParamStore exports `sitos.SitosError` and its `NotFoundError`, `TypeMismatchError`,
-`TimeoutError`, `DisconnectedError`, and `ReadOnlyError` subclasses. Missing values raise
+`TimeoutError`, `DisconnectedError`, `ReadOnlyError`, and `OutcomeUnknownError` subclasses
+(`OutcomeUnknownError` maps `Status::OutcomeUnknown` under ADR-0028). Missing values raise
 `sitos.NotFoundError`, unless an explicit `default` is supplied; the default is returned unchanged
 only for NotFound. Type conversion failures raise `sitos.TypeMismatchError`; timeout,
 disconnection, and read-only failures raise their corresponding subclasses. `Status::Error` raises

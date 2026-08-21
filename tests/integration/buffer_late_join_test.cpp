@@ -38,7 +38,7 @@ class LateJoinTransport final : public sitos::Transport {
  public:
   sitos::Result<void> Put(std::string_view key, std::span<const std::byte> payload,
                           sitos::Encoding encoding, sitos::PutOptions) override {
-    sitos::TransportSample sample{std::string(key), payload, std::move(encoding), std::nullopt,
+    sitos::TransportSample sample{std::string(key), payload, std::move(encoding), {},
                                   sitos::TransportSample::Kind::Put};
     std::vector<std::function<void(const sitos::TransportSample&)>> callbacks;
     {

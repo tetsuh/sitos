@@ -80,7 +80,7 @@ struct TransportSample {
     std::string key;
     std::span<const std::byte> payload;
     Encoding encoding;
-    std::optional<std::string> ack_token;
+    AckAttachmentObservation ack;  // absent | AckToken | malformed (ADR-0028)
     enum class Kind { Put, Delete } kind;
 };
 

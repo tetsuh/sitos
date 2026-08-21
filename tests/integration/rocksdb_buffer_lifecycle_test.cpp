@@ -73,7 +73,7 @@ class RocksDbTransport final : public sitos::Transport {
 
   sitos::Result<void> PutSample(std::string key, std::vector<std::byte> payload) {
     subscriber_(sitos::TransportSample{
-        std::move(key), payload, {"zenoh/bytes"}, std::nullopt, sitos::TransportSample::Kind::Put});
+        std::move(key), payload, {"zenoh/bytes"}, {}, sitos::TransportSample::Kind::Put});
     return sitos::Result<void>::Ok();
   }
 

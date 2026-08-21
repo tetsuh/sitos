@@ -6,6 +6,7 @@ from .node import InMemoryEngine, SessionView, StorageNode
 from .store import (
     DisconnectedError,
     NotFoundError,
+    OutcomeUnknownError,
     ParamStore,
     ReadOnlyError,
     SitosError,
@@ -32,4 +33,5 @@ __all__ = [
     "TimeoutError",
     "DisconnectedError",
     "ReadOnlyError",
+    "OutcomeUnknownError",
 ]

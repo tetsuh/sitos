@@ -122,7 +122,7 @@ class FakeTransport final : public Transport {
       callback = subscriber;
     }
     ASSERT_TRUE(callback);
-    TransportSample sample{std::move(key), payload, Encoding{std::move(encoding)}, std::nullopt,
+    TransportSample sample{std::move(key), payload, Encoding{std::move(encoding)}, {},
                            kind};
     callback(sample);
   }
@@ -138,7 +138,7 @@ class FakeTransport final : public Transport {
   bool emit_during_declaration = false;
   std::vector<std::byte> declaration_payload;
   TransportSample declaration_sample{
-      "sitos/session/s1/declaration", {}, Encoding{std::string(Encoding::kSitosV1)}, std::nullopt,
+      "sitos/session/s1/declaration", {}, Encoding{std::string(Encoding::kSitosV1)}, {},
       TransportSample::Kind::Put};
   std::atomic<int> reset_count{0};
   std::function<void()> reset_hook;
@@ -201,7 +201,7 @@ TEST(ParamCacheTest, DeclarationCallbackIsBufferedBeforeInitialGet) {
   transport->declaration_payload = payload;
   transport->declaration_sample = TransportSample{
       "sitos/session/s1/declaration", transport->declaration_payload,
-      Encoding{std::string(Encoding::kSitosV1)}, std::nullopt, TransportSample::Kind::Put};
+      Encoding{std::string(Encoding::kSitosV1)}, {}, TransportSample::Kind::Put};
   transport->emit_during_declaration = true;
   auto result = ParamCache::Open(transport);
   ASSERT_TRUE(result.IsOk());

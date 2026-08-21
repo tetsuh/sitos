@@ -63,7 +63,7 @@ class FakeTransport final : public sitos::Transport {
       deliver = sync_delivery_;
     }
     if (deliver && callback) {
-      sitos::TransportSample sample{std::string(key), payload, std::move(encoding), std::nullopt,
+      sitos::TransportSample sample{std::string(key), payload, std::move(encoding), {},
                                     sitos::TransportSample::Kind::Put};
       callback(sample);
     }
@@ -352,7 +352,7 @@ TEST_F(ParamCacheReadTest, DelayedSelfEchoUsesSubscriberSerializationOrder) {
   const auto payload = transport->PutPayload(0);
   sitos::TransportSample delayed{"sitos/session/s1/ordered", payload,
                                 sitos::Encoding{std::string(sitos::Encoding::kSitosV1)},
-                                std::nullopt, sitos::TransportSample::Kind::Put};
+                                {}, sitos::TransportSample::Kind::Put};
   transport->Deliver(delayed);
   EXPECT_EQ(cache->Get<std::int64_t>("ordered").Value(), 1);
 }
@@ -635,7 +635,7 @@ TEST_F(ParamCacheReadTest, ConcurrentReadersAndWriterSwapsAreSafe) {
       [&](int round) {
         const auto value = sitos::ParamValue(static_cast<std::int64_t>(round + kRounds + 2));
         transport->Deliver({"sitos/session/s1/a", value.Encode(),
-                            sitos::Encoding{std::string(sitos::Encoding::kSitosV1)}, std::nullopt,
+                            sitos::Encoding{std::string(sitos::Encoding::kSitosV1)}, {},
                             sitos::TransportSample::Kind::Put});
       },
       kRounds + 2);

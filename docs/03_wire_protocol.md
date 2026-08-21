@@ -117,6 +117,7 @@ Authoritative Encoding rules are route-specific [C02]:
 ```
 zenoh/bytes;sitos.v1          (single parameter value)
 zenoh/bytes;sitos.v1.batch    (base/session batch, §5)
+zenoh/bytes;sitos.v1.ack      (acknowledgement result, §6)
 zenoh/bytes                   (durable or ephemeral buffer value)
 ```
 
@@ -134,7 +135,7 @@ For parameter traffic, `Encoding` is type `zenoh/bytes` plus a schema suffix
 [ADR-0016]. Senders emit the canonical slash spelling above. Parameter
 receivers also accept the legacy `zenoh.bytes;<schema>` spelling and
 schema-only identifiers for compatibility, but normalize recognized sitos
-schemas to `sitos.v1` or `sitos.v1.batch` in the transport-independent API.
+schemas to `sitos.v1`, `sitos.v1.batch`, or `sitos.v1.ack` in the transport-independent API.
 
 Parameter receiver interpretation rules:
 
@@ -249,25 +250,78 @@ Repeated N times thereafter:
 
 ## 6. ack protocol (Put completion confirmation)
 
-> **Planned, not yet normative:** `PutOptions::ack` and `TransportSample::ack_token` already
-> provide the Transport-level acknowledgement surface. Before implementation, Issue #14 must
-> finalize how that surface creates and attaches a caller-visible token, together with its
-> representation, UUID grammar, batch outcome, and ambiguous-timeout contract. Issue #17 owns the
-> ParamStore policy layered on that contract. No implementation may infer missing details from this
-> outline or introduce a second acknowledgement format.
+> **Normative design; implementation in progress:** Accepted ADR-0028 owns this contract. The
+> Transport boundary types, `AckAttachmentV1`, `AckResultV1`, the `sitos.v1.ack` Encoding, UUIDv4
+> tokens, and `Status::OutcomeUnknown` below are implemented under Issue #14
+> (DEC-14-ACK-ATTACHMENT-001). The StorageNode token lifecycle, `meta/ack/<uuid>` route behavior,
+> and the one-submit/total-deadline helper are specified normatively by ADR-0028 and remain #14
+> implementation work; Issue #17 owns the ParamStore `WriteOptions` policy layered on that contract.
+> No implementation may introduce a second acknowledgement format.
 
-The planned behavior is one data submission followed by bounded polling:
+Acknowledged Put and PutBatch use one data submission followed by bounded result polling:
 
-1. The client requests acknowledgement through `PutOptions::ack`; the finalized #14 semantics
-   generate one caller-visible token and attach it through the Transport adapter.
-2. After completing the apply, StorageNode keeps a completion record in a ring buffer containing
-   the most recent 4096 entries, so it can answer `<prefix>/meta/ack/<uuid>` queries.
-3. The client polls `<prefix>/meta/ack/<uuid>` with a 1-second query window for up to three
-   attempts. It retries only the acknowledgement query and never resubmits the data write.
+1. sitos generates one canonical random UUIDv4 token per acknowledged operation and passes it to
+   the Transport adapter through `PutOptions::ack_token`. The adapter encodes it as
+   `AckAttachmentV1` and never invents a token; the high-level APIs never accept caller-selected
+   tokens.
+2. The adapter decodes a received attachment into the typed `TransportSample::ack` observation:
+   absent (an acknowledgement-free write), a valid token, or malformed. A malformed attachment
+   (unknown version, wrong length, or non-v4 UUID) is rejected before application and recorded as a
+   protocol error; it never creates a result.
+3. StorageNode claims the token before mutation, applies the operation, and retains an immutable
+   `AckResultV1` in a bounded 4096-entry completion ring so it can answer
+   `<prefix>/meta/ack/<uuid>` with Encoding `sitos.v1.ack`. Absent, Processing, evicted, and
+   restart-lost tokens return zero replies.
+4. The client polls only the acknowledgement query within one total deadline (query windows of
+   `min(1000 ms, remaining)`, at least 100 ms apart, no attempt count) and never resubmits the data
+   write. `Timeout` means no valid result was observed; none, some, or all effects may have
+   occurred. `OutcomeUnknown` means StorageNode observed and attempted the operation but can make
+   no stronger application claim.
 
-Clients that do not attach a token remain ack-less. Exhausted polling reports Timeout, which may
-mean that the write was applied but its bounded acknowledgement record was absent or evicted; #14
-must finalize how callers observe that ambiguity.
+Delete remains acknowledgement-free in v1; the adapter rejects `PutOptions::ack_token` on Delete
+with `Status::InvalidArgument`, and a non-v4 token on Put is also `Status::InvalidArgument`.
+
+#### AckAttachmentV1 (exactly 17 bytes)
+
+```text
+offset  size  field
+0       1     schema_version = 1
+1       16    UUID bytes in RFC 4122 network order (version 4, variant 10)
+```
+
+The canonical query spelling of the same token is lowercase `8-4-4-4-12` text; the wire carries
+bytes, never text. Golden fixture: `tests/fixtures/ack_v1/attachment_put_token.hex`
+(token `550e8400-e29b-41d4-a716-446655440000`).
+
+#### AckResultV1 (`zenoh/bytes;sitos.v1.ack`)
+
+```text
+offset  size  field
+0       1     schema_version = 1
+1       1     operation_kind: put = 1, batch = 2, fence = 3
+2       1     status: stable sitos Status numeric value
+3       1     durability: applied = 1, synced = 2
+4       4     applied_count_le
+8       4     failed_index_le; UINT32_MAX means none/not applicable
+12      8     through_sequence_le; 0 means not applicable
+20      8     failed_sequence_le; UINT64_MAX means none/not applicable
+28      4     message_length_le
+32      n     sanitized UTF-8 message; 0 <= n <= 1024
+```
+
+The encoded length must equal `32 + message_length`. The closed Status allowlist is `Ok = 0`,
+`NotFound = 1`, `TypeMismatch = 2`, `Disconnected = 4`, `ReadOnly = 5`, `InvalidKey = 6`,
+`InvalidArgument = 7`, `Error = 8`, and `OutcomeUnknown = 9`; `Timeout = 3` is client-only and
+rejected on the wire. Unknown versions, operation kinds, durability values, or Status values;
+invalid sentinels; invalid UTF-8; and truncated, trailing, or overlong data are protocol errors.
+Per-operation invariants follow the ADR-0028 table: Put and Batch always use `applied`; Put success
+has `applied_count = 1` and no `failed_index`, Put failure has `applied_count = 0` and
+`failed_index = 0`; Batch success has no `failed_index`, an envelope failure has
+`applied_count = 0` and no `failed_index`, and an entry failure names the entry with
+`applied_count` either `0` or equal to `failed_index` (the confirmed prefix); Fence has
+`applied_count = 0`, no `failed_index`, and a `failed_sequence` that is either none or nonzero and
+no greater than `through_sequence`. Put and Batch leave both sequence fields not applicable.
+Golden fixtures: `tests/fixtures/ack_v1/result_*.hex`.
 
 ### 6.1 Same-publisher Fence control
 

@@ -6,6 +6,7 @@ import numpy.typing as npt
 from ._sitos import (
     DisconnectedError as DisconnectedError,
     NotFoundError as NotFoundError,
+    OutcomeUnknownError as OutcomeUnknownError,
     ParamInput as ParamInput,
     ParamValue as ParamValue,
     ReadOnlyError as ReadOnlyError,

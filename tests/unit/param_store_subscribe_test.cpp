@@ -146,16 +146,16 @@ class FakeTransport final : public sitos::Transport {
                std::string encoding = std::string(sitos::Encoding::kSitosV1)) {
     auto payload = value.Encode();
     Emit(sitos::TransportSample{std::move(key), payload, sitos::Encoding{std::move(encoding)},
-                                std::nullopt, sitos::TransportSample::Kind::Put});
+                                {}, sitos::TransportSample::Kind::Put});
   }
 
   void EmitRaw(std::string key, std::vector<std::byte> payload, std::string encoding) {
     Emit(sitos::TransportSample{std::move(key), payload, sitos::Encoding{std::move(encoding)},
-                                std::nullopt, sitos::TransportSample::Kind::Put});
+                                {}, sitos::TransportSample::Kind::Put});
   }
 
   void EmitDelete(std::string key) {
-    Emit(sitos::TransportSample{std::move(key), {}, {}, std::nullopt,
+    Emit(sitos::TransportSample{std::move(key), {}, {}, {},
                                 sitos::TransportSample::Kind::Delete});
   }
 
@@ -243,7 +243,7 @@ sitos::TransportSample MakePutSample() {
   static const auto payload = sitos::ParamValue(true).Encode();
   return sitos::TransportSample{"sitos/base/flag", payload,
                                 sitos::Encoding{std::string(sitos::Encoding::kSitosV1)},
-                                std::nullopt, sitos::TransportSample::Kind::Put};
+                                {}, sitos::TransportSample::Kind::Put};
 }
 
 TEST(ParamStoreSubscribeTest, SynchronousDeclarationSampleIsStagedAndDrained) {
@@ -307,7 +307,7 @@ TEST(ParamStoreSubscribeTest, BatchPreservesOrderAndDuplicates) {
   transport->Emit(sitos::TransportSample{"sitos/base/:batch", payload,
                                           sitos::Encoding{
                                               std::string(sitos::Encoding::kSitosV1Batch)},
-                                          std::nullopt, sitos::TransportSample::Kind::Put});
+                                          {}, sitos::TransportSample::Kind::Put});
 
   ASSERT_EQ(changes.size(), 3U);
   EXPECT_EQ(changes[0].key, "foo/one");
@@ -866,7 +866,7 @@ TEST(ParamStoreSubscribeTest, RejectsMalformedBatchInputsWithoutCallbacks) {
   malformed.pop_back();
   transport->Emit(sitos::TransportSample{
       "sitos/base/:batch", malformed,
-      sitos::Encoding{std::string(sitos::Encoding::kSitosV1Batch)}, std::nullopt,
+      sitos::Encoding{std::string(sitos::Encoding::kSitosV1Batch)}, {},
       sitos::TransportSample::Kind::Put});
   auto invalid_entries = std::vector<sitos::BatchEntry>{
       {"valid-before-invalid", sitos::ParamValue(true)},
@@ -874,12 +874,12 @@ TEST(ParamStoreSubscribeTest, RejectsMalformedBatchInputsWithoutCallbacks) {
   const auto invalid_batch = sitos::EncodeBatch(invalid_entries);
   transport->Emit(sitos::TransportSample{
       "sitos/base/:batch", invalid_batch,
-      sitos::Encoding{std::string(sitos::Encoding::kSitosV1Batch)}, std::nullopt,
+      sitos::Encoding{std::string(sitos::Encoding::kSitosV1Batch)}, {},
       sitos::TransportSample::Kind::Put});
   const auto wrong_encoding_batch = sitos::EncodeBatch(valid_entries);
   transport->Emit(sitos::TransportSample{
       "sitos/base/:batch", wrong_encoding_batch, sitos::Encoding{"application/octet-stream"},
-      std::nullopt, sitos::TransportSample::Kind::Put});
+      {}, sitos::TransportSample::Kind::Put});
   transport->EmitDelete("sitos/base/:batch");
   EXPECT_EQ(callbacks, 0);
   EXPECT_EQ(sink->Count(sitos::LogLevel::kWarning), 4U);
@@ -999,7 +999,7 @@ TEST(ParamStoreSubscribeTest, CloseDrainsPendingBatchAndBlocksPostCloseDiagnosti
     transport->Emit(sitos::TransportSample{"sitos/base/:batch", sitos::EncodeBatch(entries),
                                             sitos::Encoding{
                                                 std::string(sitos::Encoding::kSitosV1Batch)},
-                                            std::nullopt, sitos::TransportSample::Kind::Put});
+                                            {}, sitos::TransportSample::Kind::Put});
   });
   bool entered_in_time = false;
   {
@@ -1280,7 +1280,7 @@ TEST(ParamStoreSubscribeTest, BatchDoesNotInterleaveConcurrentOrdinarySample) {
     transport->Emit(sitos::TransportSample{"sitos/base/:batch", sitos::EncodeBatch(entries),
                                             sitos::Encoding{
                                                 std::string(sitos::Encoding::kSitosV1Batch)},
-                                            std::nullopt, sitos::TransportSample::Kind::Put});
+                                            {}, sitos::TransportSample::Kind::Put});
   });
   bool entered_in_time = false;
   {

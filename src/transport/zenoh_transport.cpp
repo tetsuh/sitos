@@ -25,6 +25,8 @@
 
 #include "sitos/transport.hpp"
 
+#include "sitos/ack.hpp"
+
 #include "config_failure.hpp"
 #include "declaration_handle_lifecycle.hpp"
 #include "get_completion.hpp"
@@ -200,7 +202,8 @@ Result<ZenohOwned<z_owned_keyexpr_t>> MakeKeyexpr(std::string_view key) {
 }
 
 bool IsSitosSchema(std::string_view id) {
-  return id == Encoding::kSitosV1 || id == Encoding::kSitosV1Batch;
+  return id == Encoding::kSitosV1 || id == Encoding::kSitosV1Batch ||
+         id == Encoding::kSitosV1Ack;
 }
 
 std::optional<std::string_view> SitosSchemaFromEncoding(std::string_view id) {
@@ -250,6 +253,18 @@ Encoding ReadEncoding(const z_loaned_sample_t* sample) {
   wire.mark_valid();
   return NormalizeEncoding(
       std::string(z_string_data(wire.loan()), z_string_len(wire.loan())));
+}
+
+// Decode the sample's attachment into the typed three-state observation
+// (DEC-14-ACK-ATTACHMENT-001). StorageNode never sees the raw bytes.
+AckAttachmentObservation ReadAckAttachment(const z_loaned_sample_t* sample) {
+  const z_loaned_bytes_t* attachment = z_sample_attachment(sample);
+  if (attachment == nullptr) return AckAttachmentAbsent{};
+  ZenohOwned<z_owned_slice_t> slice;
+  if (z_bytes_to_slice(attachment, slice.get()) != Z_OK) return AckAttachmentMalformed{};
+  slice.mark_valid();
+  const auto* data = reinterpret_cast<const std::byte*>(z_slice_data(slice.loan()));
+  return ObserveAckAttachment(std::span<const std::byte>(data, z_slice_len(slice.loan())));
 }
 
 // Build a z_owned_bytes_t from a byte payload.
@@ -496,7 +511,7 @@ void OnSubscriberSample(z_loaned_sample_t* sample, void* context) noexcept {
       const auto length = z_slice_len(slice.loan());
       TransportSample transport_sample{
           std::move(key), std::span<const std::byte>(data, length), ReadEncoding(sample),
-          std::nullopt, TransportSample::Kind::Put};
+          ReadAckAttachment(sample), TransportSample::Kind::Put};
       if (state->active.load(std::memory_order_acquire) && state->callback) {
         state->callback(transport_sample);
       }
@@ -504,7 +519,7 @@ void OnSubscriberSample(z_loaned_sample_t* sample, void* context) noexcept {
     }
 
     // DELETE payloads and encodings are deliberately not inspected.
-    TransportSample transport_sample{std::move(key), {}, {}, std::nullopt,
+    TransportSample transport_sample{std::move(key), {}, {}, AckAttachmentAbsent{},
                                      TransportSample::Kind::Delete};
     if (state->active.load(std::memory_order_acquire) && state->callback) {
       state->callback(transport_sample);
@@ -751,7 +766,10 @@ class ZenohTransport : public Transport {
   }
 
   Result<void> Put(std::string_view key, std::span<const std::byte> payload, Encoding encoding,
-                   PutOptions /*options*/) override {
+                   PutOptions options) override {
+    if (options.ack_token.has_value() && !IsValidAckToken(*options.ack_token)) {
+      return SemanticTransportError<void>(Status::InvalidArgument, TransportErrc::kErrInvalidArg);
+    }
     if (!session_valid_) {
       return SemanticTransportError<void>(Status::Disconnected, TransportErrc::kErrDisconnected);
     }
@@ -769,13 +787,28 @@ class ZenohTransport : public Transport {
     z_put_options_default(&opts);
     opts.encoding = enc.Value().moved();
 
+    // ADR-0028: the adapter encodes the helper-generated token as the exact
+    // 17-byte AckAttachmentV1; it never invents one.
+    ZenohOwned<z_owned_bytes_t> attachment;
+    if (options.ack_token.has_value()) {
+      const auto encoded = EncodeAckAttachment(*options.ack_token);
+      auto bytes = MakeBytes(encoded);
+      if (!bytes.IsOk()) return Result<void>::ErrFrom(bytes);
+      attachment = std::move(bytes).Value();
+      opts.attachment = attachment.moved();
+    }
+
     z_result_t rc = z_put(z_session_loan(&session_), ke.Value().loan(), p.Value().moved(), &opts);
 
     if (rc != Z_OK) return Result<void>::Err(MakeZenohError(rc));
     return Result<void>::Ok();
   }
 
-  Result<void> Delete(std::string_view key, PutOptions /*options*/) override {
+  Result<void> Delete(std::string_view key, PutOptions options) override {
+    // Delete remains acknowledgement-free in v1 (ADR-0028).
+    if (options.ack_token.has_value()) {
+      return SemanticTransportError<void>(Status::InvalidArgument, TransportErrc::kErrInvalidArg);
+    }
     if (!session_valid_) {
       return SemanticTransportError<void>(Status::Disconnected, TransportErrc::kErrDisconnected);
     }

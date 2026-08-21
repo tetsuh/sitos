@@ -91,7 +91,7 @@ class TestTransport final : public Transport {
   void Publish(std::string key, std::span<const std::byte> payload, Encoding encoding,
                TransportSample::Kind kind = TransportSample::Kind::Put) {
     if (!subscriber) return;
-    subscriber(TransportSample{std::move(key), payload, std::move(encoding), std::nullopt, kind});
+    subscriber(TransportSample{std::move(key), payload, std::move(encoding), {}, kind});
   }
 
   int get_count = 0;

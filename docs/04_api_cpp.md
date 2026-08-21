@@ -73,7 +73,8 @@ enum class Status {
     ReadOnly = 5,
     InvalidKey = 6,
     InvalidArgument = 7,
-    Error = 8
+    Error = 8,
+    OutcomeUnknown = 9   // observed by StorageNode, no stronger application claim (ADR-0028)
 };
 const std::error_category& StatusErrorCategory() noexcept;
 std::error_code MakeErrorCode(Status status);
@@ -91,6 +92,7 @@ Result<void> ValidateClientConfig(const ClientConfig& config);
 struct Encoding {
     static constexpr std::string_view kSitosV1 = "sitos.v1";
     static constexpr std::string_view kSitosV1Batch = "sitos.v1.batch";
+    static constexpr std::string_view kSitosV1Ack = "sitos.v1.ack";
     std::string id;
 };
 
