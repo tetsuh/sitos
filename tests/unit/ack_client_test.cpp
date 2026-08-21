@@ -48,12 +48,12 @@ const Encoding kAckEncoding{std::string(Encoding::kSitosV1Ack)};
 
 AckResultV1 PutOk() {
   return AckResultV1{AckOperationKind::Put, Status::Ok, AckDurability::Applied, 1,
-                     kAckNoFailedIndex,    0,          kAckNoFailedSequence,  ""};
+                     kAckNoFailedIndex,     0,          kAckNoFailedSequence,   ""};
 }
 
 AckResultV1 PutUnknown() {
-  return AckResultV1{AckOperationKind::Put, Status::OutcomeUnknown, AckDurability::Applied, 0, 0,
-                     0, kAckNoFailedSequence, "engine refused"};
+  return AckResultV1{AckOperationKind::Put, Status::OutcomeUnknown, AckDurability::Applied, 0, 0, 0,
+                     kAckNoFailedSequence,  "engine refused"};
 }
 
 // Scripted Transport: records every Put and Get, answers each Get from a
@@ -112,8 +112,7 @@ class ScriptedTransport final : public sitos::Transport {
       }
       case Step::Kind::ReplyWrongKey: {
         const auto encoded = sitos::EncodeAckResult(PutOk());
-        sink("sitos/meta/ack/00000000-0000-4000-8000-000000000000", encoded.Value(),
-             kAckEncoding);
+        sink("sitos/meta/ack/00000000-0000-4000-8000-000000000000", encoded.Value(), kAckEncoding);
         return Result<void>::Ok();
       }
       case Step::Kind::ReplyWrongEncoding: {

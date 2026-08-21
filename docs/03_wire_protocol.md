@@ -250,14 +250,14 @@ Repeated N times thereafter:
 
 ## 6. ack protocol (Put completion confirmation)
 
-> **Normative design; implementation in progress:** Accepted ADR-0028 owns this contract. The
-> Transport boundary types, `AckAttachmentV1`, `AckResultV1`, the `sitos.v1.ack` Encoding, UUIDv4
-> tokens, `Status::OutcomeUnknown`, the StorageNode token lifecycle (claim before mutation,
-> Processing/Completed registry with operation fingerprints, 4096-entry completion ring), and the
-> `meta/ack/<uuid>` route behavior below are implemented under Issue #14
-> (DEC-14-ACK-ATTACHMENT-001). The one-submit/total-deadline helper is specified normatively by
-> ADR-0028 and remains #14 implementation work; Issue #17 owns the ParamStore `WriteOptions` policy
-> layered on that contract. No implementation may introduce a second acknowledgement format.
+> **Normative; implemented:** Accepted ADR-0028 owns this contract. Issue #14 implements the
+> Transport boundary types (DEC-14-ACK-ATTACHMENT-001), `AckAttachmentV1`, `AckResultV1`, the
+> `sitos.v1.ack` Encoding, UUIDv4 tokens, `Status::OutcomeUnknown`, the StorageNode token lifecycle
+> (claim before mutation, Processing/Completed registry with operation fingerprints, 4096-entry
+> completion ring), the `meta/ack/<uuid>` route behavior, and the internal one-submit/total-deadline
+> helper (`SubmitAcknowledgedWrite`, no cancellation API per DEC-14-ACK-CANCEL-001). Issue #17 owns
+> the ParamStore `WriteOptions` policy layered on that helper. No implementation may introduce a
+> second acknowledgement format.
 
 Acknowledged Put and PutBatch use one data submission followed by bounded result polling:
 
@@ -283,11 +283,16 @@ Acknowledged Put and PutBatch use one data submission followed by bounded result
    `OutcomeUnknown`. PutBatch applies in order and stops at the first engine failure, reporting the
    confirmed prefix in `applied_count` and the failed entry in `failed_index`; the same stop-first
    rule applies to acknowledgement-free batches. Stop clears all token state.
-4. The client polls only the acknowledgement query within one total deadline (query windows of
-   `min(1000 ms, remaining)`, at least 100 ms apart, no attempt count) and never resubmits the data
-   write. `Timeout` means no valid result was observed; none, some, or all effects may have
-   occurred. `OutcomeUnknown` means StorageNode observed and attempted the operation but can make
-   no stronger application claim.
+4. The client helper starts the total deadline immediately before the sole data Put, then polls
+   only the acknowledgement query (query windows of `min(1000 ms, remaining)`, one active query,
+   at least 100 ms apart, no attempt count) and never resubmits the data write. After each query
+   quiesces, a protocol error (wrong reply key or Encoding, malformed result → `Status::Error`)
+   takes precedence, then one valid decoded result, otherwise the zero reply or Get failure is
+   retried until the deadline. A non-OK Put return is conservatively treated as possibly submitted
+   and still polled. `Timeout` means no valid result was observed; none, some, or all effects may
+   have occurred, and the latest native cause is retained for diagnostics. `OutcomeUnknown` means
+   StorageNode observed and attempted the operation but can make no stronger application claim.
+   Neither status triggers retry, resubmission, or reconnection.
 
 Delete remains acknowledgement-free in v1; the adapter rejects `PutOptions::ack_token` on Delete
 with `Status::InvalidArgument`, and a non-v4 token on Put is also `Status::InvalidArgument`.

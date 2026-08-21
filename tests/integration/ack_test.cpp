@@ -5,6 +5,8 @@
 // helper submits one tokenized Put/PutBatch, StorageNode claims, applies, and
 // retains the typed result, and meta/ack/<uuid> answers within the deadline.
 
+#include "sitos/ack.hpp"
+
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -21,7 +23,6 @@
 #include <vector>
 
 #include "ack_client.hpp"
-#include "sitos/ack.hpp"
 #include "sitos/batch.hpp"
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/param_value.hpp"
@@ -44,10 +45,10 @@ class FailAtEngine final : public sitos::StorageEngine {
     return backing_.Put(key, value);
   }
   bool Delete(std::string_view key) override { return backing_.Delete(key); }
-  bool Get(std::string_view key, const EntrySink& sink) const override {
+  bool Get(std::string_view key, const sitos::EntrySink& sink) const override {
     return backing_.Get(key, sink);
   }
-  bool List(std::string_view prefix, const EntrySink& sink) const override {
+  bool List(std::string_view prefix, const sitos::EntrySink& sink) const override {
     return backing_.List(prefix, sink);
   }
   std::optional<std::size_t> fail_at;
@@ -104,10 +105,11 @@ TEST_F(AckIntegrationTest, PutAckTimesOutWhenNodeUnavailable) {
   // raw subscriber, and the helper returns Timeout after the total deadline.
   std::mutex mutex;
   int observed = 0;
-  auto subscription = transport_->DeclareSubscriber(Key("lonely"), [&](const sitos::TransportSample&) {
-    std::lock_guard<std::mutex> lock(mutex);
-    ++observed;
-  });
+  auto subscription =
+      transport_->DeclareSubscriber(Key("lonely"), [&](const sitos::TransportSample&) {
+        std::lock_guard<std::mutex> lock(mutex);
+        ++observed;
+      });
   ASSERT_TRUE(subscription.IsOk());
 
   const auto start = std::chrono::steady_clock::now();
@@ -131,9 +133,9 @@ TEST_F(AckIntegrationTest, BatchConfirmedPrefixIsReportedOverZenoh) {
       {"y", sitos::ParamValue(std::int64_t{2})},
       {"z", sitos::ParamValue(std::int64_t{3})}};
   const auto payload = sitos::EncodeBatch(entries);
-  const auto result = sitos::SubmitAcknowledgedWrite(*transport_, kPrefix, Key(":batch"), payload,
-                                                     {std::string(sitos::Encoding::kSitosV1Batch)},
-                                                     3000ms);
+  const auto result =
+      sitos::SubmitAcknowledgedWrite(*transport_, kPrefix, Key(":batch"), payload,
+                                     {std::string(sitos::Encoding::kSitosV1Batch)}, 3000ms);
   ASSERT_TRUE(result.IsOk()) << result.Message();
   EXPECT_EQ(result.Value().operation_kind, AckOperationKind::Batch);
   EXPECT_EQ(result.Value().status, Status::OutcomeUnknown);
