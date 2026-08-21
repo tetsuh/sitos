@@ -12,14 +12,21 @@
 namespace sitos {
 namespace {
 
-void AppendLengthPrefixed(std::vector<std::byte>& out, std::span<const std::byte> field) {
-  const auto length = static_cast<std::uint64_t>(field.size());
-  for (int i = 0; i < 8; ++i) out.push_back(static_cast<std::byte>((length >> (8 * i)) & 0xFF));
-  out.insert(out.end(), field.begin(), field.end());
-}
-
 std::span<const std::byte> AsBytes(std::string_view text) {
   return {reinterpret_cast<const std::byte*>(text.data()), text.size()};
+}
+
+// Writes a 64-bit little-endian length followed by the field bytes at `offset`
+// and returns the next offset. Fields are length-delimited so that moving bytes
+// between adjacent fields always changes the digest.
+std::size_t PutLengthPrefixed(std::span<std::byte> out, std::size_t offset,
+                              std::span<const std::byte> field) {
+  const auto length = static_cast<std::uint64_t>(field.size());
+  for (int i = 0; i < 8; ++i) {
+    out[offset++] = static_cast<std::byte>((length >> (8 * i)) & 0xFF);
+  }
+  for (std::byte b : field) out[offset++] = b;
+  return offset;
 }
 
 }  // namespace
@@ -27,12 +34,14 @@ std::span<const std::byte> AsBytes(std::string_view text) {
 AckFingerprint ComputeAckFingerprint(AckOperationKind kind, std::string_view full_key,
                                      std::string_view encoding_id,
                                      std::span<const std::byte> payload) {
-  std::vector<std::byte> material;
-  material.reserve(1 + 3 * 8 + full_key.size() + encoding_id.size() + payload.size());
-  material.push_back(static_cast<std::byte>(kind));
-  AppendLengthPrefixed(material, AsBytes(full_key));
-  AppendLengthPrefixed(material, AsBytes(encoding_id));
-  AppendLengthPrefixed(material, payload);
+  // Sized once and written by index (also avoids a gcc 14 -O3
+  // -Wfree-nonheap-object false positive on the reserve/push_back path).
+  std::vector<std::byte> material(1 + 3 * 8 + full_key.size() + encoding_id.size() +
+                                  payload.size());
+  material[0] = static_cast<std::byte>(kind);
+  std::size_t offset = PutLengthPrefixed(material, 1, AsBytes(full_key));
+  offset = PutLengthPrefixed(material, offset, AsBytes(encoding_id));
+  offset = PutLengthPrefixed(material, offset, payload);
   return AckFingerprint{Sha256(material)};
 }
 
