@@ -297,7 +297,7 @@ Acknowledged Put and PutBatch use one data submission followed by bounded result
 Delete remains acknowledgement-free in v1; the adapter rejects `PutOptions::ack_token` on Delete
 with `Status::InvalidArgument`, and a non-v4 token on Put is also `Status::InvalidArgument`.
 
-#### AckAttachmentV1 (exactly 17 bytes)
+### AckAttachmentV1 (exactly 17 bytes)
 
 ```text
 offset  size  field
@@ -309,7 +309,7 @@ The canonical query spelling of the same token is lowercase `8-4-4-4-12` text; t
 bytes, never text. Golden fixture: `tests/fixtures/ack_v1/attachment_put_token.hex`
 (token `550e8400-e29b-41d4-a716-446655440000`).
 
-#### AckResultV1 (`zenoh/bytes;sitos.v1.ack`)
+### AckResultV1 (`zenoh/bytes;sitos.v1.ack`)
 
 ```text
 offset  size  field

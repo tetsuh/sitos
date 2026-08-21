@@ -95,11 +95,16 @@ TEST(Sha256Test, MatchesKnownVectors) {
   const std::vector<std::byte> million(1000000, std::byte{'a'});
   EXPECT_EQ(Hex(sitos::Sha256(million)),
             "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
-  // 55/56/64-byte boundaries around the padding rule.
-  EXPECT_EQ(Hex(sitos::Sha256(std::vector<std::byte>(55, std::byte{'x'}))),
-            Hex(sitos::Sha256(std::vector<std::byte>(55, std::byte{'x'}))));
-  EXPECT_NE(Hex(sitos::Sha256(std::vector<std::byte>(56, std::byte{'x'}))),
-            Hex(sitos::Sha256(std::vector<std::byte>(64, std::byte{'x'}))));
+  // 55/56/64-byte inputs straddle the one-block/two-block padding boundary and must
+  // all produce distinct digests.
+  const std::string d55 = Hex(sitos::Sha256(std::vector<std::byte>(55, std::byte{'x'})));
+  const std::string d56 = Hex(sitos::Sha256(std::vector<std::byte>(56, std::byte{'x'})));
+  const std::string d64 = Hex(sitos::Sha256(std::vector<std::byte>(64, std::byte{'x'})));
+  EXPECT_NE(d55, d56);
+  EXPECT_NE(d56, d64);
+  EXPECT_NE(d55, d64);
+  EXPECT_EQ(d55, Hex(sitos::Sha256(std::vector<std::byte>(55, std::byte{'x'}))))
+      << "deterministic";
 }
 
 // ---------------------------------------------------------------------------
