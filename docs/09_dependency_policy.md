@@ -121,6 +121,15 @@ public:
 } // namespace sitos
 ```
 
+The abstract API above shows the implemented dependency boundary; Accepted ADR-0028 and ADR-0029
+reserve two disjoint attachment uses within that boundary. `AckAttachmentV1` is exact 17-byte
+correlation metadata owned by ADR-0028, with production implementation owned by #14.
+`FenceLaneAttachmentV1` is exact 25-byte same-publisher ordering metadata owned by ADR-0029, with
+production implementation owned by #158. The transport adapter encodes and decodes their wire bytes,
+while higher components consume dependency-free typed metadata. Neither attachment changes the key,
+Encoding, parameter payload bytes, or ADR-0032 buffer payload bytes, and v1 does not compose both
+formats on one sample.
+
 `Get` requires a strictly positive timeout and returns only after terminal
 reply-closure completion and callback quiescence. Terminal zero replies are
 successful transport completion. Sinks are serialized within one request and
@@ -139,9 +148,11 @@ This abstraction is limited to **only the zenoh features that sitos needs**:
 | get/queryable/reply | Reads, List, snapshot exposure, ack confirmation |
 | subscriber | Delta delivery, ParamCache updates |
 | Encoding | Identification of `sitos.v1` / `sitos.v1.batch` |
-| attachment | ack token (treated as ack-less put in unsupported environments) |
+| attachment (ADR-0028) | `AckAttachmentV1` operation-result correlation metadata |
+| attachment (ADR-0029) | `FenceLaneAttachmentV1` same-publisher ordering metadata |
 
-Do not depend directly on advanced APIs, unstable APIs, routing policies, and similar features.
+Attachments use only the stable basic attachment surface. Do not depend directly on advanced APIs,
+unstable APIs, routing policies, and similar features.
 
 ## 4. CI policy
 
@@ -199,6 +210,8 @@ The following must not change after zenoh updates:
 * Buffer key paths are exactly `buffers/<sid>/durable/<key>` and
   `buffers/<sid>/ephemeral/<key>`; `BufferClass` is reserved only in the route-class position.
 * Buffer values use opaque bare `zenoh/bytes`; parameter values retain payload-v1 encoding.
+* ADR-0028 ACK and ADR-0029 Fence-lane attachments are transport metadata only and never alter
+  parameter or buffer payload bytes.
 * Durable buffer values are retrievable by Get/List, ephemeral values are live-only, and no
   ephemeral state is retained by StorageNode.
 * Durable late join observes materialized Get replies, then buffered samples, then post-transition
