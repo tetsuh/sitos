@@ -70,6 +70,17 @@ class StorageNodeTestAccess {
     return true;
   }
 
+  /// Processing + Completed ack tokens retained by the live State; nullopt when stopped.
+  static std::optional<std::size_t> AckRegistryEntryCount(StorageNode& node) {
+    std::shared_ptr<StorageNode::State> state;
+    {
+      std::scoped_lock lock(node.lifecycle_mutex_);
+      state = node.state_;
+    }
+    if (!state) return std::nullopt;
+    return state->ack_registry.Size();
+  }
+
   static bool TryLockSubscriberMutex(StorageNode& node) {
     std::shared_ptr<StorageNode::State> state;
     {

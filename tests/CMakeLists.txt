@@ -238,6 +238,21 @@ gtest_add_tests(
   TARGET sitos_transport_get_completion_test
   SOURCES unit/transport_get_completion_test.cpp)
 
+add_executable(sitos_ack_registry_test unit/ack_registry_test.cpp)
+target_link_libraries(sitos_ack_registry_test PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_ack_registry_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+sitos_enable_warnings(sitos_ack_registry_test)
+gtest_add_tests(TARGET sitos_ack_registry_test SOURCES unit/ack_registry_test.cpp)
+
+add_executable(sitos_storage_node_ack_test unit/storage_node_ack_test.cpp)
+target_link_libraries(sitos_storage_node_ack_test PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_storage_node_ack_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+sitos_enable_warnings(sitos_storage_node_ack_test)
+if(SITOS_WITH_ZENOH)
+  sitos_copy_zenohc(sitos_storage_node_ack_test)
+endif()
+gtest_add_tests(TARGET sitos_storage_node_ack_test SOURCES unit/storage_node_ack_test.cpp)
+
 add_executable(sitos_storage_node_test
   unit/storage_node_test.cpp)
 target_link_libraries(sitos_storage_node_test
