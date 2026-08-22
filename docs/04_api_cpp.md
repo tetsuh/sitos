@@ -129,6 +129,7 @@ types in the public API. An injected `std::shared_ptr<Transport>` can be passed 
 | `InvalidKey` | Key/scope/session id violates the grammar | `ValueError` |
 | `InvalidArgument` | Invalid configuration or operation argument | `ValueError` |
 | `Error` | Other implementation-dependent error (RocksDB status, etc.) | `sitos.SitosError` |
+| `OutcomeUnknown` | StorageNode observed and attempted an acknowledged write but the StorageEngine contract cannot prove whether the effect occurred (ADR-0028; never `Timeout`, which is client-only) | `sitos.OutcomeUnknownError` |
 
 Python `get(..., default=...)` does not raise for `NotFound` only; it returns default.
 All other Status values are converted to exceptions.
