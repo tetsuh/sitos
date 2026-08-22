@@ -518,8 +518,9 @@ void OnSubscriberSample(z_loaned_sample_t* sample, void* context) noexcept {
       return;
     }
 
-    // DELETE payloads and encodings are deliberately not inspected.
-    TransportSample transport_sample{std::move(key), {}, {}, AckAttachmentAbsent{},
+    // DELETE payloads and encodings are deliberately not inspected. Attachments
+    // still cross the typed Transport boundary so StorageNode can reject them.
+    TransportSample transport_sample{std::move(key), {}, {}, ReadAckAttachment(sample),
                                      TransportSample::Kind::Delete};
     if (state->active.load(std::memory_order_acquire) && state->callback) {
       state->callback(transport_sample);

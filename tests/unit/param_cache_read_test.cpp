@@ -26,6 +26,7 @@
 
 #include "param_cache_test_access.hpp"
 #include "transport/declaration_handle_test_access.hpp"
+#include "sitos/ack.hpp"
 #include "sitos/batch.hpp"
 
 namespace {
@@ -63,7 +64,9 @@ class FakeTransport final : public sitos::Transport {
       deliver = sync_delivery_;
     }
     if (deliver && callback) {
-      sitos::TransportSample sample{std::string(key), payload, std::move(encoding), {},
+      sitos::AckAttachmentObservation ack = sitos::AckAttachmentAbsent{};
+      if (options.ack_token.has_value()) ack = *options.ack_token;
+      sitos::TransportSample sample{std::string(key), payload, std::move(encoding), std::move(ack),
                                     sitos::TransportSample::Kind::Put};
       callback(sample);
     }
@@ -203,6 +206,26 @@ class FakeTransport final : public sitos::Transport {
   bool release_submission_ = false;
   bool submission_entered_ = false;
 };
+
+TEST(FakeTransportContractTest, SynchronousDeliveryForwardsAckToken) {
+  FakeTransport transport;
+  transport.SetSynchronousDelivery(true);
+  std::optional<sitos::AckAttachmentObservation> observed;
+  auto subscription = transport.DeclareSubscriber(
+      "sitos/**", [&](const sitos::TransportSample& sample) { observed = sample.ack; });
+  ASSERT_TRUE(subscription.IsOk());
+
+  const sitos::AckToken token = sitos::GenerateAckToken();
+  sitos::PutOptions options;
+  options.ack_token = token;
+  ASSERT_TRUE(transport.Put("sitos/base/key", {}, {std::string(sitos::Encoding::kSitosV1)},
+                            options)
+                  .IsOk());
+
+  ASSERT_TRUE(observed.has_value());
+  ASSERT_TRUE(std::holds_alternative<sitos::AckToken>(*observed));
+  EXPECT_EQ(std::get<sitos::AckToken>(*observed), token);
+}
 
 class ParamCacheReadTest : public ::testing::Test {
  protected:

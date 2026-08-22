@@ -284,6 +284,16 @@ TEST(StorageNodeAckTest, MalformedAttachmentIsRejectedBeforeApplication) {
   EXPECT_TRUE(h.sink->Contains("malformed ack attachment; sample rejected"));
 }
 
+TEST(StorageNodeAckTest, MalformedDeleteAttachmentIsRejectedBeforeApplication) {
+  Harness h;
+  h.Start();
+  h.transport.Deliver("sitos/base/a", TransportSample::Kind::Delete, {}, "",
+                      AckAttachmentMalformed{});
+  EXPECT_EQ(h.engine->Deletes(), 0u);
+  EXPECT_EQ(h.RegistryEntries(), 0u);
+  EXPECT_TRUE(h.sink->Contains("malformed ack attachment; sample rejected"));
+}
+
 TEST(StorageNodeAckTest, NonCanonicalOrUnknownTokenQueriesYieldZeroReplies) {
   Harness h;
   h.Start();
