@@ -296,6 +296,45 @@ TEST(StorageNodeAckTest, MalformedDeleteAttachmentIsRejectedBeforeApplication) {
   EXPECT_TRUE(h.sink->Contains("malformed ack attachment; sample rejected"));
 }
 
+TEST(StorageNodeAckTest, MalformedSitosV1PayloadIsRejectedBeforeApplication) {
+  // ADR-0028: StorageNode decodes and validates the complete operation before its
+  // first engine mutation; a definite validation rejection creates a typed failure
+  // result without mutating storage.
+  struct Case {
+    const char* name;
+    std::vector<std::byte> payload;
+  };
+  const std::vector<Case> cases = {
+      {"empty payload", {}},
+      {"unknown type tag", {std::byte{0x7F}, std::byte{0x00}}},
+      {"truncated s64 body", {std::byte{0x01}, std::byte{0x00}}},
+      {"overlong bool body", {std::byte{0x00}, std::byte{0x01}, std::byte{0x02}}},
+  };
+  for (const auto& c : cases) {
+    SCOPED_TRACE(c.name);
+    Harness h;
+    h.Start();
+    const AckToken token = GenerateAckToken();
+    h.transport.Deliver("sitos/base/a", TransportSample::Kind::Put, c.payload, kV1, token);
+    EXPECT_TRUE(h.engine->Puts().empty()) << "no engine call for an invalid payload";
+    ExpectResult(h.QueryAck(token), AckOperationKind::Put, Status::InvalidArgument, 0, 0);
+    EXPECT_TRUE(h.sink->Contains("invalid sitos.v1 payload; sample rejected"));
+  }
+}
+
+TEST(StorageNodeAckTest, ValidSitosV1PayloadStillApplies) {
+  Harness h;
+  h.Start();
+  const AckToken token = h.Put("sitos/base/a");
+  EXPECT_EQ(h.engine->Puts(), (std::vector<std::string>{"a"}));
+  ExpectResult(h.QueryAck(token), AckOperationKind::Put, Status::Ok, 1, kAckNoFailedIndex);
+  // A non-sitos.v1 encoding is wrapped as opaque bytes and remains applicable.
+  const AckToken raw = GenerateAckToken();
+  h.transport.Deliver("sitos/base/b", TransportSample::Kind::Put, h.value_bytes, "zenoh/bytes",
+                      raw);
+  ExpectResult(h.QueryAck(raw), AckOperationKind::Put, Status::Ok, 1, kAckNoFailedIndex);
+}
+
 TEST(StorageNodeAckTest, NonCanonicalOrUnknownTokenQueriesYieldZeroReplies) {
   Harness h;
   h.Start();

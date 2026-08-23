@@ -310,6 +310,45 @@ TEST(AckClientTest, SubmissionConsumingTheDeadlineReturnsTimeoutWithoutQuery) {
   EXPECT_TRUE(transport.Gets().empty()) << "no non-positive query window is opened";
 }
 
+TEST(AckClientTest, CanonicalEmptyBatchShortCircuitsWithoutTokenSubmissionOrQuery) {
+  // ADR-0028: an empty PutBatch returns immediate Ok with no data submission, token,
+  // or query.
+  ScriptedTransport transport;
+  const std::vector<std::byte> empty_batch = {std::byte{0}, std::byte{0}, std::byte{0},
+                                              std::byte{0}};
+  const Encoding batch_encoding{std::string(Encoding::kSitosV1Batch)};
+  const auto result = sitos::SubmitAcknowledgedWrite(transport, kPrefix, "sitos/base/:batch",
+                                                     empty_batch, batch_encoding, 3000ms);
+  ASSERT_TRUE(result.IsOk()) << result.Message();
+  EXPECT_EQ(result.Value().operation_kind, AckOperationKind::Batch);
+  EXPECT_EQ(result.Value().status, Status::Ok);
+  EXPECT_EQ(result.Value().applied_count, 0u);
+  EXPECT_EQ(result.Value().failed_index, kAckNoFailedIndex);
+  EXPECT_TRUE(transport.Puts().empty()) << "no data submission";
+  EXPECT_TRUE(transport.Gets().empty()) << "no acknowledgement query";
+
+  // A malformed batch payload is not a canonical empty batch and is still submitted.
+  ScriptedTransport malformed;
+  malformed.script = {Reply(PutOk())};
+  const std::vector<std::byte> trailing = {std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0},
+                                           std::byte{0xFF}};
+  static_cast<void>(sitos::SubmitAcknowledgedWrite(malformed, kPrefix, "sitos/base/:batch",
+                                                   trailing, batch_encoding, 1000ms));
+  EXPECT_EQ(malformed.Puts().size(), 1u);
+
+  // A non-empty batch is submitted normally.
+  ScriptedTransport nonempty;
+  nonempty.script = {Reply(PutOk())};
+  const std::vector<std::byte> one_entry = {std::byte{1}, std::byte{0}, std::byte{0}, std::byte{0},
+                                            std::byte{1}, std::byte{0}, std::byte{0}, std::byte{0},
+                                            std::byte{'k'}, std::byte{0}, std::byte{1},
+                                            std::byte{0}, std::byte{0}, std::byte{0},
+                                            std::byte{1}};
+  static_cast<void>(sitos::SubmitAcknowledgedWrite(nonempty, kPrefix, "sitos/base/:batch",
+                                                   one_entry, batch_encoding, 1000ms));
+  EXPECT_EQ(nonempty.Puts().size(), 1u);
+}
+
 TEST(AckClientTest, InvalidInputsAreRejectedBeforeSubmission) {
   ScriptedTransport transport;
   EXPECT_EQ(Submit(transport, 0ms).StatusCode(), Status::InvalidArgument);
