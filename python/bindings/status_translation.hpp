@@ -16,6 +16,7 @@ enum class PythonErrorKind {
   kDisconnected,
   kReadOnly,
   kValueError,
+  kOutcomeUnknown,
 };
 
 constexpr PythonErrorKind StatusToPythonError(sitos::Status status) {
@@ -33,6 +34,8 @@ constexpr PythonErrorKind StatusToPythonError(sitos::Status status) {
       return PythonErrorKind::kDisconnected;
     case sitos::Status::ReadOnly:
       return PythonErrorKind::kReadOnly;
+    case sitos::Status::OutcomeUnknown:
+      return PythonErrorKind::kOutcomeUnknown;
     case sitos::Status::Error:
     case sitos::Status::Ok:
       return PythonErrorKind::kSitosError;

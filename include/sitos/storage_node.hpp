@@ -6,6 +6,7 @@
 #ifndef SITOS_STORAGE_NODE_HPP
 #define SITOS_STORAGE_NODE_HPP
 
+#include <atomic>
 #include <cassert>
 #include <condition_variable>
 #include <cstddef>
@@ -17,9 +18,11 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
+#include "sitos/ack.hpp"
 #include "sitos/logging.hpp"
 #include "sitos/session.hpp"
 #include "sitos/storage_engine.hpp"
@@ -56,6 +59,9 @@ struct StorageNodeConfig {
 };
 
 class SessionView;
+class AckRegistry;
+struct SubscriberDiagnostic;
+struct AckApplyProgress;
 namespace storage_node_test_access {
 class StorageNodeTestAccess;
 }
@@ -222,6 +228,9 @@ class StorageNode {
     std::string prefix;
     const std::shared_ptr<LogSink> log_sink;
     DurableBufferEngineFactory durable_buffer_engine_factory;
+    // ADR-0028 node-wide token registry and completion ring; owned by this live State.
+    // Created by Start, cleared by Stop; never shared across State generations.
+    std::shared_ptr<AckRegistry> ack_registry;
 
     class CallbackLease {
      public:
@@ -284,6 +293,10 @@ class StorageNode {
     // session_mutex. This prevents ordinary writes from interleaving a batch;
     // session locks are released before engine writes.
     std::mutex subscriber_mutex;
+    // Thread currently holding subscriber_mutex (the ADR-0028 parameter lane), or a
+    // default-constructed id. A callback re-entering OnSample from inside an engine
+    // call on the same thread is rejected instead of deadlocking on the lane.
+    std::atomic<std::thread::id> application_owner{};
 
     // Test-only observers are unset in production use. They are copied under
     // test_observer_mutex and invoked without holding State locks.
@@ -309,6 +322,21 @@ class StorageNode {
   static SessionAccess AcquireSession(const std::shared_ptr<State>& state, std::string_view sid);
   static void OnQuery(const std::shared_ptr<State>& state, TransportQuery& query);
   static void OnSample(const std::shared_ptr<State>& state, const TransportSample& sample);
+  // Shared parameter-write application for acknowledged and acknowledgement-free samples
+  // (ADR-0028 stop-first batches). Returns the typed outcome; ack-free callers ignore it.
+  static AckResultV1 ApplyParameterSample(const std::shared_ptr<State>& state,
+                                          const TransportSample& sample,
+                                          std::vector<SubscriberDiagnostic>& diagnostics,
+                                          AckApplyProgress* progress);
+  // Claims the token, applies through ApplyParameterSample, and publishes exactly one result.
+  static void ApplyAcknowledgedSample(const std::shared_ptr<State>& state, const AckToken& token,
+                                      const TransportSample& sample,
+                                      std::vector<SubscriberDiagnostic>& diagnostics);
+  // Same-thread reentry on the held lane: retains Status::Error without application.
+  static void RejectReentrantAcknowledgedSample(const std::shared_ptr<State>& state,
+                                                const AckToken& token,
+                                                const TransportSample& sample,
+                                                std::vector<SubscriberDiagnostic>& diagnostics);
   static Result<void> CreateSession(const std::shared_ptr<State>& state, std::string_view sid,
                                     SessionOptions options);
   // Answers a get in the session or snap scope from the matching overlay or

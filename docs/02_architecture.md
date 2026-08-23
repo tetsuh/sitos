@@ -316,11 +316,11 @@ before returning and retains no Session record or other resource after enumerati
 
 ### 4.4 Transport Integration Pseudocode
 
-`PutOptions::ack` and `TransportSample::ack_token` already exist in the Transport API. The
-`MetaAck` route and their end-to-end attachment, token, batch-outcome, UUID, and timeout semantics
-remain planned Issue #14 work, as recorded in `docs/03_wire_protocol.md` §6. Implementers must not
-treat the pseudocode as finalized acknowledgement behavior. #14 ACK routing, attachment, and
-cache behavior are outside this pseudocode and must not be implemented until #14 finalizes them.
+`PutOptions::ack_token` and the typed `TransportSample::ack` observation exist in the Transport
+API under ADR-0028 and DEC-14-ACK-ATTACHMENT-001, together with the `AckAttachmentV1` and
+`AckResultV1` codecs, the StorageNode token registry and completion ring, and the `MetaAck`
+route behavior, and the internal total-deadline helper (`docs/03_wire_protocol.md` §6). The
+pseudocode below omits the acknowledgement path.
 
 Pseudocode for implementers. StorageNode does not use the raw zenoh-c API directly; it goes through
 the `Transport` abstraction ([09_dependency_policy.md](09_dependency_policy.md) §3).
@@ -593,9 +593,14 @@ and compute artifacts belong to the route-selected `buffers/<sid>/durable/**` or
 
 ### 7.2 Put Completion Guarantee
 
-ParamStore write success means only that Transport accepted/submitted the operation. It does
-not confirm StorageNode application, durability, or cache visibility. Acknowledged writes and
-retry policy belong to Issues #14 and #17; this API does not add a `put_ack` configuration field.
+ParamStore write success currently means only that Transport accepted/submitted the operation. It
+does not confirm StorageNode application, durability, or cache visibility. ADR-0028 defines
+acknowledged writes: Issue #14 provides the substrate (typed Transport ACK boundary, codecs,
+StorageNode token registry answering `meta/ack/<uuid>`, and the internal `SubmitAcknowledgedWrite`
+helper with one data submission and a total-deadline query policy; see
+`docs/03_wire_protocol.md` §6), and Issue #17 layers `WriteOptions{ack, ack_timeout}` and the
+ParamStore/Python mapping on top. The acknowledgement proves the StorageNode outcome only, never
+ParamCache or subscriber visibility (#99).
 
 ### 7.3 ParamStore Subscription
 

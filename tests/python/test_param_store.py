@@ -100,6 +100,7 @@ def test_public_exception_hierarchy() -> None:
     assert issubclass(sitos.TimeoutError, sitos.SitosError)
     assert issubclass(sitos.DisconnectedError, sitos.SitosError)
     assert issubclass(sitos.ReadOnlyError, sitos.SitosError)
+    assert issubclass(sitos.OutcomeUnknownError, sitos.SitosError)
 
 
 def test_batch_rejects_malformed_pairs_before_submission() -> None:

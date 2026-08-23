@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "sitos/ack.hpp"
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/storage_node.hpp"
 #include "sitos/transport.hpp"
@@ -37,8 +38,10 @@ struct Observation {
 class LateJoinTransport final : public sitos::Transport {
  public:
   sitos::Result<void> Put(std::string_view key, std::span<const std::byte> payload,
-                          sitos::Encoding encoding, sitos::PutOptions) override {
-    sitos::TransportSample sample{std::string(key), payload, std::move(encoding), std::nullopt,
+                          sitos::Encoding encoding, sitos::PutOptions options) override {
+    sitos::AckAttachmentObservation ack = sitos::AckAttachmentAbsent{};
+    if (options.ack_token.has_value()) ack = *options.ack_token;
+    sitos::TransportSample sample{std::string(key), payload, std::move(encoding), std::move(ack),
                                   sitos::TransportSample::Kind::Put};
     std::vector<std::function<void(const sitos::TransportSample&)>> callbacks;
     {
@@ -190,6 +193,25 @@ class LateJoinTransport final : public sitos::Transport {
   std::map<int, std::function<void(const sitos::TransportSample&)>> subscribers_;
   std::function<void(sitos::TransportQuery&)> queryable_;
 };
+
+TEST(LateJoinTransportContractTest, LoopbackDeliveryForwardsAckToken) {
+  LateJoinTransport transport;
+  std::optional<sitos::AckAttachmentObservation> observed;
+  auto subscription = transport.DeclareSubscriber(
+      "sitos/**", [&](const sitos::TransportSample& sample) { observed = sample.ack; });
+  ASSERT_TRUE(subscription.IsOk());
+
+  const sitos::AckToken token = sitos::GenerateAckToken();
+  sitos::PutOptions options;
+  options.ack_token = token;
+  ASSERT_TRUE(transport.Put("sitos/base/key", {}, {std::string(sitos::Encoding::kSitosV1)},
+                            options)
+                  .IsOk());
+
+  ASSERT_TRUE(observed.has_value());
+  ASSERT_TRUE(std::holds_alternative<sitos::AckToken>(*observed));
+  EXPECT_EQ(std::get<sitos::AckToken>(*observed), token);
+}
 
 class LateJoinCollector final {
  public:

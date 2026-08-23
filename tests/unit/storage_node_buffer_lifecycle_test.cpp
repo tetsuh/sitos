@@ -143,7 +143,7 @@ class LifecycleTransport final : public Transport {
         transport_test_access::DeclarationHandleTestAccess::MakeQueryable([] {}));
   }
   void PutSample(std::string key, std::vector<std::byte> value = {std::byte{1}}) {
-    subscriber(TransportSample{std::move(key), value, Encoding{"zenoh/bytes"}, std::nullopt,
+    subscriber(TransportSample{std::move(key), value, Encoding{"zenoh/bytes"}, {},
                                TransportSample::Kind::Put});
   }
   int Query(std::string key) {

@@ -26,6 +26,7 @@
 
 #include "param_cache_test_access.hpp"
 #include "transport/declaration_handle_test_access.hpp"
+#include "sitos/ack.hpp"
 #include "sitos/batch.hpp"
 
 namespace {
@@ -63,7 +64,9 @@ class FakeTransport final : public sitos::Transport {
       deliver = sync_delivery_;
     }
     if (deliver && callback) {
-      sitos::TransportSample sample{std::string(key), payload, std::move(encoding), std::nullopt,
+      sitos::AckAttachmentObservation ack = sitos::AckAttachmentAbsent{};
+      if (options.ack_token.has_value()) ack = *options.ack_token;
+      sitos::TransportSample sample{std::string(key), payload, std::move(encoding), std::move(ack),
                                     sitos::TransportSample::Kind::Put};
       callback(sample);
     }
@@ -203,6 +206,26 @@ class FakeTransport final : public sitos::Transport {
   bool release_submission_ = false;
   bool submission_entered_ = false;
 };
+
+TEST(FakeTransportContractTest, SynchronousDeliveryForwardsAckToken) {
+  FakeTransport transport;
+  transport.SetSynchronousDelivery(true);
+  std::optional<sitos::AckAttachmentObservation> observed;
+  auto subscription = transport.DeclareSubscriber(
+      "sitos/**", [&](const sitos::TransportSample& sample) { observed = sample.ack; });
+  ASSERT_TRUE(subscription.IsOk());
+
+  const sitos::AckToken token = sitos::GenerateAckToken();
+  sitos::PutOptions options;
+  options.ack_token = token;
+  ASSERT_TRUE(transport.Put("sitos/base/key", {}, {std::string(sitos::Encoding::kSitosV1)},
+                            options)
+                  .IsOk());
+
+  ASSERT_TRUE(observed.has_value());
+  ASSERT_TRUE(std::holds_alternative<sitos::AckToken>(*observed));
+  EXPECT_EQ(std::get<sitos::AckToken>(*observed), token);
+}
 
 class ParamCacheReadTest : public ::testing::Test {
  protected:
@@ -352,7 +375,7 @@ TEST_F(ParamCacheReadTest, DelayedSelfEchoUsesSubscriberSerializationOrder) {
   const auto payload = transport->PutPayload(0);
   sitos::TransportSample delayed{"sitos/session/s1/ordered", payload,
                                 sitos::Encoding{std::string(sitos::Encoding::kSitosV1)},
-                                std::nullopt, sitos::TransportSample::Kind::Put};
+                                {}, sitos::TransportSample::Kind::Put};
   transport->Deliver(delayed);
   EXPECT_EQ(cache->Get<std::int64_t>("ordered").Value(), 1);
 }
@@ -635,7 +658,7 @@ TEST_F(ParamCacheReadTest, ConcurrentReadersAndWriterSwapsAreSafe) {
       [&](int round) {
         const auto value = sitos::ParamValue(static_cast<std::int64_t>(round + kRounds + 2));
         transport->Deliver({"sitos/session/s1/a", value.Encode(),
-                            sitos::Encoding{std::string(sitos::Encoding::kSitosV1)}, std::nullopt,
+                            sitos::Encoding{std::string(sitos::Encoding::kSitosV1)}, {},
                             sitos::TransportSample::Kind::Put});
       },
       kRounds + 2);

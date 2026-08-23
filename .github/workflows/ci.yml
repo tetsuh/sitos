@@ -163,6 +163,7 @@ jobs:
           lifecycle_filter="StorageNodeLifecycleTest|StorageNodeSessionTest|"
           lifecycle_filter+="StorageNodeSessionLifecycleTest|StorageNodeBufferLifecycleTest|"
           lifecycle_filter+="StorageNodeBufferRoutingTest|StorageNodeBufferApiTest|BufferLateJoinTest|StorageNodeBatchTest|"
+          lifecycle_filter+="StorageNodeAckTest|AckRegistryTest|"
           lifecycle_filter+="TransportGetCompletionTest|ParamStoreSubscribeTest|"
           lifecycle_filter+="ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture"
           ctest --test-dir build/sanitizer-tsan --output-on-failure --timeout 60 \
@@ -176,6 +177,7 @@ jobs:
           lifecycle_filter="StorageNodeLifecycleTest|StorageNodeSessionTest|"
           lifecycle_filter+="StorageNodeSessionLifecycleTest|StorageNodeBufferLifecycleTest|"
           lifecycle_filter+="StorageNodeBufferRoutingTest|StorageNodeBufferApiTest|BufferLateJoinTest|StorageNodeBatchTest|"
+          lifecycle_filter+="StorageNodeAckTest|AckRegistryTest|"
           lifecycle_filter+="TransportGetCompletionTest|ParamStoreSubscribeTest|"
           lifecycle_filter+="ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture"
           ctest --test-dir build/sanitizer-${{ matrix.name }} \

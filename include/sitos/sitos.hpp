@@ -4,6 +4,7 @@
 #ifndef SITOS_SITOS_HPP
 #define SITOS_SITOS_HPP
 
+#include "sitos/ack.hpp"
 #include "sitos/batch.hpp"
 #include "sitos/client_config.hpp"
 #include "sitos/in_memory_engine.hpp"

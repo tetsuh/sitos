@@ -21,6 +21,7 @@ TEST(PythonStatusTranslationTest, MapsEveryStatusDeterministically) {
   EXPECT_EQ(StatusToPythonError(Status::InvalidKey), PythonErrorKind::kValueError);
   EXPECT_EQ(StatusToPythonError(Status::InvalidArgument), PythonErrorKind::kValueError);
   EXPECT_EQ(StatusToPythonError(Status::Error), PythonErrorKind::kSitosError);
+  EXPECT_EQ(StatusToPythonError(Status::OutcomeUnknown), PythonErrorKind::kOutcomeUnknown);
 }
 
 }  // namespace

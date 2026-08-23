@@ -19,6 +19,9 @@ enum class Status {
   InvalidKey = 6,
   InvalidArgument = 7,
   Error = 8,
+  /// StorageNode observed and attempted the operation but the current engine
+  /// contract permits no stronger application claim (ADR-0028).
+  OutcomeUnknown = 9,
 };
 
 /// Returns the process-wide error category used by MakeErrorCode.

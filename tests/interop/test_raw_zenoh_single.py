@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -146,6 +147,57 @@ def test_raw_zenoh_client_can_put_and_get() -> None:
                 session, snapshot_key, _encode_dp(-17.25)
             )
             assert _decode_dp(snapshot_reply.payload) == -17.25
+
+
+def test_raw_delete_with_valid_ack_attachment_is_rejected() -> None:
+    with support.FixtureProcess() as fixture:
+        with fixture.open_raw_session() as session:
+            key = f"{fixture.prefix}/base/raw/delete-valid-ack"
+            payload = _encode_dp(41.0)
+            _put_until_query_matches(session, key, payload)
+
+            token = uuid.uuid4()
+            session.delete(key, attachment=bytes([1]) + token.bytes)
+            ack_key = f"{fixture.prefix}/meta/ack/{token}"
+            deadline = time.monotonic() + SCENARIO_TIMEOUT_SECONDS
+            replies: list[support.WireSample] = []
+            while not replies and time.monotonic() < deadline:
+                replies = _read_exact_reply(session, ack_key)
+            assert len(replies) == 1, "attached Delete was not processed as an invalid ACK operation"
+            _query_until_matches(session, key, payload)
+
+
+def test_raw_delete_with_malformed_ack_attachment_is_rejected() -> None:
+    with support.FixtureProcess() as fixture:
+        with fixture.open_raw_session() as session:
+            key = f"{fixture.prefix}/base/raw/delete-malformed-ack"
+            payload = _encode_dp(42.0)
+            _put_until_query_matches(session, key, payload)
+
+            observed_delete = threading.Event()
+
+            def observe(sample: zenoh.Sample) -> None:
+                if sample.kind == zenoh.SampleKind.DELETE:
+                    observed_delete.set()
+
+            subscriber = session.declare_subscriber(key, observe)
+            try:
+                session.delete(key, attachment=b"\x01\x00")
+                assert observed_delete.wait(SCENARIO_TIMEOUT_SECONDS), (
+                    "raw subscriber did not observe the malformed attached Delete"
+                )
+                deadline = time.monotonic() + 1.0
+                while time.monotonic() < deadline:
+                    replies = _read_exact_reply(session, key)
+                    assert len(replies) == 1, "malformed attached Delete reached StorageEngine::Delete"
+                    support.assert_wire_sample(
+                        replies[0],
+                        expected_key=key,
+                        expected_payload=payload,
+                        expected_encoding=support.CANONICAL_SITOS_ENCODING,
+                    )
+            finally:
+                subscriber.undeclare()
 
 
 def test_fixture_reports_transport_startup_failure() -> None:

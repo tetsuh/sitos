@@ -3,6 +3,7 @@
 from ._sitos import (
     DisconnectedError,
     NotFoundError,
+    OutcomeUnknownError,
     ParamStore,
     ReadOnlyError,
     SitosError,
@@ -18,4 +19,5 @@ __all__ = [
     "TimeoutError",
     "DisconnectedError",
     "ReadOnlyError",
+    "OutcomeUnknownError",
 ]

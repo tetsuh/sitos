@@ -167,7 +167,7 @@ class BufferTransport final : public Transport {
       ++sample_callbacks;
       sample_cv.notify_all();
     }
-    TransportSample sample{std::move(key), payload, Encoding{std::move(encoding)}, std::nullopt,
+    TransportSample sample{std::move(key), payload, Encoding{std::move(encoding)}, {},
                            TransportSample::Kind::Put};
     subscriber(sample);
   }
@@ -177,7 +177,7 @@ class BufferTransport final : public Transport {
   }
   void DeleteSample(std::string key) {
     TransportSample sample{
-        std::move(key), {}, Encoding{"zenoh/bytes"}, std::nullopt, TransportSample::Kind::Delete};
+        std::move(key), {}, Encoding{"zenoh/bytes"}, {}, TransportSample::Kind::Delete};
     subscriber(sample);
   }
   QueryResult Query(std::string key, int fail_after = -1, bool throw_reply = false) {

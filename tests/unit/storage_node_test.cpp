@@ -169,7 +169,7 @@ class FakeTransport final : public Transport {
   void InvokeSubscriber(std::string key, TransportSample::Kind kind,
                         std::vector<std::byte> payload, Encoding encoding) {
     if (!subscriber_callback) return;
-    TransportSample sample{std::move(key), payload, std::move(encoding), std::nullopt, kind};
+    TransportSample sample{std::move(key), payload, std::move(encoding), {}, kind};
     subscriber_callback(sample);
   }
 
@@ -1048,7 +1048,8 @@ TEST(StorageNodeBatchTest, RejectsWrongOperationAndEncodingButPreservesOrdinaryF
   EXPECT_EQ(sink->Records().size(), 8u);
 }
 
-TEST(StorageNodeBatchTest, ContinuesAfterEngineFailureInEncodedOrder) {
+TEST(StorageNodeBatchTest, StopsAtFirstEngineFailureInEncodedOrder) {
+  // ADR-0028: the stop-first application rule applies to acknowledgement-free batches too.
   auto engine = std::make_shared<FirstPutFailingEngine>();
   FakeTransport transport;
   auto sink = std::make_shared<CaptureSink>();
@@ -1060,9 +1061,9 @@ TEST(StorageNodeBatchTest, ContinuesAfterEngineFailureInEncodedOrder) {
   transport.InvokeSubscriber("sitos/base/:batch", TransportSample::Kind::Put, batch,
                              Encoding{std::string(Encoding::kSitosV1Batch)});
 
-  EXPECT_EQ(engine->puts, (std::vector<std::string>{"first", "later"}));
+  EXPECT_EQ(engine->puts, (std::vector<std::string>{"first"})) << "later is never attempted";
   EXPECT_TRUE(transport.Invoke("sitos/base/first").empty());
-  ASSERT_EQ(transport.Invoke("sitos/base/later").size(), 1u);
+  EXPECT_TRUE(transport.Invoke("sitos/base/later").empty());
   const auto records = sink->Records();
   ASSERT_EQ(records.size(), 1u);
   EXPECT_EQ(records[0].level, LogLevel::kError);

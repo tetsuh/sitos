@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include "sitos/ack.hpp"
 #include "src/transport/zenoh_transport_test_access.hpp"
 
 #include <array>
@@ -20,6 +21,7 @@
 #include <string>
 #include <thread>
 #include <type_traits>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -358,6 +360,8 @@ TEST(ZenohEncodingTest, EmitsCanonicalSitosWireEncodings) {
   EXPECT_EQ(BuildWireEncoding({"zenoh/bytes;sitos.v1"}), "zenoh/bytes;sitos.v1");
   EXPECT_EQ(BuildWireEncoding({std::string(sitos::Encoding::kSitosV1Batch)}),
             "zenoh/bytes;sitos.v1.batch");
+  EXPECT_EQ(BuildWireEncoding({std::string(sitos::Encoding::kSitosV1Ack)}),
+            "zenoh/bytes;sitos.v1.ack");
 }
 
 TEST(ZenohEncodingTest, NormalizesCompatibleSitosWireEncodings) {
@@ -366,6 +370,7 @@ TEST(ZenohEncodingTest, NormalizesCompatibleSitosWireEncodings) {
   EXPECT_EQ(NormalizeWireEncoding("zenoh/bytes;sitos.v1").id, sitos::Encoding::kSitosV1);
   EXPECT_EQ(NormalizeWireEncoding("zenoh.bytes;sitos.v1").id, sitos::Encoding::kSitosV1);
   EXPECT_EQ(NormalizeWireEncoding("sitos.v1").id, sitos::Encoding::kSitosV1);
+  EXPECT_EQ(NormalizeWireEncoding("zenoh/bytes;sitos.v1.ack").id, sitos::Encoding::kSitosV1Ack);
   EXPECT_EQ(NormalizeWireEncoding("application/json").id, "application/json");
 }
 
@@ -509,6 +514,66 @@ TEST_F(TransportTest, PutAndDeleteReturnOk) {
 
   auto del_result = transport_->Delete("sitos/test/key", {});
   ASSERT_TRUE(del_result.IsOk()) << "Delete failed: " << del_result.Error().message();
+}
+
+TEST_F(TransportTest, AckAttachmentRoundTrip) {
+  // ADR-0028 / DEC-14-ACK-ATTACHMENT-001: the adapter encodes PutOptions::ack_token as the
+  // 17-byte AckAttachmentV1 and decodes it into TransportSample::ack; absent stays absent.
+  const std::string kKey = "sitos/test/ack/attachment-roundtrip";
+  const std::vector<std::byte> kPayload = {std::byte{0x01}};
+  const sitos::Encoding kEncoding{std::string(sitos::Encoding::kSitosV1)};
+
+  std::mutex mutex;
+  std::condition_variable condition;
+  std::vector<sitos::AckAttachmentObservation> observed;
+  auto subscription = transport_->DeclareSubscriber(kKey, [&](const sitos::TransportSample& s) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      observed.push_back(s.ack);
+    }
+    condition.notify_all();
+  });
+  ASSERT_TRUE(subscription.IsOk()) << subscription.Error().message();
+
+  const sitos::AckToken token = sitos::GenerateAckToken();
+  sitos::PutOptions with_token;
+  with_token.ack_token = token;
+  ASSERT_TRUE(transport_->Put(kKey, kPayload, kEncoding, with_token).IsOk());
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(3),
+                                   [&] { return observed.size() >= 1; }));
+  }
+  ASSERT_TRUE(transport_->Put(kKey, kPayload, kEncoding, {}).IsOk());
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(3),
+                                   [&] { return observed.size() >= 2; }));
+  }
+
+  std::lock_guard<std::mutex> lock(mutex);
+  ASSERT_EQ(observed.size(), 2u);
+  ASSERT_TRUE(std::holds_alternative<sitos::AckToken>(observed[0]));
+  EXPECT_EQ(std::get<sitos::AckToken>(observed[0]), token);
+  EXPECT_TRUE(std::holds_alternative<sitos::AckAttachmentAbsent>(observed[1]));
+}
+
+TEST_F(TransportTest, PutRejectsNonV4AckToken) {
+  sitos::PutOptions options;
+  options.ack_token = sitos::AckToken{};  // all-zero bytes are not a v4 UUID
+  const auto result = transport_->Put("sitos/test/ack/non-v4", {},
+                                      {std::string(sitos::Encoding::kSitosV1)}, options);
+  ASSERT_FALSE(result.IsOk());
+  EXPECT_EQ(result.StatusCode(), sitos::Status::InvalidArgument);
+}
+
+TEST_F(TransportTest, DeleteRejectsAckToken) {
+  // Delete remains acknowledgement-free in v1 (ADR-0028).
+  sitos::PutOptions options;
+  options.ack_token = sitos::GenerateAckToken();
+  const auto result = transport_->Delete("sitos/test/ack/delete", options);
+  ASSERT_FALSE(result.IsOk());
+  EXPECT_EQ(result.StatusCode(), sitos::Status::InvalidArgument);
 }
 
 TEST_F(TransportTest, GetWithoutQueryableDoesNotInvokeSink) {
