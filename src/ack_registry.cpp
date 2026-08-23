@@ -41,7 +41,7 @@ AckFingerprint ComputeAckFingerprint(AckOperationKind kind, std::string_view ful
   material[0] = static_cast<std::byte>(kind);
   std::size_t offset = PutLengthPrefixed(material, 1, AsBytes(full_key));
   offset = PutLengthPrefixed(material, offset, AsBytes(encoding_id));
-  offset = PutLengthPrefixed(material, offset, payload);
+  PutLengthPrefixed(material, offset, payload);
   return AckFingerprint{Sha256(material)};
 }
 
@@ -69,9 +69,10 @@ AckRegistry::ClaimOutcome AckRegistry::ClaimOrReject(const AckToken& token,
   return ClaimLocked(token, fingerprint, lane, std::move(lane_busy_result));
 }
 
-AckRegistry::ClaimOutcome AckRegistry::ClaimLocked(
-    const AckToken& token, const AckFingerprint& fingerprint, std::uint64_t lane,
-    std::optional<AckResultV1> lane_busy_result) {
+AckRegistry::ClaimOutcome AckRegistry::ClaimLocked(const AckToken& token,
+                                                   const AckFingerprint& fingerprint,
+                                                   std::uint64_t lane,
+                                                   std::optional<AckResultV1> lane_busy_result) {
   if (auto it = entries_.find(token); it != entries_.end()) {
     if (it->second.fingerprint != fingerprint) return ClaimOutcome::Collision;
     return it->second.result.has_value() ? ClaimOutcome::DuplicateCompleted
@@ -79,13 +80,13 @@ AckRegistry::ClaimOutcome AckRegistry::ClaimLocked(
   }
   if (processing_by_lane_.contains(lane)) {
     if (lane_busy_result.has_value()) {
-      entries_.emplace(token, Entry{fingerprint, lane, std::move(lane_busy_result)});
+      entries_.try_emplace(token, Entry{fingerprint, lane, std::move(lane_busy_result)});
       RetainCompletedLocked(token);
     }
     return ClaimOutcome::LaneBusy;
   }
-  entries_.emplace(token, Entry{fingerprint, lane, std::nullopt});
-  processing_by_lane_.emplace(lane, token);
+  entries_.try_emplace(token, Entry{fingerprint, lane, std::nullopt});
+  processing_by_lane_.try_emplace(lane, token);
   return ClaimOutcome::Admitted;
 }
 
@@ -106,7 +107,7 @@ bool AckRegistry::RecordRejected(const AckToken& token, const AckFingerprint& fi
                                  AckResultV1 result) {
   std::scoped_lock lock(mutex_);
   if (entries_.contains(token)) return false;
-  entries_.emplace(token, Entry{fingerprint, 0, std::move(result)});
+  entries_.try_emplace(token, Entry{fingerprint, 0, std::move(result)});
   RetainCompletedLocked(token);
   return true;
 }

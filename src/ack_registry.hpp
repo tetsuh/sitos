@@ -58,9 +58,8 @@ class AckRegistry {
 
   /// Claims a token or atomically retains `lane_busy_result` when another token owns the lane.
   /// A LaneBusy token can therefore never become admissible after the current owner completes.
-  [[nodiscard]] ClaimOutcome ClaimOrReject(const AckToken& token,
-                                           const AckFingerprint& fingerprint, std::uint64_t lane,
-                                           AckResultV1 lane_busy_result);
+  [[nodiscard]] ClaimOutcome ClaimOrReject(const AckToken& token, const AckFingerprint& fingerprint,
+                                           std::uint64_t lane, AckResultV1 lane_busy_result);
 
   /// Publishes the immutable result for an Admitted token and frees its lane.
   /// Returns false when the token is not Processing (already completed or unknown).

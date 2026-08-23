@@ -179,9 +179,9 @@ class ApplicationLaneLock {
  public:
   ApplicationLaneLock(std::mutex& lane_mutex, std::atomic<std::thread::id>& owner)
       : owner_(owner), lock_(lane_mutex) {
-    owner_.store(std::this_thread::get_id(), std::memory_order_release);
+    owner_.store(std::this_thread::get_id());
   }
-  ~ApplicationLaneLock() { owner_.store(std::thread::id{}, std::memory_order_release); }
+  ~ApplicationLaneLock() { owner_.store(std::thread::id{}); }
   ApplicationLaneLock(const ApplicationLaneLock&) = delete;
   ApplicationLaneLock& operator=(const ApplicationLaneLock&) = delete;
 
@@ -660,8 +660,7 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
     if (std::holds_alternative<AckAttachmentMalformed>(sample.ack)) {
       // ADR-0028: malformed acknowledgement metadata is rejected before application.
       diagnostics.push_back({LogLevel::kWarning, kMalformedAckAttachment});
-    } else if (state->application_owner.load(std::memory_order_acquire) ==
-               std::this_thread::get_id()) {
+    } else if (state->application_owner.load() == std::this_thread::get_id()) {
       // Same-thread reentry from inside an engine call: the parameter lane is
       // already held by this callback. ADR-0028 reports reentrant admission as an
       // invariant failure (Status::Error) without applying the second operation.

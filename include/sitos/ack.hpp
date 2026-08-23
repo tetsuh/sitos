@@ -69,8 +69,8 @@ enum class AckOperationKind : std::uint8_t { Put = 1, Batch = 2, Fence = 3 };
 /// The requested durability target; `Status::Ok` confirms it.
 enum class AckDurability : std::uint8_t { Applied = 1, Synced = 2 };
 
-inline constexpr std::uint32_t kAckNoFailedIndex = 0xFFFFFFFFu;
-inline constexpr std::uint64_t kAckNoFailedSequence = 0xFFFFFFFFFFFFFFFFull;
+inline constexpr std::uint32_t kAckNoFailedIndex = 0xFFFFFFFFU;
+inline constexpr std::uint64_t kAckNoFailedSequence = 0xFFFFFFFFFFFFFFFFULL;
 inline constexpr std::size_t kAckResultV1HeaderSize = 32;
 inline constexpr std::size_t kAckResultMaxMessageLength = 1024;
 

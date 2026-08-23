@@ -9,7 +9,7 @@
 namespace sitos {
 namespace {
 
-constexpr std::uint32_t kRoundConstants[64] = {
+constexpr std::array<std::uint32_t, 64> kRoundConstants = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
     0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
@@ -24,11 +24,11 @@ constexpr std::uint32_t RotateRight(std::uint32_t value, int bits) {
 }
 
 struct Sha256State {
-  std::uint32_t h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-                        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+  std::array<std::uint32_t, 8> h = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+                                    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
 
   void ProcessBlock(const std::uint8_t* block) {
-    std::uint32_t w[64];
+    std::array<std::uint32_t, 64> w{};
     for (int i = 0; i < 16; ++i) {
       w[i] = (static_cast<std::uint32_t>(block[4 * i]) << 24) |
              (static_cast<std::uint32_t>(block[4 * i + 1]) << 16) |
@@ -82,9 +82,9 @@ std::array<std::byte, 32> Sha256(std::span<const std::byte> data) {
   for (; offset + 64 <= size; offset += 64) state.ProcessBlock(bytes + offset);
 
   // Final block(s): remaining bytes, 0x80, zero padding, 64-bit big-endian bit length.
-  std::uint8_t tail[128] = {};
+  std::array<std::uint8_t, 128> tail{};
   const std::size_t remaining = size - offset;
-  if (remaining > 0) std::memcpy(tail, bytes + offset, remaining);
+  if (remaining > 0) std::memcpy(tail.data(), bytes + offset, remaining);
   tail[remaining] = 0x80;
   const std::size_t tail_blocks = remaining < 56 ? 1 : 2;
   const std::uint64_t bit_length = static_cast<std::uint64_t>(size) * 8;
@@ -92,8 +92,8 @@ std::array<std::byte, 32> Sha256(std::span<const std::byte> data) {
     tail[tail_blocks * 64 - 1 - static_cast<std::size_t>(i)] =
         static_cast<std::uint8_t>((bit_length >> (8 * i)) & 0xFF);
   }
-  state.ProcessBlock(tail);
-  if (tail_blocks == 2) state.ProcessBlock(tail + 64);
+  state.ProcessBlock(tail.data());
+  if (tail_blocks == 2) state.ProcessBlock(tail.data() + 64);
 
   std::array<std::byte, 32> digest{};
   for (int i = 0; i < 8; ++i) {
