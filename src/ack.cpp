@@ -220,6 +220,8 @@ Result<void> ValidateAckResult(const AckResultV1& r) {
         if (!no_index) return Invalid("batch success has no failed_index");
       } else if (no_index) {
         if (r.applied_count != 0) return Invalid("batch envelope failure applied_count must be 0");
+      } else if (r.status == Status::OutcomeUnknown && r.applied_count != r.failed_index) {
+        return Invalid("batch OutcomeUnknown applied_count must equal failed_index");
       } else if (r.applied_count != 0 && r.applied_count != r.failed_index) {
         return Invalid("batch applied_count must be 0 or equal failed_index");
       }

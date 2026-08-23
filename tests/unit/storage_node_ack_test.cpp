@@ -78,6 +78,7 @@ class ScriptedEngine final : public StorageEngine {
       index = puts_.size();
       puts_.emplace_back(key);
     }
+    if (on_put) on_put(index);
     if (throw_at && index == *throw_at) throw std::runtime_error("engine exploded");
     if (fail_at && index == *fail_at) return false;
     if (block_at && index == *block_at) {
@@ -124,6 +125,7 @@ class ScriptedEngine final : public StorageEngine {
   std::optional<std::size_t> fail_at;
   std::optional<std::size_t> throw_at;
   std::optional<std::size_t> block_at;
+  std::function<void(std::size_t)> on_put;
 
  private:
   mutable std::mutex mutex_;
@@ -350,6 +352,57 @@ TEST(StorageNodeAckTest, FingerprintCollisionIsRejectedWithoutApplication) {
   EXPECT_EQ(h.RegistryEntries(), 1u);
 }
 
+TEST(StorageNodeAckTest, ReentrantLaneAdmissionFailsBeforeSecondApplication) {
+  Harness h;
+  h.Start();
+  const AckToken outer = GenerateAckToken();
+  const AckToken nested = GenerateAckToken();
+  std::atomic<bool> triggered = false;
+  std::mutex nested_mutex;
+  std::condition_variable nested_condition;
+  bool nested_started = false;
+  bool nested_done = false;
+  bool nested_started_during_engine_callback = false;
+  bool nested_completed_during_engine_callback = false;
+  std::thread nested_thread;
+  h.engine->on_put = [&](std::size_t index) {
+    if (index != 0 || triggered.exchange(true)) return;
+    nested_thread = std::thread([&] {
+      {
+        std::lock_guard<std::mutex> lock(nested_mutex);
+        nested_started = true;
+      }
+      nested_condition.notify_one();
+      h.Put("sitos/base/reentrant", nested);
+      {
+        std::lock_guard<std::mutex> lock(nested_mutex);
+        nested_done = true;
+      }
+      nested_condition.notify_one();
+    });
+    {
+      std::unique_lock<std::mutex> lock(nested_mutex);
+      nested_started_during_engine_callback = nested_condition.wait_for(
+          lock, std::chrono::seconds(3), [&] { return nested_started; });
+      if (nested_started_during_engine_callback) {
+        nested_completed_during_engine_callback = nested_condition.wait_for(
+            lock, std::chrono::seconds(3), [&] { return nested_done; });
+      }
+    }
+  };
+
+  h.Put("sitos/base/outer", outer);
+  nested_thread.join();
+
+  EXPECT_TRUE(nested_started_during_engine_callback)
+      << "reentrant worker must start within the bounded test deadline";
+  EXPECT_TRUE(nested_completed_during_engine_callback)
+      << "reentrant acknowledgement must be rejected before application serialization";
+  EXPECT_EQ(h.engine->Puts(), (std::vector<std::string>{"outer"}));
+  ExpectResult(h.QueryAck(nested), AckOperationKind::Put, Status::Error, 0, 0);
+  ExpectResult(h.QueryAck(outer), AckOperationKind::Put, Status::Ok, 1, kAckNoFailedIndex);
+}
+
 TEST(StorageNodeAckTest, EngineRejectionIsOutcomeUnknown) {
   Harness h;
   h.engine->fail_at = 0;
@@ -502,6 +555,8 @@ TEST(StorageNodeAckTest, ConcurrentRecordingAndQueryingIsSafe) {
   std::vector<std::vector<AckToken>> tokens(kWriters);
   std::atomic<bool> stop{false};
   std::atomic<int> observed{0};
+  std::atomic<int> applied{0};
+  std::atomic<int> rejected{0};
 
   std::thread reader([&] {
     while (!stop.load()) {
@@ -515,7 +570,16 @@ TEST(StorageNodeAckTest, ConcurrentRecordingAndQueryingIsSafe) {
         const AckToken token = GenerateAckToken();
         tokens[w].push_back(token);
         h.Put("sitos/base/w" + std::to_string(w), token);
-        EXPECT_TRUE(h.QueryAck(token).has_value());
+        const auto result = h.QueryAck(token);
+        EXPECT_TRUE(result.has_value());
+        if (!result) continue;
+        if (result->status == Status::Ok) {
+          applied.fetch_add(1);
+        } else if (result->status == Status::Error) {
+          rejected.fetch_add(1);
+        } else {
+          ADD_FAILURE() << "unexpected concurrent acknowledgement status";
+        }
       }
     });
   }
@@ -523,7 +587,8 @@ TEST(StorageNodeAckTest, ConcurrentRecordingAndQueryingIsSafe) {
   stop.store(true);
   reader.join();
 
-  EXPECT_EQ(h.engine->Puts().size(), static_cast<std::size_t>(kWriters * kPerWriter));
+  EXPECT_EQ(applied.load() + rejected.load(), kWriters * kPerWriter);
+  EXPECT_EQ(h.engine->Puts().size(), static_cast<std::size_t>(applied.load()));
   for (const auto& list : tokens) {
     for (const auto& token : list) EXPECT_TRUE(h.QueryAck(token).has_value());
   }

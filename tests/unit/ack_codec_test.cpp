@@ -432,6 +432,8 @@ TEST(AckResultTest, EnforcesBatchInvariants) {
   ExpectValid(BatchFailed(Status::InvalidArgument, 0, 4), "entry validation failure");
   ExpectValid(BatchFailed(Status::OutcomeUnknown, 4, 4), "application failure after prefix");
   ExpectValid(BatchFailed(Status::Error, 0, 0), "first entry failed");
+  ExpectInvalid(BatchFailed(Status::OutcomeUnknown, 0, 4),
+                "OutcomeUnknown must preserve the confirmed prefix");
 
   AckResultV1 r = BatchOk(2);
   r.failed_index = 1;

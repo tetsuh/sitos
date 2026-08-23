@@ -623,19 +623,18 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
     }
     if (subscriber_observer) subscriber_observer();
     SubscriberDiagnostics diagnostics;
-    {
-      // The gate lease is acquired first. Serializing the entire subscriber
-      // path prevents an ordinary write from becoming visible between batch
-      // entries. Diagnostics are emitted only after releasing this lock.
+    if (std::holds_alternative<AckAttachmentMalformed>(sample.ack)) {
+      // ADR-0028: malformed acknowledgement metadata is rejected before application.
+      diagnostics.push_back({LogLevel::kWarning, kMalformedAckAttachment});
+    } else if (const auto* token = std::get_if<AckToken>(&sample.ack)) {
+      // Acknowledged samples claim their token before waiting for the application
+      // lock, so same-lane reentry can complete with Error instead of blocking.
+      ApplyAcknowledgedSample(state, *token, sample, diagnostics);
+    } else {
+      // Serializing ordinary writes prevents one from becoming visible between
+      // batch entries. Diagnostics are emitted only after releasing this lock.
       std::scoped_lock application_lock(state->subscriber_mutex);
-      if (std::holds_alternative<AckAttachmentMalformed>(sample.ack)) {
-        // ADR-0028: malformed acknowledgement metadata is rejected before application.
-        diagnostics.push_back({LogLevel::kWarning, kMalformedAckAttachment});
-      } else if (const auto* token = std::get_if<AckToken>(&sample.ack)) {
-        ApplyAcknowledgedSample(state, *token, sample, diagnostics);
-      } else {
-        ApplyParameterSample(state, sample, diagnostics, /*progress=*/nullptr);
-      }
+      ApplyParameterSample(state, sample, diagnostics, /*progress=*/nullptr);
     }
     EmitDiagnostics(state->log_sink, diagnostics);
   } catch (...) {
@@ -740,22 +739,23 @@ void StorageNode::ApplyAcknowledgedSample(const std::shared_ptr<State>& state,
   const AckFingerprint fingerprint =
       ComputeAckFingerprint(kind, sample.key, sample.encoding.id, sample.payload);
 
-  // The claim is the token linearization point; the registry mutex is released
-  // before any engine application.
-  switch (registry.Claim(token, fingerprint, AckRegistry::kParameterLane)) {
+  // The claim is the token linearization point; a busy-lane rejection is retained
+  // in the same registry critical section, before any later delivery can claim it.
+  const std::uint32_t lane_busy_failed_index =
+      kind == AckOperationKind::Batch ? kAckNoFailedIndex : 0;
+  const AckResultV1 lane_busy_result =
+      MakeAckResult(kind, Status::Error, 0, lane_busy_failed_index);
+  switch (registry.ClaimOrReject(token, fingerprint, AckRegistry::kParameterLane,
+                                lane_busy_result)) {
     case AckRegistry::ClaimOutcome::DuplicateProcessing:
     case AckRegistry::ClaimOutcome::DuplicateCompleted:
       return;  // never repeat apply; the retained result answers queries
     case AckRegistry::ClaimOutcome::Collision:
       diagnostics.push_back({LogLevel::kWarning, kAckTokenCollision});
       return;
-    case AckRegistry::ClaimOutcome::LaneBusy: {
+    case AckRegistry::ClaimOutcome::LaneBusy:
       diagnostics.push_back({LogLevel::kError, kAckLaneReentry});
-      const std::uint32_t failed_index = kind == AckOperationKind::Batch ? kAckNoFailedIndex : 0;
-      registry.RecordRejected(token, fingerprint,
-                              MakeAckResult(kind, Status::Error, 0, failed_index));
       return;
-    }
     case AckRegistry::ClaimOutcome::Admitted:
       break;
   }
@@ -763,7 +763,11 @@ void StorageNode::ApplyAcknowledgedSample(const std::shared_ptr<State>& state,
   AckApplyProgress progress;
   progress.kind = kind;
   AckCompletionGuard guard(registry, token, progress);
-  AckResultV1 result = ApplyParameterSample(state, sample, diagnostics, &progress);
+  AckResultV1 result;
+  {
+    std::scoped_lock application_lock(state->subscriber_mutex);
+    result = ApplyParameterSample(state, sample, diagnostics, &progress);
+  }
   guard.Finish(std::move(result));
 }
 

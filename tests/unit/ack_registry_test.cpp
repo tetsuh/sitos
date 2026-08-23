@@ -186,6 +186,27 @@ TEST(AckRegistryTest, LaneAdmitsOneProcessingTokenAtATime) {
             Outcome::Admitted);
 }
 
+TEST(AckRegistryTest, LaneBusyRejectionIsAtomicallyRetained) {
+  AckRegistry registry;
+  const AckToken owner = Token(6);
+  const AckToken rejected = Token(7);
+  ASSERT_EQ(registry.Claim(owner, Fingerprint("owner"), AckRegistry::kParameterLane),
+            Outcome::Admitted);
+
+  EXPECT_EQ(registry.ClaimOrReject(rejected, Fingerprint("rejected"),
+                                   AckRegistry::kParameterLane, PutError()),
+            Outcome::LaneBusy);
+  EXPECT_EQ(registry.ProcessingCount(), 1u);
+  ASSERT_TRUE(registry.Find(rejected).has_value());
+  EXPECT_EQ(*registry.Find(rejected), PutError());
+
+  ASSERT_TRUE(registry.Complete(owner, PutOk()));
+  EXPECT_EQ(registry.Claim(rejected, Fingerprint("rejected"), AckRegistry::kParameterLane),
+            Outcome::DuplicateCompleted)
+      << "the rejected token must never become admissible after the lane owner completes";
+  EXPECT_EQ(*registry.Find(rejected), PutError());
+}
+
 TEST(AckRegistryTest, RecordRejectedStoresCompletedResultWithoutProcessing) {
   AckRegistry registry;
   const AckToken token = Token(8);

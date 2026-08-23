@@ -56,6 +56,12 @@ class AckRegistry {
   [[nodiscard]] ClaimOutcome Claim(const AckToken& token, const AckFingerprint& fingerprint,
                                    std::uint64_t lane);
 
+  /// Claims a token or atomically retains `lane_busy_result` when another token owns the lane.
+  /// A LaneBusy token can therefore never become admissible after the current owner completes.
+  [[nodiscard]] ClaimOutcome ClaimOrReject(const AckToken& token,
+                                           const AckFingerprint& fingerprint, std::uint64_t lane,
+                                           AckResultV1 lane_busy_result);
+
   /// Publishes the immutable result for an Admitted token and frees its lane.
   /// Returns false when the token is not Processing (already completed or unknown).
   bool Complete(const AckToken& token, AckResultV1 result);
@@ -82,6 +88,10 @@ class AckRegistry {
   struct TokenHash {
     std::size_t operator()(const AckToken& token) const noexcept;
   };
+
+  // Must be called with mutex_ held.
+  ClaimOutcome ClaimLocked(const AckToken& token, const AckFingerprint& fingerprint,
+                           std::uint64_t lane, std::optional<AckResultV1> lane_busy_result);
 
   // Must be called with mutex_ held; pushes the token onto the ring and evicts the oldest.
   void RetainCompletedLocked(const AckToken& token);

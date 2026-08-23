@@ -58,12 +58,32 @@ AckRegistry::ClaimOutcome AckRegistry::Claim(const AckToken& token,
                                              const AckFingerprint& fingerprint,
                                              std::uint64_t lane) {
   std::scoped_lock lock(mutex_);
+  return ClaimLocked(token, fingerprint, lane, std::nullopt);
+}
+
+AckRegistry::ClaimOutcome AckRegistry::ClaimOrReject(const AckToken& token,
+                                                     const AckFingerprint& fingerprint,
+                                                     std::uint64_t lane,
+                                                     AckResultV1 lane_busy_result) {
+  std::scoped_lock lock(mutex_);
+  return ClaimLocked(token, fingerprint, lane, std::move(lane_busy_result));
+}
+
+AckRegistry::ClaimOutcome AckRegistry::ClaimLocked(
+    const AckToken& token, const AckFingerprint& fingerprint, std::uint64_t lane,
+    std::optional<AckResultV1> lane_busy_result) {
   if (auto it = entries_.find(token); it != entries_.end()) {
     if (it->second.fingerprint != fingerprint) return ClaimOutcome::Collision;
     return it->second.result.has_value() ? ClaimOutcome::DuplicateCompleted
                                          : ClaimOutcome::DuplicateProcessing;
   }
-  if (processing_by_lane_.contains(lane)) return ClaimOutcome::LaneBusy;
+  if (processing_by_lane_.contains(lane)) {
+    if (lane_busy_result.has_value()) {
+      entries_.emplace(token, Entry{fingerprint, lane, std::move(lane_busy_result)});
+      RetainCompletedLocked(token);
+    }
+    return ClaimOutcome::LaneBusy;
+  }
   entries_.emplace(token, Entry{fingerprint, lane, std::nullopt});
   processing_by_lane_.emplace(lane, token);
   return ClaimOutcome::Admitted;
