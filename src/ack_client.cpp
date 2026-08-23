@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "sitos/batch.hpp"
 #include "sitos/key.hpp"
 
 namespace sitos {
@@ -42,6 +43,15 @@ Result<AckResultV1> SubmitAcknowledgedWrite(Transport& transport, std::string_vi
   // Definite NotSubmitted: validation before the Transport is invoked.
   if (total_deadline.count() <= 0) {
     return R::Err(Status::InvalidArgument, std::string(kDeadlineNotPositive));
+  }
+  // ADR-0028: an empty PutBatch returns immediate Ok with no data submission, token,
+  // or query. Only a canonical zero-entry batch short-circuits; a malformed payload
+  // follows the ordinary submit-and-poll path so StorageNode reports the rejection.
+  if (encoding.id == Encoding::kSitosV1Batch) {
+    if (auto decoded = DecodeBatch(payload); decoded.has_value() && decoded->empty()) {
+      return R::Ok(AckResultV1{AckOperationKind::Batch, Status::Ok, AckDurability::Applied, 0,
+                               kAckNoFailedIndex, 0, kAckNoFailedSequence, ""});
+    }
   }
   const AckToken token = GenerateAckToken();
   const auto query_key = BuildMetaAckKey(prefix, FormatAckToken(token));

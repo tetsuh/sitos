@@ -278,12 +278,14 @@ Acknowledged Put and PutBatch use one data submission followed by bounded result
    return zero replies. A duplicate token with the same process-local SHA-256 operation fingerprint
    never repeats apply; a different fingerprint is a rejected collision that preserves the original
    result. A definite validation rejection (unknown key, read-only snapshot, unknown session,
-   token on a Delete or buffer route, malformed batch) creates a typed failure result without
-   mutating storage; a boolean engine failure or an exception after the engine was invoked is
+   token on a Delete or buffer route, a `sitos.v1` payload that is not decodable payload v1, or a
+   malformed batch) creates a typed failure result without mutating storage; a boolean engine failure or an exception after the engine was invoked is
    `OutcomeUnknown`. PutBatch applies in order and stops at the first engine failure, reporting the
    confirmed prefix in `applied_count` and the failed entry in `failed_index`; the same stop-first
    rule applies to acknowledgement-free batches. Stop clears all token state.
-4. The client helper starts the total deadline immediately before the sole data Put, then polls
+4. A canonical empty `sitos.v1.batch` short-circuits in the client helper with Batch/`Ok` and
+   `applied_count = 0`, generating no token and performing no submission or query. Otherwise the
+   client helper starts the total deadline immediately before the sole data Put, then polls
    only the acknowledgement query (query windows of `min(1000 ms, remaining)`, one active query,
    at least 100 ms apart, no attempt count) and never resubmits the data write. After each query
    quiesces, a protocol error (wrong reply key or Encoding, malformed result → `Status::Error`)

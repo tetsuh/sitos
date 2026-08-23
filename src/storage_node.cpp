@@ -167,6 +167,7 @@ constexpr std::string_view kMalformedAckAttachment = "malformed ack attachment; 
 constexpr std::string_view kAckTokenCollision = "ack token collision; sample rejected";
 constexpr std::string_view kAckLaneReentry = "ack lane reentry; sample rejected";
 constexpr std::string_view kSubscriberReentry = "subscriber reentry; sample rejected";
+constexpr std::string_view kInvalidAckPayload = "invalid sitos.v1 payload; sample rejected";
 constexpr std::string_view kAckUnsupportedOperation =
     "acknowledgement not supported for this operation; sample rejected";
 
@@ -291,6 +292,13 @@ AckResultV1 ApplyWrite(SubscriberDiagnostics& diagnostics, StorageEngine& target
     auto bytes = std::vector<std::byte>(sample.payload.begin(), sample.payload.end());
     wrapped = ParamValue(std::move(bytes)).Encode();
     value = wrapped;
+  } else if (progress != nullptr && !ParamValue::Decode(sample.payload).has_value()) {
+    // ADR-0028: an acknowledged operation is decoded and validated completely before
+    // its first engine mutation; a definite rejection creates a typed failure result
+    // without mutating storage. Acknowledgement-free writes keep their existing
+    // pass-through behavior, which is owned by the base/session write path.
+    diagnostics.push_back({LogLevel::kWarning, kInvalidAckPayload});
+    return PutFailure(Status::InvalidArgument);
   }
   if (progress != nullptr) progress->engine_invoked = true;
   if (!target.Put(relative_key, value)) {
