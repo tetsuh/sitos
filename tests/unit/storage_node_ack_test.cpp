@@ -352,55 +352,58 @@ TEST(StorageNodeAckTest, FingerprintCollisionIsRejectedWithoutApplication) {
   EXPECT_EQ(h.RegistryEntries(), 1u);
 }
 
-TEST(StorageNodeAckTest, ReentrantLaneAdmissionFailsBeforeSecondApplication) {
+TEST(StorageNodeAckTest, SameThreadReentryIsRejectedWithErrorWithoutDeadlock) {
+  // True reentry: the engine Put of the outer acknowledged write synchronously
+  // delivers another acknowledged write on the same thread. ADR-0028: reentrant
+  // admission is an invariant failure reported as Status::Error, not applied.
   Harness h;
   h.Start();
   const AckToken outer = GenerateAckToken();
   const AckToken nested = GenerateAckToken();
-  std::atomic<bool> triggered = false;
-  std::mutex nested_mutex;
-  std::condition_variable nested_condition;
-  bool nested_started = false;
-  bool nested_done = false;
-  bool nested_started_during_engine_callback = false;
-  bool nested_completed_during_engine_callback = false;
-  std::thread nested_thread;
+  bool triggered = false;
   h.engine->on_put = [&](std::size_t index) {
-    if (index != 0 || triggered.exchange(true)) return;
-    nested_thread = std::thread([&] {
-      {
-        std::lock_guard<std::mutex> lock(nested_mutex);
-        nested_started = true;
-      }
-      nested_condition.notify_one();
-      h.Put("sitos/base/reentrant", nested);
-      {
-        std::lock_guard<std::mutex> lock(nested_mutex);
-        nested_done = true;
-      }
-      nested_condition.notify_one();
-    });
-    {
-      std::unique_lock<std::mutex> lock(nested_mutex);
-      nested_started_during_engine_callback = nested_condition.wait_for(
-          lock, std::chrono::seconds(3), [&] { return nested_started; });
-      if (nested_started_during_engine_callback) {
-        nested_completed_during_engine_callback = nested_condition.wait_for(
-            lock, std::chrono::seconds(3), [&] { return nested_done; });
-      }
-    }
+    if (index != 0 || triggered) return;
+    triggered = true;
+    h.Put("sitos/base/reentrant", nested);
+    // An acknowledgement-free reentrant write is rejected with a diagnostic as well.
+    h.transport.Deliver("sitos/base/reentrant-plain", TransportSample::Kind::Put, h.value_bytes,
+                        kV1, AckAttachmentAbsent{});
   };
 
   h.Put("sitos/base/outer", outer);
-  nested_thread.join();
 
-  EXPECT_TRUE(nested_started_during_engine_callback)
-      << "reentrant worker must start within the bounded test deadline";
-  EXPECT_TRUE(nested_completed_during_engine_callback)
-      << "reentrant acknowledgement must be rejected before application serialization";
+  EXPECT_TRUE(triggered);
   EXPECT_EQ(h.engine->Puts(), (std::vector<std::string>{"outer"}));
   ExpectResult(h.QueryAck(nested), AckOperationKind::Put, Status::Error, 0, 0);
   ExpectResult(h.QueryAck(outer), AckOperationKind::Put, Status::Ok, 1, kAckNoFailedIndex);
+  EXPECT_TRUE(h.sink->Contains("ack lane reentry; sample rejected"));
+  EXPECT_TRUE(h.sink->Contains("subscriber reentry; sample rejected"));
+  // A later delivery of the reentrant token is a duplicate of the retained Error result.
+  h.Put("sitos/base/reentrant", nested);
+  EXPECT_EQ(h.engine->Puts(), (std::vector<std::string>{"outer"}));
+  ExpectResult(h.QueryAck(nested), AckOperationKind::Put, Status::Error, 0, 0);
+}
+
+TEST(StorageNodeAckTest, ConcurrentAcknowledgedWritesAreSerializedNotRejected) {
+  // Independent deliveries that merely overlap in time are ordinary concurrency, not
+  // reentry: the second writer waits for the lane and is applied and acknowledged Ok.
+  Harness h;
+  h.engine->block_at = 0;
+  h.Start();
+  const AckToken first = GenerateAckToken();
+  const AckToken second = GenerateAckToken();
+  std::thread writer_a([&] { h.Put("sitos/base/a", first); });
+  ASSERT_TRUE(h.engine->WaitUntilBlocked());
+  std::thread writer_b([&] { h.Put("sitos/base/b", second); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_FALSE(h.QueryAck(second).has_value()) << "B is waiting for the lane, not rejected";
+  h.engine->Release();
+  writer_a.join();
+  writer_b.join();
+  EXPECT_EQ(h.engine->Puts(), (std::vector<std::string>{"a", "b"}));
+  ExpectResult(h.QueryAck(first), AckOperationKind::Put, Status::Ok, 1, kAckNoFailedIndex);
+  ExpectResult(h.QueryAck(second), AckOperationKind::Put, Status::Ok, 1, kAckNoFailedIndex);
+  EXPECT_FALSE(h.sink->Contains("ack lane reentry; sample rejected"));
 }
 
 TEST(StorageNodeAckTest, EngineRejectionIsOutcomeUnknown) {
@@ -556,7 +559,6 @@ TEST(StorageNodeAckTest, ConcurrentRecordingAndQueryingIsSafe) {
   std::atomic<bool> stop{false};
   std::atomic<int> observed{0};
   std::atomic<int> applied{0};
-  std::atomic<int> rejected{0};
 
   std::thread reader([&] {
     while (!stop.load()) {
@@ -571,15 +573,9 @@ TEST(StorageNodeAckTest, ConcurrentRecordingAndQueryingIsSafe) {
         tokens[w].push_back(token);
         h.Put("sitos/base/w" + std::to_string(w), token);
         const auto result = h.QueryAck(token);
-        EXPECT_TRUE(result.has_value());
-        if (!result) continue;
-        if (result->status == Status::Ok) {
-          applied.fetch_add(1);
-        } else if (result->status == Status::Error) {
-          rejected.fetch_add(1);
-        } else {
-          ADD_FAILURE() << "unexpected concurrent acknowledgement status";
-        }
+        ASSERT_TRUE(result.has_value());
+        EXPECT_EQ(result->status, Status::Ok) << "concurrent deliveries are never rejected";
+        applied.fetch_add(1);
       }
     });
   }
@@ -587,8 +583,9 @@ TEST(StorageNodeAckTest, ConcurrentRecordingAndQueryingIsSafe) {
   stop.store(true);
   reader.join();
 
-  EXPECT_EQ(applied.load() + rejected.load(), kWriters * kPerWriter);
-  EXPECT_EQ(h.engine->Puts().size(), static_cast<std::size_t>(applied.load()));
+  EXPECT_EQ(applied.load(), kWriters * kPerWriter);
+  EXPECT_EQ(h.engine->Puts().size(), static_cast<std::size_t>(kWriters * kPerWriter));
+  EXPECT_FALSE(h.sink->Contains("ack lane reentry; sample rejected"));
   for (const auto& list : tokens) {
     for (const auto& token : list) EXPECT_TRUE(h.QueryAck(token).has_value());
   }

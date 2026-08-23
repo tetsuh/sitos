@@ -6,6 +6,7 @@
 #ifndef SITOS_STORAGE_NODE_HPP
 #define SITOS_STORAGE_NODE_HPP
 
+#include <atomic>
 #include <cassert>
 #include <condition_variable>
 #include <cstddef>
@@ -17,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -291,6 +293,10 @@ class StorageNode {
     // session_mutex. This prevents ordinary writes from interleaving a batch;
     // session locks are released before engine writes.
     std::mutex subscriber_mutex;
+    // Thread currently holding subscriber_mutex (the ADR-0028 parameter lane), or a
+    // default-constructed id. A callback re-entering OnSample from inside an engine
+    // call on the same thread is rejected instead of deadlocking on the lane.
+    std::atomic<std::thread::id> application_owner{};
 
     // Test-only observers are unset in production use. They are copied under
     // test_observer_mutex and invoked without holding State locks.
@@ -326,6 +332,11 @@ class StorageNode {
   static void ApplyAcknowledgedSample(const std::shared_ptr<State>& state, const AckToken& token,
                                       const TransportSample& sample,
                                       std::vector<SubscriberDiagnostic>& diagnostics);
+  // Same-thread reentry on the held lane: retains Status::Error without application.
+  static void RejectReentrantAcknowledgedSample(const std::shared_ptr<State>& state,
+                                                const AckToken& token,
+                                                const TransportSample& sample,
+                                                std::vector<SubscriberDiagnostic>& diagnostics);
   static Result<void> CreateSession(const std::shared_ptr<State>& state, std::string_view sid,
                                     SessionOptions options);
   // Answers a get in the session or snap scope from the matching overlay or

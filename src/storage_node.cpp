@@ -7,6 +7,7 @@
 #include "sitos/storage_node.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <ctime>
@@ -15,6 +16,7 @@
 #include <shared_mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -164,10 +166,28 @@ constexpr std::string_view kBufferQueryFailed = "durable buffer query failed";
 constexpr std::string_view kMalformedAckAttachment = "malformed ack attachment; sample rejected";
 constexpr std::string_view kAckTokenCollision = "ack token collision; sample rejected";
 constexpr std::string_view kAckLaneReentry = "ack lane reentry; sample rejected";
+constexpr std::string_view kSubscriberReentry = "subscriber reentry; sample rejected";
 constexpr std::string_view kAckUnsupportedOperation =
     "acknowledgement not supported for this operation; sample rejected";
 
 using SubscriberDiagnostics = std::vector<SubscriberDiagnostic>;
+
+// Holds the serialized application lane: takes subscriber_mutex and records the
+// owning thread so that same-thread reentry can be detected without blocking.
+class ApplicationLaneLock {
+ public:
+  ApplicationLaneLock(std::mutex& lane_mutex, std::atomic<std::thread::id>& owner)
+      : owner_(owner), lock_(lane_mutex) {
+    owner_.store(std::this_thread::get_id(), std::memory_order_release);
+  }
+  ~ApplicationLaneLock() { owner_.store(std::thread::id{}, std::memory_order_release); }
+  ApplicationLaneLock(const ApplicationLaneLock&) = delete;
+  ApplicationLaneLock& operator=(const ApplicationLaneLock&) = delete;
+
+ private:
+  std::atomic<std::thread::id>& owner_;
+  std::scoped_lock<std::mutex> lock_;
+};
 
 AckResultV1 MakeAckResult(AckOperationKind kind, Status status, std::uint32_t applied_count,
                           std::uint32_t failed_index) {
@@ -177,6 +197,12 @@ AckResultV1 MakeAckResult(AckOperationKind kind, Status status, std::uint32_t ap
 
 // Definite rejection or uncertain outcome for a Put: applied_count 0, failed_index 0.
 AckResultV1 PutFailure(Status status) { return MakeAckResult(AckOperationKind::Put, status, 0, 0); }
+
+// ADR-0028: reentrant admission on a serialized lane is Status::Error without application.
+AckResultV1 LaneBusyResult(AckOperationKind kind) {
+  return MakeAckResult(kind, Status::Error, 0,
+                       kind == AckOperationKind::Batch ? kAckNoFailedIndex : 0);
+}
 
 // Moves a Processing token to exactly one immutable Completed result, even when
 // application throws after the claim (ADR-0028 RAII completion guard).
@@ -626,15 +652,27 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
     if (std::holds_alternative<AckAttachmentMalformed>(sample.ack)) {
       // ADR-0028: malformed acknowledgement metadata is rejected before application.
       diagnostics.push_back({LogLevel::kWarning, kMalformedAckAttachment});
-    } else if (const auto* token = std::get_if<AckToken>(&sample.ack)) {
-      // Acknowledged samples claim their token before waiting for the application
-      // lock, so same-lane reentry can complete with Error instead of blocking.
-      ApplyAcknowledgedSample(state, *token, sample, diagnostics);
+    } else if (state->application_owner.load(std::memory_order_acquire) ==
+               std::this_thread::get_id()) {
+      // Same-thread reentry from inside an engine call: the parameter lane is
+      // already held by this callback. ADR-0028 reports reentrant admission as an
+      // invariant failure (Status::Error) without applying the second operation.
+      // Independent concurrent deliveries never take this path; they wait below.
+      if (const auto* token = std::get_if<AckToken>(&sample.ack)) {
+        RejectReentrantAcknowledgedSample(state, *token, sample, diagnostics);
+      } else {
+        diagnostics.push_back({LogLevel::kError, kSubscriberReentry});
+      }
     } else {
-      // Serializing ordinary writes prevents one from becoming visible between
-      // batch entries. Diagnostics are emitted only after releasing this lock.
-      std::scoped_lock application_lock(state->subscriber_mutex);
-      ApplyParameterSample(state, sample, diagnostics, /*progress=*/nullptr);
+      // The lane lock serializes every parameter write, so an ordinary write can
+      // never become visible between batch entries and at most one acknowledged
+      // token is Processing at a time. Diagnostics are emitted after release.
+      ApplicationLaneLock lane(state->subscriber_mutex, state->application_owner);
+      if (const auto* token = std::get_if<AckToken>(&sample.ack)) {
+        ApplyAcknowledgedSample(state, *token, sample, diagnostics);
+      } else {
+        ApplyParameterSample(state, sample, diagnostics, /*progress=*/nullptr);
+      }
     }
     EmitDiagnostics(state->log_sink, diagnostics);
   } catch (...) {
@@ -739,14 +777,12 @@ void StorageNode::ApplyAcknowledgedSample(const std::shared_ptr<State>& state,
   const AckFingerprint fingerprint =
       ComputeAckFingerprint(kind, sample.key, sample.encoding.id, sample.payload);
 
-  // The claim is the token linearization point; a busy-lane rejection is retained
-  // in the same registry critical section, before any later delivery can claim it.
-  const std::uint32_t lane_busy_failed_index =
-      kind == AckOperationKind::Batch ? kAckNoFailedIndex : 0;
-  const AckResultV1 lane_busy_result =
-      MakeAckResult(kind, Status::Error, 0, lane_busy_failed_index);
+  // The caller holds the parameter lane, so the claim is the token linearization
+  // point for every tokenized sample on that lane and the registry mutex is released
+  // before engine application. A busy-lane rejection (cannot happen while the lane is
+  // held, kept as a defensive invariant) is retained in the same critical section.
   switch (registry.ClaimOrReject(token, fingerprint, AckRegistry::kParameterLane,
-                                lane_busy_result)) {
+                                LaneBusyResult(kind))) {
     case AckRegistry::ClaimOutcome::DuplicateProcessing:
     case AckRegistry::ClaimOutcome::DuplicateCompleted:
       return;  // never repeat apply; the retained result answers queries
@@ -763,12 +799,22 @@ void StorageNode::ApplyAcknowledgedSample(const std::shared_ptr<State>& state,
   AckApplyProgress progress;
   progress.kind = kind;
   AckCompletionGuard guard(registry, token, progress);
-  AckResultV1 result;
-  {
-    std::scoped_lock application_lock(state->subscriber_mutex);
-    result = ApplyParameterSample(state, sample, diagnostics, &progress);
-  }
+  AckResultV1 result = ApplyParameterSample(state, sample, diagnostics, &progress);
   guard.Finish(std::move(result));
+}
+
+void StorageNode::RejectReentrantAcknowledgedSample(
+    const std::shared_ptr<State>& state, const AckToken& token, const TransportSample& sample,
+    std::vector<SubscriberDiagnostic>& diagnostics) {
+  const auto parsed = ParseKey(state->prefix, sample.key);
+  const AckOperationKind kind =
+      parsed && parsed->is_batch ? AckOperationKind::Batch : AckOperationKind::Put;
+  const AckFingerprint fingerprint =
+      ComputeAckFingerprint(kind, sample.key, sample.encoding.id, sample.payload);
+  diagnostics.push_back({LogLevel::kError, kAckLaneReentry});
+  // Retained outside the lane: later deliveries of the reentrant token are duplicates
+  // of this Error result and are never applied.
+  state->ack_registry->RecordRejected(token, fingerprint, LaneBusyResult(kind));
 }
 
 void StorageNode::OnQuery(const std::shared_ptr<State>& state, TransportQuery& query) {
