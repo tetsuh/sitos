@@ -12,8 +12,10 @@
 #include <cstdint>
 #include <ctime>
 #include <format>
+#include <new>
 #include <optional>
 #include <shared_mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -22,6 +24,8 @@
 #include <vector>
 
 #include "ack_registry.hpp"
+#include "fence_internal.hpp"
+#include "fence_test_access.hpp"
 #include "sitos/ack.hpp"
 #include "sitos/batch.hpp"
 #include "sitos/in_memory_engine.hpp"
@@ -29,6 +33,7 @@
 #include "sitos/param_value.hpp"
 
 namespace sitos {
+using namespace fence_internal;
 
 // Diagnostics are retained until the subscriber sequencer is released, so an
 // injected sink is never called while node application state is locked.
@@ -45,6 +50,11 @@ struct AckApplyProgress {
   bool engine_invoked = false;
   std::uint32_t applied_count = 0;
   std::uint32_t current_index = 0;
+};
+
+struct FenceApplyProgress {
+  bool application_started = false;
+  bool completion_retained = false;
 };
 
 namespace {
@@ -192,8 +202,8 @@ class ApplicationLaneLock {
 
 AckResultV1 MakeAckResult(AckOperationKind kind, Status status, std::uint32_t applied_count,
                           std::uint32_t failed_index) {
-  return AckResultV1{kind, status, AckDurability::Applied, applied_count, failed_index, 0,
-                     kAckNoFailedSequence, ""};
+  return AckResultV1{kind,         status, AckDurability::Applied, applied_count,
+                     failed_index, 0,      kAckNoFailedSequence,   ""};
 }
 
 // Definite rejection or uncertain outcome for a Put: applied_count 0, failed_index 0.
@@ -238,6 +248,32 @@ class AckCompletionGuard {
   AckRegistry& registry_;
   AckToken token_;
   AckApplyProgress& progress_;
+  bool done_ = false;
+};
+
+// A claimed Fence marker has the same immutable-completion obligation as an
+// acknowledged write. Before the optional durability barrier is invoked, an
+// unexpected exception is a definite local Error; the barrier path translates
+// its own post-invocation uncertainty to OutcomeUnknown before Finish().
+class FenceAckCompletionGuard {
+ public:
+  FenceAckCompletionGuard(AckRegistry& registry, AckToken token, AckResultV1 fallback) noexcept
+      : registry_(registry), token_(token), fallback_(std::move(fallback)) {}
+  ~FenceAckCompletionGuard() {
+    if (!done_) registry_.Complete(token_, std::move(fallback_));
+  }
+  FenceAckCompletionGuard(const FenceAckCompletionGuard&) = delete;
+  FenceAckCompletionGuard& operator=(const FenceAckCompletionGuard&) = delete;
+
+  void Finish(AckResultV1 result) {
+    registry_.Complete(token_, std::move(result));
+    done_ = true;
+  }
+
+ private:
+  AckRegistry& registry_;
+  AckToken token_;
+  AckResultV1 fallback_;
   bool done_ = false;
 };
 
@@ -318,8 +354,7 @@ struct EncodedBatchEntry {
 // PutBatch is not transactional). The result reports the confirmed prefix in
 // applied_count and the first failed entry in failed_index.
 AckResultV1 ApplyBatch(SubscriberDiagnostics& diagnostics, StorageEngine& target,
-                       std::span<const std::byte> payload,
-                       AckApplyProgress* progress) {
+                       std::span<const std::byte> payload, AckApplyProgress* progress) {
   auto decoded = DecodeBatch(payload);
   if (!decoded) {
     diagnostics.push_back({LogLevel::kWarning, kMalformedBatchPayload});
@@ -400,6 +435,8 @@ Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Transport
                                        std::move(config.log_sink),
                                        std::move(config.durable_buffer_engine_factory));
   state->ack_registry = std::make_shared<AckRegistry>();
+  state->fence_dispatcher = transport.FenceDispatcher();
+  state->fence_receiver_registry = std::make_shared<fence_internal::FenceReceiverRegistry>();
   const std::string declaration_key = state->prefix + "/**";
   auto queryable_result = transport.DeclareQueryable(
       declaration_key, [state](TransportQuery& query) { OnQuery(state, query); });
@@ -407,7 +444,7 @@ Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Transport
   Queryable queryable = std::move(queryable_result).Value();
 
   auto subscriber_result = transport.DeclareSubscriber(
-      declaration_key, [state](const TransportSample& sample) { OnSample(state, sample); });
+      declaration_key, [state](const TransportSample& sample) { DispatchSample(state, sample); });
   if (!subscriber_result.IsOk()) return Result<void>::ErrFrom(subscriber_result);
   Subscription subscriber = std::move(subscriber_result).Value();
 
@@ -436,16 +473,17 @@ void StorageNode::Stop() noexcept {
     subscriber = std::move(subscriber_);
   }
 
+  // Stop closes callback admission first. A marker that already claimed its
+  // token therefore completes with the stop boundary status before quiescence,
+  // while callbacks queued only in the Fence dispatcher fail State admission.
+  // CreateSession operations admitted before this point are included in the
+  // drain, so the subsequent Session snapshot is final.
   state->DeactivateAndWait();
 
-  // ADR-0028: after callbacks have quiesced, Processing and Completed token state
-  // is dropped; a later Start never recovers old results.
-  state->ack_registry->Clear();
-
-  // Stop is a quiescence boundary for the entire Session generation. Once
-  // callbacks have drained, no Session admission can remain active; close and
-  // release every committed record before returning to the caller. Extracting
-  // one existing map node at a time avoids allocation in this noexcept path.
+  // Stop is a quiescence boundary for the entire Session generation. Extract
+  // one existing map node at a time so this noexcept path performs no snapshot
+  // allocation. Each record remains alive while its dispatch registrations and
+  // active Session admissions drain.
   for (;;) {
     std::shared_ptr<SessionRecord> record;
     {
@@ -454,12 +492,21 @@ void StorageNode::Stop() noexcept {
       auto node = state->sessions.extract(state->sessions.begin());
       record = std::move(node.mapped());
     }
+    if (state->fence_dispatcher) {
+      state->fence_dispatcher->CloseAndWait(record->fence_dispatch->durable);
+      state->fence_dispatcher->CloseAndWait(record->fence_dispatch->ephemeral);
+    }
     if (record->BeginClose()) record->WaitForAdmission();
     record->snapshot.reset();
     record->overlay.reset();
     record->durable_buffers.reset();
     record->metadata = {};
   }
+
+  // ADR-0028: after callbacks have quiesced, Processing and Completed token state
+  // is dropped; a later Start never recovers old results.
+  state->ack_registry->Clear();
+  state->fence_receiver_registry->Clear();
 
   subscriber = Subscription{};
   queryable = Queryable{};
@@ -498,6 +545,24 @@ Result<void> StorageNode::CreateSession(const std::shared_ptr<State>& state, std
                                         SessionOptions options) {
   const std::string key(sid);
   auto record = std::make_shared<SessionRecord>();
+  // Every field visible to subscriber dispatch is immutable and initialized
+  // before the Creating record is published in the Session table.
+  record->options = options;
+  record->generation_uuid = GenerateFenceUuid();
+  record->fence_dispatch = std::make_shared<fence_internal::FenceSessionDispatch>();
+  if (state->fence_dispatcher) {
+    record->fence_dispatch->durable = state->fence_dispatcher->Register();
+    record->fence_dispatch->ephemeral = state->fence_dispatcher->Register();
+  }
+  {
+    std::unique_lock lock(state->fence_test_mutex);
+    if (state->fence_test_gate_session_registration) {
+      state->fence_test_session_registration_reached = true;
+      state->fence_test_condition.notify_all();
+      state->fence_test_condition.wait(
+          lock, [state] { return state->fence_test_release_session_registration; });
+    }
+  }
   {
     std::unique_lock lock(state->session_mutex);
     if (auto it = state->sessions.find(key); it != state->sessions.end()) {
@@ -524,6 +589,14 @@ Result<void> StorageNode::CreateSession(const std::shared_ptr<State>& state, std
 
     ~SessionRollbackGuard() noexcept {
       if (!active) return;
+      // Keep the failed record published until SID-wide receiver cleanup is
+      // complete. Otherwise a same-SID replacement could be created and have
+      // its new generation's proof erased by this rollback.
+      if (state->fence_dispatcher && record->fence_dispatch) {
+        state->fence_dispatcher->CloseAndWait(record->fence_dispatch->durable);
+        state->fence_dispatcher->CloseAndWait(record->fence_dispatch->ephemeral);
+      }
+      state->fence_receiver_registry->EraseSession(key);
       record->snapshot.reset();
       record->overlay.reset();
       record->durable_buffers.reset();
@@ -549,7 +622,6 @@ Result<void> StorageNode::CreateSession(const std::shared_ptr<State>& state, std
 
   record->snapshot = std::move(snapshot);
   record->overlay = std::make_shared<InMemoryEngine>();
-  record->options = options;
   record->metadata = SessionMeta{NowIso8601()};
 
   if (options.durable_buffers) {
@@ -603,11 +675,26 @@ Result<void> StorageNode::CloseSession(std::string_view sid) {
     if (!record->BeginClose()) return Result<void>::Err(OperationInProgress());
   }
 
+  if (state->fence_dispatcher) {
+    state->fence_dispatcher->CloseAndWait(record->fence_dispatch->durable);
+    state->fence_dispatcher->CloseAndWait(record->fence_dispatch->ephemeral);
+  }
+  {
+    std::unique_lock lock(state->fence_test_mutex);
+    if (state->fence_test_gate_close_after_dispatch) {
+      state->fence_test_close_after_dispatch_reached = true;
+      state->fence_test_condition.notify_all();
+      state->fence_test_condition.wait(
+          lock, [state] { return state->fence_test_release_close_after_dispatch; });
+    }
+  }
   record->WaitForAdmission();
   record->snapshot.reset();
   record->overlay.reset();
   record->durable_buffers.reset();
   record->metadata = {};
+  record->generation_uuid = {};
+  state->fence_receiver_registry->EraseSession(sid);
   {
     std::unique_lock lock(state->session_mutex);
     auto it = state->sessions.find(key);
@@ -646,9 +733,161 @@ StorageNode::SessionAccess StorageNode::AcquireSession(const std::shared_ptr<Sta
   return access;
 }
 
-void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportSample& sample) {
+void StorageNode::DispatchSample(const std::shared_ptr<State>& state,
+                                 const TransportSample& sample) {
+  try {
+    {
+      std::scoped_lock lock(state->fence_test_mutex);
+      if (std::exchange(state->fence_test_throw_dispatch_once, false)) {
+        throw std::bad_alloc();
+      }
+    }
+    std::string sid;
+    std::optional<BufferClass> buffer_class;
+    bool marker = false;
+    auto route = ParseFenceMarkerRoute(state->prefix, sample.key);
+    const bool marker_route_valid = route.has_value();
+    if (!route.has_value()) {
+      route = fence_internal::RecoverMalformedFenceMarkerRoute(state->prefix, sample.key);
+    }
+    if (route && route->target == FenceMarkerTarget::Buffer) {
+      sid = route->sid;
+      buffer_class = route->buffer_class;
+      marker = true;
+    } else if (const auto parsed = ParseKey(state->prefix, sample.key);
+               parsed && parsed->kind == KeyKind::Buffer &&
+               !std::holds_alternative<FenceLaneAbsent>(sample.fence_lane)) {
+      sid = parsed->sid;
+      buffer_class = parsed->buffer_class;
+    } else {
+      OnSample(state, sample);
+      return;
+    }
+
+    // Keep Session selection and dispatch admission in one read-side critical
+    // section. CloseSession takes the unique side before BeginClose and final
+    // erasure, so a selected marker is either admitted before Closing or its
+    // InvalidArgument fallback completes before the record can disappear.
+    std::shared_lock session_lock(state->session_mutex);
+    std::shared_ptr<SessionRecord> record;
+    const auto session = state->sessions.find(sid);
+    if (session != state->sessions.end()) record = session->second;
+    if (!record || !buffer_class.has_value()) {
+      session_lock.unlock();
+      if (marker) OnSample(state, sample);
+      return;
+    }
+    if (!state->fence_dispatcher || !record->fence_dispatch) {
+      session_lock.unlock();
+      OnSample(state, sample);
+      return;
+    }
+    auto& registration = *buffer_class == BufferClass::Durable ? record->fence_dispatch->durable
+                                                               : record->fence_dispatch->ephemeral;
+    const auto prepare = [&] {
+      if (marker) return true;
+      if (const auto* lane = std::get_if<FenceLaneMetadata>(&sample.fence_lane)) {
+        return state->fence_receiver_registry->AdmitBufferObservation(
+            sid, record->generation_uuid, *buffer_class, lane->publisher_uuid, lane->sequence);
+      }
+      if (const auto* malformed = std::get_if<FenceLaneMalformed>(&sample.fence_lane)) {
+        static_cast<void>(state->fence_receiver_registry->RecordMalformedBuffer(
+            sid, record->generation_uuid, *buffer_class, *malformed));
+      }
+      return false;
+    };
+    const auto overflow = [&] {
+      if (marker) return;
+      if (const auto* lane = std::get_if<FenceLaneMetadata>(&sample.fence_lane)) {
+        static_cast<void>(state->fence_receiver_registry->RecordBufferOverflow(
+            sid, record->generation_uuid, *buffer_class, lane->publisher_uuid, lane->sequence));
+      } else if (const auto* malformed = std::get_if<FenceLaneMalformed>(&sample.fence_lane)) {
+        static_cast<void>(state->fence_receiver_registry->RecordMalformedBuffer(
+            sid, record->generation_uuid, *buffer_class, *malformed));
+      }
+    };
+    auto admission = state->fence_dispatcher->Dispatch(registration, prepare, overflow);
+    if (admission.outcome != fence_internal::FenceDispatchCoordinator::Outcome::Admitted) {
+      // CloseSession closes class dispatch before erasing the Closing record. A
+      // recoverable marker arriving in that interval still receives the existing
+      // InvalidArgument lifecycle result instead of being silently dropped.
+      if (marker &&
+          admission.outcome == fence_internal::FenceDispatchCoordinator::Outcome::Closed) {
+        {
+          std::unique_lock lock(state->fence_test_mutex);
+          if (state->fence_test_gate_closed_marker_fallback) {
+            state->fence_test_closed_marker_fallback_reached = true;
+            state->fence_test_condition.notify_all();
+            state->fence_test_condition.wait(
+                lock, [state] { return state->fence_test_release_closed_marker_fallback; });
+          }
+        }
+        auto callback_lease = state->Enter();
+        if (!callback_lease) return;
+        try {
+          // The closed-dispatch fallback performs no parameter or buffer application. Keep the
+          // Session read lock until its immutable InvalidArgument result is retained so
+          // CloseSession cannot erase the selected record first, but do not acquire the
+          // application lane in the reverse of the normal lane-then-Session order.
+          SubscriberDiagnostics diagnostics;
+          ApplyBufferFenceMarker(state, *route, sample, diagnostics, marker_route_valid,
+                                 Status::InvalidArgument);
+          EmitDiagnostics(state->log_sink, diagnostics);
+        } catch (...) {
+          EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, kSubscriberCallbackFailed);
+        }
+      }
+      return;
+    }
+    session_lock.unlock();
+    admission.entry.WaitTurn();
+    OnSample(state, sample, !marker);
+  } catch (...) {
+    // No Transport implementation is required to contain user callback
+    // exceptions, so the complete dispatch path is the boundary. Preserve
+    // fail-closed ordering evidence for identifiable covered buffer data.
+    std::shared_ptr<SessionRecord> failed_record;
+    FenceDispatchCoordinator::Registration* registration = nullptr;
+    bool retained = false;
+    try {
+      const auto parsed = ParseKey(state->prefix, sample.key);
+      if (parsed && parsed->kind == KeyKind::Buffer && parsed->buffer_class.has_value()) {
+        std::shared_lock lock(state->session_mutex);
+        const auto session = state->sessions.find(parsed->sid);
+        if (session != state->sessions.end() && session->second->fence_dispatch) {
+          failed_record = session->second;
+          registration = *parsed->buffer_class == BufferClass::Durable
+                             ? &failed_record->fence_dispatch->durable
+                             : &failed_record->fence_dispatch->ephemeral;
+          if (const auto* lane = std::get_if<FenceLaneMetadata>(&sample.fence_lane)) {
+            static_cast<void>(state->fence_receiver_registry->RecordBufferOverflow(
+                parsed->sid, failed_record->generation_uuid, *parsed->buffer_class,
+                lane->publisher_uuid, lane->sequence));
+            retained = true;
+          } else if (const auto* malformed = std::get_if<FenceLaneMalformed>(&sample.fence_lane)) {
+            static_cast<void>(state->fence_receiver_registry->RecordMalformedBuffer(
+                parsed->sid, failed_record->generation_uuid, *parsed->buffer_class, *malformed));
+            retained = true;
+          }
+        }
+      }
+    } catch (...) {
+    }
+    if (!retained && registration != nullptr && state->fence_dispatcher) {
+      try {
+        state->fence_dispatcher->CloseAndWait(*registration);
+      } catch (...) {
+      }
+    }
+    EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, kSubscriberCallbackFailed);
+  }
+}
+
+void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportSample& sample,
+                           bool fence_preadmitted) {
   auto lease = state->Enter();
   if (!lease) return;
+  FenceApplyProgress fence_progress;
   try {
     std::function<void()> subscriber_observer;
     {
@@ -657,7 +896,26 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
     }
     if (subscriber_observer) subscriber_observer();
     SubscriberDiagnostics diagnostics;
-    if (std::holds_alternative<AckAttachmentMalformed>(sample.ack)) {
+    auto marker = ParseFenceMarkerRoute(state->prefix, sample.key);
+    bool marker_route_valid = marker.has_value();
+    if (!marker.has_value()) {
+      marker = fence_internal::RecoverMalformedFenceMarkerRoute(state->prefix, sample.key);
+    }
+    if (marker.has_value()) {
+      if (marker->target == FenceMarkerTarget::Buffer) {
+        if (state->application_owner.load() == std::this_thread::get_id()) {
+          diagnostics.push_back({LogLevel::kError, kSubscriberReentry});
+        } else {
+          ApplicationLaneLock lane(state->subscriber_mutex, state->application_owner);
+          ApplyBufferFenceMarker(state, *marker, sample, diagnostics, marker_route_valid);
+        }
+      }
+    } else if (sample.key.starts_with(state->prefix + "/meta/fence/buffer/")) {
+      // Without recoverable target/durability/through fields no truthful
+      // Fence AckResult can be created; ignore without claiming the token.
+    } else if (sample.key.starts_with(state->prefix + "/meta/fence/cache/")) {
+      // Cache-target markers never create a StorageNode result.
+    } else if (std::holds_alternative<AckAttachmentMalformed>(sample.ack)) {
       // ADR-0028: malformed acknowledgement metadata is rejected before application.
       diagnostics.push_back({LogLevel::kWarning, kMalformedAckAttachment});
     } else if (state->application_owner.load() == std::this_thread::get_id()) {
@@ -678,19 +936,165 @@ void StorageNode::OnSample(const std::shared_ptr<State>& state, const TransportS
       if (const auto* token = std::get_if<AckToken>(&sample.ack)) {
         ApplyAcknowledgedSample(state, *token, sample, diagnostics);
       } else {
-        ApplyParameterSample(state, sample, diagnostics, /*progress=*/nullptr);
+        ApplyParameterSample(state, sample, diagnostics, /*progress=*/nullptr, fence_preadmitted,
+                             fence_preadmitted ? &fence_progress : nullptr);
       }
     }
     EmitDiagnostics(state->log_sink, diagnostics);
   } catch (...) {
+    if (fence_preadmitted && !fence_progress.completion_retained) {
+      try {
+        const auto parsed = ParseKey(state->prefix, sample.key);
+        if (parsed && parsed->kind == KeyKind::Buffer && parsed->buffer_class.has_value()) {
+          std::shared_lock lock(state->session_mutex);
+          const auto session = state->sessions.find(parsed->sid);
+          const auto* lane = std::get_if<FenceLaneMetadata>(&sample.fence_lane);
+          if (session != state->sessions.end() && lane != nullptr) {
+            state->fence_receiver_registry->CompleteBufferObservation(
+                parsed->sid, session->second->generation_uuid, *parsed->buffer_class,
+                lane->publisher_uuid, lane->sequence,
+                fence_progress.application_started ? Status::OutcomeUnknown : Status::Error);
+          }
+        }
+      } catch (...) {
+      }
+    }
     EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, kSubscriberCallbackFailed);
   }
+}
+
+void StorageNode::ApplyBufferFenceMarker(const std::shared_ptr<State>& state,
+                                         const FenceMarkerRoute& route,
+                                         const TransportSample& sample,
+                                         std::vector<SubscriberDiagnostic>& diagnostics,
+                                         bool route_valid,
+                                         std::optional<Status> forced_lifecycle_status) {
+  const auto* token = std::get_if<AckToken>(&sample.ack);
+  if (token == nullptr) return;
+
+  const AckFingerprint fingerprint = ComputeAckFingerprint(AckOperationKind::Fence, sample.key,
+                                                           sample.encoding.id, sample.payload);
+  AckResultV1 result{AckOperationKind::Fence, Status::Error,          route.durability,     0,
+                     kAckNoFailedIndex,       route.through_sequence, kAckNoFailedSequence, ""};
+  const bool marker_valid = route_valid && sample.kind == TransportSample::Kind::Put &&
+                            sample.encoding.id == Encoding::kSitosV1Fence &&
+                            DecodeFenceMarker(sample.payload).IsOk();
+
+  std::shared_ptr<SessionRecord> record;
+  std::optional<SessionRecord::AdmissionLease> admission;
+  if (marker_valid && forced_lifecycle_status.has_value()) {
+    result.status = *forced_lifecycle_status;
+  } else if (marker_valid) {
+    std::shared_lock lock(state->session_mutex);
+    const auto it = state->sessions.find(route.sid);
+    if (it == state->sessions.end()) {
+      result.status = Status::NotFound;
+    } else {
+      record = it->second;
+      admission = record->TryAcquire();
+      if (!admission.has_value()) {
+        result.status = Status::InvalidArgument;
+      } else if (record->generation_uuid != route.receiver_generation) {
+        return;  // stale Session generation is rejected before token claim
+      }
+    }
+  }
+
+  const auto outcome = state->ack_registry->ClaimIndependent(*token, fingerprint);
+  switch (outcome) {
+    case AckRegistry::ClaimOutcome::DuplicateProcessing:
+    case AckRegistry::ClaimOutcome::DuplicateCompleted:
+      return;
+    case AckRegistry::ClaimOutcome::Collision:
+      diagnostics.push_back({LogLevel::kWarning, kAckTokenCollision});
+      return;
+    case AckRegistry::ClaimOutcome::LaneBusy:
+      // Independent Fence markers never contend on a shared processing lane.
+      diagnostics.push_back({LogLevel::kError, kAckLaneReentry});
+      return;
+    case AckRegistry::ClaimOutcome::Admitted:
+      break;
+  }
+  FenceAckCompletionGuard completion(*state->ack_registry, *token, result);
+  bool throw_after_claim = false;
+  {
+    std::unique_lock lock(state->fence_test_mutex);
+    if (state->fence_test_last_claim_token == *token) {
+      ++state->fence_test_last_claim_count;
+    } else {
+      state->fence_test_last_claim_token = *token;
+      state->fence_test_last_claim_count = 1;
+    }
+    if (state->fence_test_gate_after_claim) {
+      state->fence_test_claimed = true;
+      state->fence_test_claimed_token = *token;
+      state->fence_test_condition.notify_all();
+      state->fence_test_condition.wait(lock, [state] { return state->fence_test_release_claim; });
+    }
+    throw_after_claim = std::exchange(state->fence_test_throw_after_claim_once, false);
+  }
+
+  if (!state->IsAccepting()) {
+    result.status = Status::Error;
+  } else if (record && admission.has_value() && marker_valid) {
+    result.status = Status::Ok;
+    // Inject at the latest pre-evaluation point so the exception-safety test
+    // proves that a mutable optimistic result cannot escape through the
+    // completion guard.
+    if (throw_after_claim) throw std::runtime_error("injected Fence post-claim failure");
+    if (!route.buffer_class.has_value()) {
+      result.status = Status::InvalidArgument;
+    } else {
+      const bool buffer_enabled = *route.buffer_class == BufferClass::Durable
+                                      ? record->options.durable_buffers
+                                      : record->options.ephemeral_buffers;
+      result = state->fence_receiver_registry->EvaluateBuffer(
+          route.sid, route.receiver_generation, *route.buffer_class, route.publisher_uuid,
+          route.durability, route.through_sequence);
+      if (result.status == Status::Ok && !buffer_enabled) {
+        result.status = Status::InvalidArgument;
+      }
+      if (result.status == Status::Ok && route.durability == AckDurability::Synced) {
+        std::function<Result<void>(StorageEngine&)> barrier;
+        {
+          std::scoped_lock lock(state->fence_test_mutex);
+          barrier = state->fence_test_durability_barrier;
+        }
+        if (!barrier || !record->durable_buffers) {
+          result.status = Status::InvalidArgument;
+        } else if (route.through_sequence > 0) {
+          {
+            std::scoped_lock lock(state->fence_test_mutex);
+            ++state->fence_test_barrier_calls;
+          }
+          try {
+            const auto synchronized = barrier(*record->durable_buffers);
+            if (!synchronized.IsOk()) {
+              result.status = synchronized.StatusCode();
+              if (!ValidateAckResult(result).IsOk()) result.status = Status::Error;
+            }
+          } catch (...) {
+            result.status = Status::OutcomeUnknown;
+          }
+        }
+      }
+    }
+  } else if (record && admission.has_value()) {
+    result.status = Status::Error;
+  }
+
+  {
+    std::scoped_lock lock(state->fence_test_mutex);
+    state->fence_test_last_completed_result = result;
+  }
+  completion.Finish(std::move(result));
 }
 
 AckResultV1 StorageNode::ApplyParameterSample(const std::shared_ptr<State>& state,
                                               const TransportSample& sample,
                                               std::vector<SubscriberDiagnostic>& diagnostics,
-                                              AckApplyProgress* progress) {
+                                              AckApplyProgress* progress, bool fence_preadmitted,
+                                              FenceApplyProgress* fence_progress) {
   const bool acknowledged = progress != nullptr;
   const auto parsed = ParseKey(state->prefix, sample.key);
   if (!parsed) {
@@ -724,32 +1128,80 @@ AckResultV1 StorageNode::ApplyParameterSample(const std::shared_ptr<State>& stat
       diagnostics.push_back({LogLevel::kWarning, kAckUnsupportedOperation});
       return PutFailure(Status::InvalidArgument);
     }
+    auto access = AcquireSession(state, parsed->sid);
+    if (!access.record || !access.admission.has_value()) {
+      diagnostics.emplace_back(LogLevel::kWarning, kUnknownSession);
+      if (fence_preadmitted && access.record && parsed->buffer_class.has_value()) {
+        if (const auto* lane = std::get_if<FenceLaneMetadata>(&sample.fence_lane)) {
+          state->fence_receiver_registry->CompleteBufferObservation(
+              parsed->sid, access.record->generation_uuid, *parsed->buffer_class,
+              lane->publisher_uuid, lane->sequence, Status::InvalidArgument);
+        }
+      }
+      return PutFailure(Status::InvalidArgument);
+    }
+    if (!parsed->buffer_class.has_value()) {
+      diagnostics.emplace_back(LogLevel::kWarning, kBufferUnsupported);
+      return PutFailure(Status::InvalidArgument);
+    }
+    if (const auto* malformed = std::get_if<FenceLaneMalformed>(&sample.fence_lane)) {
+      static_cast<void>(state->fence_receiver_registry->RecordMalformedBuffer(
+          parsed->sid, access.record->generation_uuid, *parsed->buffer_class, *malformed));
+      return PutFailure(Status::InvalidArgument);
+    }
+    const auto* lane = std::get_if<FenceLaneMetadata>(&sample.fence_lane);
+    if (lane != nullptr && !fence_preadmitted &&
+        !state->fence_receiver_registry->AdmitBufferObservation(
+            parsed->sid, access.record->generation_uuid, *parsed->buffer_class,
+            lane->publisher_uuid, lane->sequence)) {
+      return PutFailure(Status::InvalidArgument);
+    }
+
+    std::optional<Status> fence_failure;
+    bool applied = false;
     if (sample.kind == TransportSample::Kind::Delete) {
       diagnostics.emplace_back(LogLevel::kWarning, kBufferUnsupported);
+      fence_failure = Status::InvalidArgument;
     } else if (!IsBufferBytes(sample)) {
       diagnostics.emplace_back(LogLevel::kWarning, kBufferEncodingRejected);
-    } else if (auto access = AcquireSession(state, parsed->sid);
-               !access.record || !access.admission.has_value()) {
-      diagnostics.emplace_back(LogLevel::kWarning, kUnknownSession);
-    } else if (!parsed->buffer_class.has_value()) {
-      diagnostics.emplace_back(LogLevel::kWarning, kBufferUnsupported);
+      fence_failure = Status::InvalidArgument;
     } else if (*parsed->buffer_class == BufferClass::Ephemeral) {
       if (!access.record->options.ephemeral_buffers) {
         diagnostics.emplace_back(LogLevel::kWarning, kBufferCapabilityDisabled);
+        fence_failure = Status::InvalidArgument;
+      } else {
+        applied = true;
+        if (fence_progress != nullptr) fence_progress->application_started = true;
       }
     } else if (!access.record->options.durable_buffers || !access.record->durable_buffers) {
       diagnostics.emplace_back(LogLevel::kWarning, kBufferCapabilityDisabled);
+      fence_failure = Status::InvalidArgument;
     } else {
       switch (ApplyDurableBufferWrite(*access.record->durable_buffers, *parsed, sample)) {
         case BufferWriteOutcome::Conflict:
           diagnostics.emplace_back(LogLevel::kWarning, kBufferPutConflict);
+          fence_failure = Status::InvalidArgument;
           break;
         case BufferWriteOutcome::Failed:
+          if (fence_progress != nullptr) fence_progress->application_started = true;
           diagnostics.emplace_back(LogLevel::kError, kBufferPutFailed);
+          fence_failure = Status::OutcomeUnknown;
           break;
         case BufferWriteOutcome::Stored:
+          applied = true;
+          if (fence_progress != nullptr) fence_progress->application_started = true;
           break;
       }
+    }
+    if (lane != nullptr) {
+      state->fence_receiver_registry->CompleteBufferObservation(
+          parsed->sid, access.record->generation_uuid, *parsed->buffer_class, lane->publisher_uuid,
+          lane->sequence, fence_failure);
+      if (fence_progress != nullptr) fence_progress->completion_retained = true;
+    }
+    if (applied) {
+      std::scoped_lock lock(state->fence_test_mutex);
+      ++state->buffer_application_count;
     }
     return PutFailure(Status::InvalidArgument);  // unused by the acknowledgement-free path
   }
@@ -789,7 +1241,7 @@ void StorageNode::ApplyAcknowledgedSample(const std::shared_ptr<State>& state,
   // before engine application. A busy-lane rejection (cannot happen while the lane is
   // held, kept as a defensive invariant) is retained in the same critical section.
   switch (registry.ClaimOrReject(token, fingerprint, AckRegistry::kParameterLane,
-                                LaneBusyResult(kind))) {
+                                 LaneBusyResult(kind))) {
     case AckRegistry::ClaimOutcome::DuplicateProcessing:
     case AckRegistry::ClaimOutcome::DuplicateCompleted:
       return;  // never repeat apply; the retained result answers queries
@@ -991,5 +1443,424 @@ void StorageNode::ReplyMetaQuery(const std::shared_ptr<State>& state, TransportQ
   const auto payload = ParamValue(json).Encode();
   query.Reply(query.keyexpr, payload, SitosEncoding());
 }
+
+namespace fence_test_access {
+
+bool FenceTestAccess::SetSessionGeneration(StorageNode& node, std::string_view sid,
+                                           const FenceUuid& generation) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state) return false;
+  std::unique_lock lock(state->session_mutex);
+  const auto it = state->sessions.find(sid);
+  if (it == state->sessions.end()) return false;
+  it->second->generation_uuid = generation;
+  return true;
+}
+
+bool FenceTestAccess::BufferValueExists(StorageNode& node, std::string_view sid,
+                                        std::string_view key) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state) return false;
+  std::shared_ptr<StorageNode::SessionRecord> record;
+  std::optional<StorageNode::SessionRecord::AdmissionLease> admission;
+  {
+    std::shared_lock lock(state->session_mutex);
+    const auto it = state->sessions.find(sid);
+    if (it == state->sessions.end()) return false;
+    record = it->second;
+    admission = record->TryAcquire();
+  }
+  if (!admission || !record->durable_buffers) return false;
+  return record->durable_buffers->Get(key, [](std::string_view, Bytes) { return true; });
+}
+
+std::optional<AckResultV1> FenceTestAccess::FindAckResult(StorageNode& node,
+                                                          const AckToken& token) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  return state ? state->ack_registry->Find(token) : std::nullopt;
+}
+
+std::size_t FenceTestAccess::FenceTokenClaims(StorageNode& node, const AckToken& token) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state) return 0;
+  std::scoped_lock lock(state->fence_test_mutex);
+  return state->fence_test_last_claim_token == token ? state->fence_test_last_claim_count : 0;
+}
+
+std::size_t FenceTestAccess::BufferApplicationCount(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state) return 0;
+  std::scoped_lock lock(state->fence_test_mutex);
+  return state->buffer_application_count;
+}
+
+std::size_t FenceTestAccess::AckRegistryEntries(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  return state ? state->ack_registry->Size() : 0;
+}
+
+std::size_t FenceTestAccess::AckRegistryProcessingEntries(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  return state ? state->ack_registry->ProcessingCount() : 0;
+}
+
+bool FenceTestAccess::ThrowStorageDispatchOnce(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state) return false;
+  std::scoped_lock lock(state->fence_test_mutex);
+  state->fence_test_throw_dispatch_once = true;
+  return true;
+}
+
+bool FenceTestAccess::ThrowFenceAfterTokenClaimOnce(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state) return false;
+  std::scoped_lock lock(state->fence_test_mutex);
+  state->fence_test_throw_after_claim_once = true;
+  return true;
+}
+
+bool FenceTestAccess::FailFenceCompletionRetentionOnce(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state) return false;
+  state->ack_registry->FailNextForTesting(
+      AckRegistry::FailurePointForTesting::BeforeCompletionRetention);
+  return true;
+}
+
+std::size_t FenceTestAccess::FenceReceiverRegistryEntries(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_ ? node.state_ : node.fence_test_retained_state_;
+  }
+  return state ? state->fence_receiver_registry->Size() : 0;
+}
+
+std::optional<FenceUuid> FenceTestAccess::VisibleSessionGeneration(StorageNode& node,
+                                                                   std::string_view sid) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state) return std::nullopt;
+  std::shared_lock lock(state->session_mutex);
+  const auto it = state->sessions.find(sid);
+  return it == state->sessions.end() ? std::nullopt
+                                     : std::optional<FenceUuid>{it->second->generation_uuid};
+}
+
+bool FenceTestAccess::BeginClose(StorageNode& node, std::string_view sid) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state) return false;
+  std::unique_lock lock(state->session_mutex);
+  const auto it = state->sessions.find(sid);
+  return it != state->sessions.end() && it->second->BeginClose();
+}
+
+bool FenceTestAccess::CloseSessionFenceDispatch(StorageNode& node, std::string_view sid) {
+  std::shared_ptr<StorageNode::State> state;
+  std::shared_ptr<StorageNode::SessionRecord> record;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state || !state->fence_dispatcher) return false;
+  {
+    std::shared_lock lock(state->session_mutex);
+    const auto it = state->sessions.find(sid);
+    if (it == state->sessions.end()) return false;
+    record = it->second;
+  }
+  state->fence_dispatcher->CloseAndWait(record->fence_dispatch->durable);
+  state->fence_dispatcher->CloseAndWait(record->fence_dispatch->ephemeral);
+  return true;
+}
+
+bool FenceTestAccess::SetFenceDurabilityBarrier(
+    StorageNode& node, std::function<Result<void>(StorageEngine&)> barrier) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state) return false;
+  std::scoped_lock lock(state->fence_test_mutex);
+  state->fence_test_durability_barrier = std::move(barrier);
+  return true;
+}
+
+std::size_t FenceTestAccess::FenceDurabilityBarrierCalls(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state) return 0;
+  std::scoped_lock lock(state->fence_test_mutex);
+  return state->fence_test_barrier_calls;
+}
+
+bool FenceTestAccess::CloseAndRecreateSession(StorageNode& node, std::string_view sid,
+                                              SessionOptions options,
+                                              const FenceUuid& repeated_generation) {
+  if (!node.CloseSession(sid).IsOk() || !node.CreateSession(sid, options).IsOk()) return false;
+  return SetSessionGeneration(node, sid, repeated_generation);
+}
+
+bool FenceTestAccess::GateSessionAfterFenceRegistration(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+    node.fence_test_retained_state_ = state;
+  }
+  if (!state) return false;
+  std::scoped_lock lock(state->fence_test_mutex);
+  state->fence_test_gate_session_registration = true;
+  state->fence_test_session_registration_reached = false;
+  state->fence_test_release_session_registration = false;
+  return true;
+}
+
+bool FenceTestAccess::WaitForSessionFenceRegistration(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_ ? node.state_ : node.fence_test_retained_state_;
+  }
+  if (!state) return false;
+  std::unique_lock lock(state->fence_test_mutex);
+  state->fence_test_condition.wait(
+      lock, [state] { return state->fence_test_session_registration_reached; });
+  return true;
+}
+
+bool FenceTestAccess::ReleaseSessionFenceRegistration(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_ ? node.state_ : node.fence_test_retained_state_;
+  }
+  if (!state) return false;
+  std::scoped_lock lock(state->fence_test_mutex);
+  state->fence_test_release_session_registration = true;
+  state->fence_test_condition.notify_all();
+  return true;
+}
+
+bool FenceTestAccess::GateCloseAfterFenceDispatch(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state) return false;
+  std::scoped_lock lock(state->fence_test_mutex);
+  state->fence_test_gate_close_after_dispatch = true;
+  state->fence_test_close_after_dispatch_reached = false;
+  state->fence_test_release_close_after_dispatch = false;
+  return true;
+}
+
+bool FenceTestAccess::WaitForCloseAfterFenceDispatch(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state) return false;
+  std::unique_lock lock(state->fence_test_mutex);
+  state->fence_test_condition.wait(
+      lock, [state] { return state->fence_test_close_after_dispatch_reached; });
+  return true;
+}
+
+bool FenceTestAccess::ReleaseCloseAfterFenceDispatch(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state) return false;
+  std::scoped_lock lock(state->fence_test_mutex);
+  state->fence_test_release_close_after_dispatch = true;
+  state->fence_test_condition.notify_all();
+  return true;
+}
+
+bool FenceTestAccess::GateClosedMarkerFallback(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state) return false;
+  std::scoped_lock lock(state->fence_test_mutex);
+  state->fence_test_gate_closed_marker_fallback = true;
+  state->fence_test_closed_marker_fallback_reached = false;
+  state->fence_test_release_closed_marker_fallback = false;
+  return true;
+}
+
+bool FenceTestAccess::WaitForClosedMarkerFallback(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state) return false;
+  std::unique_lock lock(state->fence_test_mutex);
+  state->fence_test_condition.wait(
+      lock, [state] { return state->fence_test_closed_marker_fallback_reached; });
+  return true;
+}
+
+bool FenceTestAccess::ReleaseClosedMarkerFallback(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+  }
+  if (!state) return false;
+  std::scoped_lock lock(state->fence_test_mutex);
+  state->fence_test_release_closed_marker_fallback = true;
+  state->fence_test_condition.notify_all();
+  return true;
+}
+
+bool FenceTestAccess::GateFenceAfterTokenClaim(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_;
+    node.fence_test_retained_state_ = state;
+  }
+  if (!state) return false;
+  std::scoped_lock lock(state->fence_test_mutex);
+  state->fence_test_gate_after_claim = true;
+  state->fence_test_claimed = false;
+  state->fence_test_release_claim = false;
+  return true;
+}
+
+bool FenceTestAccess::WaitForFenceTokenClaim(StorageNode& node, const AckToken& token) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_ ? node.state_ : node.fence_test_retained_state_;
+  }
+  if (!state) return false;
+  std::unique_lock lock(state->fence_test_mutex);
+  state->fence_test_condition.wait(lock, [state, &token] {
+    return state->fence_test_claimed && state->fence_test_claimed_token == token;
+  });
+  return true;
+}
+
+bool FenceTestAccess::ReleaseFenceAfterTokenClaim(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_ ? node.state_ : node.fence_test_retained_state_;
+  }
+  if (!state) return false;
+  std::scoped_lock lock(state->fence_test_mutex);
+  state->fence_test_release_claim = true;
+  state->fence_test_condition.notify_all();
+  return true;
+}
+
+bool FenceTestAccess::WaitUntilStorageNodeAdmissionClosed(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_ ? node.state_ : node.fence_test_retained_state_;
+  }
+  if (!state) return false;
+  std::unique_lock lock(state->gate_mutex);
+  state->gate_cv.wait(lock, [state] { return !state->accepting; });
+  return true;
+}
+
+std::optional<AckResultV1> FenceTestAccess::LastCompletedFenceResult(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_ ? node.state_ : node.fence_test_retained_state_;
+  }
+  if (!state) return std::nullopt;
+  std::scoped_lock lock(state->fence_test_mutex);
+  return state->fence_test_last_completed_result;
+}
+
+bool FenceTestAccess::StorageNodeCallbacksQuiesced(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_ ? node.state_ : node.fence_test_retained_state_;
+  }
+  if (!state) return true;
+  std::scoped_lock lock(state->gate_mutex);
+  return state->in_flight == 0;
+}
+
+bool FenceTestAccess::LateNodeCallbackCanAccessState(StorageNode& node) {
+  std::shared_ptr<StorageNode::State> state;
+  {
+    std::scoped_lock lock(node.lifecycle_mutex_);
+    state = node.state_ ? node.state_ : node.fence_test_retained_state_;
+  }
+  if (!state) return false;
+  std::scoped_lock lock(state->gate_mutex);
+  return state->accepting;
+}
+
+}  // namespace fence_test_access
 
 }  // namespace sitos

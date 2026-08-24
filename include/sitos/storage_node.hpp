@@ -20,6 +20,7 @@
 #include <system_error>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "sitos/ack.hpp"
@@ -60,10 +61,20 @@ struct StorageNodeConfig {
 
 class SessionView;
 class AckRegistry;
+namespace fence_internal {
+class FenceDispatchCoordinator;
+class FenceReceiverRegistry;
+struct FenceMarkerRoute;
+struct FenceSessionDispatch;
+}  // namespace fence_internal
 struct SubscriberDiagnostic;
 struct AckApplyProgress;
+struct FenceApplyProgress;
 namespace storage_node_test_access {
 class StorageNodeTestAccess;
+}
+namespace fence_test_access {
+class FenceTestAccess;
 }
 
 /// Serves base-scope Get/List queries and base writes through Transport declarations.
@@ -120,6 +131,7 @@ class StorageNode {
  private:
   friend class SessionView;
   friend class storage_node_test_access::StorageNodeTestAccess;
+  friend class fence_test_access::FenceTestAccess;
 
   struct SessionRecord {
     enum class Phase { Creating, Active, Closing };
@@ -206,6 +218,8 @@ class StorageNode {
     std::unique_ptr<StorageEngine> durable_buffers;
     SessionOptions options;
     SessionMeta metadata;
+    FenceUuid generation_uuid{};
+    std::shared_ptr<fence_internal::FenceSessionDispatch> fence_dispatch;
   };
 
   struct SessionKeyHash {
@@ -231,6 +245,31 @@ class StorageNode {
     // ADR-0028 node-wide token registry and completion ring; owned by this live State.
     // Created by Start, cleared by Stop; never shared across State generations.
     std::shared_ptr<AckRegistry> ack_registry;
+    std::shared_ptr<fence_internal::FenceDispatchCoordinator> fence_dispatcher;
+    std::shared_ptr<fence_internal::FenceReceiverRegistry> fence_receiver_registry;
+    mutable std::mutex fence_test_mutex;
+    std::optional<AckToken> fence_test_last_claim_token;
+    std::size_t fence_test_last_claim_count = 0;
+    std::size_t buffer_application_count = 0;
+    std::condition_variable fence_test_condition;
+    bool fence_test_gate_after_claim = false;
+    bool fence_test_throw_dispatch_once = false;
+    bool fence_test_throw_after_claim_once = false;
+    bool fence_test_claimed = false;
+    bool fence_test_release_claim = false;
+    AckToken fence_test_claimed_token{};
+    std::optional<AckResultV1> fence_test_last_completed_result;
+    std::function<Result<void>(StorageEngine&)> fence_test_durability_barrier;
+    std::size_t fence_test_barrier_calls = 0;
+    bool fence_test_gate_session_registration = false;
+    bool fence_test_session_registration_reached = false;
+    bool fence_test_release_session_registration = false;
+    bool fence_test_gate_close_after_dispatch = false;
+    bool fence_test_close_after_dispatch_reached = false;
+    bool fence_test_release_close_after_dispatch = false;
+    bool fence_test_gate_closed_marker_fallback = false;
+    bool fence_test_closed_marker_fallback_reached = false;
+    bool fence_test_release_closed_marker_fallback = false;
 
     class CallbackLease {
      public:
@@ -273,6 +312,11 @@ class StorageNode {
       accepting = false;
       gate_cv.notify_all();
       gate_cv.wait(lock, [this] { return in_flight == 0; });
+    }
+
+    bool IsAccepting() noexcept {
+      std::scoped_lock lock(gate_mutex);
+      return accepting;
     }
 
     void Leave() noexcept {
@@ -321,13 +365,23 @@ class StorageNode {
 
   static SessionAccess AcquireSession(const std::shared_ptr<State>& state, std::string_view sid);
   static void OnQuery(const std::shared_ptr<State>& state, TransportQuery& query);
-  static void OnSample(const std::shared_ptr<State>& state, const TransportSample& sample);
+  static void DispatchSample(const std::shared_ptr<State>& state, const TransportSample& sample);
+  static void OnSample(const std::shared_ptr<State>& state, const TransportSample& sample,
+                       bool fence_preadmitted = false);
+  static void ApplyBufferFenceMarker(const std::shared_ptr<State>& state,
+                                     const fence_internal::FenceMarkerRoute& route,
+                                     const TransportSample& sample,
+                                     std::vector<SubscriberDiagnostic>& diagnostics,
+                                     bool route_valid = true,
+                                     std::optional<Status> forced_lifecycle_status = std::nullopt);
   // Shared parameter-write application for acknowledged and acknowledgement-free samples
   // (ADR-0028 stop-first batches). Returns the typed outcome; ack-free callers ignore it.
   static AckResultV1 ApplyParameterSample(const std::shared_ptr<State>& state,
                                           const TransportSample& sample,
                                           std::vector<SubscriberDiagnostic>& diagnostics,
-                                          AckApplyProgress* progress);
+                                          AckApplyProgress* progress,
+                                          bool fence_preadmitted = false,
+                                          FenceApplyProgress* fence_progress = nullptr);
   // Claims the token, applies through ApplyParameterSample, and publishes exactly one result.
   static void ApplyAcknowledgedSample(const std::shared_ptr<State>& state, const AckToken& token,
                                       const TransportSample& sample,
@@ -352,6 +406,7 @@ class StorageNode {
   mutable std::mutex operation_mutex_;
   Transport* transport_ = nullptr;
   std::shared_ptr<State> state_;
+  std::shared_ptr<State> fence_test_retained_state_;
   Queryable queryable_;
   Subscription subscriber_;
 };

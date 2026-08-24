@@ -13,8 +13,8 @@
 #include <string_view>
 #include <utility>
 
-#include "sitos/storage_engine.hpp"
 #include "ack_registry.hpp"
+#include "sitos/storage_engine.hpp"
 #include "sitos/storage_node.hpp"
 
 namespace sitos::storage_node_test_access {
@@ -132,6 +132,34 @@ class StorageNodeTestAccess {
     }
     record->WaitForClosing();
     return true;
+  }
+
+  static bool SetSessionGeneration(StorageNode& node, std::string_view sid,
+                                   const FenceUuid& generation) {
+    std::shared_ptr<StorageNode::State> state;
+    {
+      std::scoped_lock lock(node.lifecycle_mutex_);
+      state = node.state_;
+    }
+    if (!state) return false;
+    std::unique_lock lock(state->session_mutex);
+    const auto it = state->sessions.find(sid);
+    if (it == state->sessions.end()) return false;
+    it->second->generation_uuid = generation;
+    return true;
+  }
+
+  static std::optional<FenceUuid> SessionGeneration(StorageNode& node, std::string_view sid) {
+    std::shared_ptr<StorageNode::State> state;
+    {
+      std::scoped_lock lock(node.lifecycle_mutex_);
+      state = node.state_;
+    }
+    if (!state) return std::nullopt;
+    std::shared_lock lock(state->session_mutex);
+    const auto it = state->sessions.find(sid);
+    if (it == state->sessions.end() || !it->second->IsActive()) return std::nullopt;
+    return it->second->generation_uuid;
   }
 
   static bool ReplaceSessionOverlay(StorageNode& node, std::string_view sid,
