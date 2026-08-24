@@ -113,6 +113,7 @@ add_library(sitos STATIC
   src/ack.cpp
   src/ack_client.cpp
   src/ack_registry.cpp
+  src/fence.cpp
   src/sha256.cpp
   src/key.cpp
   src/storage_engine.cpp

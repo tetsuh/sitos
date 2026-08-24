@@ -12,12 +12,12 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <mutex>
 #include <optional>
 #include <span>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 #include "sitos/ack.hpp"
 #include "sitos/transport.hpp"
@@ -50,11 +50,19 @@ class AckRegistry {
     LaneBusy,             ///< another token is Processing in this lane: reentrant admission
   };
 
+  enum class FailurePointForTesting { None, AfterEntryInsert, BeforeCompletionRetention };
+
   explicit AckRegistry(std::size_t capacity = kDefaultCapacity);
 
   /// Atomically claims the token before any mutation. Never blocks on callers.
   [[nodiscard]] ClaimOutcome Claim(const AckToken& token, const AckFingerprint& fingerprint,
                                    std::uint64_t lane);
+
+  /// Claims a token without serializing it against a shared processing lane.
+  /// Used by independent Fence marker operations; token/fingerprint duplicate
+  /// and collision semantics remain node-wide.
+  [[nodiscard]] ClaimOutcome ClaimIndependent(const AckToken& token,
+                                              const AckFingerprint& fingerprint);
 
   /// Claims a token or atomically retains `lane_busy_result` when another token owns the lane.
   /// A LaneBusy token can therefore never become admissible after the current owner completes.
@@ -63,7 +71,7 @@ class AckRegistry {
 
   /// Publishes the immutable result for an Admitted token and frees its lane.
   /// Returns false when the token is not Processing (already completed or unknown).
-  bool Complete(const AckToken& token, AckResultV1 result);
+  bool Complete(const AckToken& token, AckResultV1 result) noexcept;
 
   /// Retains a Completed result for a token that was never admitted (for
   /// example a LaneBusy rejection). Returns false when the token is already retained.
@@ -78,10 +86,13 @@ class AckRegistry {
   [[nodiscard]] std::size_t Size() const;
   [[nodiscard]] std::size_t ProcessingCount() const;
 
+  /// Deterministic source-private allocation-boundary injection for tests.
+  void FailNextForTesting(FailurePointForTesting point) noexcept;
+
  private:
   struct Entry {
     AckFingerprint fingerprint;
-    std::uint64_t lane = 0;
+    std::optional<std::uint64_t> lane;
     std::optional<AckResultV1> result;  // nullopt while Processing
   };
   struct TokenHash {
@@ -90,16 +101,21 @@ class AckRegistry {
 
   // Must be called with mutex_ held.
   ClaimOutcome ClaimLocked(const AckToken& token, const AckFingerprint& fingerprint,
-                           std::uint64_t lane, std::optional<AckResultV1> lane_busy_result);
+                           std::optional<std::uint64_t> lane,
+                           std::optional<AckResultV1> lane_busy_result);
 
-  // Must be called with mutex_ held; pushes the token onto the ring and evicts the oldest.
-  void RetainCompletedLocked(const AckToken& token);
+  // Must be called with mutex_ held. Storage is preallocated by the constructor,
+  // so completion from a noexcept RAII guard cannot allocate.
+  void RetainCompletedLocked(const AckToken& token) noexcept;
+  void MaybeFailForTesting(FailurePointForTesting point);
 
   mutable std::mutex mutex_;
   std::size_t capacity_;
   std::unordered_map<AckToken, Entry, TokenHash> entries_;
   std::unordered_map<std::uint64_t, AckToken> processing_by_lane_;
-  std::deque<AckToken> completion_order_;
+  std::vector<AckToken> completion_order_;
+  std::size_t next_completion_slot_ = 0;
+  FailurePointForTesting failure_point_for_testing_ = FailurePointForTesting::None;
 };
 
 }  // namespace sitos

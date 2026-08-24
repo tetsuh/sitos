@@ -35,43 +35,25 @@ std::string TimeoutMessage(const std::string& latest_message) {
 
 }  // namespace
 
-Result<AckResultV1> SubmitAcknowledgedWrite(Transport& transport, std::string_view prefix,
-                                            std::string_view full_key,
-                                            std::span<const std::byte> payload, Encoding encoding,
-                                            std::chrono::milliseconds total_deadline) {
+Result<AckResultV1> PollAcknowledgement(Transport& transport, std::string_view prefix,
+                                        const AckToken& token, Clock::time_point deadline_at,
+                                        std::optional<ErrorInfo> latest_transport_error,
+                                        std::function<std::optional<AckResultV1>()> cancelled,
+                                        std::function<void(const AckResultV1&)> observed_callback) {
   using R = Result<AckResultV1>;
-  // Definite NotSubmitted: validation before the Transport is invoked.
-  if (total_deadline.count() <= 0) {
-    return R::Err(Status::InvalidArgument, std::string(kDeadlineNotPositive));
-  }
-  // ADR-0028: an empty PutBatch returns immediate Ok with no data submission, token,
-  // or query. Only a canonical zero-entry batch short-circuits; a malformed payload
-  // follows the ordinary submit-and-poll path so StorageNode reports the rejection.
-  if (encoding.id == Encoding::kSitosV1Batch) {
-    if (auto decoded = DecodeBatch(payload); decoded.has_value() && decoded->empty()) {
-      return R::Ok(AckResultV1{AckOperationKind::Batch, Status::Ok, AckDurability::Applied, 0,
-                               kAckNoFailedIndex, 0, kAckNoFailedSequence, ""});
-    }
-  }
-  const AckToken token = GenerateAckToken();
   const auto query_key = BuildMetaAckKey(prefix, FormatAckToken(token));
   if (!query_key) return R::Err(Status::InvalidArgument, std::string(kInvalidPrefix));
-
-  // The total deadline starts immediately before the sole data submission.
-  const Clock::time_point deadline_at = Clock::now() + total_deadline;
-  PutOptions options;
-  options.ack_token = token;
   std::error_code latest_cause;
   std::string latest_message;
-  if (auto put = transport.Put(full_key, payload, std::move(encoding), options); !put.IsOk()) {
-    // Conservatively MayHaveSubmitted: keep polling; never resubmit.
-    latest_cause = put.Error();
-    latest_message = std::string(put.Message());
+  if (latest_transport_error.has_value()) {
+    latest_cause = latest_transport_error->cause;
+    latest_message = latest_transport_error->message;
   }
 
   for (;;) {
-    // Round up so that a sub-millisecond remainder still opens a 1 ms window: Timeout is
-    // reported only after the total deadline has actually expired.
+    if (cancelled) {
+      if (auto result = cancelled(); result.has_value()) return R::Ok(std::move(*result));
+    }
     const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(deadline_at - Clock::now());
     if (remaining.count() <= 0) {
       return R::Err(Status::Timeout, TimeoutMessage(latest_message), latest_cause);
@@ -91,13 +73,15 @@ Result<AckResultV1> SubmitAcknowledgedWrite(Transport& transport, std::string_vi
             protocol_error = kProtocolMalformed;
           } else {
             observed = std::move(decoded).Value();
+            if (observed_callback) observed_callback(*observed);
           }
-          return false;  // at most one consolidated reply is meaningful
+          return false;
         },
         window);
 
-    // After Get quiesces: a protocol error takes precedence; otherwise one valid
-    // decoded result; otherwise the failure or zero reply is retried.
+    if (cancelled) {
+      if (auto result = cancelled(); result.has_value()) return R::Ok(std::move(*result));
+    }
     if (protocol_error) return R::Err(Status::Error, std::string(*protocol_error));
     if (observed) return R::Ok(std::move(*observed));
     if (!get.IsOk()) {
@@ -111,6 +95,35 @@ Result<AckResultV1> SubmitAcknowledgedWrite(Transport& transport, std::string_vi
     }
     std::this_thread::sleep_for(std::min(kAckQueryRetryDelay, left));
   }
+}
+
+Result<AckResultV1> SubmitAcknowledgedWrite(Transport& transport, std::string_view prefix,
+                                            std::string_view full_key,
+                                            std::span<const std::byte> payload, Encoding encoding,
+                                            std::chrono::milliseconds total_deadline) {
+  using R = Result<AckResultV1>;
+  if (total_deadline.count() <= 0) {
+    return R::Err(Status::InvalidArgument, std::string(kDeadlineNotPositive));
+  }
+  if (encoding.id == Encoding::kSitosV1Batch) {
+    if (auto decoded = DecodeBatch(payload); decoded.has_value() && decoded->empty()) {
+      return R::Ok(AckResultV1{AckOperationKind::Batch, Status::Ok, AckDurability::Applied, 0,
+                               kAckNoFailedIndex, 0, kAckNoFailedSequence, ""});
+    }
+  }
+  const AckToken token = GenerateAckToken();
+  if (!BuildMetaAckKey(prefix, FormatAckToken(token))) {
+    return R::Err(Status::InvalidArgument, std::string(kInvalidPrefix));
+  }
+
+  const Clock::time_point deadline_at = Clock::now() + total_deadline;
+  PutOptions options;
+  options.ack_token = token;
+  std::optional<ErrorInfo> latest_error;
+  if (auto put = transport.Put(full_key, payload, std::move(encoding), options); !put.IsOk()) {
+    latest_error = ErrorInfo{put.StatusCode(), std::string(put.Message()), put.Error()};
+  }
+  return PollAcknowledgement(transport, prefix, token, deadline_at, std::move(latest_error));
 }
 
 }  // namespace sitos

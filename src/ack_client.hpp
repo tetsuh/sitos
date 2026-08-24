@@ -11,6 +11,8 @@
 
 #include <chrono>
 #include <cstddef>
+#include <functional>
+#include <optional>
 #include <span>
 #include <string_view>
 
@@ -45,6 +47,15 @@ inline constexpr std::chrono::milliseconds kAckQueryRetryDelay{100};
 ///    diagnostics. MayHaveSubmitted. Never retry the data write on Timeout.
 ///
 /// Synchronous; there is no cancellation API in v1 (DEC-14-ACK-CANCEL-001).
+/// Polls an existing ADR-0028 token until an absolute total deadline.
+/// Used by Fence after its sole marker submission.
+[[nodiscard]] Result<AckResultV1> PollAcknowledgement(
+    Transport& transport, std::string_view prefix, const AckToken& token,
+    std::chrono::steady_clock::time_point deadline_at,
+    std::optional<ErrorInfo> latest_transport_error = std::nullopt,
+    std::function<std::optional<AckResultV1>()> cancelled = {},
+    std::function<void(const AckResultV1&)> observed = {});
+
 [[nodiscard]] Result<AckResultV1> SubmitAcknowledgedWrite(Transport& transport,
                                                           std::string_view prefix,
                                                           std::string_view full_key,
