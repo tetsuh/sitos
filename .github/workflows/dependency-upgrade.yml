@@ -44,25 +44,32 @@ jobs:
           test -n "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve latest stable zenoh-c version
+      - name: Resolve latest supported stable 1.x zenoh-c version
         id: latest
         env:
           ZENOH_VERSION_INPUT: ${{ github.event.inputs.zenoh_version }}
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          locked=$(sed -nE 's/^eclipse-zenoh==([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' \
+            tests/interop/requirements-latest.in)
+          test -n "$locked"
           if [ -n "$ZENOH_VERSION_INPUT" ]; then
             version="$ZENOH_VERSION_INPUT"
           else
-            version=$(curl -fsSL \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              https://api.github.com/repos/eclipse-zenoh/zenoh-c/releases/latest \
-              | jq -r .tag_name)
+            version="$(
+              git ls-remote --refs --tags https://github.com/eclipse-zenoh/zenoh-c.git 'refs/tags/1.*' |
+                awk '{sub("^refs/tags/", "", $2); print $2}' |
+                grep -E '^1\.[0-9]+\.[0-9]+$' |
+                sort -V |
+                tail -n 1
+            )"
           fi
-          test "$version" != "null"
-          echo "Resolved latest stable zenoh-c: $version"
+          printf '%s\n' "$version" | grep -Eq '^1\.[0-9]+\.[0-9]+$'
+          test "$version" = "$locked"
+          echo "Resolved latest supported stable zenoh-c: $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  test:
+  test-linux:
     needs: resolve-versions
     runs-on: ubuntu-24.04
     permissions:
@@ -84,8 +91,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build libssl-dev python3-pip
+          lock=tests/interop/requirements.txt
+          if [ "${{ matrix.label }}" = latest-stable ]; then
+            lock=tests/interop/requirements-latest.txt
+          fi
           python3 -m pip install --break-system-packages --only-binary=:all: \
-            --require-hashes -r tests/interop/requirements.txt
+            --require-hashes -r "$lock"
 
       - name: Configure (zenoh-c ${{ matrix.label }} = ${{ matrix.version }})
         env:
@@ -95,8 +106,73 @@ jobs:
       - name: Build
         run: cmake --build --preset dev-linux
 
+      - name: Verify and run Fence qualification
+        env:
+          SITOS_EXPECTED_ZENOH_PYTHON_VERSION: ${{ matrix.version }}
+        run: |
+          python3 tests/verify_fence_test_registration.py --build build/dev-linux --profile zenoh-on
+          ctest --test-dir build/dev-linux --output-on-failure --timeout 120 \
+            -R '^Fence(ZenohIntegration|RawZenohInterop)Test\.'
+
       - name: Test
+        env:
+          SITOS_EXPECTED_ZENOH_PYTHON_VERSION: ${{ matrix.version }}
         run: ctest --preset dev-linux
 
       - name: Fixture validator
-        run: python tests/fixtures/validate_fixtures.py
+        run: python3 tests/fixtures/validate_fixtures.py
+
+  test-windows:
+    needs: resolve-versions
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: minimum-supported
+            version: ${{ needs.resolve-versions.outputs.minimum }}
+          - label: latest-stable
+            version: ${{ needs.resolve-versions.outputs.latest }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install raw Zenoh interoperability dependencies
+        shell: pwsh
+        run: |
+          $lock = "tests/interop/requirements.txt"
+          if ("${{ matrix.label }}" -eq "latest-stable") {
+            $lock = "tests/interop/requirements-latest.txt"
+          }
+          python -m pip install --only-binary=:all: --require-hashes -r $lock
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Configure, build and qualify Fence (MSVC + Ninja)
+        shell: pwsh
+        env:
+          ZENOHC_VERSION: ${{ matrix.version }}
+        run: |
+          $python = (Get-Command python).Source
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          $vcvars = "$vsPath\VC\Auxiliary\Build\vcvars64.bat"
+          $commands = @(
+            "call `"$vcvars`""
+            "cmake -S . -B build/fence-dependency -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSITOS_BUILD_TESTS=ON -DSITOS_WITH_ZENOH=ON -DZENOHC_VERSION=$env:ZENOHC_VERSION -DPython3_EXECUTABLE=`"$python`""
+            "cmake --build build/fence-dependency --parallel 2"
+            "set SITOS_EXPECTED_ZENOH_PYTHON_VERSION=$env:ZENOHC_VERSION"
+            "python tests/verify_fence_test_registration.py --build build/fence-dependency --profile zenoh-on"
+            "ctest --test-dir build/fence-dependency --output-on-failure --timeout 120 -R '^Fence(ZenohIntegration|RawZenohInterop)Test\.'"
+            "python tests/fixtures/validate_fixtures.py"
+          ) -join " && "
+          cmd /c $commands
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }

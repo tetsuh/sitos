@@ -64,8 +64,16 @@ jobs:
       - name: Build
         run: cmake --build --preset dev-linux
 
+      - name: Verify Fence CTest registration
+        run: python3 tests/verify_fence_test_registration.py --build build/dev-linux --profile zenoh-on
+
       - name: Test
         run: ctest --preset dev-linux
+
+      - name: Qualify Fence C++ and raw zenoh-python paths
+        run: >-
+          ctest --test-dir build/dev-linux --output-on-failure --timeout 120
+          -R '^Fence(ZenohIntegration|RawZenohInterop)Test\.'
 
       - name: Fixture validator (Python/struct independent check)
         run: python tests/fixtures/validate_fixtures.py
@@ -152,6 +160,11 @@ jobs:
       - name: Build
         run: cmake --build build/sanitizer-${{ matrix.name }} --parallel 2
 
+      - name: Verify Fence sanitizer registration
+        run: >-
+          python3 tests/verify_fence_test_registration.py
+          --build build/sanitizer-${{ matrix.name }} --profile sanitizer
+
       - name: Stress subscription lifecycle under TSan
         if: matrix.name == 'tsan'
         env:
@@ -165,7 +178,9 @@ jobs:
           lifecycle_filter+="StorageNodeBufferRoutingTest|StorageNodeBufferApiTest|BufferLateJoinTest|StorageNodeBatchTest|"
           lifecycle_filter+="StorageNodeAckTest|AckRegistryTest|"
           lifecycle_filter+="TransportGetCompletionTest|ParamStoreSubscribeTest|"
-          lifecycle_filter+="ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture"
+          lifecycle_filter+="ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture|"
+          lifecycle_filter+="FencePublisherTest|FenceReceiverTest|FenceParamCacheTest|"
+          lifecycle_filter+="FenceStorageNodeTest|FenceCollisionTest|FenceLifecycleTest"
           ctest --test-dir build/sanitizer-tsan --output-on-failure --timeout 60 \
             --repeat until-fail:10 -R "$lifecycle_filter"
 
@@ -179,7 +194,9 @@ jobs:
           lifecycle_filter+="StorageNodeBufferRoutingTest|StorageNodeBufferApiTest|BufferLateJoinTest|StorageNodeBatchTest|"
           lifecycle_filter+="StorageNodeAckTest|AckRegistryTest|"
           lifecycle_filter+="TransportGetCompletionTest|ParamStoreSubscribeTest|"
-          lifecycle_filter+="ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture"
+          lifecycle_filter+="ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture|"
+          lifecycle_filter+="FencePublisherTest|FenceReceiverTest|FenceParamCacheTest|"
+          lifecycle_filter+="FenceStorageNodeTest|FenceCollisionTest|FenceLifecycleTest"
           ctest --test-dir build/sanitizer-${{ matrix.name }} \
             --output-on-failure --timeout 60 -R "$lifecycle_filter"
 
@@ -214,7 +231,9 @@ jobs:
             "cmake --preset dev-windows -DPython3_EXECUTABLE=`"$python`" -DSITOS_BUILD_EXAMPLES=ON"
             "python tests/examples/test_cpp_examples.py ctest-contract --build build/dev-windows"
             "cmake --build --preset dev-windows"
+            "python tests/verify_fence_test_registration.py --build build/dev-windows --profile zenoh-on"
             "ctest --preset dev-windows"
+            "ctest --test-dir build/dev-windows --output-on-failure --timeout 120 -R '^Fence(ZenohIntegration|RawZenohInterop)Test\.'"
           ) -join " && "
           cmd /c $commands
 
