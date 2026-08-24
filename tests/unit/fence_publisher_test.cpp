@@ -131,7 +131,10 @@ TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
     wait_started = true;
     return close_publisher.Wait(close_handle.Value());
   });
-  while (!wait_started.load() || close_publisher.ActiveWaits() != 1U) std::this_thread::yield();
+  EXPECT_TRUE(sitos::fence_test::WaitUntil(
+      [&] { return wait_started.load() && close_publisher.ActiveWaits() == 1U; },
+      std::chrono::seconds(1)))
+      << "the active wait must be admitted within the test deadline";
   close_publisher.Close();
   EXPECT_EQ(close_publisher.ActiveWaits(), 0U);
   EXPECT_EQ(active_wait.wait_for(std::chrono::milliseconds(100)), std::future_status::ready);
@@ -152,7 +155,9 @@ TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
       std::async(std::launch::async, [&] { return multi_publisher.Wait(multi_handle.Value()); });
   auto second_wait =
       std::async(std::launch::async, [&] { return multi_publisher.Wait(multi_handle.Value()); });
-  while (multi_publisher.ActiveWaits() != 2U) std::this_thread::yield();
+  EXPECT_TRUE(sitos::fence_test::WaitUntil([&] { return multi_publisher.ActiveWaits() == 2U; },
+                                           std::chrono::seconds(1)))
+      << "both waits must be admitted within the test deadline";
   multi_transport->ReplaceGeneration();
   auto detect_replacement =
       std::async(std::launch::async, [&] { return multi_publisher.SubmitPut(); });

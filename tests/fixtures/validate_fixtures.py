@@ -118,9 +118,14 @@ def expected_ack() -> dict:
 def expected_fence() -> dict:
     """ADR-0029 lane, marker, and complete representative result matrix."""
     publisher = bytes.fromhex("8b8f3a627dd54c408a2b28f71331fe41")
-    lane = lambda sequence: bytes([1]) + publisher + struct.pack("<Q", sequence)
-    result = lambda status, durability, through, failed=NO_SEQUENCE: ack_result(
-        K_FENCE, status, durability, 0, NO_INDEX, through, failed)
+
+    def lane(sequence: int) -> bytes:
+        return bytes([1]) + publisher + struct.pack("<Q", sequence)
+
+    def result(
+        status: int, durability: int, through: int, failed: int = NO_SEQUENCE
+    ) -> bytes:
+        return ack_result(K_FENCE, status, durability, 0, NO_INDEX, through, failed)
     return {
         "lane_min_sequence": lane(1),
         "lane_max_sequence": lane(0xFFFFFFFFFFFFFFFF),

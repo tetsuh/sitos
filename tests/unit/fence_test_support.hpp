@@ -114,6 +114,16 @@ inline constexpr FenceUuid kSessionGeneration{{
     std::byte{0xab},
 }};
 
+template <typename Predicate>
+bool WaitUntil(Predicate&& predicate, std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (!predicate()) {
+    if (std::chrono::steady_clock::now() >= deadline) return false;
+    std::this_thread::yield();
+  }
+  return true;
+}
+
 inline AckToken Token(std::byte tail) {
   AckToken token{{std::byte{0x55}, std::byte{0x0e}, std::byte{0x84}, std::byte{0x00},
                   std::byte{0xe2}, std::byte{0x9b}, std::byte{0x41}, std::byte{0xd4},

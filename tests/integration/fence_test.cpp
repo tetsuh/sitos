@@ -115,33 +115,43 @@ TEST(FenceZenohIntegrationTest, QualifiesTopologiesQosAndControlIsolation) {
   const auto token = sitos::GenerateAckToken();
   sitos::PutOptions marker;
   marker.ack_token = token;
+  const std::string marker_key = prefix +
+                                 "/meta/fence/cache/s1/123e4567-e89b-42d3-a456-426614174000/"
+                                 "8b8f3a62-7dd5-4c40-8a2b-28f71331fe41/2";
   ASSERT_TRUE(transport
-                  ->Put(prefix + "/meta/fence/cache/s1/123e4567-e89b-42d3-a456-426614174000/"
-                                 "8b8f3a62-7dd5-4c40-8a2b-28f71331fe41/2",
-                        marker_payload,
+                  ->Put(marker_key, marker_payload,
                         sitos::Encoding{std::string(sitos::Encoding::kSitosV1Fence)}, marker)
                   .IsOk());
 
+  std::vector<OwnedObservation> observed;
   {
     std::unique_lock lock(mutex);
     ASSERT_TRUE(condition.wait_for(lock, 5s, [&] { return observations.size() >= 3; }));
+    observed = observations;
   }
-  ASSERT_EQ(observations.size(), 3U);
-  EXPECT_EQ(observations[0].payload, std::vector<std::byte>(payload.begin(), payload.end()));
-  EXPECT_EQ(observations[0].encoding.id, "zenoh/bytes");
-  ASSERT_TRUE(std::holds_alternative<sitos::FenceLaneMetadata>(observations[0].lane));
-  EXPECT_EQ(std::get<sitos::FenceLaneMetadata>(observations[0].lane).publisher_uuid, kPublisherA);
-  ASSERT_TRUE(std::holds_alternative<sitos::FenceLaneMetadata>(observations[1].lane));
-  EXPECT_EQ(std::get<sitos::FenceLaneMetadata>(observations[1].lane).publisher_uuid, kPublisherB);
-  ASSERT_TRUE(std::holds_alternative<sitos::AckToken>(observations[2].ack));
-  EXPECT_EQ(std::get<sitos::AckToken>(observations[2].ack), token);
-  EXPECT_TRUE(std::holds_alternative<sitos::FenceLaneAbsent>(observations[2].lane));
-  EXPECT_EQ(observations[2].encoding.id, sitos::Encoding::kSitosV1Fence);
+  ASSERT_EQ(observed.size(), 3U);
+  EXPECT_EQ(observed[0].key, prefix + "/data/a");
+  EXPECT_EQ(observed[0].payload, std::vector<std::byte>(payload.begin(), payload.end()));
+  EXPECT_EQ(observed[0].encoding.id, "zenoh/bytes");
+  ASSERT_TRUE(std::holds_alternative<sitos::FenceLaneMetadata>(observed[0].lane));
+  EXPECT_EQ(std::get<sitos::FenceLaneMetadata>(observed[0].lane).publisher_uuid, kPublisherA);
+  EXPECT_EQ(observed[1].key, prefix + "/data/b");
+  ASSERT_TRUE(std::holds_alternative<sitos::FenceLaneMetadata>(observed[1].lane));
+  EXPECT_EQ(std::get<sitos::FenceLaneMetadata>(observed[1].lane).publisher_uuid, kPublisherB);
+  EXPECT_EQ(observed[2].key, marker_key);
+  ASSERT_TRUE(std::holds_alternative<sitos::AckToken>(observed[2].ack));
+  EXPECT_EQ(std::get<sitos::AckToken>(observed[2].ack), token);
+  EXPECT_TRUE(std::holds_alternative<sitos::FenceLaneAbsent>(observed[2].lane));
+  EXPECT_EQ(observed[2].encoding.id, sitos::Encoding::kSitosV1Fence);
 
   sitos::PutOptions invalid;
   invalid.ack_token = token;
   invalid.fence_lane = sitos::FenceLaneMetadata{kPublisherA, 2};
-  const auto before = observations.size();
+  std::size_t before = 0;
+  {
+    std::scoped_lock lock(mutex);
+    before = observations.size();
+  }
   const auto rejected =
       transport->Put(prefix + "/invalid", payload, sitos::Encoding{"zenoh/bytes"}, invalid);
   EXPECT_EQ(rejected.StatusCode(), sitos::Status::InvalidArgument);

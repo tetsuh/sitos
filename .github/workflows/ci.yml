@@ -233,7 +233,7 @@ jobs:
             "cmake --build --preset dev-windows"
             "python tests/verify_fence_test_registration.py --build build/dev-windows --profile zenoh-on"
             "ctest --preset dev-windows"
-            "ctest --test-dir build/dev-windows --output-on-failure --timeout 120 -R '^Fence(ZenohIntegration|RawZenohInterop)Test\.'"
+            "ctest --test-dir build/dev-windows --output-on-failure --timeout 120 -R `"^Fence(ZenohIntegration|RawZenohInterop)Test\.`""
           ) -join " && "
           cmd /c $commands
 

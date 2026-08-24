@@ -304,4 +304,22 @@ TEST(FenceReceiverTest, EvaluatesPrefixesFailuresBoundsAndCapacityPoison) {
   ExpectFenceResult(*cleaned, sitos::Status::Ok, 0, sitos::kAckNoFailedSequence);
 }
 
+TEST(FenceReceiverTest, CleansUpWhenTheCapacityPollExpiresBelowCapacity) {
+  const auto no_workers = sitos::fence_test_access::FenceTestAccess::ExerciseGlobalDispatchCapacity(
+      1, {}, 0, std::chrono::milliseconds(1));
+
+  EXPECT_EQ(no_workers.admitted, 1U);
+  EXPECT_FALSE(no_workers.overflow_rejected);
+  EXPECT_TRUE(no_workers.callback_tickets.empty());
+
+  const auto earlier_worker =
+      sitos::fence_test_access::FenceTestAccess::ExerciseGlobalDispatchCapacity(
+          2, {}, 1, std::chrono::milliseconds(1));
+
+  EXPECT_EQ(earlier_worker.admitted, 2U);
+  EXPECT_FALSE(earlier_worker.overflow_rejected);
+  ASSERT_EQ(earlier_worker.callback_tickets.size(), 1U);
+  EXPECT_EQ(earlier_worker.callback_tickets.front(), 0U);
+}
+
 }  // namespace

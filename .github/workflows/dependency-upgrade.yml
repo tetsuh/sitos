@@ -171,7 +171,7 @@ jobs:
             "cmake --build build/fence-dependency --parallel 2"
             "set SITOS_EXPECTED_ZENOH_PYTHON_VERSION=$env:ZENOHC_VERSION"
             "python tests/verify_fence_test_registration.py --build build/fence-dependency --profile zenoh-on"
-            "ctest --test-dir build/fence-dependency --output-on-failure --timeout 120 -R '^Fence(ZenohIntegration|RawZenohInterop)Test\.'"
+            "ctest --test-dir build/fence-dependency --output-on-failure --timeout 120 -R `"^Fence(ZenohIntegration|RawZenohInterop)Test\.`""
             "python tests/fixtures/validate_fixtures.py"
           ) -join " && "
           cmd /c $commands

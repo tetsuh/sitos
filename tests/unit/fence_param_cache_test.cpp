@@ -14,21 +14,35 @@
 namespace {
 
 TEST(FenceParamCacheTest, CompletesOnlyTheMatchingAttachGeneration) {
+  std::vector<std::byte> first_batch_storage;
+  auto first_batch = sitos::fence_test_access::FenceTestAccess::MakeCoveredCacheBatch(
+      "sitos/session/s1/:batch", sitos::fence_test::kPublisherA, 1, first_batch_storage,
+      {"first-batch"});
+  const std::vector first_batch_copy(first_batch.payload.begin(), first_batch.payload.end());
+  std::vector<std::byte> second_batch_storage;
+  auto second_batch = sitos::fence_test_access::FenceTestAccess::MakeCoveredCacheBatch(
+      "sitos/session/s1/:batch", sitos::fence_test::kPublisherA, 2, second_batch_storage,
+      {"second-batch"});
+  EXPECT_EQ(std::vector<std::byte>(first_batch.payload.begin(), first_batch.payload.end()),
+            first_batch_copy);
+  EXPECT_NE(first_batch.payload.data(), second_batch.payload.data());
+
   {
     auto partial_transport = sitos::fence_test::MakeTransport();
     auto partial_cache_result = sitos::fence_test::OpenAttachedCache(partial_transport);
     ASSERT_TRUE(partial_cache_result.IsOk());
     auto partial_cache = std::move(partial_cache_result).Value();
-    sitos::fence_test_access::FenceTestAccess::ConfigureCacheFenceReceiver(
-        partial_cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA);
+    ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::ConfigureCacheFenceReceiver(
+        partial_cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA));
     sitos::param_cache_test_access::ParamCacheTestAccess::SetMutationHook(
         partial_cache, [](std::size_t count) {
           if (count == 1) throw std::runtime_error("injected partial cache batch failure");
         });
 
+    std::vector<std::byte> partial_batch_storage;
     EXPECT_NO_THROW(
         partial_transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeCoveredCacheBatch(
-            "sitos/session/s1/:batch", sitos::fence_test::kPublisherA, 1,
+            "sitos/session/s1/:batch", sitos::fence_test::kPublisherA, 1, partial_batch_storage,
             {"partial-one", "partial-two"})));
     EXPECT_TRUE(
         sitos::fence_test_access::FenceTestAccess::CacheContains(partial_cache, "partial-one"));
@@ -45,8 +59,8 @@ TEST(FenceParamCacheTest, CompletesOnlyTheMatchingAttachGeneration) {
     auto pre_effect_cache_result = sitos::fence_test::OpenAttachedCache(pre_effect_transport);
     ASSERT_TRUE(pre_effect_cache_result.IsOk());
     auto pre_effect_cache = std::move(pre_effect_cache_result).Value();
-    sitos::fence_test_access::FenceTestAccess::ConfigureCacheFenceReceiver(
-        pre_effect_cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA);
+    ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::ConfigureCacheFenceReceiver(
+        pre_effect_cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA));
     sitos::param_cache_test_access::ParamCacheTestAccess::SetCallbackHook(
         pre_effect_cache, [] { throw std::bad_alloc(); });
 
@@ -66,8 +80,8 @@ TEST(FenceParamCacheTest, CompletesOnlyTheMatchingAttachGeneration) {
     auto failure_cache_result = sitos::fence_test::OpenAttachedCache(failure_transport);
     ASSERT_TRUE(failure_cache_result.IsOk());
     auto failure_cache = std::move(failure_cache_result).Value();
-    sitos::fence_test_access::FenceTestAccess::ConfigureCacheFenceReceiver(
-        failure_cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA);
+    ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::ConfigureCacheFenceReceiver(
+        failure_cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA));
 
     ASSERT_TRUE(failure_cache.Put("submitted-one", std::int64_t{1}).IsOk());
     ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::ThrowCacheDispatchOnce(failure_cache));
@@ -95,8 +109,8 @@ TEST(FenceParamCacheTest, CompletesOnlyTheMatchingAttachGeneration) {
   auto cache_result = sitos::fence_test::OpenAttachedCache(transport);
   ASSERT_TRUE(cache_result.IsOk());
   auto cache = std::move(cache_result).Value();
-  sitos::fence_test_access::FenceTestAccess::ConfigureCacheFenceReceiver(
-      cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA);
+  ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::ConfigureCacheFenceReceiver(
+      cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA));
 
   // Decode failure after dispatch admission is a retained sequence-specific
   // Error, not an uncompleted reservation that degrades to OutcomeUnknown.
@@ -112,15 +126,15 @@ TEST(FenceParamCacheTest, CompletesOnlyTheMatchingAttachGeneration) {
   EXPECT_EQ(malformed_data_failure.failed_sequence, 1U);
 
   // Use a fresh receiver lane for the rest of the prefix/marker matrix.
-  sitos::fence_test_access::FenceTestAccess::ConfigureCacheFenceReceiver(
-      cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA);
+  ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::ConfigureCacheFenceReceiver(
+      cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA));
   ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::ThrowCacheDispatchOnce(cache));
   EXPECT_NO_THROW(transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeCoveredCachePut(
       "sitos/session/s1/injected-dispatch-failure", sitos::fence_test::kPublisherA, 1)));
   EXPECT_FALSE(
       sitos::fence_test_access::FenceTestAccess::CacheContains(cache, "injected-dispatch-failure"));
-  sitos::fence_test_access::FenceTestAccess::ConfigureCacheFenceReceiver(
-      cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA);
+  ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::ConfigureCacheFenceReceiver(
+      cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA));
 
   // Sender calls allocate the covered sequences; only their matching real
   // subscriber callbacks advance the receiver proof.
@@ -132,8 +146,10 @@ TEST(FenceParamCacheTest, CompletesOnlyTheMatchingAttachGeneration) {
       sitos::BatchEntry{"three", sitos::ParamValue(std::int64_t{3})},
   };
   ASSERT_TRUE(cache.PutBatch(batch).IsOk());
+  std::vector<std::byte> batch_storage;
   transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeCoveredCacheBatch(
-      "sitos/session/s1/:batch", sitos::fence_test::kPublisherA, 2, {"two", "three"}));
+      "sitos/session/s1/:batch", sitos::fence_test::kPublisherA, 2, batch_storage,
+      {"two", "three"}));
   EXPECT_EQ(sitos::fence_test_access::FenceTestAccess::CacheCompletedThrough(cache), 2U);
   EXPECT_EQ(sitos::fence_test_access::FenceTestAccess::CacheMutationCount(cache), 3U);
 

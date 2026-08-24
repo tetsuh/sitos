@@ -51,8 +51,8 @@ TEST(FenceStorageNodeTest, DispatchesFenceAndBindsTheSessionGeneration) {
   ASSERT_TRUE(
       node->CreateSession(sitos::fence_test::kSid, sitos::fence_test::DurableSessionOptions())
           .IsOk());
-  sitos::fence_test_access::FenceTestAccess::SetSessionGeneration(
-      *node, sitos::fence_test::kSid, sitos::fence_test::kSessionGeneration);
+  ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::SetSessionGeneration(
+      *node, sitos::fence_test::kSid, sitos::fence_test::kSessionGeneration));
 
   auto pre_effect_publisher = sitos::fence_test::kPublisherB;
   pre_effect_publisher[0] = std::byte{0x71};
@@ -255,7 +255,9 @@ TEST(FenceStorageNodeTest, DispatchesFenceAndBindsTheSessionGeneration) {
       std::async(std::launch::async, [&] { return buffer_publisher.Wait(remote_fence.Value()); });
   transport->WaitForAckQueryObservation();
   auto close_buffer_publisher = std::async(std::launch::async, [&] { buffer_publisher.Close(); });
-  while (buffer_publisher.AcceptingOperations()) std::this_thread::yield();
+  EXPECT_TRUE(sitos::fence_test::WaitUntil([&] { return !buffer_publisher.AcceptingOperations(); },
+                                           std::chrono::seconds(1)))
+      << "Close must stop accepting operations within the test deadline";
   EXPECT_EQ(close_buffer_publisher.wait_for(std::chrono::milliseconds(20)),
             std::future_status::timeout);
   transport->ReleaseAckQueryReturn();

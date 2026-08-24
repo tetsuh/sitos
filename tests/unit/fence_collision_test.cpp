@@ -88,8 +88,8 @@ TEST(FenceCollisionTest, PinsDocumentedUuidAndTokenResidualBoundaries) {
   auto node = sitos::fence_test::StartNode(transport);
   ASSERT_NE(node, nullptr);
   ASSERT_TRUE(node->CreateSession("s1", sitos::fence_test::DurableSessionOptions()).IsOk());
-  sitos::fence_test_access::FenceTestAccess::SetSessionGeneration(
-      *node, "s1", sitos::fence_test::kSessionGeneration);
+  ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::SetSessionGeneration(
+      *node, "s1", sitos::fence_test::kSessionGeneration));
   const auto old_token = sitos::fence_test::Token(std::byte{0x52});
   ASSERT_TRUE(node->CloseSession("s1").IsOk());
   ASSERT_TRUE(node->CreateSession("s1", sitos::fence_test::DurableSessionOptions()).IsOk());

@@ -16,8 +16,8 @@ TEST(FenceLifecycleTest, QuiescesCallbacksAndPreventsPostReturnAccess) {
   auto cache_result = sitos::fence_test::OpenAttachedCache(transport);
   ASSERT_TRUE(cache_result.IsOk());
   auto cache = std::move(cache_result).Value();
-  sitos::fence_test_access::FenceTestAccess::ConfigureCacheFenceReceiver(
-      cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA);
+  ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::ConfigureCacheFenceReceiver(
+      cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA));
 
   auto pending = sitos::fence_test_access::FenceTestAccess::BeginCacheFence(
       cache, sitos::fence_test::kDeadline);
@@ -74,8 +74,8 @@ TEST(FenceLifecycleTest, QuiescesCallbacksAndPreventsPostReturnAccess) {
   auto node = sitos::fence_test::StartNode(node_transport);
   ASSERT_NE(node, nullptr);
   ASSERT_TRUE(node->CreateSession("s1", sitos::fence_test::DurableSessionOptions()).IsOk());
-  sitos::fence_test_access::FenceTestAccess::SetSessionGeneration(
-      *node, "s1", sitos::fence_test::kSessionGeneration);
+  ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::SetSessionGeneration(
+      *node, "s1", sitos::fence_test::kSessionGeneration));
 
   // Marker lease first: CloseSession waits for the admitted marker to publish
   // its immutable result before releasing the Session generation.
@@ -139,8 +139,8 @@ TEST(FenceLifecycleTest, QuiescesCallbacksAndPreventsPostReturnAccess) {
   node = sitos::fence_test::StartNode(node_transport);
   ASSERT_NE(node, nullptr);
   ASSERT_TRUE(node->CreateSession("s1", sitos::fence_test::DurableSessionOptions()).IsOk());
-  sitos::fence_test_access::FenceTestAccess::SetSessionGeneration(
-      *node, "s1", sitos::fence_test::kSessionGeneration);
+  ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::SetSessionGeneration(
+      *node, "s1", sitos::fence_test::kSessionGeneration));
   sitos::fence_test_access::FenceTestAccess::GateFenceAfterTokenClaim(*node);
   const auto after_token = sitos::fence_test::Token(std::byte{0x62});
   auto node_delivery = std::async(std::launch::async, [&node_transport, after_token] {

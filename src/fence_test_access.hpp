@@ -336,15 +336,15 @@ class FenceTestAccess {
   static TransportSample MakeCoveredCacheBatch(std::string_view key,
                                                const FenceUuid& publisher_uuid,
                                                std::uint64_t sequence,
+                                               std::vector<std::byte>& payload_storage,
                                                std::initializer_list<std::string_view> keys) {
-    static thread_local std::vector<std::byte> payload;
     std::vector<BatchEntry> entries;
     for (const auto item : keys) {
       entries.push_back(BatchEntry{std::string(item), ParamValue(std::int64_t{1})});
     }
-    payload = EncodeBatch(entries);
+    payload_storage = EncodeBatch(entries);
     return {std::string(key),
-            payload,
+            payload_storage,
             Encoding{std::string(Encoding::kSitosV1Batch)},
             AckAttachmentAbsent{},
             TransportSample::Kind::Put,
@@ -398,7 +398,9 @@ class FenceTestAccess {
   }
 
   static DispatchCapacityObservation ExerciseGlobalDispatchCapacity(
-      std::size_t capacity, std::function<void()> overflow_action = {}) {
+      std::size_t capacity, std::function<void()> overflow_action = {},
+      std::optional<std::size_t> worker_count = std::nullopt,
+      std::chrono::milliseconds admission_timeout = std::chrono::seconds(5)) {
     fence_internal::FenceDispatchCoordinator coordinator(capacity);
     auto first = coordinator.Register();
     auto second = coordinator.Register();
@@ -406,9 +408,10 @@ class FenceTestAccess {
     std::condition_variable gate_condition;
     bool release = false;
     std::vector<std::uint64_t> tickets;
+    const auto workers_to_start = worker_count.value_or(capacity);
     std::vector<std::thread> workers;
-    workers.reserve(capacity);
-    for (std::size_t index = 0; index < capacity; ++index) {
+    workers.reserve(workers_to_start);
+    for (std::size_t index = 0; index < workers_to_start; ++index) {
       workers.emplace_back([&, index] {
         const auto& registration = index % 2 == 0 ? first : second;
         auto admission = coordinator.Dispatch(registration, [] { return true; }, [] {});
@@ -425,7 +428,11 @@ class FenceTestAccess {
         gate_condition.wait(lock, [&release] { return release; });
       });
     }
-    while (coordinator.Admitted() != capacity) std::this_thread::yield();
+    const auto admission_deadline = std::chrono::steady_clock::now() + admission_timeout;
+    while (coordinator.Admitted() != capacity &&
+           std::chrono::steady_clock::now() < admission_deadline) {
+      std::this_thread::yield();
+    }
     std::size_t overflow_calls = 0;
     auto overflow = coordinator.Dispatch(
         first, [] { return true; },
@@ -440,6 +447,7 @@ class FenceTestAccess {
       gate_condition.notify_all();
     }
     for (auto& worker : workers) worker.join();
+    overflow.entry = {};
     coordinator.CloseAndWait(first);
     coordinator.CloseAndWait(second);
     return {admitted,
@@ -471,7 +479,10 @@ class FenceTestAccess {
         gate_condition.wait(lock, [&release] { return release; });
       });
     }
-    while (lane.Admitted() != capacity) std::this_thread::yield();
+    const auto admission_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (lane.Admitted() != capacity && std::chrono::steady_clock::now() < admission_deadline) {
+      std::this_thread::yield();
+    }
     const auto admitted = lane.Admitted();
     const bool overflow_rejected = !lane.TryEnter().has_value();
     {
