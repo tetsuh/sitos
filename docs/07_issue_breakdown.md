@@ -274,6 +274,8 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 * Implementation targets: internal Transport/StorageNode control routing, Publisher-lane and local
   waiter seams, codecs, deterministic fake-Transport tests, Linux/Windows Zenoh integration, and
   sanitizer coverage frozen by #158's own readiness review
+* Implementation status: #158 provides the shared primitive and fixed executable qualification;
+  #99/#107 remain responsible for their public APIs and #105 for production synchronized barriers
 * Scope: implement ADR-0029's generated Publisher lanes, lane attachment, target-aware marker,
   buffer Session-generation UUID binding, bounded receiver dispatch/state, ParamCache local target,
   StorageNode buffer target, and exact ADR-0028 result reuse. It adds no #99/#107 public API and no
