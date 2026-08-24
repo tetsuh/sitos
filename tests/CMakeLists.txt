@@ -14,6 +14,47 @@ include(GoogleTest)
 
 set(SITOS_FIXTURE_DIR "${CMAKE_SOURCE_DIR}/tests/fixtures/payload_v1")
 
+# Issue #158 fixed-name Zenoh-OFF Fence tests. Keep these as ordinary TEST/TEST_F
+# declarations so gtest_add_tests registers exact names at configure time.
+function(add_sitos_fence_unit_test target source fixed_name)
+  add_executable(${target} ${source})
+  target_link_libraries(${target} PRIVATE GTest::gtest_main sitos::sitos)
+  target_include_directories(${target} PRIVATE ${PROJECT_SOURCE_DIR}/src)
+  target_compile_definitions(${target} PRIVATE
+    SITOS_FENCE_FIXTURE_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/fence_v1")
+  sitos_enable_warnings(${target})
+  gtest_add_tests(TARGET ${target} SOURCES ${source})
+  set_tests_properties(${fixed_name} PROPERTIES TIMEOUT 60)
+endfunction()
+
+add_sitos_fence_unit_test(
+  sitos_fence_lane_codec_test unit/fence_lane_codec_test.cpp
+  FenceLaneCodecTest.GoldenAndNegativeForms)
+add_sitos_fence_unit_test(
+  sitos_fence_ack_result_test unit/fence_ack_result_test.cpp
+  FenceAckResultTest.GoldenFailureMatrixRows)
+add_sitos_fence_unit_test(
+  sitos_fence_adapter_test unit/fence_adapter_test.cpp
+  FenceAdapterTest.ClassifiesAttachmentsByRouteWithoutDroppingParameters)
+add_sitos_fence_unit_test(
+  sitos_fence_publisher_test unit/fence_publisher_test.cpp
+  FencePublisherTest.LinearizesDataAndMarkerAndBoundsAdmission)
+add_sitos_fence_unit_test(
+  sitos_fence_receiver_test unit/fence_receiver_test.cpp
+  FenceReceiverTest.EvaluatesPrefixesFailuresBoundsAndCapacityPoison)
+add_sitos_fence_unit_test(
+  sitos_fence_param_cache_test unit/fence_param_cache_test.cpp
+  FenceParamCacheTest.CompletesOnlyTheMatchingAttachGeneration)
+add_sitos_fence_unit_test(
+  sitos_fence_storage_node_test unit/fence_storage_node_test.cpp
+  FenceStorageNodeTest.DispatchesFenceAndBindsTheSessionGeneration)
+add_sitos_fence_unit_test(
+  sitos_fence_collision_test unit/fence_collision_test.cpp
+  FenceCollisionTest.PinsDocumentedUuidAndTokenResidualBoundaries)
+add_sitos_fence_unit_test(
+  sitos_fence_lifecycle_test unit/fence_lifecycle_test.cpp
+  FenceLifecycleTest.QuiescesCallbacksAndPreventsPostReturnAccess)
+
 function(add_sitos_public_header_compile_test target source)
   add_executable(${target} ${source})
   target_link_libraries(${target} PRIVATE sitos::sitos)
@@ -347,6 +388,7 @@ if(SITOS_WITH_ZENOH)
   add_executable(sitos_raw_zenoh_buffer_fixture
     interop/raw_zenoh_buffer_fixture.cpp)
   target_link_libraries(sitos_raw_zenoh_buffer_fixture PRIVATE sitos::sitos)
+  target_include_directories(sitos_raw_zenoh_buffer_fixture PRIVATE ${PROJECT_SOURCE_DIR}/src)
   if(SITOS_WITH_ROCKSDB)
     target_compile_definitions(sitos_raw_zenoh_buffer_fixture PRIVATE SITOS_WITH_ROCKSDB=1)
   endif()
@@ -364,7 +406,7 @@ if(SITOS_WITH_ZENOH)
     COMMAND "${Python3_EXECUTABLE}" -m pytest -q
             "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_single.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_wheel_boundary.py"
-            -k "not test_raw_zenoh_client_can_put_and_get")
+            -k "not test_raw_zenoh_client_can_put_and_get and not test_raw_zenoh_fence_payload_and_control_isolation")
   add_test(
     NAME RawZenohClientCanUseMixedSessionBuffers
     COMMAND "${Python3_EXECUTABLE}" -m pytest -q
@@ -395,6 +437,31 @@ if(SITOS_WITH_ZENOH)
       ENVIRONMENT "SITOS_RAW_ZENOH_FIXTURE=$<TARGET_FILE:sitos_raw_zenoh_buffer_fixture>"
       RUN_SERIAL TRUE
       TIMEOUT 60)
+
+  add_executable(sitos_fence_zenoh_integration_test
+    integration/fence_test.cpp)
+  target_link_libraries(sitos_fence_zenoh_integration_test
+    PRIVATE GTest::gtest_main sitos::sitos)
+  target_include_directories(sitos_fence_zenoh_integration_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+  sitos_enable_warnings(sitos_fence_zenoh_integration_test)
+  sitos_copy_zenohc(sitos_fence_zenoh_integration_test)
+  gtest_add_tests(
+    TARGET sitos_fence_zenoh_integration_test
+    SOURCES integration/fence_test.cpp)
+
+  add_test(
+    NAME FenceRawZenohInteropTest.QualifiesPayloadTransparencyAndControlIsolation
+    COMMAND "${Python3_EXECUTABLE}" -m pytest -q
+            "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_single.py"
+            -k test_raw_zenoh_fence_payload_and_control_isolation)
+  set_tests_properties(
+    FenceZenohIntegrationTest.QualifiesTopologiesQosAndControlIsolation
+    FenceRawZenohInteropTest.QualifiesPayloadTransparencyAndControlIsolation
+    PROPERTIES RUN_SERIAL TRUE TIMEOUT 120)
+  set_tests_properties(
+    FenceRawZenohInteropTest.QualifiesPayloadTransparencyAndControlIsolation
+    PROPERTIES
+      ENVIRONMENT "SITOS_RAW_ZENOH_FIXTURE=$<TARGET_FILE:sitos_raw_zenoh_buffer_fixture>")
 
   add_executable(sitos_ack_integration_test
     integration/ack_test.cpp)

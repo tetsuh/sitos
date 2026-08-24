@@ -15,6 +15,7 @@
 
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/param_store.hpp"
+#include "storage_node_test_access.hpp"
 #if defined(SITOS_WITH_ROCKSDB)
 #include "sitos/rocksdb_engine.hpp"
 #endif
@@ -25,6 +26,25 @@
 namespace {
 
 using namespace std::chrono_literals;
+
+constexpr sitos::FenceUuid kFenceSessionGeneration{{
+    std::byte{0x6f},
+    std::byte{0x1c},
+    std::byte{0x2d},
+    std::byte{0x3e},
+    std::byte{0x4a},
+    std::byte{0x5b},
+    std::byte{0x4c},
+    std::byte{0x6d},
+    std::byte{0x8e},
+    std::byte{0x9f},
+    std::byte{0x01},
+    std::byte{0x23},
+    std::byte{0x45},
+    std::byte{0x67},
+    std::byte{0x89},
+    std::byte{0xab},
+}};
 
 template <typename T>
 void ReportStartupFailure(std::string_view stage, const sitos::Result<T>& result) {
@@ -144,6 +164,11 @@ bool HandleCreateBufferSession(std::istringstream& input, sitos::StorageNode& no
   const auto created = node.CreateSession(session_id, options);
   if (!created.IsOk()) {
     protocol.Error("CREATE_BUFFER_SESSION", created.Message());
+    return true;
+  }
+  if (!sitos::storage_node_test_access::StorageNodeTestAccess::SetSessionGeneration(
+          node, session_id, kFenceSessionGeneration)) {
+    protocol.Error("CREATE_BUFFER_SESSION", "failed to set test Session generation");
     return true;
   }
   protocol.Reply("BUFFER_SESSION_OK " + session_id);
