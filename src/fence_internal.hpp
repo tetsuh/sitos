@@ -5,6 +5,7 @@
 #define SITOS_FENCE_INTERNAL_HPP
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -322,6 +323,11 @@ class FencePublisher {
   void WaitAtOperationGateForTesting();
   void QuiescePeerOperations();
   bool CheckGeneration();
+  void MarkGenerationMismatch();
+  [[nodiscard]] AckResultV1 DisconnectedResult(std::uint64_t through_sequence) const;
+  [[nodiscard]] std::optional<bool> PublishWaiterResult(
+      const std::shared_ptr<FenceWaiterState>& waiter, std::uint64_t through_sequence,
+      AckResultV1 result);
   void Disconnect();
 
   Transport* transport_;
@@ -344,6 +350,7 @@ class FencePublisher {
   bool exhausted_ = false;
   bool may_have_submitted_ = false;
   std::optional<ErrorInfo> latest_submission_error_;
+  std::atomic<bool> generation_mismatch_{false};
   bool disconnected_ = false;
   std::optional<FenceHandle> pending_;
 };

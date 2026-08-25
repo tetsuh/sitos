@@ -155,7 +155,19 @@ class DeterministicFenceTransport final : public Transport {
     std::scoped_lock lock(mutex_);
     return fence_profile_supported_;
   }
-  std::uint64_t FenceGeneration() const noexcept override { return generation(); }
+  std::uint64_t FenceGeneration() const noexcept override {
+    std::scoped_lock lock(mutex_);
+    const auto observed = generation_;
+    if (generation_reads_before_replacement_.has_value()) {
+      if (*generation_reads_before_replacement_ == 1) {
+        generation_reads_before_replacement_.reset();
+        ++generation_;
+      } else {
+        --*generation_reads_before_replacement_;
+      }
+    }
+    return observed;
+  }
   std::shared_ptr<fence_internal::FenceDispatchCoordinator> FenceDispatcher() noexcept override {
     return fence_dispatcher_;
   }
@@ -300,6 +312,10 @@ class DeterministicFenceTransport final : public Transport {
     std::scoped_lock lock(mutex_);
     ++generation_;
   }
+  void ReplaceGenerationAfterReads(std::size_t reads) {
+    std::scoped_lock lock(mutex_);
+    generation_reads_before_replacement_ = reads;
+  }
   void SetFenceProfileSupported(bool supported) {
     std::scoped_lock lock(mutex_);
     fence_profile_supported_ = supported;
@@ -365,7 +381,8 @@ class DeterministicFenceTransport final : public Transport {
   bool release_ack_query_return_ = false;
   bool fence_profile_supported_ = true;
   bool marker_waiter_was_published_ = false;
-  std::uint64_t generation_ = 1;
+  mutable std::uint64_t generation_ = 1;
+  mutable std::optional<std::size_t> generation_reads_before_replacement_;
 };
 
 inline std::shared_ptr<DeterministicFenceTransport> MakeTransport() {

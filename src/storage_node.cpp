@@ -171,6 +171,7 @@ constexpr std::string_view kBufferUnsupported = "unsupported buffer operation";
 constexpr std::string_view kBufferCapabilityDisabled = "buffer capability disabled";
 constexpr std::string_view kBufferEncodingRejected = "buffer encoding rejected";
 constexpr std::string_view kBufferPutConflict = "durable buffer PUT conflicts with existing value";
+constexpr std::string_view kBufferReadBeforePutFailed = "durable buffer read before PUT failed";
 constexpr std::string_view kBufferPutFailed = "durable buffer PUT failed";
 constexpr std::string_view kBufferQueryFailed = "durable buffer query failed";
 constexpr std::string_view kMalformedAckAttachment = "malformed ack attachment; sample rejected";
@@ -285,7 +286,7 @@ bool IsBufferBytes(const TransportSample& sample) {
   return sample.kind == TransportSample::Kind::Put && sample.encoding.id == "zenoh/bytes";
 }
 
-enum class BufferWriteOutcome { Stored, Conflict, Failed };
+enum class BufferWriteOutcome { Stored, Conflict, ReadFailed, WriteFailed };
 
 BufferWriteOutcome ApplyDurableBufferWrite(StorageEngine& engine, const ParsedKey& parsed,
                                            const TransportSample& sample) {
@@ -298,11 +299,15 @@ BufferWriteOutcome ApplyDurableBufferWrite(StorageEngine& engine, const ParsedKe
         })) {
       return same ? BufferWriteOutcome::Stored : BufferWriteOutcome::Conflict;
     }
+  } catch (...) {
+    return BufferWriteOutcome::ReadFailed;
+  }
+  try {
     if (engine.Put(parsed.relative_key, sample.payload)) return BufferWriteOutcome::Stored;
   } catch (...) {
-    return BufferWriteOutcome::Failed;
+    return BufferWriteOutcome::WriteFailed;
   }
-  return BufferWriteOutcome::Failed;
+  return BufferWriteOutcome::WriteFailed;
 }
 
 // Applies a put/delete sample to a target engine (base engine or session
@@ -1182,7 +1187,11 @@ AckResultV1 StorageNode::ApplyParameterSample(const std::shared_ptr<State>& stat
           diagnostics.emplace_back(LogLevel::kWarning, kBufferPutConflict);
           fence_failure = Status::InvalidArgument;
           break;
-        case BufferWriteOutcome::Failed:
+        case BufferWriteOutcome::ReadFailed:
+          diagnostics.emplace_back(LogLevel::kError, kBufferReadBeforePutFailed);
+          fence_failure = Status::Error;
+          break;
+        case BufferWriteOutcome::WriteFailed:
           if (fence_progress != nullptr) fence_progress->application_started = true;
           diagnostics.emplace_back(LogLevel::kError, kBufferPutFailed);
           fence_failure = Status::OutcomeUnknown;

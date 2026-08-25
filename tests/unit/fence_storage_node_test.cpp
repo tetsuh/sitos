@@ -15,21 +15,33 @@
 
 namespace {
 
-enum class BufferEngineMode { Healthy, ReturnFalse, Throw };
+enum class BufferEngineMode { Healthy, ReturnFalse, ThrowOnGet, ThrowOnPut };
 
 class ControlledBufferEngine final : public sitos::InMemoryEngine {
  public:
-  explicit ControlledBufferEngine(std::shared_ptr<BufferEngineMode> mode)
-      : mode_(std::move(mode)) {}
+  ControlledBufferEngine(std::shared_ptr<BufferEngineMode> mode,
+                         std::shared_ptr<std::size_t> put_calls)
+      : mode_(std::move(mode)), put_calls_(std::move(put_calls)) {}
+
+  bool Get(std::string_view key, const sitos::EntrySink& sink) const override {
+    if (*mode_ == BufferEngineMode::ThrowOnGet) {
+      throw std::runtime_error("injected durable buffer read failure");
+    }
+    return InMemoryEngine::Get(key, sink);
+  }
 
   bool Put(std::string_view key, sitos::Bytes value) override {
+    ++*put_calls_;
     if (*mode_ == BufferEngineMode::ReturnFalse) return false;
-    if (*mode_ == BufferEngineMode::Throw) throw std::runtime_error("injected buffer failure");
+    if (*mode_ == BufferEngineMode::ThrowOnPut) {
+      throw std::runtime_error("injected durable buffer write failure");
+    }
     return InMemoryEngine::Put(key, value);
   }
 
  private:
   std::shared_ptr<BufferEngineMode> mode_;
+  std::shared_ptr<std::size_t> put_calls_;
 };
 
 void ExpectRemoteFence(const sitos::AckResultV1& result, sitos::Status status,
@@ -273,6 +285,32 @@ TEST(FenceStorageNodeTest, DispatchesFenceAndBindsTheSessionGeneration) {
   EXPECT_EQ(immutable_remote_result.Value(), remote_result.Value());
   EXPECT_EQ(transport->AckQueryCount(), queries_after_completion);
 
+  // Buffer ACK decoding uses the same hidden terminal-result generation
+  // linearization as direct cache completion. Replace the generation after
+  // Wait's entry check and the callback's first sample; its final sample must
+  // still downgrade the result before it becomes observable.
+  auto buffer_completion_race_uuid = sitos::fence_test::kPublisherA;
+  buffer_completion_race_uuid[15] ^= std::byte{0x04};
+  auto buffer_completion_race_publisher =
+      sitos::fence_test_access::FenceTestAccess::CreatePublisher(
+          *transport, buffer_completion_race_uuid,
+          sitos::fence_test_access::FenceTestAccess::BufferReceiverBinding(
+              "s2", sitos::fence_test::kAttachGeneration, sitos::BufferClass::Durable,
+              sitos::AckDurability::Applied));
+  ASSERT_TRUE(buffer_completion_race_publisher.SubmitPush().IsOk());
+  auto buffer_completion_race =
+      buffer_completion_race_publisher.BeginFence(sitos::fence_test::kDeadline);
+  ASSERT_TRUE(buffer_completion_race.IsOk());
+  transport->ReplaceGenerationAfterReads(2);
+  const auto buffer_completion_race_result =
+      buffer_completion_race_publisher.Wait(buffer_completion_race.Value());
+  ASSERT_TRUE(buffer_completion_race_result.IsOk());
+  EXPECT_EQ(buffer_completion_race_result.Value().status, sitos::Status::Disconnected);
+  const auto data_submissions_after_buffer_replacement = transport->DataSubmissionCount();
+  EXPECT_EQ(buffer_completion_race_publisher.SubmitPush().StatusCode(),
+            sitos::Status::Disconnected);
+  EXPECT_EQ(transport->DataSubmissionCount(), data_submissions_after_buffer_replacement);
+
   ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::SetFenceDurabilityBarrier(
       *node, [](sitos::StorageEngine&) { return sitos::Result<void>::Ok(); }));
   const auto empty_synced_token = sitos::fence_test::Token(std::byte{0x51});
@@ -427,11 +465,12 @@ TEST(FenceStorageNodeTest, DispatchesFenceAndBindsTheSessionGeneration) {
             applications_before_synced);
 
   auto engine_mode = std::make_shared<BufferEngineMode>(BufferEngineMode::Healthy);
+  auto put_calls = std::make_shared<std::size_t>(0);
   auto failing_transport = sitos::fence_test::MakeTransport();
-  auto failing_node =
-      sitos::fence_test::StartNode(failing_transport, [engine_mode](std::string_view) {
+  auto failing_node = sitos::fence_test::StartNode(
+      failing_transport, [engine_mode, put_calls](std::string_view) {
         return sitos::Result<std::unique_ptr<sitos::StorageEngine>>::Ok(
-            std::make_unique<ControlledBufferEngine>(engine_mode));
+            std::make_unique<ControlledBufferEngine>(engine_mode, put_calls));
       });
   ASSERT_NE(failing_node, nullptr);
   ASSERT_TRUE(
@@ -452,7 +491,7 @@ TEST(FenceStorageNodeTest, DispatchesFenceAndBindsTheSessionGeneration) {
   ExpectRemoteFence(*false_result, sitos::Status::OutcomeUnknown, sitos::AckDurability::Applied, 1,
                     1);
 
-  *engine_mode = BufferEngineMode::Throw;
+  *engine_mode = BufferEngineMode::ThrowOnPut;
   failing_transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeCoveredBufferPut(
       "sitos/buffers/failures/durable/throw", sitos::fence_test::kPublisherB, 1));
   const auto throw_token = sitos::fence_test::Token(std::byte{0x55});
@@ -465,7 +504,27 @@ TEST(FenceStorageNodeTest, DispatchesFenceAndBindsTheSessionGeneration) {
   ExpectRemoteFence(*throw_result, sitos::Status::OutcomeUnknown, sitos::AckDurability::Applied, 1,
                     1);
 
+  auto read_failure_publisher = sitos::fence_test::kPublisherA;
+  read_failure_publisher[15] ^= std::byte{0x02};
+  *engine_mode = BufferEngineMode::ThrowOnGet;
+  const auto put_calls_before_read_failure = *put_calls;
+  failing_transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeCoveredBufferPut(
+      "sitos/buffers/failures/durable/read-failure", read_failure_publisher, 1));
+  EXPECT_EQ(*put_calls, put_calls_before_read_failure)
+      << "a pre-effect durable read failure must not invoke Put";
+  const auto read_failure_token = sitos::fence_test::Token(std::byte{0x57});
+  failing_transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeBufferMarker(
+      "sitos", "failures", sitos::fence_test::kSessionGeneration, sitos::BufferClass::Durable,
+      read_failure_publisher, sitos::AckDurability::Applied, 1, read_failure_token));
+  const auto read_failure_result =
+      sitos::fence_test_access::FenceTestAccess::FindAckResult(*failing_node, read_failure_token);
+  ASSERT_TRUE(read_failure_result.has_value());
+  ExpectRemoteFence(*read_failure_result, sitos::Status::Error, sitos::AckDurability::Applied, 1,
+                    1);
   *engine_mode = BufferEngineMode::Healthy;
+  EXPECT_FALSE(sitos::fence_test_access::FenceTestAccess::BufferValueExists(
+      *failing_node, "failures", "read-failure"));
+
   auto conflict_publisher = sitos::fence_test::kPublisherA;
   conflict_publisher[15] ^= std::byte{0x01};
   failing_transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeCoveredBufferPut(

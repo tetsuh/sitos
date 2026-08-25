@@ -242,6 +242,107 @@ TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
   EXPECT_EQ(max_fence.Value().through_sequence, UINT64_MAX);
   EXPECT_TRUE(max_publisher.Wait(max_fence.Value()).IsOk());
 
+  // A generation replacement that overlaps data submission makes the possibly
+  // submitted call and every later operation permanently disconnected.
+  auto data_replacement_transport = sitos::fence_test::MakeTransport();
+  auto data_replacement_publisher =
+      sitos::fence_test_access::FenceTestAccess::CreatePublisher(
+          *data_replacement_transport, sitos::fence_test::kPublisherB,
+          sitos::fence_test_access::FenceTestAccess::CacheReceiverBinding(
+              sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration));
+  data_replacement_transport->SetPutObserver(
+      [&data_replacement_transport](const auto& record) {
+        if (record.encoding.id != sitos::Encoding::kSitosV1Fence) {
+          data_replacement_transport->ReplaceGeneration();
+        }
+      });
+  EXPECT_EQ(data_replacement_publisher.SubmitPut().StatusCode(), sitos::Status::Disconnected);
+  EXPECT_TRUE(data_replacement_publisher.may_have_submitted());
+  EXPECT_EQ(data_replacement_transport->DataSubmissionCount(), 1U);
+  EXPECT_EQ(data_replacement_publisher.BeginFence(sitos::fence_test::kDeadline).StatusCode(),
+            sitos::Status::Disconnected);
+  EXPECT_EQ(data_replacement_transport->MarkerSubmissionCount(), 0U);
+
+  // A generation replacement that overlaps marker submission must not let a
+  // synchronous completion from the replacement generation prove the old lane.
+  auto synchronous_replacement_transport = sitos::fence_test::MakeTransport();
+  auto synchronous_replacement_publisher =
+      sitos::fence_test_access::FenceTestAccess::CreatePublisher(
+          *synchronous_replacement_transport, sitos::fence_test::kPublisherA,
+          sitos::fence_test_access::FenceTestAccess::CacheReceiverBinding(
+              sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration));
+  ASSERT_TRUE(synchronous_replacement_publisher.SubmitPut().IsOk());
+  synchronous_replacement_transport->SetPutObserver(
+      [&synchronous_replacement_transport, &synchronous_replacement_publisher](
+          const auto& record) {
+        if (record.encoding.id == sitos::Encoding::kSitosV1Fence &&
+            record.options.ack_token.has_value()) {
+          synchronous_replacement_transport->ReplaceGeneration();
+          sitos::fence_test_access::FenceTestAccess::CompletePublisherFence(
+              synchronous_replacement_publisher, *record.options.ack_token);
+        }
+      });
+  EXPECT_EQ(synchronous_replacement_publisher.BeginFence(sitos::fence_test::kDeadline).StatusCode(),
+            sitos::Status::Disconnected);
+  EXPECT_EQ(synchronous_replacement_publisher.SubmitPut().StatusCode(),
+            sitos::Status::Disconnected);
+
+  // The same boundary applies when completion is delayed until after Put
+  // returns. In contrast, an Ok completion observed before replacement remains
+  // immutable (covered near the end of this test).
+  auto asynchronous_replacement_transport = sitos::fence_test::MakeTransport();
+  auto asynchronous_replacement_publisher =
+      sitos::fence_test_access::FenceTestAccess::CreatePublisher(
+          *asynchronous_replacement_transport, sitos::fence_test::kPublisherB,
+          sitos::fence_test_access::FenceTestAccess::CacheReceiverBinding(
+              sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration));
+  asynchronous_replacement_transport->SetPutObserver(
+      [&asynchronous_replacement_publisher](const auto& record) {
+        if (record.encoding.id == sitos::Encoding::kSitosV1Fence &&
+            record.options.ack_token.has_value()) {
+          sitos::fence_test_access::FenceTestAccess::CompletePublisherFence(
+              asynchronous_replacement_publisher, *record.options.ack_token);
+        }
+      });
+  asynchronous_replacement_transport->GateMarkerCompletion();
+  auto asynchronous_replacement =
+      asynchronous_replacement_publisher.BeginFence(sitos::fence_test::kDeadline);
+  ASSERT_TRUE(asynchronous_replacement.IsOk());
+  asynchronous_replacement_transport->ReplaceGeneration();
+  asynchronous_replacement_transport->ReleaseMarkerCompletion();
+  const auto asynchronous_replacement_result =
+      asynchronous_replacement_publisher.Wait(asynchronous_replacement.Value());
+  ASSERT_TRUE(asynchronous_replacement_result.IsOk());
+  EXPECT_EQ(asynchronous_replacement_result.Value().status, sitos::Status::Disconnected);
+  EXPECT_EQ(asynchronous_replacement_publisher.SubmitPut().StatusCode(),
+            sitos::Status::Disconnected);
+
+  // Completion publication samples the generation again before exposing the
+  // terminal result. This deterministic transport replacement occurs after the
+  // first sample and must still downgrade the hidden provisional Ok result.
+  auto completion_race_transport = sitos::fence_test::MakeTransport();
+  auto completion_race_publisher =
+      sitos::fence_test_access::FenceTestAccess::CreatePublisher(
+          *completion_race_transport, sitos::fence_test::kPublisherA,
+          sitos::fence_test_access::FenceTestAccess::CacheReceiverBinding(
+              sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration));
+  completion_race_transport->SetPutObserver(
+      [&completion_race_publisher](const auto& record) {
+        if (record.encoding.id == sitos::Encoding::kSitosV1Fence &&
+            record.options.ack_token.has_value()) {
+          sitos::fence_test_access::FenceTestAccess::CompletePublisherFence(
+              completion_race_publisher, *record.options.ack_token);
+        }
+      });
+  completion_race_transport->GateMarkerCompletion();
+  auto completion_race = completion_race_publisher.BeginFence(sitos::fence_test::kDeadline);
+  ASSERT_TRUE(completion_race.IsOk());
+  completion_race_transport->ReplaceGenerationAfterReads(1);
+  completion_race_transport->ReleaseMarkerCompletion();
+  const auto completion_race_result = completion_race_publisher.Wait(completion_race.Value());
+  ASSERT_TRUE(completion_race_result.IsOk());
+  EXPECT_EQ(completion_race_result.Value().status, sitos::Status::Disconnected);
+
   auto buffer_transport = sitos::fence_test::MakeTransport();
   auto buffer_publisher = sitos::fence_test_access::FenceTestAccess::CreatePublisher(
       *buffer_transport, sitos::fence_test::kPublisherB,
