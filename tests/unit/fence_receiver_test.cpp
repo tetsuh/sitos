@@ -304,7 +304,7 @@ TEST(FenceReceiverTest, EvaluatesPrefixesFailuresBoundsAndCapacityPoison) {
   ExpectFenceResult(*cleaned, sitos::Status::Ok, 0, sitos::kAckNoFailedSequence);
 }
 
-TEST(FenceReceiverTest, CleansUpWhenTheCapacityPollExpiresBelowCapacity) {
+TEST(ReceiverCapacityPollTest, CleansUpWhenTheCapacityPollExpiresBelowCapacity) {
   const auto no_workers = sitos::fence_test_access::FenceTestAccess::ExerciseGlobalDispatchCapacity(
       1, {}, 0, std::chrono::milliseconds(1));
 
