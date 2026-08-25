@@ -130,19 +130,26 @@ TEST(FenceZenohIntegrationTest, QualifiesTopologiesQosAndControlIsolation) {
     observed = observations;
   }
   ASSERT_EQ(observed.size(), 3U);
-  EXPECT_EQ(observed[0].key, prefix + "/data/a");
-  EXPECT_EQ(observed[0].payload, std::vector<std::byte>(payload.begin(), payload.end()));
-  EXPECT_EQ(observed[0].encoding.id, "zenoh/bytes");
-  ASSERT_TRUE(std::holds_alternative<sitos::FenceLaneMetadata>(observed[0].lane));
-  EXPECT_EQ(std::get<sitos::FenceLaneMetadata>(observed[0].lane).publisher_uuid, kPublisherA);
-  EXPECT_EQ(observed[1].key, prefix + "/data/b");
-  ASSERT_TRUE(std::holds_alternative<sitos::FenceLaneMetadata>(observed[1].lane));
-  EXPECT_EQ(std::get<sitos::FenceLaneMetadata>(observed[1].lane).publisher_uuid, kPublisherB);
-  EXPECT_EQ(observed[2].key, marker_key);
-  ASSERT_TRUE(std::holds_alternative<sitos::AckToken>(observed[2].ack));
-  EXPECT_EQ(std::get<sitos::AckToken>(observed[2].ack), token);
-  EXPECT_TRUE(std::holds_alternative<sitos::FenceLaneAbsent>(observed[2].lane));
-  EXPECT_EQ(observed[2].encoding.id, sitos::Encoding::kSitosV1Fence);
+  const auto find_observation = [&](const std::string& key) {
+    return std::find_if(observed.begin(), observed.end(),
+                        [&](const OwnedObservation& item) { return item.key == key; });
+  };
+  const auto first_observation = find_observation(prefix + "/data/a");
+  ASSERT_NE(first_observation, observed.end());
+  EXPECT_EQ(first_observation->payload, std::vector<std::byte>(payload.begin(), payload.end()));
+  EXPECT_EQ(first_observation->encoding.id, "zenoh/bytes");
+  ASSERT_TRUE(std::holds_alternative<sitos::FenceLaneMetadata>(first_observation->lane));
+  EXPECT_EQ(std::get<sitos::FenceLaneMetadata>(first_observation->lane).publisher_uuid, kPublisherA);
+  const auto second_observation = find_observation(prefix + "/data/b");
+  ASSERT_NE(second_observation, observed.end());
+  ASSERT_TRUE(std::holds_alternative<sitos::FenceLaneMetadata>(second_observation->lane));
+  EXPECT_EQ(std::get<sitos::FenceLaneMetadata>(second_observation->lane).publisher_uuid, kPublisherB);
+  const auto marker_observation = find_observation(marker_key);
+  ASSERT_NE(marker_observation, observed.end());
+  ASSERT_TRUE(std::holds_alternative<sitos::AckToken>(marker_observation->ack));
+  EXPECT_EQ(std::get<sitos::AckToken>(marker_observation->ack), token);
+  EXPECT_TRUE(std::holds_alternative<sitos::FenceLaneAbsent>(marker_observation->lane));
+  EXPECT_EQ(marker_observation->encoding.id, sitos::Encoding::kSitosV1Fence);
 
   sitos::PutOptions invalid;
   invalid.ack_token = token;
