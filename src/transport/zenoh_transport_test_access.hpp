@@ -33,6 +33,9 @@ bool AllocationFailurePrecedesOwnershipTransfer();
 /// Verifies the production Get options select native LATEST consolidation.
 bool UsesLatestGetConsolidation();
 
+/// Verifies Fence puts use Block/Data/non-express native options.
+bool UsesFencePutProfile();
+
 /// Returns a production transport with no opened Zenoh session.
 std::unique_ptr<Transport> MakeDisconnectedTransport();
 

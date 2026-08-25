@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -23,25 +24,23 @@
 #include <string_view>
 #include <type_traits>
 
-#include "sitos/transport.hpp"
-
-#include "sitos/ack.hpp"
-
+#include "../fence_internal.hpp"
 #include "config_failure.hpp"
 #include "declaration_handle_lifecycle.hpp"
 #include "get_completion.hpp"
+#include "sitos/ack.hpp"
+#include "sitos/transport.hpp"
 #include "zenoh_runtime_anchor.hpp"
 #include "zenoh_transport_test_access.hpp"
 
 namespace sitos::detail {
 
-std::uintptr_t ZenohRuntimeAnchor() noexcept {
-  return reinterpret_cast<std::uintptr_t>(&z_open);
-}
+std::uintptr_t ZenohRuntimeAnchor() noexcept { return reinterpret_cast<std::uintptr_t>(&z_open); }
 
 }  // namespace sitos::detail
 
 namespace sitos {
+using namespace fence_internal;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -202,8 +201,8 @@ Result<ZenohOwned<z_owned_keyexpr_t>> MakeKeyexpr(std::string_view key) {
 }
 
 bool IsSitosSchema(std::string_view id) {
-  return id == Encoding::kSitosV1 || id == Encoding::kSitosV1Batch ||
-         id == Encoding::kSitosV1Ack;
+  return id == Encoding::kSitosV1 || id == Encoding::kSitosV1Batch || id == Encoding::kSitosV1Ack ||
+         id == Encoding::kSitosV1Fence;
 }
 
 std::optional<std::string_view> SitosSchemaFromEncoding(std::string_view id) {
@@ -224,8 +223,8 @@ Result<ZenohOwned<z_owned_encoding_t>> MakeEncoding(const Encoding& enc) {
   if (auto schema = SitosSchemaFromEncoding(enc.id); schema.has_value()) {
     z_encoding_clone(z_enc.get(), z_encoding_zenoh_bytes());
     z_enc.mark_valid();
-    z_result_t rc = z_encoding_set_schema_from_substr(z_enc.loan_mut(), schema->data(),
-                                                       schema->size());
+    z_result_t rc =
+        z_encoding_set_schema_from_substr(z_enc.loan_mut(), schema->data(), schema->size());
     if (rc != Z_OK) {
       return Result<ZenohOwned<z_owned_encoding_t>>::Err(MakeZenohError(rc));
     }
@@ -251,20 +250,22 @@ Encoding ReadEncoding(const z_loaned_sample_t* sample) {
   ZenohOwned<z_owned_string_t> wire;
   z_encoding_to_string(z_sample_encoding(sample), wire.get());
   wire.mark_valid();
-  return NormalizeEncoding(
-      std::string(z_string_data(wire.loan()), z_string_len(wire.loan())));
+  return NormalizeEncoding(std::string(z_string_data(wire.loan()), z_string_len(wire.loan())));
 }
 
-// Decode the sample's attachment into the typed three-state observation
-// (DEC-14-ACK-ATTACHMENT-001). StorageNode never sees the raw bytes.
-AckAttachmentObservation ReadAckAttachment(const z_loaned_sample_t* sample) {
+// Decode the sample attachment once, then classify it disjointly as ADR-0028
+// ACK metadata, ADR-0029 lane metadata, or unrelated raw metadata.
+fence_internal::AttachmentObservations ReadAttachments(const z_loaned_sample_t* sample) {
   const z_loaned_bytes_t* attachment = z_sample_attachment(sample);
-  if (attachment == nullptr) return AckAttachmentAbsent{};
+  if (attachment == nullptr) return fence_internal::ClassifyAttachment(std::nullopt);
   ZenohOwned<z_owned_slice_t> slice;
-  if (z_bytes_to_slice(attachment, slice.get()) != Z_OK) return AckAttachmentMalformed{};
+  if (z_bytes_to_slice(attachment, slice.get()) != Z_OK) {
+    return {AckAttachmentMalformed{}, FenceLaneAbsent{}};
+  }
   slice.mark_valid();
   const auto* data = reinterpret_cast<const std::byte*>(z_slice_data(slice.loan()));
-  return ObserveAckAttachment(std::span<const std::byte>(data, z_slice_len(slice.loan())));
+  return fence_internal::ClassifyAttachment(
+      std::span<const std::byte>(data, z_slice_len(slice.loan())));
 }
 
 // Build a z_owned_bytes_t from a byte payload.
@@ -365,6 +366,12 @@ void ConfigureGetOptions(z_get_options_t* options, std::chrono::milliseconds tim
   options->timeout_ms = static_cast<uint64_t>(timeout.count());
 }
 
+void ConfigureFencePutOptions(z_put_options_t* options) {
+  options->congestion_control = Z_CONGESTION_CONTROL_BLOCK;
+  options->priority = Z_PRIORITY_DATA;
+  options->is_express = false;
+}
+
 }  // namespace
 
 namespace transport_test_access {
@@ -405,6 +412,14 @@ bool UsesLatestGetConsolidation() {
   return options.consolidation.mode == Z_CONSOLIDATION_MODE_LATEST;
 }
 
+bool UsesFencePutProfile() {
+  z_put_options_t options;
+  z_put_options_default(&options);
+  ConfigureFencePutOptions(&options);
+  return options.congestion_control == Z_CONGESTION_CONTROL_BLOCK &&
+         options.priority == Z_PRIORITY_DATA && !options.is_express;
+}
+
 }  // namespace transport_test_access
 
 // ---------------------------------------------------------------------------
@@ -433,8 +448,7 @@ struct TransportQuery::Impl {
 };
 
 TransportQuery::TransportQuery() = default;
-TransportQuery::TransportQuery(ReplyHandler handler)
-    : test_reply_handler_(std::move(handler)) {}
+TransportQuery::TransportQuery(ReplyHandler handler) : test_reply_handler_(std::move(handler)) {}
 TransportQuery::~TransportQuery() = default;
 
 Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::byte> payload,
@@ -509,9 +523,13 @@ void OnSubscriberSample(z_loaned_sample_t* sample, void* context) noexcept {
       slice.mark_valid();
       const auto* data = reinterpret_cast<const std::byte*>(z_slice_data(slice.loan()));
       const auto length = z_slice_len(slice.loan());
-      TransportSample transport_sample{
-          std::move(key), std::span<const std::byte>(data, length), ReadEncoding(sample),
-          ReadAckAttachment(sample), TransportSample::Kind::Put};
+      auto attachments = ReadAttachments(sample);
+      TransportSample transport_sample{std::move(key),
+                                       std::span<const std::byte>(data, length),
+                                       ReadEncoding(sample),
+                                       std::move(attachments.ack),
+                                       TransportSample::Kind::Put,
+                                       std::move(attachments.lane)};
       if (state->active.load(std::memory_order_acquire) && state->callback) {
         state->callback(transport_sample);
       }
@@ -520,8 +538,13 @@ void OnSubscriberSample(z_loaned_sample_t* sample, void* context) noexcept {
 
     // DELETE payloads and encodings are deliberately not inspected. Attachments
     // still cross the typed Transport boundary so StorageNode can reject them.
-    TransportSample transport_sample{std::move(key), {}, {}, ReadAckAttachment(sample),
-                                     TransportSample::Kind::Delete};
+    auto attachments = ReadAttachments(sample);
+    TransportSample transport_sample{std::move(key),
+                                     {},
+                                     {},
+                                     std::move(attachments.ack),
+                                     TransportSample::Kind::Delete,
+                                     std::move(attachments.lane)};
     if (state->active.load(std::memory_order_acquire) && state->callback) {
       state->callback(transport_sample);
     }
@@ -642,7 +665,7 @@ Subscription SubscriptionTestAccess::Make(std::string_view keyexpr,
 }
 
 bool SubscriptionTestAccess::SetResetObserver(Subscription& subscription,
-                                                   std::function<void()> observer) {
+                                              std::function<void()> observer) {
   if (!subscription.impl_) return false;
   subscription.impl_->reset_observer = std::move(observer);
   return true;
@@ -683,6 +706,7 @@ struct Queryable::Impl {
 #include "declaration_handle_lifecycle_impl.hpp"
 
 namespace sitos {
+using namespace fence_internal;
 
 void Queryable::Reset() noexcept {
   if (impl_) {
@@ -704,6 +728,11 @@ void Queryable::Reset() noexcept {
 namespace {
 
 struct DisconnectedTransportTag {};
+
+std::uint64_t NextFenceTransportGeneration() noexcept {
+  static std::atomic<std::uint64_t> next{1};
+  return next.fetch_add(1, std::memory_order_relaxed);
+}
 
 z_result_t OpenZenohSession(z_owned_session_t* session, z_moved_config_t* config) {
   return z_open(session, config, nullptr);
@@ -752,12 +781,20 @@ class ZenohTransport : public Transport {
 
   template <typename ConfigTransfer>
   explicit ZenohTransport(ConfigTransfer&& config_transfer)
-      : open_result_(OpenZenohSession(
-            &session_, std::invoke(std::forward<ConfigTransfer>(config_transfer)))),
+      : open_result_(OpenZenohSession(&session_,
+                                      std::invoke(std::forward<ConfigTransfer>(config_transfer)))),
         session_valid_(open_result_ == Z_OK) {}
 
   bool IsSessionValid() const { return session_valid_; }
   z_result_t OpenResult() const { return open_result_; }
+  void SetFenceProfileSupported(bool supported) noexcept { fence_profile_supported_ = supported; }
+  bool SupportsFenceProfile() const noexcept override {
+    return session_valid_ && fence_profile_supported_;
+  }
+  std::uint64_t FenceGeneration() const noexcept override { return fence_generation_; }
+  std::shared_ptr<fence_internal::FenceDispatchCoordinator> FenceDispatcher() noexcept override {
+    return fence_dispatcher_;
+  }
 
   ~ZenohTransport() override {
     if (session_valid_) {
@@ -768,7 +805,14 @@ class ZenohTransport : public Transport {
 
   Result<void> Put(std::string_view key, std::span<const std::byte> payload, Encoding encoding,
                    PutOptions options) override {
+    if (options.ack_token.has_value() && options.fence_lane.has_value()) {
+      return SemanticTransportError<void>(Status::InvalidArgument, TransportErrc::kErrInvalidArg);
+    }
     if (options.ack_token.has_value() && !IsValidAckToken(*options.ack_token)) {
+      return SemanticTransportError<void>(Status::InvalidArgument, TransportErrc::kErrInvalidArg);
+    }
+    if (options.fence_lane.has_value() && (!IsValidFenceUuid(options.fence_lane->publisher_uuid) ||
+                                           options.fence_lane->sequence == 0)) {
       return SemanticTransportError<void>(Status::InvalidArgument, TransportErrc::kErrInvalidArg);
     }
     if (!session_valid_) {
@@ -787,9 +831,12 @@ class ZenohTransport : public Transport {
     z_put_options_t opts;
     z_put_options_default(&opts);
     opts.encoding = enc.Value().moved();
+    const bool fence_profile =
+        options.fence_lane.has_value() || encoding.id == Encoding::kSitosV1Fence;
+    if (fence_profile) ConfigureFencePutOptions(&opts);
 
-    // ADR-0028: the adapter encodes the helper-generated token as the exact
-    // 17-byte AckAttachmentV1; it never invents one.
+    // The adapter encodes exactly one caller-provided typed attachment and never
+    // invents a token or Publisher identity.
     ZenohOwned<z_owned_bytes_t> attachment;
     if (options.ack_token.has_value()) {
       const auto encoded = EncodeAckAttachment(*options.ack_token);
@@ -797,8 +844,15 @@ class ZenohTransport : public Transport {
       if (!bytes.IsOk()) return Result<void>::ErrFrom(bytes);
       attachment = std::move(bytes).Value();
       opts.attachment = attachment.moved();
+    } else if (options.fence_lane.has_value()) {
+      const auto encoded = EncodeFenceLaneAttachment(*options.fence_lane);
+      auto bytes = MakeBytes(encoded);
+      if (!bytes.IsOk()) return Result<void>::ErrFrom(bytes);
+      attachment = std::move(bytes).Value();
+      opts.attachment = attachment.moved();
     }
 
+    std::scoped_lock submission_lock(submission_mutex_);
     z_result_t rc = z_put(z_session_loan(&session_), ke.Value().loan(), p.Value().moved(), &opts);
 
     if (rc != Z_OK) return Result<void>::Err(MakeZenohError(rc));
@@ -859,8 +913,7 @@ class ZenohTransport : public Transport {
   }
 
   Result<Subscription> DeclareSubscriber(
-      std::string_view keyexpr_str,
-      std::function<void(const TransportSample&)> callback) override {
+      std::string_view keyexpr_str, std::function<void(const TransportSample&)> callback) override {
     if (!session_valid_) {
       return SemanticTransportError<Subscription>(Status::Disconnected,
                                                   TransportErrc::kErrDisconnected);
@@ -875,8 +928,7 @@ class ZenohTransport : public Transport {
     Subscription subscription;
 
     subscription.impl_ = std::make_unique<Subscription::Impl>();
-    subscription.impl_->callback_state =
-        std::make_shared<SubscriberState>(std::move(callback));
+    subscription.impl_->callback_state = std::make_shared<SubscriberState>(std::move(callback));
     auto* context = new std::shared_ptr<SubscriberState>(subscription.impl_->callback_state);
 
     z_owned_closure_sample_t closure;
@@ -884,9 +936,9 @@ class ZenohTransport : public Transport {
 
     z_subscriber_options_t options;
     z_subscriber_options_default(&options);
-    const z_result_t decl_rc = z_declare_subscriber(
-        z_session_loan(&session_), &subscription.impl_->subscriber, ke.Value().loan(),
-        z_move(closure), &options);
+    const z_result_t decl_rc =
+        z_declare_subscriber(z_session_loan(&session_), &subscription.impl_->subscriber,
+                             ke.Value().loan(), z_move(closure), &options);
     if (decl_rc != Z_OK) {
       subscription.Reset();
       return Result<Subscription>::Err(MakeZenohError(decl_rc));
@@ -894,9 +946,8 @@ class ZenohTransport : public Transport {
     return Result<Subscription>::Ok(std::move(subscription));
   }
 
-  Result<Queryable> DeclareQueryable(
-      std::string_view keyexpr_str,
-      std::function<void(TransportQuery&)> callback) override {
+  Result<Queryable> DeclareQueryable(std::string_view keyexpr_str,
+                                     std::function<void(TransportQuery&)> callback) override {
     // An empty callback is a programming error; return an error rather than
     // registering a closure that would throw std::bad_function_call (#67).
     if (!callback) {
@@ -939,9 +990,14 @@ class ZenohTransport : public Transport {
   }
 
  private:
+  std::mutex submission_mutex_;
+  const std::uint64_t fence_generation_ = NextFenceTransportGeneration();
+  std::shared_ptr<fence_internal::FenceDispatchCoordinator> fence_dispatcher_ =
+      std::make_shared<fence_internal::FenceDispatchCoordinator>();
   z_owned_session_t session_{};
   z_result_t open_result_ = -1;
   bool session_valid_ = false;
+  bool fence_profile_supported_ = false;
 };
 
 namespace transport_test_access {
@@ -964,8 +1020,7 @@ sitos::Result<std::unique_ptr<sitos::Transport>> sitos::OpenZenohTransport(
   ZenohOwned<z_owned_config_t> config;
   z_result_t config_result = Z_OK;
   if (config_json.has_value()) {
-    config_result =
-        zc_config_from_substr(config.get(), config_json->data(), config_json->size());
+    config_result = zc_config_from_substr(config.get(), config_json->data(), config_json->size());
   } else {
     config_result = z_config_default(config.get());
   }
@@ -974,18 +1029,20 @@ sitos::Result<std::unique_ptr<sitos::Transport>> sitos::OpenZenohTransport(
     const auto status = transport_detail::ConfigFailureStatus(user_config_provided);
     const char* message = user_config_provided ? "invalid zenoh configuration"
                                                : "failed to create default zenoh configuration";
-    return Result<std::unique_ptr<Transport>>::Err(status, message,
-                                                   MakeZenohError(config_result));
+    return Result<std::unique_ptr<Transport>>::Err(status, message, MakeZenohError(config_result));
   }
 
   config.mark_valid();
-  auto transport = MakeUniqueWithDeferredTransfer<sitos::ZenohTransport>(
-      [&config] { return config.moved(); });
+  auto transport =
+      MakeUniqueWithDeferredTransfer<sitos::ZenohTransport>([&config] { return config.moved(); });
   if (!transport->IsSessionValid()) {
-    return Result<std::unique_ptr<Transport>>::Err(
-        Status::Error, "failed to open zenoh session",
-        MakeZenohError(transport->OpenResult()));
+    return Result<std::unique_ptr<Transport>>::Err(Status::Error, "failed to open zenoh session",
+                                                   MakeZenohError(transport->OpenResult()));
   }
+  // A caller-supplied JSON5 configuration may contain key-specific QoS
+  // overrides that this stable adapter cannot inspect. Reject Fence capability
+  // for that case rather than claiming an unprovable profile.
+  transport->SetFenceProfileSupported(!config_json.has_value());
   return Result<std::unique_ptr<Transport>>::Ok(std::move(transport));
 }
 

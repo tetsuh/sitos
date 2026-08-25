@@ -19,6 +19,7 @@ from pathlib import Path
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "payload_v1"
 ACK_FIXTURE_DIR = Path(__file__).resolve().parent / "ack_v1"
+FENCE_FIXTURE_DIR = Path(__file__).resolve().parent / "fence_v1"
 
 # Canonical quiet-NaN body bytes (LE), matching docs/03 §2.3 (dp_nan).
 # Bit pattern 0x7ff8000000000000.
@@ -92,7 +93,7 @@ NO_INDEX = 0xFFFFFFFF
 NO_SEQUENCE = 0xFFFFFFFFFFFFFFFF
 K_PUT, K_BATCH, K_FENCE = 1, 2, 3
 D_APPLIED, D_SYNCED = 1, 2
-S_OK, S_INVALID_ARGUMENT, S_ERROR, S_OUTCOME_UNKNOWN = 0, 7, 8, 9
+S_OK, S_NOT_FOUND, S_INVALID_ARGUMENT, S_ERROR, S_OUTCOME_UNKNOWN = 0, 1, 7, 8, 9
 
 
 def expected_ack() -> dict:
@@ -111,6 +112,36 @@ def expected_ack() -> dict:
         "result_fence_synced_ok": ack_result(K_FENCE, S_OK, D_SYNCED, 0, NO_INDEX, 42, NO_SEQUENCE),
         "result_fence_failed_sequence": ack_result(
             K_FENCE, S_ERROR, D_APPLIED, 0, NO_INDEX, 5, 3, "lane 3 failed"),
+    }
+
+
+def expected_fence() -> dict:
+    """ADR-0029 lane, marker, and complete representative result matrix."""
+    publisher = bytes.fromhex("8b8f3a627dd54c408a2b28f71331fe41")
+
+    def lane(sequence: int) -> bytes:
+        return bytes([1]) + publisher + struct.pack("<Q", sequence)
+
+    def result(
+        status: int, durability: int, through: int, failed: int = NO_SEQUENCE
+    ) -> bytes:
+        return ack_result(K_FENCE, status, durability, 0, NO_INDEX, through, failed)
+    return {
+        "lane_min_sequence": lane(1),
+        "lane_max_sequence": lane(0xFFFFFFFFFFFFFFFF),
+        "marker_v1": bytes([1]),
+        "ack_applied_success": result(S_OK, D_APPLIED, 7),
+        "ack_synced_success": result(S_OK, D_SYNCED, 7),
+        "ack_empty_success": result(S_OK, D_APPLIED, 0),
+        "ack_empty_poison": result(S_OUTCOME_UNKNOWN, D_APPLIED, 0),
+        "ack_overtake": result(S_OUTCOME_UNKNOWN, D_APPLIED, 7),
+        "ack_missing_session": result(S_NOT_FOUND, D_APPLIED, 7),
+        "ack_closing_session": result(S_INVALID_ARGUMENT, D_APPLIED, 7),
+        "ack_malformed_global": result(S_ERROR, D_APPLIED, 7),
+        "ack_barrier_error": result(S_ERROR, D_SYNCED, 7),
+        "ack_stale_sequence": result(S_ERROR, D_APPLIED, 7, 4),
+        "ack_gap_sequence": result(S_OUTCOME_UNKNOWN, D_APPLIED, 7, 4),
+        "ack_write_once_sequence": result(S_INVALID_ARGUMENT, D_APPLIED, 7, 4),
     }
 
 
@@ -144,9 +175,18 @@ def main() -> int:
         else:
             print(f"OK   {name}")
 
+    fences = expected_fence()
+    for name, expected in fences.items():
+        actual = parse_hex_file(FENCE_FIXTURE_DIR / f"{name}.hex")
+        if actual != expected:
+            failures += 1
+            print(f"FAIL {name}: expected {expected.hex(' ')} got {actual.hex(' ')}")
+        else:
+            print(f"OK   {name}")
+
     status = "PASS" if failures == 0 else "FAIL"
-    print(f"{status} (fixture validator): {len(singles)} singles + 1 batch + {len(acks)} ack, "
-          f"{failures} failure(s)")
+    print(f"{status} (fixture validator): {len(singles)} singles + 1 batch + {len(acks)} ack + "
+          f"{len(fences)} fence, {failures} failure(s)")
     return 1 if failures else 0
 
 

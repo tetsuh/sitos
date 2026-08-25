@@ -99,7 +99,10 @@ def _put_until_query_matches(
 
 
 def test_raw_zenoh_client_can_put_and_get() -> None:
-    assert importlib.metadata.version("eclipse-zenoh") == "1.9.0"
+    expected_version = os.environ.get(
+        "SITOS_EXPECTED_ZENOH_PYTHON_VERSION", "1.9.0"
+    )
+    assert importlib.metadata.version("eclipse-zenoh") == expected_version
     _assert_no_sitos_import(sys.modules[__name__])
     _assert_no_sitos_import(support)
 
@@ -149,6 +152,144 @@ def test_raw_zenoh_client_can_put_and_get() -> None:
             assert _decode_dp(snapshot_reply.payload) == -17.25
 
 
+def test_raw_zenoh_fence_payload_and_control_isolation() -> None:
+    _assert_no_sitos_import(sys.modules[__name__])
+    _assert_no_sitos_import(support)
+
+    with support.FixtureProcess() as fixture:
+        with fixture.open_raw_session() as session:
+            publisher = uuid.UUID("8b8f3a62-7dd5-4c40-8a2b-28f71331fe41")
+            receiver = uuid.UUID("123e4567-e89b-42d3-a456-426614174000")
+            lane = bytes([1]) + publisher.bytes + struct.pack("<Q", 1)
+            key = f"{fixture.prefix}/base/raw/fence-lane"
+            payload = _encode_dp(19.5)
+            session.put(
+                key,
+                payload,
+                encoding=zenoh.Encoding(support.CANONICAL_SITOS_ENCODING),
+                attachment=lane,
+            )
+            _query_until_matches(session, key, payload)
+
+            fixture.create_buffer_session()
+            session_generation = uuid.UUID(
+                "6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab"
+            )
+            buffer_key = (
+                f"{fixture.prefix}/buffers/{fixture.session_id}/durable/fence/raw"
+            )
+            buffer_payload = b"raw-fence-payload"
+            session.put(
+                buffer_key,
+                buffer_payload,
+                encoding=zenoh.Encoding("zenoh/bytes"),
+                attachment=lane,
+            )
+            deadline = time.monotonic() + SCENARIO_TIMEOUT_SECONDS
+            buffer_replies: list[support.WireSample] = []
+            while not buffer_replies and time.monotonic() < deadline:
+                buffer_replies = _read_exact_reply(session, buffer_key)
+            assert len(buffer_replies) == 1
+            support.assert_wire_sample(
+                buffer_replies[0],
+                expected_key=buffer_key,
+                expected_payload=buffer_payload,
+                expected_encoding="zenoh/bytes",
+            )
+
+            buffer_token = uuid.uuid4()
+            buffer_marker = (
+                f"{fixture.prefix}/meta/fence/buffer/{fixture.session_id}/"
+                f"{session_generation}/durable/{publisher}/applied/1"
+            )
+            session.put(
+                buffer_marker,
+                b"\x01",
+                encoding=zenoh.Encoding("zenoh/bytes;sitos.v1.fence"),
+                attachment=bytes([1]) + buffer_token.bytes,
+            )
+            buffer_ack_key = f"{fixture.prefix}/meta/ack/{buffer_token}"
+            buffer_ack: list[support.WireSample] = []
+            deadline = time.monotonic() + SCENARIO_TIMEOUT_SECONDS
+            while not buffer_ack and time.monotonic() < deadline:
+                buffer_ack = _read_exact_reply(session, buffer_ack_key)
+            assert len(buffer_ack) == 1
+            assert buffer_ack[0].payload[1:4] == bytes([3, 0, 1])
+
+            gap_key = (
+                f"{fixture.prefix}/buffers/{fixture.session_id}/durable/fence/gap"
+            )
+            session.put(
+                gap_key,
+                b"must-not-apply",
+                encoding=zenoh.Encoding("zenoh/bytes"),
+                attachment=bytes([1]) + publisher.bytes + struct.pack("<Q", 3),
+            )
+            gap_token = uuid.uuid4()
+            gap_marker = (
+                f"{fixture.prefix}/meta/fence/buffer/{fixture.session_id}/"
+                f"{session_generation}/durable/{publisher}/applied/3"
+            )
+            session.put(
+                gap_marker,
+                b"\x01",
+                encoding=zenoh.Encoding("zenoh/bytes;sitos.v1.fence"),
+                attachment=bytes([1]) + gap_token.bytes,
+            )
+            gap_ack_key = f"{fixture.prefix}/meta/ack/{gap_token}"
+            gap_ack: list[support.WireSample] = []
+            deadline = time.monotonic() + SCENARIO_TIMEOUT_SECONDS
+            while not gap_ack and time.monotonic() < deadline:
+                gap_ack = _read_exact_reply(session, gap_ack_key)
+            assert len(gap_ack) == 1
+            assert gap_ack[0].payload[1:4] == bytes([3, 9, 1])
+            assert struct.unpack_from("<Q", gap_ack[0].payload, 20)[0] == 2
+            assert _read_exact_reply(session, gap_key) == []
+
+            cache_token = uuid.uuid4()
+            cache_marker = (
+                f"{fixture.prefix}/meta/fence/cache/s1/{receiver}/{publisher}/0"
+            )
+            session.put(
+                cache_marker,
+                b"\x01",
+                encoding=zenoh.Encoding("zenoh/bytes;sitos.v1.fence"),
+                attachment=bytes([1]) + cache_token.bytes,
+            )
+            cache_ack = f"{fixture.prefix}/meta/ack/{cache_token}"
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                assert _read_exact_reply(session, cache_ack) == []
+
+            missing_token = uuid.uuid4()
+            missing_marker = (
+                f"{fixture.prefix}/meta/fence/buffer/missing/{receiver}/durable/"
+                f"{publisher}/applied/0"
+            )
+            session.put(
+                missing_marker,
+                b"\x01",
+                encoding=zenoh.Encoding("zenoh/bytes;sitos.v1.fence"),
+                attachment=bytes([1]) + missing_token.bytes,
+            )
+            missing_ack = f"{fixture.prefix}/meta/ack/{missing_token}"
+            replies: list[support.WireSample] = []
+            deadline = time.monotonic() + SCENARIO_TIMEOUT_SECONDS
+            while not replies and time.monotonic() < deadline:
+                replies = _read_exact_reply(session, missing_ack)
+            assert len(replies) == 1
+            result = replies[0]
+            assert result.key == missing_ack
+            assert result.encoding == "zenoh/bytes;sitos.v1.ack"
+            assert len(result.payload) == 32
+            version, kind, status, durability = result.payload[:4]
+            assert (version, kind, status, durability) == (1, 3, 1, 1)
+            assert struct.unpack_from("<I", result.payload, 4)[0] == 0
+            assert struct.unpack_from("<I", result.payload, 8)[0] == 0xFFFFFFFF
+            assert struct.unpack_from("<Q", result.payload, 12)[0] == 0
+            assert struct.unpack_from("<Q", result.payload, 20)[0] == 0xFFFFFFFFFFFFFFFF
+
+
 def test_raw_delete_with_valid_ack_attachment_is_rejected() -> None:
     with support.FixtureProcess() as fixture:
         with fixture.open_raw_session() as session:
@@ -182,7 +323,10 @@ def test_raw_delete_with_malformed_ack_attachment_is_rejected() -> None:
 
             subscriber = session.declare_subscriber(key, observe)
             try:
-                session.delete(key, attachment=b"\x01\x00")
+                # Exact 17-byte attachments are reserved for ADR-0028. Keep
+                # this malformed-ACK regression disjoint from ADR-0029's
+                # schema-v1 wrong-length Fence candidate classification.
+                session.delete(key, attachment=bytes([1]) + bytes(16))
                 assert observed_delete.wait(SCENARIO_TIMEOUT_SECONDS), (
                     "raw subscriber did not observe the malformed attached Delete"
                 )

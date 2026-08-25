@@ -26,12 +26,12 @@ A standard zenoh client can interoperate with sitos simply by following this spe
   and `<key>` reuse the existing grammar. The route requires the corresponding explicit Session
   capability. Payloads are plain `zenoh/bytes`, with no sitos schema or type tag.
 * Buffer value routes support no inline `:batch`, `:fence`, snapshot, or other control segment.
-  Accepted ADR-0029 defines Fence markers in a disjoint `meta/fence/**` namespace; #158 owns their
-  planned implementation. They are never buffer values. Buffer values remain disjoint from
+  Accepted ADR-0029 defines Fence markers in a disjoint `meta/fence/**` namespace; #158 implements
+  their shared primitive. They are never buffer values. Buffer values remain disjoint from
   ParamStore, ParamCache, ParamSubscription, and SessionView [ADR-0032].
 
-> **Normative design; implementation planned:** Accepted ADR-0029 reserves these marker routes;
-> #158 owns their production implementation.
+> **Normative implementation:** Accepted ADR-0029 defines these marker routes, implemented by
+> #158 as the shared primitive consumed later by #99 and #107.
 >
 > ```text
 > <prefix>/meta/fence/cache/<sid>/<receiver-uuid>/<publisher-uuid>/<through>
@@ -118,12 +118,9 @@ Authoritative Encoding rules are route-specific [C02]:
 zenoh/bytes;sitos.v1          (single parameter value)
 zenoh/bytes;sitos.v1.batch    (base/session batch, §5)
 zenoh/bytes;sitos.v1.ack      (acknowledgement result, §6)
+zenoh/bytes;sitos.v1.fence    (same-publisher Fence marker, §6.1)
 zenoh/bytes                   (durable or ephemeral buffer value)
 ```
-
-> **Normative design; implementation planned:** Accepted ADR-0029 reserves
-> `zenoh/bytes;sitos.v1.fence` as the authoritative same-publisher Fence marker Encoding in §6.1;
-> #158 owns its production implementation.
 
 Base, session, and snapshot parameter payload-v1 values use
 `zenoh/bytes;sitos.v1`. Base and session batch values use
@@ -135,7 +132,8 @@ For parameter traffic, `Encoding` is type `zenoh/bytes` plus a schema suffix
 [ADR-0016]. Senders emit the canonical slash spelling above. Parameter
 receivers also accept the legacy `zenoh.bytes;<schema>` spelling and
 schema-only identifiers for compatibility, but normalize recognized sitos
-schemas to `sitos.v1`, `sitos.v1.batch`, or `sitos.v1.ack` in the transport-independent API.
+schemas to `sitos.v1`, `sitos.v1.batch`, `sitos.v1.ack`, or `sitos.v1.fence` in the
+transport-independent API.
 
 Parameter receiver interpretation rules:
 
@@ -343,8 +341,8 @@ Golden fixtures: `tests/fixtures/ack_v1/result_*.hex`.
 
 ### 6.1 Same-publisher Fence control
 
-> **Normative design; implementation planned:** Accepted ADR-0029 owns this contract; production
-> implementation and executable qualification belong to #158.
+> **Normative implementation:** Accepted ADR-0029 owns this contract; #158 implements and
+> qualifies the shared primitive without adding the #99/#107 public APIs.
 
 Covered data retains its existing key, payload, and route Encoding and carries the exact ordering
 attachment below. An absent attachment is an ordinary write outside a sitos Fence prefix.

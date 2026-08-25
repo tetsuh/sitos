@@ -277,6 +277,28 @@ major behaviors.
 | `BufferKeyTest.InvalidBufferRoutesAreRejected` | C06 | Reject malformed routes, unknown classes, and undefined BufferClass values |
 | `BufferKeyTest.BufferClassIsReservedOnlyInTheClassPosition` | C06 | Permit durable/ephemeral chunks inside a hierarchical user key |
 
+Issue #158 additionally fixes these exact Fence acceptance names:
+
+- `FenceLaneCodecTest.GoldenAndNegativeForms`
+- `FenceAckResultTest.GoldenFailureMatrixRows`
+- `FenceAdapterTest.ClassifiesAttachmentsByRouteWithoutDroppingParameters`
+- `FencePublisherTest.LinearizesDataAndMarkerAndBoundsAdmission`
+- `FenceReceiverTest.EvaluatesPrefixesFailuresBoundsAndCapacityPoison`
+- `FenceParamCacheTest.CompletesOnlyTheMatchingAttachGeneration`
+- `FenceStorageNodeTest.DispatchesFenceAndBindsTheSessionGeneration`
+- `FenceCollisionTest.PinsDocumentedUuidAndTokenResidualBoundaries`
+- `FenceLifecycleTest.QuiescesCallbacksAndPreventsPostReturnAccess`
+- `FenceZenohIntegrationTest.QualifiesTopologiesQosAndControlIsolation`
+- `FenceRawZenohInteropTest.QualifiesPayloadTransparencyAndControlIsolation`
+
+`tests/verify_fence_test_registration.py` parses `ctest --show-only=json-v1` and must pass for
+`zenoh-off`, `sanitizer`, or `zenoh-on` before filtered execution; CTest's zero-match success is not
+qualification. The first nine names are Zenoh-independent. The final two are process-isolated,
+run serially, and qualify the pinned and latest-supported 1.x Linux/Windows paths. The six
+Publisher/receiver/component/collision/lifecycle tests run under both TSan and ASan/UBSan.
+Golden Fence lane, marker, and result bytes live under `tests/fixtures/fence_v1/` and are generated
+independently by `tests/fixtures/validate_fixtures.py`.
+
 ### 5.1.1 Session buffer implementation stages
 
 The Session buffer work is split into four sequential implementation Issues. The fixed tests in

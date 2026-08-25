@@ -25,6 +25,9 @@ namespace sitos {
 namespace param_cache_test_access {
 class ParamCacheTestAccess;
 }
+namespace fence_test_access {
+class FenceTestAccess;
+}
 
 namespace param_cache_detail {
 struct Access;
@@ -40,8 +43,7 @@ struct SpanHandle {
 class ParamCache {
  public:
   static Result<ParamCache> Open(ClientConfig config = {});
-  static Result<ParamCache> Open(std::shared_ptr<Transport> transport,
-                                 ClientConfig config = {});
+  static Result<ParamCache> Open(std::shared_ptr<Transport> transport, ClientConfig config = {});
 
   ~ParamCache();
   ParamCache(const ParamCache&) = delete;
@@ -99,6 +101,7 @@ class ParamCache {
   struct Impl;
   friend struct param_cache_detail::Access;
   friend class param_cache_test_access::ParamCacheTestAccess;
+  friend class fence_test_access::FenceTestAccess;
   explicit ParamCache(std::shared_ptr<Transport> transport, ClientConfig config);
 
   std::unique_ptr<Impl> impl_;

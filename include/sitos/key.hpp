@@ -83,8 +83,7 @@ std::optional<std::string> BuildKey(std::string_view prefix, std::string_view sc
 /// Builds a Session buffer key: <prefix>/buffers/<sid>/{durable,ephemeral}/<key>.
 /// Returns std::nullopt if any component or the BufferClass is invalid.
 std::optional<std::string> BuildBufferKey(std::string_view prefix, std::string_view sid,
-                                          BufferClass buffer_class,
-                                          std::string_view user_key);
+                                          BufferClass buffer_class, std::string_view user_key);
 
 /// Builds a :batch key for the given scope: <prefix>/base/:batch or
 /// <prefix>/session/<sid>/:batch. Batch is not defined for snap; returns

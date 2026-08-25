@@ -88,8 +88,7 @@ std::optional<Scope> ParseScope(std::string_view scope) {
   }
   constexpr std::string_view kSessionPrefix = "session/";
   constexpr std::string_view kSnapPrefix = "snap/";
-  if (scope.size() > kSessionPrefix.size() &&
-      scope.starts_with(kSessionPrefix)) {
+  if (scope.size() > kSessionPrefix.size() && scope.starts_with(kSessionPrefix)) {
     std::string_view sid = scope.substr(kSessionPrefix.size());
     if (IsValidSessionId(sid)) {
       return Scope{ScopeKind::Session, std::string(sid)};
@@ -120,8 +119,7 @@ std::optional<std::string> BuildKey(std::string_view prefix, std::string_view sc
 }
 
 std::optional<std::string> BuildBufferKey(std::string_view prefix, std::string_view sid,
-                                          BufferClass buffer_class,
-                                          std::string_view user_key) {
+                                          BufferClass buffer_class, std::string_view user_key) {
   if (!IsValidPrefix(prefix) || !IsValidSessionId(sid) || !IsValidKey(user_key)) {
     return std::nullopt;
   }
@@ -138,8 +136,8 @@ std::optional<std::string> BuildBufferKey(std::string_view prefix, std::string_v
   }
   constexpr std::string_view kBuffers = "buffers";
   std::string result;
-  result.reserve(prefix.size() + 1 + kBuffers.size() + 1 + sid.size() + 1 + class_name.size() +
-                 1 + user_key.size());
+  result.reserve(prefix.size() + 1 + kBuffers.size() + 1 + sid.size() + 1 + class_name.size() + 1 +
+                 user_key.size());
   result.append(prefix);
   result.push_back('/');
   result.append(kBuffers);
@@ -168,8 +166,7 @@ std::optional<std::string> BuildBatchKey(std::string_view prefix, std::string_vi
     return result;
   }
   constexpr std::string_view kSessionPrefix = "session/";
-  if (scope.size() > kSessionPrefix.size() &&
-      scope.starts_with(kSessionPrefix)) {
+  if (scope.size() > kSessionPrefix.size() && scope.starts_with(kSessionPrefix)) {
     std::string_view sid = scope.substr(kSessionPrefix.size());
     if (!IsValidSessionId(sid)) {
       return std::nullopt;
@@ -325,8 +322,8 @@ std::optional<ParsedKey> ParseKey(std::string_view prefix, std::string_view full
       if (!IsValidKey(user_key)) {
         return std::nullopt;
       }
-      return ParsedKey{KeyKind::Buffer, std::string(sid), "", std::string(user_key), false,
-                       buffer_class};
+      return ParsedKey{KeyKind::Buffer, std::string(sid), "", std::string(user_key),
+                       false,           buffer_class};
     }
     if (head == "meta") {
       // meta/session/<sid> or meta/ack/<uuid>

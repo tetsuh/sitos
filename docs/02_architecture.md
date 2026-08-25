@@ -182,7 +182,10 @@ struct SessionRecord {
     std::unique_ptr<StorageEngine> durable_buffers;  // null unless enabled
     SessionOptions options;
     SessionMeta metadata;
+    FenceUuid generation_uuid;  // fresh for each successful Active incarnation
     SessionAdmission admission;
+    FenceDispatchRegistration durable_fence_dispatch;
+    FenceDispatchRegistration ephemeral_fence_dispatch;
 };
 
 // Lives inside StorageNode's callback-shared long-lived State (see §4.4 / ADR-0017).
@@ -195,6 +198,9 @@ struct State /* excerpt */ {
     std::mutex subscriber_mutex;
     // The node-wide callback gate remains responsible for Stop() quiescence.
     CallbackGate callback_gate;
+    FenceDispatchCoordinator fence_dispatch;  // Transport-owned global 256-entry FIFO
+    FenceReceiverRegistry fence_receiver_registry;  // 4096 live Publisher lanes
+    AckRegistry ack_registry;                       // reused ADR-0028 results
     std::shared_mutex session_mutex;
 };
 ```
@@ -263,8 +269,8 @@ before returning and retains no Session record or other resource after enumerati
 
 ### 4.3 Consistency Model
 
-> **Normative design; implementation planned:** Accepted ADR-0029 owns the same-publisher Fence
-> mechanism below; #158 owns production implementation.
+> **Normative implementation:** Accepted ADR-0029 owns the same-publisher Fence mechanism below;
+> #158 implements the shared primitive consumed later by #99 and #107.
 
 * Same-publisher Fence ordering is not inferred from a Zenoh session alone. ADR-0029 defines a
   sitos logical Publisher as a serialized UUIDv4-and-sequence lane whose covered data and marker
@@ -277,9 +283,9 @@ before returning and retains no Session record or other resource after enumerati
   than weakening the guarantee.
 * `FenceLaneAttachmentV1` lets the designated receiver prove a contiguous covered sequence.
   Marker arrival alone cannot confirm a missing or reordered publication. The Transport's bounded
-  FIFO callback-dispatch lane also prevents a marker entered after a data callback from completing
-  before that callback's processing returns. Production implementation and executable
-  qualification remain planned under #158.
+  fixed 256-entry FIFO callback-dispatch lane also prevents a marker entered after a data callback
+  from completing before that callback's processing returns. #158 supplies the implementation,
+  deterministic seams, and executable qualification.
 * The local-delivery receiver boundary is completion of the initiating ParamCache Attach
   generation's serialized decode/cache-mutation path; it is not peer delivery or StorageNode
   acknowledgement. A buffer marker binds both SID and one generated active Session-generation UUID,

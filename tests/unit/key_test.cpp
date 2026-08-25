@@ -10,6 +10,9 @@
 namespace sitos {
 namespace {
 
+static_assert(static_cast<int>(KeyKind::Buffer) == 5,
+              "Issue #158 must preserve the public KeyKind numbering");
+
 TEST(KeyValidationTest, ValidSingleChunkKey) {
   EXPECT_TRUE(IsValidKey("fov"));
   EXPECT_TRUE(IsValidKey("recon"));
@@ -408,8 +411,7 @@ TEST(KeyTest, InvalidKeysAreRejected) {
 }
 
 TEST(BufferKeyTest, BufferRoutesRoundTrip) {
-  const auto durable = BuildBufferKey("my/app", "session-1", BufferClass::Durable,
-                                      "durable/part");
+  const auto durable = BuildBufferKey("my/app", "session-1", BufferClass::Durable, "durable/part");
   ASSERT_TRUE(durable.has_value());
   EXPECT_EQ(*durable, "my/app/buffers/session-1/durable/durable/part");
   const auto durable_parsed = ParseKey("my/app", *durable);
@@ -422,8 +424,8 @@ TEST(BufferKeyTest, BufferRoutesRoundTrip) {
   EXPECT_TRUE(durable_parsed->uuid.empty());
   EXPECT_FALSE(durable_parsed->is_batch);
 
-  const auto ephemeral = BuildBufferKey("my/app", "session-1", BufferClass::Ephemeral,
-                                        "ephemeral/part");
+  const auto ephemeral =
+      BuildBufferKey("my/app", "session-1", BufferClass::Ephemeral, "ephemeral/part");
   ASSERT_TRUE(ephemeral.has_value());
   EXPECT_EQ(*ephemeral, "my/app/buffers/session-1/ephemeral/ephemeral/part");
   const auto ephemeral_parsed = ParseKey("my/app", *ephemeral);
@@ -479,8 +481,8 @@ TEST(BufferKeyTest, InvalidBufferRoutesAreRejected) {
 }
 
 TEST(BufferKeyTest, BufferClassIsReservedOnlyInTheClassPosition) {
-  const auto durable = BuildBufferKey("sitos", "session-1", BufferClass::Durable,
-                                      "nested/durable/ephemeral");
+  const auto durable =
+      BuildBufferKey("sitos", "session-1", BufferClass::Durable, "nested/durable/ephemeral");
   ASSERT_TRUE(durable.has_value());
   EXPECT_EQ(*durable, "sitos/buffers/session-1/durable/nested/durable/ephemeral");
   const auto durable_parsed = ParseKey("sitos", *durable);
@@ -493,8 +495,8 @@ TEST(BufferKeyTest, BufferClassIsReservedOnlyInTheClassPosition) {
   ASSERT_TRUE(durable_parsed->buffer_class.has_value());
   EXPECT_EQ(*durable_parsed->buffer_class, BufferClass::Durable);
 
-  const auto ephemeral = BuildBufferKey("sitos", "session-1", BufferClass::Ephemeral,
-                                        "nested/durable/ephemeral");
+  const auto ephemeral =
+      BuildBufferKey("sitos", "session-1", BufferClass::Ephemeral, "nested/durable/ephemeral");
   ASSERT_TRUE(ephemeral.has_value());
   EXPECT_EQ(*ephemeral, "sitos/buffers/session-1/ephemeral/nested/durable/ephemeral");
   const auto ephemeral_parsed = ParseKey("sitos", *ephemeral);

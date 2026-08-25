@@ -13,6 +13,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <new>
 #include <optional>
 #include <span>
 #include <string>
@@ -103,8 +104,7 @@ TEST(Sha256Test, MatchesKnownVectors) {
   EXPECT_NE(d55, d56);
   EXPECT_NE(d56, d64);
   EXPECT_NE(d55, d64);
-  EXPECT_EQ(d55, Hex(sitos::Sha256(std::vector<std::byte>(55, std::byte{'x'}))))
-      << "deterministic";
+  EXPECT_EQ(d55, Hex(sitos::Sha256(std::vector<std::byte>(55, std::byte{'x'})))) << "deterministic";
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +186,19 @@ TEST(AckRegistryTest, LaneAdmitsOneProcessingTokenAtATime) {
             Outcome::Admitted);
 }
 
+TEST(AckRegistryTest, IndependentClaimsDoNotAliasAProcessingLane) {
+  AckRegistry registry;
+  const AckToken first = Token(0x31);
+  const AckToken second = Token(0x32);
+  EXPECT_EQ(registry.ClaimIndependent(first, Fingerprint("first")), Outcome::Admitted);
+  EXPECT_EQ(registry.ClaimIndependent(second, Fingerprint("second")), Outcome::Admitted);
+  EXPECT_EQ(registry.ProcessingCount(), 2u);
+  EXPECT_TRUE(registry.Complete(first, PutOk()));
+  EXPECT_TRUE(registry.Complete(second, PutOk()));
+  EXPECT_EQ(*registry.Find(first), PutOk());
+  EXPECT_EQ(*registry.Find(second), PutOk());
+}
+
 TEST(AckRegistryTest, LaneBusyRejectionIsAtomicallyRetained) {
   AckRegistry registry;
   const AckToken owner = Token(6);
@@ -193,8 +206,8 @@ TEST(AckRegistryTest, LaneBusyRejectionIsAtomicallyRetained) {
   ASSERT_EQ(registry.Claim(owner, Fingerprint("owner"), AckRegistry::kParameterLane),
             Outcome::Admitted);
 
-  EXPECT_EQ(registry.ClaimOrReject(rejected, Fingerprint("rejected"),
-                                   AckRegistry::kParameterLane, PutError()),
+  EXPECT_EQ(registry.ClaimOrReject(rejected, Fingerprint("rejected"), AckRegistry::kParameterLane,
+                                   PutError()),
             Outcome::LaneBusy);
   EXPECT_EQ(registry.ProcessingCount(), 1u);
   ASSERT_TRUE(registry.Find(rejected).has_value());
@@ -205,6 +218,29 @@ TEST(AckRegistryTest, LaneBusyRejectionIsAtomicallyRetained) {
             Outcome::DuplicateCompleted)
       << "the rejected token must never become admissible after the lane owner completes";
   EXPECT_EQ(*registry.Find(rejected), PutError());
+}
+
+TEST(AckRegistryTest, ClaimRollbackAndCompletionContainAllocationBoundaryFailures) {
+  AckRegistry registry(/*capacity=*/2);
+  const AckToken first = Token(0x41);
+  registry.FailNextForTesting(AckRegistry::FailurePointForTesting::AfterEntryInsert);
+  EXPECT_THROW(
+      static_cast<void>(registry.Claim(first, Fingerprint("first"), AckRegistry::kParameterLane)),
+      std::bad_alloc);
+  EXPECT_EQ(registry.Size(), 0U);
+  EXPECT_EQ(registry.ProcessingCount(), 0U);
+
+  const AckToken owner = Token(0x42);
+  EXPECT_EQ(registry.Claim(owner, Fingerprint("owner"), AckRegistry::kParameterLane),
+            Outcome::Admitted)
+      << "the lane insertion must roll back with the token entry";
+  registry.FailNextForTesting(AckRegistry::FailurePointForTesting::BeforeCompletionRetention);
+  EXPECT_TRUE(registry.Complete(owner, PutOk()));
+  EXPECT_EQ(registry.ProcessingCount(), 0U);
+  ASSERT_TRUE(registry.Find(owner).has_value());
+  EXPECT_EQ(*registry.Find(owner), PutOk());
+  EXPECT_EQ(registry.Claim(owner, Fingerprint("owner"), AckRegistry::kParameterLane),
+            Outcome::DuplicateCompleted);
 }
 
 TEST(AckRegistryTest, RecordRejectedStoresCompletedResultWithoutProcessing) {

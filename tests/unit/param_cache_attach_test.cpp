@@ -1,8 +1,6 @@
 // Copyright 2026 sitos contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "sitos/param_cache.hpp"
-
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -20,8 +18,9 @@
 #include <utility>
 #include <vector>
 
-#include "sitos/batch.hpp"
 #include "param_cache_test_access.hpp"
+#include "sitos/batch.hpp"
+#include "sitos/param_cache.hpp"
 #include "transport/declaration_handle_test_access.hpp"
 
 namespace {
@@ -53,8 +52,7 @@ class FakeTransport final : public Transport {
     Encoding encoding;
   };
 
-  Result<void> Put(std::string_view, std::span<const std::byte>, Encoding,
-                   PutOptions) override {
+  Result<void> Put(std::string_view, std::span<const std::byte>, Encoding, PutOptions) override {
     return Result<void>::Ok();
   }
   Result<void> Delete(std::string_view, PutOptions) override { return Result<void>::Ok(); }
@@ -82,8 +80,7 @@ class FakeTransport final : public Transport {
   }
 
   Result<Subscription> DeclareSubscriber(
-      std::string_view keyexpr,
-      std::function<void(const TransportSample&)> callback) override {
+      std::string_view keyexpr, std::function<void(const TransportSample&)> callback) override {
     {
       std::lock_guard lock(mutex);
       calls.push_back("declare:" + std::string(keyexpr));
@@ -122,8 +119,7 @@ class FakeTransport final : public Transport {
       callback = subscriber;
     }
     ASSERT_TRUE(callback);
-    TransportSample sample{std::move(key), payload, Encoding{std::move(encoding)}, {},
-                           kind};
+    TransportSample sample{std::move(key), payload, Encoding{std::move(encoding)}, {}, kind};
     callback(sample);
   }
 
@@ -137,9 +133,11 @@ class FakeTransport final : public Transport {
   Result<void> get_result = Result<void>::Ok();
   bool emit_during_declaration = false;
   std::vector<std::byte> declaration_payload;
-  TransportSample declaration_sample{
-      "sitos/session/s1/declaration", {}, Encoding{std::string(Encoding::kSitosV1)}, {},
-      TransportSample::Kind::Put};
+  TransportSample declaration_sample{"sitos/session/s1/declaration",
+                                     {},
+                                     Encoding{std::string(Encoding::kSitosV1)},
+                                     {},
+                                     TransportSample::Kind::Put};
   std::atomic<int> reset_count{0};
   std::function<void()> reset_hook;
 };
@@ -187,10 +185,11 @@ TEST(ParamCacheTest, AttachUsesSubscriberFirstAndAppliesSnapshotOverlayAndBuffer
   ASSERT_TRUE(result.IsOk());
   auto cache = std::move(result).Value();
   ASSERT_TRUE(cache.Attach("s1").IsOk());
-  ASSERT_EQ(transport->calls.size(), 3U);
+  ASSERT_EQ(transport->calls.size(), 4U);
   EXPECT_EQ(transport->calls[0], "declare:sitos/session/s1/**");
-  EXPECT_EQ(transport->calls[1], "get:sitos/snap/s1/**");
-  EXPECT_EQ(transport->calls[2], "get:sitos/session/s1/**");
+  EXPECT_EQ(transport->calls[1], "declare:sitos/meta/fence/cache/s1/**");
+  EXPECT_EQ(transport->calls[2], "get:sitos/snap/s1/**");
+  EXPECT_EQ(transport->calls[3], "get:sitos/session/s1/**");
   EXPECT_EQ(Access::Get(cache, "inherited")->As<std::int64_t>(), 3);
   EXPECT_EQ(Access::Get(cache, "overlaid")->As<std::int64_t>(), 2);
 }
@@ -199,9 +198,11 @@ TEST(ParamCacheTest, DeclarationCallbackIsBufferedBeforeInitialGet) {
   auto transport = std::make_shared<FakeTransport>();
   const auto payload = Payload(ParamValue(std::int64_t{9}));
   transport->declaration_payload = payload;
-  transport->declaration_sample = TransportSample{
-      "sitos/session/s1/declaration", transport->declaration_payload,
-      Encoding{std::string(Encoding::kSitosV1)}, {}, TransportSample::Kind::Put};
+  transport->declaration_sample = TransportSample{"sitos/session/s1/declaration",
+                                                  transport->declaration_payload,
+                                                  Encoding{std::string(Encoding::kSitosV1)},
+                                                  {},
+                                                  TransportSample::Kind::Put};
   transport->emit_during_declaration = true;
   auto result = ParamCache::Open(transport);
   ASSERT_TRUE(result.IsOk());
@@ -286,8 +287,8 @@ TEST(ParamCacheTest, SessionDeleteRestoresSnapshotAndBatchIsAllOrNothing) {
   EXPECT_FALSE(Access::Get(cache, "prevalidated").has_value());
   EXPECT_FALSE(Access::Get(cache, "malformed").has_value());
 
-  const std::vector<BatchEntry> invalid_key_entries = {
-      {"valid_first", ParamValue(7)}, {"invalid key", ParamValue(8)}};
+  const std::vector<BatchEntry> invalid_key_entries = {{"valid_first", ParamValue(7)},
+                                                       {"invalid key", ParamValue(8)}};
   auto invalid_key_batch = sitos::EncodeBatch(invalid_key_entries);
   transport->EmitOwned("sitos/session/s1/:batch", std::move(invalid_key_batch),
                        std::string(Encoding::kSitosV1Batch));
@@ -317,8 +318,7 @@ TEST(ParamCacheTest, BatchAndOrdinarySamplesDoNotInterleave) {
     condition.notify_all();
     condition.wait(lock, [&] { return release; });
   });
-  const std::vector<BatchEntry> entries = {{"batch_a", ParamValue(1)},
-                                            {"batch_b", ParamValue(2)}};
+  const std::vector<BatchEntry> entries = {{"batch_a", ParamValue(1)}, {"batch_b", ParamValue(2)}};
   auto batch = sitos::EncodeBatch(entries);
   std::thread batch_thread([&] {
     transport->EmitOwned("sitos/session/s1/:batch", std::move(batch),
@@ -328,9 +328,8 @@ TEST(ParamCacheTest, BatchAndOrdinarySamplesDoNotInterleave) {
     std::unique_lock lock(mutex);
     ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(2), [&] { return first_mutation; }));
   }
-  std::thread ordinary_thread([&] {
-    transport->EmitOwned("sitos/session/s1/ordinary", Payload(ParamValue(3)));
-  });
+  std::thread ordinary_thread(
+      [&] { transport->EmitOwned("sitos/session/s1/ordinary", Payload(ParamValue(3))); });
   EXPECT_FALSE(Access::Get(cache, "ordinary").has_value());
   {
     std::lock_guard lock(mutex);
@@ -362,12 +361,12 @@ TEST(ParamCacheTest, DetachWaitsForInFlightCallbackAndRejectsStaleCallback) {
     condition.notify_all();
     condition.wait(lock, [&] { return release_callback; });
   });
-  std::thread sample_thread([&] {
-    transport->EmitOwned("sitos/session/s1/in_flight", Payload(ParamValue(1)));
-  });
+  std::thread sample_thread(
+      [&] { transport->EmitOwned("sitos/session/s1/in_flight", Payload(ParamValue(1))); });
   {
     std::unique_lock lock(mutex);
-    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(2), [&] { return callback_entered; }));
+    ASSERT_TRUE(
+        condition.wait_for(lock, std::chrono::seconds(2), [&] { return callback_entered; }));
   }
   transport->reset_hook = [&] {
     std::lock_guard lock(mutex);
@@ -381,9 +380,8 @@ TEST(ParamCacheTest, DetachWaitsForInFlightCallbackAndRejectsStaleCallback) {
   });
   {
     std::unique_lock lock(mutex);
-    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(2), [&] {
-      return transport->reset_count == 1;
-    }));
+    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(2),
+                                   [&] { return transport->reset_count == 2; }));
     EXPECT_FALSE(detach_returned);
   }
   {
@@ -397,7 +395,7 @@ TEST(ParamCacheTest, DetachWaitsForInFlightCallbackAndRejectsStaleCallback) {
   EXPECT_FALSE(Access::Get(cache, "in_flight").has_value());
   transport->EmitOwned("sitos/session/s1/stale", Payload(ParamValue(2)));
   EXPECT_FALSE(Access::Get(cache, "stale").has_value());
-  EXPECT_EQ(transport->reset_count, 1);
+  EXPECT_EQ(transport->reset_count, 2);
 }
 
 TEST(ParamCacheTest, ActiveMoveAssignmentResetsDestinationExactlyOnce) {
@@ -412,10 +410,10 @@ TEST(ParamCacheTest, ActiveMoveAssignmentResetsDestinationExactlyOnce) {
   ASSERT_TRUE(first.Attach("s1").IsOk());
   ASSERT_TRUE(second.Attach("s1").IsOk());
   second = std::move(first);
-  EXPECT_EQ(second_transport->reset_count, 1);
+  EXPECT_EQ(second_transport->reset_count, 2);
   EXPECT_TRUE(Access::IsAttached(second));
   second.Detach();
-  EXPECT_EQ(first_transport->reset_count, 1);
+  EXPECT_EQ(first_transport->reset_count, 2);
 }
 
 TEST(ParamCacheTest, AttachedMoveConstructionTransfersOwnership) {
@@ -430,7 +428,7 @@ TEST(ParamCacheTest, AttachedMoveConstructionTransfersOwnership) {
   EXPECT_TRUE(Access::IsAttached(moved));
   EXPECT_EQ(transport->reset_count, 0);
   moved.Detach();
-  EXPECT_EQ(transport->reset_count, 1);
+  EXPECT_EQ(transport->reset_count, 2);
 }
 
 TEST(ParamCacheTest, SelfMovePreservesActiveAttachment) {
@@ -444,7 +442,7 @@ TEST(ParamCacheTest, SelfMovePreservesActiveAttachment) {
   EXPECT_TRUE(Access::IsAttached(cache));
   EXPECT_EQ(transport->reset_count, 0);
   cache.Detach();
-  EXPECT_EQ(transport->reset_count, 1);
+  EXPECT_EQ(transport->reset_count, 2);
 }
 
 TEST(ParamCacheTest, ActiveMoveAssignmentWaitsForInFlightDestinationCallback) {
@@ -476,9 +474,8 @@ TEST(ParamCacheTest, ActiveMoveAssignmentWaitsForInFlightDestinationCallback) {
   });
   {
     std::unique_lock lock(mutex);
-    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(2), [&] {
-      return callback_entered;
-    }));
+    ASSERT_TRUE(
+        condition.wait_for(lock, std::chrono::seconds(2), [&] { return callback_entered; }));
   }
 
   std::thread assignment_thread([&] {
@@ -489,9 +486,8 @@ TEST(ParamCacheTest, ActiveMoveAssignmentWaitsForInFlightDestinationCallback) {
   });
   {
     std::unique_lock lock(mutex);
-    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(2), [&] {
-      return destination_transport->reset_count == 1;
-    }));
+    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(2),
+                                   [&] { return destination_transport->reset_count == 2; }));
     EXPECT_FALSE(assignment_returned);
   }
   {
@@ -505,8 +501,8 @@ TEST(ParamCacheTest, ActiveMoveAssignmentWaitsForInFlightDestinationCallback) {
   EXPECT_TRUE(Access::IsAttached(destination));
   EXPECT_FALSE(Access::IsAttached(source));
   destination.Detach();
-  EXPECT_EQ(destination_transport->reset_count, 1);
-  EXPECT_EQ(source_transport->reset_count, 1);
+  EXPECT_EQ(destination_transport->reset_count, 2);
+  EXPECT_EQ(source_transport->reset_count, 2);
 }
 
 TEST(ParamCacheTest, DestructionWaitsForInFlightCallback) {
@@ -528,14 +524,12 @@ TEST(ParamCacheTest, DestructionWaitsForInFlightCallback) {
     condition.wait(lock, [&] { return release_callback; });
   });
   transport->reset_hook = [&] { condition.notify_all(); };
-  std::thread sample_thread([&] {
-    transport->EmitOwned("sitos/session/s1/in_flight", Payload(ParamValue(1)));
-  });
+  std::thread sample_thread(
+      [&] { transport->EmitOwned("sitos/session/s1/in_flight", Payload(ParamValue(1))); });
   {
     std::unique_lock lock(mutex);
-    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(2), [&] {
-      return callback_entered;
-    }));
+    ASSERT_TRUE(
+        condition.wait_for(lock, std::chrono::seconds(2), [&] { return callback_entered; }));
   }
 
   std::thread destruction_thread([&] {
@@ -546,9 +540,8 @@ TEST(ParamCacheTest, DestructionWaitsForInFlightCallback) {
   });
   {
     std::unique_lock lock(mutex);
-    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(2), [&] {
-      return transport->reset_count == 1;
-    }));
+    ASSERT_TRUE(condition.wait_for(lock, std::chrono::seconds(2),
+                                   [&] { return transport->reset_count == 2; }));
     EXPECT_FALSE(destruction_returned);
   }
   {
@@ -585,10 +578,11 @@ TEST(ParamCacheTest, SessionAttachUsesSubscriberFirstAndDeleteRestoresBaseline) 
   ASSERT_TRUE(result.IsOk());
   auto cache = std::move(result).Value();
   ASSERT_TRUE(cache.Attach("s1").IsOk());
-  ASSERT_EQ(transport->calls.size(), 3U);
+  ASSERT_EQ(transport->calls.size(), 4U);
   EXPECT_EQ(transport->calls[0], "declare:sitos/session/s1/**");
-  EXPECT_EQ(transport->calls[1], "get:sitos/snap/s1/**");
-  EXPECT_EQ(transport->calls[2], "get:sitos/session/s1/**");
+  EXPECT_EQ(transport->calls[1], "declare:sitos/meta/fence/cache/s1/**");
+  EXPECT_EQ(transport->calls[2], "get:sitos/snap/s1/**");
+  EXPECT_EQ(transport->calls[3], "get:sitos/session/s1/**");
   EXPECT_EQ(Access::Get(cache, "key")->As<std::int64_t>(), 1);
   transport->EmitOwned("sitos/session/s1/key", Payload(ParamValue(2)));
   EXPECT_EQ(Access::Get(cache, "key")->As<std::int64_t>(), 2);
@@ -638,7 +632,8 @@ TEST(ParamCacheTest, UnknownEncodingUsesBytesAndMalformedKnownValueIsIgnored) {
   ASSERT_TRUE(result.IsOk());
   auto cache = std::move(result).Value();
   ASSERT_TRUE(cache.Attach("s1").IsOk());
-  transport->EmitOwned("sitos/session/s1/raw", {std::byte{1}, std::byte{2}}, "application/octet-stream");
+  transport->EmitOwned("sitos/session/s1/raw", {std::byte{1}, std::byte{2}},
+                       "application/octet-stream");
   auto raw = Access::Get(cache, "raw");
   ASSERT_TRUE(raw.has_value());
   ASSERT_TRUE(raw->As<std::vector<std::byte>>().has_value());
@@ -655,8 +650,8 @@ TEST(ParamCacheTest, FailedAttachStagesRollbackPreservesErrorAndCanRetry) {
     auto result = ParamCache::Open(transport);
     ASSERT_TRUE(result.IsOk());
     auto cache = std::move(result).Value();
-    transport->declaration_result = Result<Subscription>::Err(
-        sitos::Status::Disconnected, "declaration offline", cause);
+    transport->declaration_result =
+        Result<Subscription>::Err(sitos::Status::Disconnected, "declaration offline", cause);
 
     auto failed = cache.Attach("s1");
     ASSERT_FALSE(failed.IsOk());
@@ -669,7 +664,7 @@ TEST(ParamCacheTest, FailedAttachStagesRollbackPreservesErrorAndCanRetry) {
     transport->declaration_result = Result<Subscription>::Ok(Subscription{});
     ASSERT_TRUE(cache.Attach("s1").IsOk());
     cache.Detach();
-    EXPECT_EQ(transport->reset_count, 1);
+    EXPECT_EQ(transport->reset_count, 2);
   }
 
   {
@@ -691,20 +686,19 @@ TEST(ParamCacheTest, FailedAttachStagesRollbackPreservesErrorAndCanRetry) {
     EXPECT_EQ(failed.Message(), "snapshot offline");
     EXPECT_EQ(failed.Error(), cause);
     EXPECT_FALSE(Access::IsAttached(cache));
-    EXPECT_EQ(transport->reset_count, 1);
+    EXPECT_EQ(transport->reset_count, 2);
     EXPECT_EQ(Access::Size(cache), 0U);
 
     auto retry = cache.Attach("s1");
     ASSERT_TRUE(retry.IsOk()) << static_cast<int>(retry.StatusCode()) << ": " << retry.Message();
     cache.Detach();
-    EXPECT_EQ(transport->reset_count, 2);
+    EXPECT_EQ(transport->reset_count, 4);
   }
 
   {
     auto transport = std::make_shared<FakeTransport>();
-    transport->replies["sitos/snap/s1/**"] = {
-        {"sitos/snap/s1/partial", Payload(ParamValue(1)),
-         Encoding{std::string(Encoding::kSitosV1)}}};
+    transport->replies["sitos/snap/s1/**"] = {{"sitos/snap/s1/partial", Payload(ParamValue(1)),
+                                               Encoding{std::string(Encoding::kSitosV1)}}};
     auto result = ParamCache::Open(transport);
     ASSERT_TRUE(result.IsOk());
     auto cache = std::move(result).Value();
@@ -723,13 +717,13 @@ TEST(ParamCacheTest, FailedAttachStagesRollbackPreservesErrorAndCanRetry) {
     EXPECT_EQ(failed.Error(), cause);
     EXPECT_FALSE(Access::IsAttached(cache));
     EXPECT_FALSE(Access::Get(cache, "partial").has_value());
-    EXPECT_EQ(transport->reset_count, 1);
+    EXPECT_EQ(transport->reset_count, 2);
 
     transport->get_result_factories.clear();
     ASSERT_TRUE(cache.Attach("s1").IsOk());
     EXPECT_EQ(Access::Get(cache, "partial")->As<std::int64_t>(), 1);
     cache.Detach();
-    EXPECT_EQ(transport->reset_count, 2);
+    EXPECT_EQ(transport->reset_count, 4);
   }
 }
 
@@ -749,36 +743,35 @@ TEST(ParamCacheTest, InitialReplyProtocolErrorsRollBackAndCanRetry) {
     EXPECT_EQ(failed.Error(), sitos::MakeErrorCode(sitos::Status::Error));
     EXPECT_FALSE(Access::IsAttached(cache));
     EXPECT_EQ(Access::Size(cache), 0U);
-    EXPECT_EQ(transport->reset_count, 1);
+    EXPECT_EQ(transport->reset_count, 2);
 
     transport->replies.clear();
     const auto retry = cache.Attach("s1");
     ASSERT_TRUE(retry.IsOk()) << retry.Message();
     cache.Detach();
-    EXPECT_EQ(transport->reset_count, 2);
+    EXPECT_EQ(transport->reset_count, 4);
   };
 
   verify(
       [](FakeTransport& transport) {
-        transport.replies["sitos/snap/s1/**"] = {
-            {"sitos/snap/s1/malformed", {std::byte{0xff}},
-             Encoding{std::string(Encoding::kSitosV1)}}};
+        transport.replies["sitos/snap/s1/**"] = {{"sitos/snap/s1/malformed",
+                                                  {std::byte{0xff}},
+                                                  Encoding{std::string(Encoding::kSitosV1)}}};
       },
       "transport returned malformed payload");
 
   verify(
       [](FakeTransport& transport) {
-        transport.replies["sitos/session/s1/**"] = {
-            {"sitos/snap/s1/wrong_scope", Payload(ParamValue(1)),
-             Encoding{std::string(Encoding::kSitosV1)}}};
+        transport.replies["sitos/session/s1/**"] = {{"sitos/snap/s1/wrong_scope",
+                                                     Payload(ParamValue(1)),
+                                                     Encoding{std::string(Encoding::kSitosV1)}}};
       },
       "transport returned an invalid cache key");
 
   verify(
       [](FakeTransport& transport) {
         transport.replies["sitos/snap/s1/**"] = {
-            {"sitos/snap/s1/value", {},
-             Encoding{std::string(Encoding::kSitosV1Batch)}}};
+            {"sitos/snap/s1/value", {}, Encoding{std::string(Encoding::kSitosV1Batch)}}};
       },
       "transport returned a batch for a value query");
 }
@@ -792,16 +785,16 @@ TEST(ParamCacheTest, FailedAttachPreservesTransportErrorAndCanRetry) {
   transport->get_result = Result<void>::Err(sitos::Status::Disconnected, "offline", cause);
   auto failed = cache.Attach("s1");
   ASSERT_FALSE(failed.IsOk());
-  EXPECT_EQ(transport->reset_count, 1);
+  EXPECT_EQ(transport->reset_count, 2);
   EXPECT_EQ(failed.StatusCode(), sitos::Status::Disconnected);
   EXPECT_EQ(failed.Message(), "offline");
   EXPECT_EQ(failed.Error(), cause);
   EXPECT_FALSE(Access::IsAttached(cache));
   transport->get_result = Result<void>::Ok();
   ASSERT_TRUE(cache.Attach("s1").IsOk());
-  EXPECT_EQ(transport->reset_count, 1);
-  cache.Detach();
   EXPECT_EQ(transport->reset_count, 2);
+  cache.Detach();
+  EXPECT_EQ(transport->reset_count, 4);
 }
 
 }  // namespace

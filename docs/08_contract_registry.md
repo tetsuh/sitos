@@ -55,8 +55,8 @@ open decision (`—` when settled); implementers and consumers are listed separa
 | `meta/ack/<uuid>` **route behavior** (token lifecycle, AckResult payload, query semantics) | Normative | Implemented | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | #14, #17; Fence reuse by #158, #107 |
 | `AckAttachmentV1` (17-byte acknowledged-operation UUIDv4 attachment) | Normative | Implemented | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | #14, #17; Fence reuse by #158, #107 |
 | Acknowledgement result Encoding (`sitos.v1.ack`, canonical `zenoh/bytes;sitos.v1.ack`) | Normative | Implemented | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | #14, #17; Fence reuse by #158, #107 |
-| Same-publisher in-band Fence marker (`meta/fence/**`, `sitos.v1.fence`) | Normative | Planned | [ADR-0029](adr/0029-define-same-publisher-fence-ordering.md) | — | #158; consumers #99, #107 |
-| `FenceLaneAttachmentV1` (25-byte Publisher UUIDv4 and sequence ordering metadata) | Normative | Planned | [ADR-0029](adr/0029-define-same-publisher-fence-ordering.md) | — | #158; consumers #99, #107 |
+| Same-publisher in-band Fence marker (`meta/fence/**`, `sitos.v1.fence`) | Normative | Implemented | [ADR-0029](adr/0029-define-same-publisher-fence-ordering.md) | — | #158; consumers #99, #107 |
+| `FenceLaneAttachmentV1` (25-byte Publisher UUIDv4 and sequence ordering metadata) | Normative | Implemented | [ADR-0029](adr/0029-define-same-publisher-fence-ordering.md) | — | #158; consumers #99, #107 |
 | `buffers/<sid>/{durable\|ephemeral}/<key>` value scope (plain opaque bytes) | Normative | Implemented | [ADR-0032](adr/0032-mixed-session-buffer-routes.md) | — | #56; fences via #107 |
 
 ## 3. Stable identifiers

@@ -507,7 +507,8 @@ TEST_F(StorageNodeBufferRoutingTest, EngineFailuresAndExceptionsAreContained) {
   EXPECT_NO_THROW(transport.PutSample("sitos/buffers/s/durable/read-throw", {std::byte{2}}));
   EXPECT_EQ(log_sink->Messages().size(), read_throw_before + 2);
   EXPECT_EQ(log_sink->Messages()[read_throw_before], "durable buffer query failed");
-  EXPECT_EQ(log_sink->Messages()[read_throw_before + 1], "durable buffer PUT failed");
+  EXPECT_EQ(log_sink->Messages()[read_throw_before + 1],
+            "durable buffer read before PUT failed");
   engine->throw_get = false;
 }
 

@@ -3,7 +3,11 @@
 
 #include "ack_registry.hpp"
 
+#include <algorithm>
+#include <cassert>
 #include <cstring>
+#include <new>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -11,6 +15,8 @@
 
 namespace sitos {
 namespace {
+
+static_assert(std::is_nothrow_move_constructible_v<AckResultV1>);
 
 std::span<const std::byte> AsBytes(std::string_view text) {
   return {reinterpret_cast<const std::byte*>(text.data()), text.size()};
@@ -52,13 +58,21 @@ std::size_t AckRegistry::TokenHash::operator()(const AckToken& token) const noex
   return static_cast<std::size_t>(value);
 }
 
-AckRegistry::AckRegistry(std::size_t capacity) : capacity_(capacity == 0 ? 1 : capacity) {}
+AckRegistry::AckRegistry(std::size_t capacity) : capacity_(capacity == 0 ? 1 : capacity) {
+  completion_order_.reserve(capacity_);
+}
 
 AckRegistry::ClaimOutcome AckRegistry::Claim(const AckToken& token,
                                              const AckFingerprint& fingerprint,
                                              std::uint64_t lane) {
   std::scoped_lock lock(mutex_);
   return ClaimLocked(token, fingerprint, lane, std::nullopt);
+}
+
+AckRegistry::ClaimOutcome AckRegistry::ClaimIndependent(const AckToken& token,
+                                                        const AckFingerprint& fingerprint) {
+  std::scoped_lock lock(mutex_);
+  return ClaimLocked(token, fingerprint, std::nullopt, std::nullopt);
 }
 
 AckRegistry::ClaimOutcome AckRegistry::ClaimOrReject(const AckToken& token,
@@ -71,33 +85,50 @@ AckRegistry::ClaimOutcome AckRegistry::ClaimOrReject(const AckToken& token,
 
 AckRegistry::ClaimOutcome AckRegistry::ClaimLocked(const AckToken& token,
                                                    const AckFingerprint& fingerprint,
-                                                   std::uint64_t lane,
+                                                   std::optional<std::uint64_t> lane,
                                                    std::optional<AckResultV1> lane_busy_result) {
   if (auto it = entries_.find(token); it != entries_.end()) {
     if (it->second.fingerprint != fingerprint) return ClaimOutcome::Collision;
     return it->second.result.has_value() ? ClaimOutcome::DuplicateCompleted
                                          : ClaimOutcome::DuplicateProcessing;
   }
-  if (processing_by_lane_.contains(lane)) {
+  if (lane.has_value() && processing_by_lane_.contains(*lane)) {
     if (lane_busy_result.has_value()) {
       entries_.try_emplace(token, Entry{fingerprint, lane, std::move(lane_busy_result)});
       RetainCompletedLocked(token);
     }
     return ClaimOutcome::LaneBusy;
   }
-  entries_.try_emplace(token, Entry{fingerprint, lane, std::nullopt});
-  processing_by_lane_.try_emplace(lane, token);
+  const auto [entry, inserted] =
+      entries_.try_emplace(token, Entry{fingerprint, lane, std::nullopt});
+  static_cast<void>(entry);
+  assert(inserted);
+  try {
+    MaybeFailForTesting(FailurePointForTesting::AfterEntryInsert);
+    if (lane.has_value()) processing_by_lane_.try_emplace(*lane, token);
+  } catch (...) {
+    entries_.erase(token);
+    throw;
+  }
   return ClaimOutcome::Admitted;
 }
 
-bool AckRegistry::Complete(const AckToken& token, AckResultV1 result) {
+bool AckRegistry::Complete(const AckToken& token, AckResultV1 result) noexcept {
   std::scoped_lock lock(mutex_);
   auto it = entries_.find(token);
   if (it == entries_.end() || it->second.result.has_value()) return false;
-  it->second.result = std::move(result);
-  if (auto lane = processing_by_lane_.find(it->second.lane);
-      lane != processing_by_lane_.end() && lane->second == token) {
-    processing_by_lane_.erase(lane);
+  it->second.result.emplace(std::move(result));
+  if (it->second.lane.has_value()) {
+    if (auto lane = processing_by_lane_.find(*it->second.lane);
+        lane != processing_by_lane_.end() && lane->second == token) {
+      processing_by_lane_.erase(lane);
+    }
+  }
+  try {
+    MaybeFailForTesting(FailurePointForTesting::BeforeCompletionRetention);
+  } catch (...) {
+    // The production path below is allocation-free. The injection proves that
+    // an incidental failure before retention cannot escape a noexcept guard.
   }
   RetainCompletedLocked(token);
   return true;
@@ -107,18 +138,31 @@ bool AckRegistry::RecordRejected(const AckToken& token, const AckFingerprint& fi
                                  AckResultV1 result) {
   std::scoped_lock lock(mutex_);
   if (entries_.contains(token)) return false;
-  entries_.try_emplace(token, Entry{fingerprint, 0, std::move(result)});
+  entries_.try_emplace(token, Entry{fingerprint, std::nullopt, std::move(result)});
   RetainCompletedLocked(token);
   return true;
 }
 
-void AckRegistry::RetainCompletedLocked(const AckToken& token) {
-  completion_order_.push_back(token);
-  while (completion_order_.size() > capacity_) {
-    const AckToken oldest = completion_order_.front();
-    completion_order_.pop_front();
-    entries_.erase(oldest);  // only Completed tokens are ever in the ring
+void AckRegistry::RetainCompletedLocked(const AckToken& token) noexcept {
+  if (completion_order_.size() < capacity_) {
+    completion_order_.push_back(token);
+    return;
   }
+  const AckToken oldest = completion_order_[next_completion_slot_];
+  entries_.erase(oldest);  // only Completed tokens are ever in the ring
+  completion_order_[next_completion_slot_] = token;
+  next_completion_slot_ = (next_completion_slot_ + 1) % capacity_;
+}
+
+void AckRegistry::MaybeFailForTesting(FailurePointForTesting point) {
+  if (failure_point_for_testing_ != point) return;
+  failure_point_for_testing_ = FailurePointForTesting::None;
+  throw std::bad_alloc();
+}
+
+void AckRegistry::FailNextForTesting(FailurePointForTesting point) noexcept {
+  std::scoped_lock lock(mutex_);
+  failure_point_for_testing_ = point;
 }
 
 std::optional<AckResultV1> AckRegistry::Find(const AckToken& token) const {
@@ -133,6 +177,8 @@ void AckRegistry::Clear() {
   entries_.clear();
   processing_by_lane_.clear();
   completion_order_.clear();
+  next_completion_slot_ = 0;
+  failure_point_for_testing_ = FailurePointForTesting::None;
 }
 
 std::size_t AckRegistry::Size() const {
@@ -142,7 +188,9 @@ std::size_t AckRegistry::Size() const {
 
 std::size_t AckRegistry::ProcessingCount() const {
   std::scoped_lock lock(mutex_);
-  return processing_by_lane_.size();
+  return static_cast<std::size_t>(
+      std::count_if(entries_.begin(), entries_.end(),
+                    [](const auto& item) { return !item.second.result.has_value(); }));
 }
 
 }  // namespace sitos

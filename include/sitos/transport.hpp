@@ -10,6 +10,7 @@
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -28,6 +29,9 @@ namespace sitos {
 namespace transport_test_access {
 class SubscriptionTestAccess;
 class DeclarationHandleTestAccess;
+}  // namespace transport_test_access
+namespace fence_internal {
+class FenceDispatchCoordinator;
 }
 
 /// Transport-independent schema identifiers for encoded payloads.
@@ -40,6 +44,8 @@ struct Encoding {
   static constexpr std::string_view kSitosV1Batch = "sitos.v1.batch";
   /// The well-known encoding for acknowledgement results (ADR-0028 AckResultV1).
   static constexpr std::string_view kSitosV1Ack = "sitos.v1.ack";
+  /// The well-known encoding for ADR-0029 FenceMarkerV1 payloads.
+  static constexpr std::string_view kSitosV1Fence = "sitos.v1.fence";
 
   std::string id;
 };
@@ -70,6 +76,32 @@ struct AckAttachmentMalformed {
 using AckAttachmentObservation =
     std::variant<AckAttachmentAbsent, AckToken, AckAttachmentMalformed>;
 
+/// A generated ADR-0029 Publisher, Attach-generation, or Session-generation UUID.
+/// Its role is determined by the field or route that contains it.
+using FenceUuid = std::array<std::byte, 16>;
+
+/// Valid ordering metadata carried by one Fence-covered data publication.
+struct FenceLaneMetadata {
+  FenceUuid publisher_uuid{};
+  std::uint64_t sequence = 0;
+
+  bool operator==(const FenceLaneMetadata&) const = default;
+};
+
+struct FenceLaneAbsent {
+  bool operator==(const FenceLaneAbsent&) const = default;
+};
+
+/// A malformed lane candidate with independently recoverable identity and sequence.
+struct FenceLaneMalformed {
+  std::optional<FenceUuid> publisher_uuid;
+  std::optional<std::uint64_t> sequence;
+
+  bool operator==(const FenceLaneMalformed&) const = default;
+};
+
+using FenceLaneObservation = std::variant<FenceLaneAbsent, FenceLaneMetadata, FenceLaneMalformed>;
+
 /// Options for put/delete operations.
 struct PutOptions {
   /// When set, the adapter attaches this helper-generated token as the exact
@@ -77,6 +109,9 @@ struct PutOptions {
   /// The adapter never invents a token. Delete is acknowledgement-free in v1
   /// and rejects a token with Status::InvalidArgument.
   std::optional<AckToken> ack_token;
+  /// When set, the adapter attaches the exact 25-byte FenceLaneAttachmentV1.
+  /// It is mutually exclusive with ack_token.
+  std::optional<FenceLaneMetadata> fence_lane;
 };
 
 /// A sample received from a subscriber or query.
@@ -90,6 +125,8 @@ struct TransportSample {
   /// Decoded acknowledgement attachment; AckAttachmentAbsent for ack-less samples.
   AckAttachmentObservation ack;
   Kind kind;
+  /// Decoded ADR-0029 lane attachment. Appended to preserve existing aggregate initializers.
+  FenceLaneObservation fence_lane{FenceLaneAbsent{}};
 };
 
 /// A query received from the transport layer. It is valid only for the
@@ -113,8 +150,7 @@ struct TransportQuery {
   TransportQuery(const TransportQuery&) = delete;
   TransportQuery& operator=(const TransportQuery&) = delete;
 
-  Result<void> Reply(std::string_view key, std::span<const std::byte> payload,
-                     Encoding encoding);
+  Result<void> Reply(std::string_view key, std::span<const std::byte> payload, Encoding encoding);
 
  private:
   explicit TransportQuery(ReplyHandler handler);
@@ -178,6 +214,14 @@ class Transport {
  public:
   virtual ~Transport() = default;
 
+  /// Source-private ADR-0029 capability hooks. Existing transports reject
+  /// Fence before submission unless they opt in and provide a stable generation.
+  virtual bool SupportsFenceProfile() const noexcept { return false; }
+  virtual std::uint64_t FenceGeneration() const noexcept { return 0; }
+  virtual std::shared_ptr<fence_internal::FenceDispatchCoordinator> FenceDispatcher() noexcept {
+    return {};
+  }
+
   /// Put a value at the given key expression.
   virtual Result<void> Put(std::string_view key, std::span<const std::byte> payload,
                            Encoding encoding, PutOptions options) = 0;
@@ -198,21 +242,18 @@ class Transport {
   /// An Error result does not imply the sink was never invoked: a reply-
   /// processing failure can occur after earlier concrete keys were already
   /// delivered, so callers must not treat Error as "no data was seen".
-  using QueryResultSink =
-      std::function<bool(std::string_view key, std::span<const std::byte> payload,
-                         Encoding encoding)>;
+  using QueryResultSink = std::function<bool(
+      std::string_view key, std::span<const std::byte> payload, Encoding encoding)>;
   virtual Result<void> Get(std::string_view keyexpr, const QueryResultSink& sink,
                            std::chrono::milliseconds timeout) = 0;
 
   /// Declare a subscriber that receives put/delete samples under keyexpr.
   virtual Result<Subscription> DeclareSubscriber(
-      std::string_view keyexpr,
-      std::function<void(const TransportSample&)> callback) = 0;
+      std::string_view keyexpr, std::function<void(const TransportSample&)> callback) = 0;
 
   /// Declare a queryable that answers queries under keyexpr.
-  virtual Result<Queryable> DeclareQueryable(
-      std::string_view keyexpr,
-      std::function<void(TransportQuery&)> callback) = 0;
+  virtual Result<Queryable> DeclareQueryable(std::string_view keyexpr,
+                                             std::function<void(TransportQuery&)> callback) = 0;
 };
 
 }  // namespace sitos
