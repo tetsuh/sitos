@@ -199,6 +199,18 @@ TEST(AckClientTest, SubmitsDataExactlyOnceWithFreshTokenAndReturnsDecodedResult)
   }
 }
 
+TEST(AckClientTest, SaturatesVeryLargeDeadlineWithoutFalseTimeout) {
+  ScriptedTransport transport;
+  transport.script = {Reply(PutOk())};
+
+  const auto result = Submit(transport, std::chrono::milliseconds::max());
+
+  ASSERT_TRUE(result.IsOk()) << result.Message();
+  EXPECT_EQ(result.Value(), PutOk());
+  EXPECT_EQ(transport.Puts().size(), 1U);
+  EXPECT_EQ(transport.Gets().size(), 1U);
+}
+
 TEST(AckClientTest, ResultStatusIsReturnedUnchanged) {
   ScriptedTransport transport;
   transport.script = {Reply(PutUnknown())};
