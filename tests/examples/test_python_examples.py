@@ -569,16 +569,14 @@ class PythonExampleContractTest(unittest.TestCase):
         self.assertEqual(result.returncode, 124)
         popen.assert_not_called()
 
-    def test_run_example_restarts_operation_deadline_after_attach(self) -> None:
+    def test_run_example_separates_ack_and_visibility_deadlines(self) -> None:
         quickstart = _load_quickstart()
         clock = _FakeClock()
         processes = [_FakeProcess(clock) for _ in range(3)]
         connections = [_FakeConnection(clock) for _ in range(3)]
         spawned = iter(zip(processes, connections))
         requests: list[tuple[str, float, str]] = []
-        startup_seconds = getattr(
-            quickstart, "STARTUP_SECONDS", quickstart.WORK_SECONDS
-        )
+        cache_checks = 0
 
         def request(
             _connection: _FakeConnection,
@@ -588,15 +586,18 @@ class PythonExampleContractTest(unittest.TestCase):
             command: str,
             *_args: object,
         ) -> object:
+            nonlocal cache_checks
             requests.append((label, deadline, command))
-            if label == "cache attach":
-                clock.advance(startup_seconds - 0.1)
-                return ""
-            duration = 1.0 if label in {"writer put", "cache check"} else 0.0
+            duration = (
+                quickstart.WORK_SECONDS - 0.1 if label == "writer put" else 0.0
+            )
             if clock.monotonic() + duration > deadline:
                 raise TimeoutError(f"timed out waiting for {label}")
             clock.advance(duration)
-            return 240.0 if label == "cache check" else ""
+            if label == "cache check":
+                cache_checks += 1
+                return 240.0 if cache_checks == 2 else None
+            return ""
 
         def cleanup(
             _children: list[tuple[str, _FakeProcess, _FakeConnection]],
@@ -636,22 +637,36 @@ class PythonExampleContractTest(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(output.getvalue().strip(), "TEST_OK")
+        commands = [command for _label, _deadline, command in requests]
+        self.assertEqual(commands.count("PUT"), 1)
         self.assertEqual(
-            [command for _label, _deadline, command in requests].count("PUT"), 1
-        )
-        attach_deadline = next(
-            deadline for label, deadline, _command in requests
-            if label == "cache attach"
+            commands,
+            [
+                "CREATE",
+                "PUT",
+                "ATTACH",
+                "GET",
+                "DETACH",
+                "ATTACH",
+                "GET",
+                "DETACH",
+                "CLOSE",
+            ],
         )
         put_deadline = next(
             deadline for label, deadline, _command in requests
             if label == "writer put"
         )
-        self.assertGreater(put_deadline, attach_deadline)
+        attach_deadline = next(
+            deadline for label, deadline, _command in requests
+            if label == "cache attach"
+        )
+        self.assertGreater(attach_deadline, put_deadline)
         self.assertGreaterEqual(
             CASE_SECONDS,
-            startup_seconds
+            quickstart.STARTUP_SECONDS
             + quickstart.WORK_SECONDS
+            + quickstart.VISIBILITY_SECONDS
             + quickstart.CLEANUP_SECONDS
             + 5.0,
         )
@@ -1468,7 +1483,7 @@ def _contract_methods(case: str) -> tuple[str, ...]:
         "test_process_examples_declare_lifecycle_contract",
         "test_pipe_failures_keep_stage_and_exit_diagnostics",
         "test_near_expiry_does_not_spawn_a_coordinator",
-        "test_run_example_restarts_operation_deadline_after_attach",
+        "test_run_example_separates_ack_and_visibility_deadlines",
         "test_failure_cleanup_uses_single_shared_deadline",
         "test_exempt_cleanup_still_reports_abnormal_exit",
         "test_cleanup_requests_all_stops_before_shared_deadline_wait",

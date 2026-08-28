@@ -15,11 +15,12 @@ import uuid
 from multiprocessing.connection import Connection
 from typing import Any, Callable
 
-# Local process startup and Zenoh discovery are distinct from the post-attach
-# write/visibility operation. A slow Windows discovery phase must not consume
-# the acknowledged write's operation budget.
-STARTUP_SECONDS = 30.0
+# Local process startup, the acknowledged write, and cache snapshot visibility
+# use distinct budgets. Slow Windows discovery must not consume the write or
+# visibility budget.
+STARTUP_SECONDS = 20.0
 WORK_SECONDS = 15.0
+VISIBILITY_SECONDS = 15.0
 FAILURE_SECONDS = 15.0
 # Cleanup sends STOP to every child before sharing one monotonic deadline.
 # The final second is reserved for process-wide terminate and kill phases.
@@ -566,23 +567,10 @@ def run_example(
         )
         children.append(("cache", cache_process, cache_connection))
         _wait(cache_connection, cache_process, "cache", startup_deadline)
-        # Attach may race default-discovery convergence, so retry it boundedly.
-        attached = False
-        while time.monotonic() < startup_deadline:
-            if _request(
-                cache_connection,
-                cache_process,
-                "cache attach",
-                startup_deadline,
-                "ATTACH",
-            ) is not None:
-                attached = True
-                break
-        if not attached:
-            raise TimeoutError("cache did not attach to the created session")
         operation_deadline = time.monotonic() + WORK_SECONDS
-        # ParamStore put() waits for the StorageNode acknowledgement once. It
-        # does not prove ParamCache visibility, which is observed separately.
+        # ParamStore put() waits for the StorageNode acknowledgement exactly
+        # once. The cache attaches afterward so its initial snapshot observes
+        # that applied value without relying on subscriber-discovery timing.
         _request(
             writer_connection,
             writer_process,
@@ -591,19 +579,43 @@ def run_example(
             "PUT",
             *put_args_factory(sid, key, value),
         )
+        visibility_deadline = time.monotonic() + VISIBILITY_SECONDS
         observed = False
-        while time.monotonic() < operation_deadline:
-            if observe(
+        attached = False
+        while time.monotonic() < visibility_deadline and not observed:
+            # Attach may race default-discovery convergence. A successful empty
+            # snapshot is also retried because it may have found no queryable
+            # before discovery converged; the acknowledged PUT is never repeated.
+            while time.monotonic() < visibility_deadline:
+                if _request(
+                    cache_connection,
+                    cache_process,
+                    "cache attach",
+                    visibility_deadline,
+                    "ATTACH",
+                ) is not None:
+                    attached = True
+                    break
+            if not attached:
+                break
+            observed = observe(
                 _request(
                     cache_connection,
                     cache_process,
                     "cache check",
-                    operation_deadline,
+                    visibility_deadline,
                     check_command,
                 )
-            ):
-                observed = True
-                break
+            )
+            if not observed:
+                _request(
+                    cache_connection,
+                    cache_process,
+                    "cache detach",
+                    visibility_deadline,
+                    "DETACH",
+                )
+                attached = False
         if not observed:
             raise TimeoutError("cache did not observe the submitted value")
         # Release the cache view before closing the node-owned session.
@@ -611,14 +623,14 @@ def run_example(
             cache_connection,
             cache_process,
             "cache detach",
-            operation_deadline,
+            visibility_deadline,
             "DETACH",
         )
         _request(
             node_connection,
             node_process,
             "node close",
-            operation_deadline,
+            visibility_deadline,
             "CLOSE",
             sid,
         )

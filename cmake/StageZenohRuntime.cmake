@@ -1,6 +1,6 @@
 # Stage one zenoh-c runtime per binary directory before dependent executables
-# link. This avoids concurrent POST_BUILD copies racing with vcpkg's applocal
-# processing when many Windows targets share one output directory.
+# link. This avoids concurrent POST_BUILD copies racing with dependency-manager
+# applocal processing when many Windows targets share one output directory.
 function(sitos_copy_zenohc target)
   if(NOT WIN32)
     return()
