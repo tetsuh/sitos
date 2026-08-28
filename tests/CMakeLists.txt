@@ -397,6 +397,12 @@ if(SITOS_WITH_ZENOH)
 
   find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
   add_test(
+    NAME ZenohRuntimeStagingTest
+    COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/test_zenoh_runtime_staging.py"
+            --source-root "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(ZenohRuntimeStagingTest PROPERTIES TIMEOUT 60)
+  add_test(
     NAME RawZenohClientCanPutAndGet
     COMMAND "${Python3_EXECUTABLE}" -m pytest -q
             "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_single.py"

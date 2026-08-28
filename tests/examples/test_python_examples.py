@@ -38,7 +38,7 @@ MARKERS = {
     "numpy-lut": "PYTHON_NUMPY_LUT_OK",
     "raw-zenoh": "PYTHON_RAW_ZENOH_OK",
 }
-CASE_SECONDS = 60.0
+CASE_SECONDS = 75.0
 
 
 class _FakeClock:
@@ -568,6 +568,93 @@ class PythonExampleContractTest(unittest.TestCase):
             )
         self.assertEqual(result.returncode, 124)
         popen.assert_not_called()
+
+    def test_run_example_restarts_operation_deadline_after_attach(self) -> None:
+        quickstart = _load_quickstart()
+        clock = _FakeClock()
+        processes = [_FakeProcess(clock) for _ in range(3)]
+        connections = [_FakeConnection(clock) for _ in range(3)]
+        spawned = iter(zip(processes, connections))
+        requests: list[tuple[str, float, str]] = []
+        startup_seconds = getattr(
+            quickstart, "STARTUP_SECONDS", quickstart.WORK_SECONDS
+        )
+
+        def request(
+            _connection: _FakeConnection,
+            _process: _FakeProcess,
+            label: str,
+            deadline: float,
+            command: str,
+            *_args: object,
+        ) -> object:
+            requests.append((label, deadline, command))
+            if label == "cache attach":
+                clock.advance(startup_seconds - 0.1)
+                return ""
+            duration = 1.0 if label in {"writer put", "cache check"} else 0.0
+            if clock.monotonic() + duration > deadline:
+                raise TimeoutError(f"timed out waiting for {label}")
+            clock.advance(duration)
+            return 240.0 if label == "cache check" else ""
+
+        def cleanup(
+            _children: list[tuple[str, _FakeProcess, _FakeConnection]],
+            _deadline: float,
+            **_kwargs: object,
+        ) -> list[str]:
+            for process in processes:
+                process._alive = False
+                process._exitcode = 0
+            return []
+
+        output = io.StringIO()
+        with (
+            mock.patch.object(quickstart.time, "monotonic", clock.monotonic),
+            mock.patch.object(
+                quickstart.multiprocessing, "get_context", return_value=object()
+            ),
+            mock.patch.object(
+                quickstart, "_spawn", side_effect=lambda *_args: next(spawned)
+            ),
+            mock.patch.object(quickstart, "_wait", return_value=None),
+            mock.patch.object(quickstart, "_request", side_effect=request),
+            mock.patch.object(quickstart, "_cleanup", side_effect=cleanup),
+            contextlib.redirect_stdout(output),
+        ):
+            result = quickstart.run_example(
+                "test/prefix",
+                writer_target=lambda *_args: None,
+                writer_args_factory=lambda _sid, _key: (),
+                cache_target=lambda *_args: None,
+                cache_args_factory=lambda _sid, _key: (),
+                put_args_factory=lambda _sid, _key, _value: (),
+                check_command="GET",
+                observe=lambda value: value == 240.0,
+                marker="TEST_OK",
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(output.getvalue().strip(), "TEST_OK")
+        self.assertEqual(
+            [command for _label, _deadline, command in requests].count("PUT"), 1
+        )
+        attach_deadline = next(
+            deadline for label, deadline, _command in requests
+            if label == "cache attach"
+        )
+        put_deadline = next(
+            deadline for label, deadline, _command in requests
+            if label == "writer put"
+        )
+        self.assertGreater(put_deadline, attach_deadline)
+        self.assertGreaterEqual(
+            CASE_SECONDS,
+            startup_seconds
+            + quickstart.WORK_SECONDS
+            + quickstart.CLEANUP_SECONDS
+            + 5.0,
+        )
 
     def test_failure_cleanup_uses_single_shared_deadline(self) -> None:
         quickstart = _load_quickstart()
@@ -1381,6 +1468,7 @@ def _contract_methods(case: str) -> tuple[str, ...]:
         "test_process_examples_declare_lifecycle_contract",
         "test_pipe_failures_keep_stage_and_exit_diagnostics",
         "test_near_expiry_does_not_spawn_a_coordinator",
+        "test_run_example_restarts_operation_deadline_after_attach",
         "test_failure_cleanup_uses_single_shared_deadline",
         "test_exempt_cleanup_still_reports_abnormal_exit",
         "test_cleanup_requests_all_stops_before_shared_deadline_wait",
