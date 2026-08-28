@@ -35,6 +35,26 @@ std::string TimeoutMessage(const std::string& latest_message) {
 
 }  // namespace
 
+namespace ack_client_internal {
+
+Clock::time_point SaturatingDeadlineAt(Clock::time_point now, std::chrono::milliseconds requested) {
+  const auto remaining = Clock::time_point::max() - now;
+  const auto remaining_milliseconds =
+      std::chrono::duration_cast<std::chrono::milliseconds>(remaining);
+  if (requested > remaining_milliseconds) return Clock::time_point::max();
+  return now + std::chrono::duration_cast<Clock::duration>(requested);
+}
+
+}  // namespace ack_client_internal
+
+namespace {
+
+Clock::time_point SaturatingDeadline(std::chrono::milliseconds requested) {
+  return ack_client_internal::SaturatingDeadlineAt(Clock::now(), requested);
+}
+
+}  // namespace
+
 Result<AckResultV1> PollAcknowledgement(Transport& transport, std::string_view prefix,
                                         const AckToken& token, Clock::time_point deadline_at,
                                         std::optional<ErrorInfo> latest_transport_error,
@@ -116,7 +136,7 @@ Result<AckResultV1> SubmitAcknowledgedWrite(Transport& transport, std::string_vi
     return R::Err(Status::InvalidArgument, std::string(kInvalidPrefix));
   }
 
-  const Clock::time_point deadline_at = Clock::now() + total_deadline;
+  const Clock::time_point deadline_at = SaturatingDeadline(total_deadline);
   PutOptions options;
   options.ack_token = token;
   std::optional<ErrorInfo> latest_error;

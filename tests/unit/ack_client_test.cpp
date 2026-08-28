@@ -26,6 +26,11 @@
 #include "sitos/transport.hpp"
 #include "transport/declaration_handle_test_access.hpp"
 
+namespace sitos::ack_client_internal {
+std::chrono::steady_clock::time_point SaturatingDeadlineAt(
+    std::chrono::steady_clock::time_point now, std::chrono::milliseconds requested);
+}  // namespace sitos::ack_client_internal
+
 namespace {
 
 using namespace std::chrono_literals;
@@ -197,6 +202,30 @@ TEST(AckClientTest, SubmitsDataExactlyOnceWithFreshTokenAndReturnsDecodedResult)
     EXPECT_EQ(get.keyexpr, expected_key) << "the same token is preserved across attempts";
     EXPECT_EQ(get.timeout, 1000ms);
   }
+}
+
+TEST(AckClientTest, SaturatesVeryLargeDeadlineWithoutFalseTimeout) {
+  ScriptedTransport transport;
+  transport.script = {Reply(PutOk())};
+
+  const auto result = Submit(transport, std::chrono::milliseconds::max());
+
+  ASSERT_TRUE(result.IsOk()) << result.Message();
+  EXPECT_EQ(result.Value(), PutOk());
+  EXPECT_EQ(transport.Puts().size(), 1U);
+  EXPECT_EQ(transport.Gets().size(), 1U);
+}
+
+TEST(AckClientTest, SaturatesOnlyBeyondTheWholeMillisecondBoundary) {
+  const auto ten_milliseconds = std::chrono::duration_cast<Clock::duration>(10ms);
+  const auto half_millisecond = std::chrono::duration_cast<Clock::duration>(500us);
+  ASSERT_GT(half_millisecond, Clock::duration::zero());
+  const auto now = Clock::time_point::max() - ten_milliseconds - half_millisecond;
+
+  EXPECT_EQ(sitos::ack_client_internal::SaturatingDeadlineAt(now, 10ms), now + ten_milliseconds)
+      << "an exact whole-millisecond fit must preserve the requested deadline";
+  EXPECT_EQ(sitos::ack_client_internal::SaturatingDeadlineAt(now, 11ms), Clock::time_point::max())
+      << "the next millisecond must saturate past the representable range";
 }
 
 TEST(AckClientTest, ResultStatusIsReturnedUnchanged) {
