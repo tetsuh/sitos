@@ -47,7 +47,8 @@ nonzero BOOL decoding. General buffer-protocol inputs remain unsupported.
 
 ### 2.1 ParamStore
 
-Issue #23 provides a non-callback, ack-less Python facade over the synchronous C++ ParamStore.
+Issue #23 provides a non-callback Python facade over the synchronous C++ ParamStore. Issue #17
+adds acknowledged writes with C++-matching options.
 Each instance opens and owns its own Transport/session from `zenoh_config_json`; raw session or
 Transport sharing is not part of this API. `query_timeout_ms` is a positive integer in the same
 milliseconds unit as C++ `ClientConfig`.
@@ -57,8 +58,9 @@ import sitos
 
 with sitos.ParamStore(prefix="sitos", zenoh_config_json=None,
                       query_timeout_ms=5000) as store:
-    store.put("base", "recon/fov", 240.0)
-    store.put_batch("base", [("recon/fov", 240.0), ("recon/kernel", "sharp")])
+    store.put("base", "recon/fov", 240.0)  # acknowledged by default
+    store.put_batch("base", [("recon/fov", 240.0), ("recon/kernel", "sharp")],
+                    ack=True, ack_timeout_ms=3000)
     store.delete("base", "recon/tmp")
 
     value = store.get("base", "recon/fov")           # automatic Python type
@@ -68,7 +70,11 @@ with sitos.ParamStore(prefix="sitos", zenoh_config_json=None,
 ```
 
 `put_batch` also accepts a Mapping. Pair iterables preserve caller order and duplicate keys;
-all entries are validated before one wire submission. Writes are submission-only. `list` eagerly
+all entries are validated before one wire submission. `put` and `put_batch` acknowledge the
+StorageNode by default and submit data exactly once. Pass `ack=False` for submission-only behavior;
+`ack_timeout_ms` is still checked as an integer but its positivity is ignored in that mode. The
+option arguments are keyword-only, `ack` must be an exact bool, and `ack_timeout_ms` must be a
+representable non-bool signed 64-bit integer; positive timeout is required when `ack=True`. `list` eagerly
 queries, validates, sorts, and materializes owned `(relative_key, value)` pairs before returning
 an iterator.
 
@@ -80,7 +86,8 @@ only for NotFound. Type conversion failures raise `sitos.TypeMismatchError`; tim
 disconnection, and read-only failures raise their corresponding subclasses. `Status::Error` raises
 `sitos.SitosError`, while invalid keys and arguments raise built-in `ValueError`. `close` is
 idempotent, rejects later calls, and allows already-admitted native operations to finish safely.
-Subscriptions and acknowledgements remain outside Issue #23.
+Subscriptions remain outside Issue #23. Issue #17 maps acknowledged remote statuses, including
+`OutcomeUnknownError`, and releases the GIL around the complete synchronous write and ACK polling.
 
 ### 2.2 ParamCache
 
@@ -179,8 +186,9 @@ The quickstart and LUT examples use `multiprocessing.get_context("spawn")`: the 
 no sitos object, and separate node, writer, and cache processes each own at most one Zenoh session.
 Independent `StorageNode`, `ParamStore`, and `ParamCache` objects in one process remain unsupported
 with the pinned zenoh-c 1.9.0 runtime. The examples use default local discovery, unique prefixes and
-session IDs, bounded Pipe handshakes, and failure-safe child cleanup. A successful `put` is only a
-submission; examples resubmit the identical value while independently observing the expected result.
+session IDs, bounded Pipe handshakes, and failure-safe child cleanup. A successful ParamStore
+`put` acknowledges StorageNode application once; examples observe ParamCache visibility separately
+without resubmitting.
 
 `numpy_lut.py` uses a caller-supplied `<f4` dtype and demonstrates a one-dimensional read-only
 zero-copy view over cached BYTES. Payload v1 does not transport shape or dtype metadata, and the

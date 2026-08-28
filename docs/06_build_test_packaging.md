@@ -271,7 +271,11 @@ major behaviors.
 | `SpanHandleSurvivesOverwrite` | N01/P02 | old SpanHandle/ndarray remains valid after an update |
 | `RawZenohClientCanPutAndGet` | C03 | Single-value interoperability using only zenoh-python |
 | `RawZenohClientCanSendBatch` | C03/F09 | Batch interoperability using only zenoh-python |
-| `PutAckTimesOutWhenNodeUnavailable` | N10 | ack timeout/status mapping |
+| `ParamStoreAckTest.ValidatesOptionsBeforeSubmission` | P01/N07 | Validate write options before Transport activity |
+| `ParamStoreAckTest.SubmitsOnceAndMapsResult` | F04/P01 | One-submit ACK polling and remote result mapping |
+| `ParamStoreAckTest.PreservesSubmissionOnlyWrites` | C04 | Preserve explicit acknowledgement-free writes |
+| `ParamStoreAckTest.HandlesEmptyBatchWithoutWireTraffic` | F09 | Empty acknowledged batches are local zero-wire success |
+| `ParamStoreAckIntegrationTest.QualifiesApplicationTimeoutAndReuse` | F04/N05 | Live ACK, timeout, and same-store reuse |
 | `PythonCallbackDoesNotDeadlockWithGet` | P04 | get inside callback does not deadlock |
 | `BufferKeyTest.BufferRoutesRoundTrip` | C06/X03 | Build and parse canonical durable and ephemeral routes; custom prefix and non-buffer nullopt |
 | `BufferKeyTest.InvalidBufferRoutesAreRejected` | C06 | Reject malformed routes, unknown classes, and undefined BufferClass values |

@@ -95,7 +95,7 @@ class DurableRootCleanup final {
 bool PutDpAndConfirm(sitos::ParamStore& store, std::string_view key, double value) {
   const auto deadline = std::chrono::steady_clock::now() + 5s;
   while (std::chrono::steady_clock::now() < deadline) {
-    const auto put = store.Put("base", key, value);
+    const auto put = store.Put("base", key, value, sitos::ParamStore::WriteOptions{.ack = false});
     if (!put.IsOk()) return false;
     const auto observed = store.Get<double>("base", key);
     if (observed.IsOk()) return observed.Value() == value;

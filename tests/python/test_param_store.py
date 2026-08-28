@@ -277,6 +277,136 @@ def test_live_value_domain_mapping_empty_batch_and_type_mismatch(live_store) -> 
         store.get("base", "str", default=b"fallback", type=bytes)
 
 
+def test_param_store_ack_options_are_keyword_only_and_strict() -> None:
+    store = sitos.ParamStore(query_timeout_ms=5000)
+    for method in (sitos.ParamStore.put, sitos.ParamStore.put_batch):
+        documentation = method.__doc__ or ""
+        assert "ack: object = True" in documentation
+        assert "ack_timeout_ms: object = 3000" in documentation
+    with pytest.raises(TypeError):
+        store.put("base", "key", 1, False)
+    with pytest.raises(TypeError):
+        store.put_batch("base", [], True)
+    with pytest.raises(TypeError, match="ack must be a bool"):
+        store.put("base", "key", 1, ack=1)
+    with pytest.raises(TypeError, match="ack must be a bool"):
+        store.put_batch("base", [], ack=1)
+    with pytest.raises(TypeError, match="ack_timeout_ms"):
+        store.put("base", "key", 1, ack_timeout_ms=True)
+    with pytest.raises(ValueError, match="ack_timeout_ms must be positive"):
+        store.put("base", "key", 1, ack_timeout_ms=0)
+    with pytest.raises(ValueError, match="ack_timeout_ms must be positive"):
+        store.put_batch("base", [], ack_timeout_ms=0)
+    for timeout in (2**63, -2**63 - 1):
+        for operation in (
+            lambda timeout=timeout: store.put("base", "key", 1, ack=False, ack_timeout_ms=timeout),
+            lambda timeout=timeout: store.put_batch(
+                "base", [], ack=False, ack_timeout_ms=timeout
+            ),
+        ):
+            with pytest.raises(ValueError, match=r"outside the C\+\+ millisecond range"):
+                operation()
+    with pytest.raises(TypeError):
+        store.put_batch("base", [], ack=False, ack_timeout_ms=None)
+    for timeout in (1.5, "1"):
+        with pytest.raises(TypeError, match="ack_timeout_ms must be an integer"):
+            store.put_batch("base", [], ack=False, ack_timeout_ms=timeout)
+    store.close()
+
+
+def test_param_store_submission_only_options_work_without_ack_server() -> None:
+    with sitos.ParamStore(query_timeout_ms=5000) as store:
+        store.put("base", "submission_only", 1, ack=False, ack_timeout_ms=0)
+        store.put_batch("base", [("submission_batch", 2)], ack=False, ack_timeout_ms=-1)
+
+
+def _test_store_or_skip(mode: str) -> sitos.ParamStore:
+    factory = getattr(sitos.ParamStore, "_test_store", None)
+    if factory is None:
+        pytest.skip("SITOS_PYTHON_TEST_SUPPORT is unavailable")
+    return factory(mode)
+
+
+@pytest.mark.parametrize(
+    ("mode", "exception", "message"),
+    [
+        ("outcome_unknown", sitos.OutcomeUnknownError, "test remote outcome_unknown"),
+        ("disconnected", sitos.DisconnectedError, "test remote disconnected"),
+    ],
+)
+def test_source_test_store_ack_status_mapping(mode, exception, message) -> None:
+    with _test_store_or_skip(mode) as store:
+        for operation in (
+            lambda: store.put("base", "key", 1),
+            lambda: store.put_batch("base", [("key", 1)]),
+        ):
+            with pytest.raises(exception, match=message):
+                operation()
+
+
+def test_source_test_store_rejects_unknown_mode() -> None:
+    factory = getattr(sitos.ParamStore, "_test_store", None)
+    if factory is None:
+        pytest.skip("SITOS_PYTHON_TEST_SUPPORT is unavailable")
+    with pytest.raises(ValueError, match="unknown ParamStore test mode"):
+        factory("typo")
+
+
+def test_source_test_store_submission_failure_and_missing_ack() -> None:
+    with _test_store_or_skip("submit_disconnect") as store:
+        with pytest.raises(sitos.DisconnectedError, match="test submission disconnected"):
+            store.put("base", "key", 1, ack=False)
+        with pytest.raises(sitos.DisconnectedError, match="test submission disconnected"):
+            store.put_batch("base", [("key", 1)], ack=False)
+    with _test_store_or_skip("timeout") as store:
+        with pytest.raises(sitos.TimeoutError, match="no acknowledgement within"):
+            store.put("base", "key", 1, ack_timeout_ms=40)
+        with pytest.raises(sitos.TimeoutError, match="no acknowledgement within"):
+            store.put_batch("base", [("key", 1)], ack_timeout_ms=40)
+
+
+def test_source_test_store_ack_polling_releases_gil() -> None:
+    store = _test_store_or_skip("delayed")
+    result: list[BaseException] = []
+    progress: list[bool] = []
+    control = sitos._sitos
+    control._gil_test_arm("param_store_ack")
+    writer = threading.Thread(
+        target=lambda: _capture_exception(
+            result, lambda: store.put("base", "gil", 1, ack_timeout_ms=1000)
+        ),
+        daemon=True,
+    )
+    try:
+        writer.start()
+        assert control._gil_test_wait("param_store_ack", 1000)
+        assert writer.is_alive()
+        worker = threading.Thread(target=lambda: progress.append(True))
+        worker.start()
+        worker.join(timeout=1)
+        assert not worker.is_alive()
+        assert progress == [True]
+        control._gil_test_release("param_store_ack")
+        writer.join(timeout=2)
+        assert not writer.is_alive()
+        assert result == []
+    finally:
+        try:
+            control._gil_test_release("param_store_ack")
+        except (RuntimeError, ValueError):
+            pass
+        control._gil_test_reset()
+        writer.join(timeout=2)
+        store.close()
+
+
+def _capture_exception(target: list[BaseException], operation) -> None:
+    try:
+        operation()
+    except BaseException as error:  # pragma: no cover - failure diagnostic
+        target.append(error)
+
+
 def test_read_only_scope_maps_to_public_exception() -> None:
     with sitos.ParamStore(query_timeout_ms=5000) as store:
         with pytest.raises(sitos.ReadOnlyError):

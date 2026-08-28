@@ -6,6 +6,7 @@
 #ifndef SITOS_PARAM_STORE_HPP
 #define SITOS_PARAM_STORE_HPP
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -18,11 +19,11 @@
 
 #include "sitos/batch.hpp"
 #include "sitos/client_config.hpp"
+#include "sitos/key.hpp"
 #include "sitos/list_sink.hpp"
 #include "sitos/param_concepts.hpp"
-#include "sitos/key.hpp"
-#include "sitos/param_value.hpp"
 #include "sitos/param_subscription.hpp"
+#include "sitos/param_value.hpp"
 #include "sitos/result.hpp"
 #include "sitos/transport.hpp"
 
@@ -48,16 +49,32 @@ class ParamStore {
   Result<ParamSubscription> Subscribe(std::string_view scope, std::string_view prefix,
                                       ParamCallback callback);
 
+  struct WriteOptions {
+    bool ack = true;
+    std::chrono::milliseconds ack_timeout{3000};
+  };
+
   Result<void> Put(std::string_view scope, std::string_view key, const ParamValue& value);
+  Result<void> Put(std::string_view scope, std::string_view key, const ParamValue& value,
+                   WriteOptions options);
 
   template <ParamInput T>
   Result<void> Put(std::string_view scope, std::string_view key, T&& value) {
     auto converted = param_detail::MakeParamValue(std::forward<T>(value));
     if (!converted.IsOk()) return Result<void>::ErrFrom(converted);
-    return Put(scope, key, converted.Value());
+    return Put(scope, key, converted.Value(), WriteOptions{});
+  }
+
+  template <ParamInput T>
+  Result<void> Put(std::string_view scope, std::string_view key, T&& value, WriteOptions options) {
+    auto converted = param_detail::MakeParamValue(std::forward<T>(value));
+    if (!converted.IsOk()) return Result<void>::ErrFrom(converted);
+    return Put(scope, key, converted.Value(), options);
   }
 
   Result<void> PutBatch(std::string_view scope, std::span<const BatchEntry> entries);
+  Result<void> PutBatch(std::string_view scope, std::span<const BatchEntry> entries,
+                        WriteOptions options);
   Result<void> Delete(std::string_view scope, std::string_view key);
 
   Result<ParamValue> Get(std::string_view scope, std::string_view key);

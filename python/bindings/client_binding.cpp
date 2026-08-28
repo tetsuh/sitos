@@ -76,6 +76,20 @@ std::int64_t GetTimeout(const nb::handle& value) {
   return converted;
 }
 
+std::int64_t GetWriteTimeout(const nb::handle& value, bool ack) {
+  if (!nb::isinstance<nb::int_>(value) || nb::isinstance<nb::bool_>(value)) {
+    throw nb::type_error("ack_timeout_ms must be an integer");
+  }
+  std::int64_t converted = 0;
+  try {
+    converted = nb::cast<std::int64_t>(value);
+  } catch (const nb::cast_error&) {
+    throw nb::value_error("ack_timeout_ms is outside the C++ millisecond range");
+  }
+  if (ack && converted <= 0) throw nb::value_error("ack_timeout_ms must be positive");
+  return converted;
+}
+
 std::vector<BatchEntry> MaterializeBatchEntries(const nb::handle& entries) {
   std::vector<BatchEntry> materialized;
   const auto append_pair = [&materialized](const nb::handle& item) {

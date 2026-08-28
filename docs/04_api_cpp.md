@@ -158,12 +158,24 @@ class ParamStore {
                                       std::string_view prefix,
                                       ParamCallback callback);
 
+  struct WriteOptions {
+    bool ack = true;
+    std::chrono::milliseconds ack_timeout{3000};
+  };
+
   Result<void> Put(std::string_view scope, std::string_view key,
                    const ParamValue& value);
+  Result<void> Put(std::string_view scope, std::string_view key,
+                   const ParamValue& value, WriteOptions options);
   template <ParamInput T>
   Result<void> Put(std::string_view scope, std::string_view key, T&& value);
+  template <ParamInput T>
+  Result<void> Put(std::string_view scope, std::string_view key, T&& value,
+                   WriteOptions options);
   Result<void> PutBatch(std::string_view scope,
                         std::span<const BatchEntry> entries);
+  Result<void> PutBatch(std::string_view scope,
+                        std::span<const BatchEntry> entries, WriteOptions options);
   Result<void> Delete(std::string_view scope, std::string_view key);
 
   Result<ParamValue> Get(std::string_view scope, std::string_view key);
@@ -178,10 +190,12 @@ class ParamStore {
 `scope` is `"base"`, `"session/<sid>"`, or `"snap/<sid>"`. The public `Delete` API is
 base-only; session Delete returns `Status::InvalidKey`, and snapshot writes return
 `Status::ReadOnly`. Raw Transport DELETE remains supported for both base and session routes;
-buffer DELETE is unsupported in v0.4. `Put`, `PutBatch`, and `Delete` report Transport submission
-only and do not wait for node application. `PutBatch`
-uses the canonical `:batch` key and sends one `sitos.v1.batch` message; an empty valid batch
-sends no message.
+buffer DELETE is unsupported in v0.4. `Put` and `PutBatch` are acknowledged by default: they
+submit one message and wait up to `WriteOptions::ack_timeout` (3000 ms by default) for the
+StorageNode result. Pass `WriteOptions{.ack = false}` for submission-only behavior. `Delete`
+remains acknowledgement-free. Acknowledgement proves StorageNode application only, not ParamCache
+visibility. `PutBatch` uses the canonical `:batch` key and sends one `sitos.v1.batch` message; an
+empty valid batch sends no message.
 
 `Get` waits for synchronous Transport completion. Zero replies map to `NotFound`, while
 `Contains` maps them to `Ok(false)`. `List` collects and validates all matching replies,
@@ -200,8 +214,9 @@ BYTES; malformed known payloads, invalid batches, and unsupported paths are drop
 `ParamSubscription` is move-only. Declaration-time samples are staged and drained only after
 successful declaration. `Close()` is synchronous, idempotent, and callback-quiescent. It waits for
 native callbacks, queued work, user callbacks, and diagnostics; no callback or LogSink call starts
-after it returns. Callbacks are serialized per subscription but have no thread affinity. They may
-submit nonblocking Put/PutBatch/Delete, but must not call blocking reads or close/destroy the
+after it returns. Callbacks are serialized per subscription but have no thread affinity. They may submit
+nonblocking Put/PutBatch/Delete; ParamStore acknowledged writes must use `WriteOptions{.ack = false}`
+because blocking reads and writes are forbidden in callbacks. They must not close/destroy the
 subscription from inside its callback. Python callback dispatch is Issue #26.
 
 ## 3. StorageEngine / StorageNode — Storage Node Side

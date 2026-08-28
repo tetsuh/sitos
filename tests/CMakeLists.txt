@@ -529,6 +529,19 @@ if(SITOS_WITH_ZENOH)
   sitos_copy_zenohc(sitos_batch_test)
   gtest_add_tests(TARGET sitos_batch_test SOURCES integration/batch_test.cpp)
 
+  add_executable(sitos_param_store_ack_integration_test
+    integration/param_store_ack_test.cpp)
+  target_link_libraries(sitos_param_store_ack_integration_test
+    PRIVATE GTest::gtest_main sitos::sitos)
+  sitos_enable_warnings(sitos_param_store_ack_integration_test)
+  sitos_copy_zenohc(sitos_param_store_ack_integration_test)
+  gtest_add_tests(
+    TARGET sitos_param_store_ack_integration_test
+    SOURCES integration/param_store_ack_test.cpp)
+  set_tests_properties(
+    ParamStoreAckIntegrationTest.QualifiesApplicationTimeoutAndReuse
+    PROPERTIES TIMEOUT 60)
+
   add_executable(sitos_param_store_integration_test
     integration/param_store_test.cpp)
   target_link_libraries(sitos_param_store_integration_test

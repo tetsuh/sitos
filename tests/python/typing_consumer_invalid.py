@@ -10,3 +10,8 @@ node: sitos.StorageNode
 node.session_view()  # E: missing session ID
 view: sitos.SessionView
 view.get("missing", None)  # E: default is keyword-only
+
+store = sitos.ParamStore()
+store.put("base", "key", 1, False)  # E: acknowledgement options are keyword-only
+store.put("base", "key", 1, ack=1)  # E: ack must be bool
+store.put_batch("base", [], True)  # E: acknowledgement options are keyword-only

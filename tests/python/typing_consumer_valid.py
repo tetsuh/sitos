@@ -13,6 +13,10 @@ typed_with_default: int | str = cache.get("missing", "fallback", type=int)
 assert array.ndim == 1
 assert isinstance(value, int)
 
+store = sitos.ParamStore()
+store.put("base", "value", 1, ack=True, ack_timeout_ms=3000)
+store.put_batch("base", [("value", 2)], ack=False, ack_timeout_ms=0)
+
 
 def accepts_root_error(error: sitos.SitosError) -> None:
     pass

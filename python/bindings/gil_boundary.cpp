@@ -31,6 +31,7 @@ std::optional<GilBoundary> ParseBoundary(std::string_view name) {
   if (name == "constructor") return GilBoundary::Constructor;
   if (name == "create_session") return GilBoundary::CreateSession;
   if (name == "stop") return GilBoundary::Stop;
+  if (name == "param_store_ack") return GilBoundary::ParamStoreAck;
   return std::nullopt;
 }
 #endif

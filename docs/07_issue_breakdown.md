@@ -244,14 +244,20 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
   Close and one same-session Zenoh integration test for PUT/DELETE/batch/control-subscriber delivery
 * Depends on: #13, #15, #76, #85, #88, #90; ADR-0030 must be Accepted immediately before merge
 
-### #17 ParamStore: ack/error mapping
+### #17 ParamStore: acknowledged writes and result mapping
 * Milestone: v0.5
-* References: [03] §6, [04] §2
-* Implementation targets: `include/sitos/status.hpp`, `src/param_store.cpp`,
-  `tests/integration/param_store_ack_test.cpp`
-* Scope: PutOptions::ack, ack timeout/retry, detailed Status mapping
-* Acceptance criteria: integration tests — ack success/failure/timeout, Disconnected/Timeout when StorageNode is stopped
-* Depends on: #14, #15
+* References: ADR-0028, [03] §6, [04] §§1.1, 2, [05] §2.1
+* Implementation targets: `include/sitos/param_store.hpp`, `src/param_store.cpp`,
+  `python/bindings/param_store.cpp`, `python/sitos/store.pyi`, fixed C++/Python tests,
+  and affected examples/documentation
+* Scope: expose `ParamStore::WriteOptions` and Python keyword-only `ack`/`ack_timeout_ms`,
+  acknowledge Put and PutBatch by default through the shared one-submit total-deadline helper,
+  preserve explicit submission-only mode, and map every ADR-0028 result without changing the wire
+  or Contract Registry.
+* Acceptance criteria: the four fixed Zenoh-OFF ParamStoreAckTest cases, live ACK/timeout/reuse
+  integration, strict Python option/type tests and typing consumers, GIL-release coverage, and
+  reconciled quickstarts/API/build documentation pass on supported platforms.
+* Depends on: #14, #15, #85, #86 (all closed)
 
 ### #106 Same-publisher Fence ordering ADR
 * Milestone: v0.5
@@ -642,8 +648,8 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
   `docs/05_api_python.md`, `docs/06_build_test_packaging.md`, and this file
 * Scope: source-only process-isolated public-API quickstart and NumPy LUT examples, plus a raw
   Zenoh 1.9.0 payload-v1 interoperability example. Each networked process owns at most one
-  Zenoh session; default discovery, unique identifiers, bounded handshakes, submission-only
-  resubmission/observation, and failure-safe cleanup are mandatory.
+  Zenoh session; default discovery, unique identifiers, bounded handshakes, one acknowledged
+  submission followed by separate bounded cache observation, and failure-safe cleanup are mandatory.
 * Acceptance criteria: source Linux and repaired CPython 3.12 Linux/Rocky/Windows wheel tiers run
   all three examples and the bounded failure-cleanup case; NumPy verifies fixed `<f4` bytes and
   read-only repeated zero-copy views; raw Zenoh verifies exact payload-v1 bytes and canonical

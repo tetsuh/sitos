@@ -2,7 +2,8 @@
 """Process-isolated Python quickstart for public sitos APIs.
 
 Each spawned role owns one public client. The coordinator owns no Zenoh session.
-READY is local startup only, and PUT is retried because submission is not delivery.
+READY is local startup only. ParamStore PUT acknowledgement confirms StorageNode
+application; cache visibility is observed independently.
 """
 from __future__ import annotations
 
@@ -564,18 +565,18 @@ def run_example(
                 break
         if not attached:
             raise TimeoutError("cache did not attach to the created session")
-        # put() is submission-only: resubmit identical data and independently
-        # retry cache observation under the same monotonic deadline.
+        # ParamStore put() waits for the StorageNode acknowledgement once. It
+        # does not prove ParamCache visibility, which is observed separately.
+        _request(
+            writer_connection,
+            writer_process,
+            "writer put",
+            deadline,
+            "PUT",
+            *put_args_factory(sid, key, value),
+        )
         observed = False
         while time.monotonic() < deadline:
-            _request(
-                writer_connection,
-                writer_process,
-                "writer put",
-                deadline,
-                "PUT",
-                *put_args_factory(sid, key, value),
-            )
             if observe(
                 _request(
                     cache_connection,

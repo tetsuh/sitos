@@ -89,9 +89,8 @@ int main() {
   }
   auto cache = std::move(opened_cache).Value();
 
-  // Put returns after transport submission, not after the node has applied the
-  // value. Submit each value once, then observe both exact values before taking
-  // the session snapshot below.
+  // ParamStore Put waits for one StorageNode acknowledgement. The ACK proves
+  // node application only; it does not prove ParamCache visibility.
   auto scalar_put = store.Put("base", "answer", expected_scalar);
   if (!scalar_put.IsOk()) {
     ReportFailure("ParamStore::Put(answer)", scalar_put);
@@ -105,26 +104,13 @@ int main() {
     return 1;
   }
 
-  bool observed = false;
-  const auto deadline = std::chrono::steady_clock::now() + 5s;
-  while (std::chrono::steady_clock::now() < deadline) {
-    auto scalar = store.Get<std::int64_t>("base", "answer");
-    auto lut = store.Get<std::vector<std::byte>>("base", "lut");
-    if (scalar.IsOk() && lut.IsOk()) {
-      observed = scalar.Value() == expected_scalar && lut.Value() == expected_lut;
-      break;
-    }
-    if ((!scalar.IsOk() && scalar.StatusCode() != sitos::Status::NotFound) ||
-        (!lut.IsOk() && lut.StatusCode() != sitos::Status::NotFound)) {
-      if (!scalar.IsOk() && scalar.StatusCode() != sitos::Status::NotFound)
-        ReportFailure("ParamStore::Get(answer)", scalar);
-      if (!lut.IsOk() && lut.StatusCode() != sitos::Status::NotFound)
-        ReportFailure("ParamStore::Get(lut)", lut);
-      break;
-    }
-  }
-  if (!observed) {
-    std::cerr << "base values were not observed exactly before the deadline\n";
+  auto scalar = store.Get<std::int64_t>("base", "answer");
+  auto lut = store.Get<std::vector<std::byte>>("base", "lut");
+  if (!scalar.IsOk() || !lut.IsOk() || scalar.Value() != expected_scalar ||
+      lut.Value() != expected_lut) {
+    if (!scalar.IsOk()) ReportFailure("ParamStore::Get(answer)", scalar);
+    if (!lut.IsOk()) ReportFailure("ParamStore::Get(lut)", lut);
+    std::cerr << "acknowledged base values did not match exactly\n";
     node.Stop();
     return 1;
   }
