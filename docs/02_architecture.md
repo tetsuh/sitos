@@ -601,7 +601,7 @@ and compute artifacts belong to the route-selected `buffers/<sid>/durable/**` or
 ### 7.2 Put Completion Guarantee
 
 ParamStore `Put` and `PutBatch` acknowledge StorageNode application by default with
-`WriteOptions{ack = true, ack_timeout = 3000ms}`. They submit data once and use ADR-0028's
+`WriteOptions{.ack = true, .ack_timeout = 3000ms}`. They submit data once and use ADR-0028's
 `SubmitAcknowledgedWrite` for total-deadline result polling. `WriteOptions{.ack = false}` retains
 submission-only behavior, and `Delete` remains submission-only. Acknowledgement proves the
 StorageNode outcome only, never ParamCache or subscriber visibility (#99); it does not claim

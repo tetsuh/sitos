@@ -217,9 +217,9 @@ RocksDB; a Python RocksDB API and wheel require a separate approved Issue.
 Issue #32's three Python examples are source-only and remain outside CMake install components,
 wheel metadata, and runtime dependencies. `tests/examples/test_python_examples.py` is a
 standard-library acceptance driver with fixed `quickstart`, `numpy-lut`, `raw-zenoh`,
-`failure-cleanup`, and `wheel-boundary` cases. Every process case uses an absolute monotonic
-60-second bound, `spawn`, collision-safe identifiers, bounded handshakes, and graceful/terminate/
-kill cleanup with child reaping. The private source-test seam
+`failure-cleanup`, and `wheel-boundary` cases. Every process case uses the implemented 75-second
+`CASE_SECONDS` bound, `spawn`, collision-safe identifiers, bounded handshakes, and graceful/
+terminate/kill cleanup with child reaping. The private source-test seam
 `SITOS_EXAMPLE_TEST_FAIL=cache-before-open` is the only induced-failure input; it is not a public
 API or installed feature.
 
