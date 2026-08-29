@@ -442,6 +442,6 @@ Large binary values belong to the route-selected `buffers/<sid>/durable/**` or
 | `ParamCache` | Attach/Detach and local write sequencing are synchronized internally. Local reads are cache-only; stale/reconnect behavior is future #20 behavior |
 | `StorageNode` | Ordinary independent-thread calls may run concurrently; `DurableBufferEngineFactory` and `LogSink` must not synchronously call `Stop`, destruction, or another waiting lifecycle operation on the same node, or wait for one |
 | `SessionView` | All methods may be called concurrently. List callbacks run on the caller thread outside internal locks; re-entry and Stop from inside a sink are safe |
-| ParamSubscription callback | Serialized per subscription with no thread affinity. It may submit nonblocking Put/PutBatch/Delete, but blocking reads, Subscribe, subscription lifecycle, and Transport/session lifecycle operations are forbidden |
+| ParamSubscription callback | Serialized per subscription with no thread affinity. Put/PutBatch must use `WriteOptions{.ack = false}`; Delete remains nonblocking. Blocking reads, acknowledged writes, Subscribe, subscription lifecycle, and Transport/session lifecycle operations are forbidden |
 
 (END OF DOCUMENT)
