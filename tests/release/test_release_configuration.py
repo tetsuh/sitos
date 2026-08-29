@@ -190,10 +190,17 @@ def requirement_version(text: str, component: str) -> str:
 def requirement_hashes(text: str, component: str) -> list[str]:
     """Return validated SHA-256 values from one hash-locked requirement."""
     block = requirement_block(text, component)
-    hashes = re.findall(r"--hash=sha256:([^\s\\]+)", block)
-    if not hashes or any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in hashes):
+    hash_tokens = re.findall(r"--hash=([^\s\\]*)", block)
+    if not hash_tokens or any(
+        re.fullmatch(r"sha256:[0-9a-f]{64}", token) is None for token in hash_tokens
+    ):
         raise AssertionError(f"{component!r} has an invalid hash record")
-    return hashes
+    return [token.removeprefix("sha256:") for token in hash_tokens]
+
+
+def pytest_hash_lock_paths() -> tuple[Path, ...]:
+    """Return every lock whose pytest hashes are installed with hash checking."""
+    return INTEROP_LOCK, INTEROP_LATEST_LOCK, WHEEL_TOOLS_REQUIREMENTS
 
 
 class ReleaseConfigurationContractTest(unittest.TestCase):
@@ -297,9 +304,38 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         self.assertIn("../NOTICE", license_files)
 
     def test_requirement_hash_validation_rejects_malformed_token(self) -> None:
-        malformed = f"pytest=={PYTEST_VERSION} \\\n    --hash=sha256:{'a' * 64}z\n"
-        with self.assertRaises(AssertionError):
-            requirement_hashes(malformed, "pytest")
+        malformed_records = (
+            f"pytest=={PYTEST_VERSION} \\\n    --hash=sha256:{'a' * 64}z\n",
+            f"pytest=={PYTEST_VERSION} \\\n    --hash=sha256:{'a' * 64} \\\n    --hash=sha256:\n",
+            f"pytest=={PYTEST_VERSION} \\\n    --hash=sha256:{'a' * 64} \\\n    --hash=md5:{'b' * 32}\n",
+        )
+        for malformed in malformed_records:
+            with self.subTest(malformed=malformed):
+                with self.assertRaises(AssertionError):
+                    requirement_hashes(malformed, "pytest")
+
+    def test_pytest_dependency_inventory_rejects_malformed_wheel_tool_hash(self) -> None:
+        wheel_tools = read(WHEEL_TOOLS_REQUIREMENTS)
+        pytest_block = requirement_block(wheel_tools, "pytest")
+        malformed_block, replacements = re.subn(
+            r"--hash=sha256:[0-9a-f]{64}",
+            "--hash=sha256:",
+            pytest_block,
+            count=1,
+        )
+        self.assertEqual(replacements, 1)
+        malformed = wheel_tools.replace(pytest_block, malformed_block, 1)
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            malformed_path = Path(directory) / "wheel-tools-requirements.txt"
+            malformed_path.write_text(malformed, encoding="utf-8")
+            original_path = globals()["WHEEL_TOOLS_REQUIREMENTS"]
+            globals()["WHEEL_TOOLS_REQUIREMENTS"] = malformed_path
+            try:
+                with self.assertRaises(AssertionError):
+                    for path in pytest_hash_lock_paths():
+                        requirement_hashes(read(path), "pytest")
+            finally:
+                globals()["WHEEL_TOOLS_REQUIREMENTS"] = original_path
 
     def test_pytest_dependency_inventory_is_aligned(self) -> None:
         requirement_paths = (
@@ -316,7 +352,7 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
                     PYTEST_VERSION,
                 )
 
-        for path in (INTEROP_LOCK, INTEROP_LATEST_LOCK):
+        for path in pytest_hash_lock_paths():
             with self.subTest(lock=path.relative_to(ROOT)):
                 requirement_hashes(read(path), "pytest")
 
