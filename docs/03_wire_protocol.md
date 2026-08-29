@@ -253,8 +253,8 @@ Repeated N times thereafter:
 > `sitos.v1.ack` Encoding, UUIDv4 tokens, `Status::OutcomeUnknown`, the StorageNode token lifecycle
 > (claim before mutation, Processing/Completed registry with operation fingerprints, 4096-entry
 > completion ring), the `meta/ack/<uuid>` route behavior, and the internal one-submit/total-deadline
-> helper (`SubmitAcknowledgedWrite`, no cancellation API per DEC-14-ACK-CANCEL-001). Issue #17 owns
-> the ParamStore `WriteOptions` policy layered on that helper. No implementation may introduce a
+> helper (`SubmitAcknowledgedWrite`, no cancellation API per DEC-14-ACK-CANCEL-001). Issue #17
+> exposes the ParamStore `WriteOptions` policy layered on that helper. No implementation may introduce a
 > second acknowledgement format.
 
 Acknowledged Put and PutBatch use one data submission followed by bounded result polling:

@@ -5,8 +5,6 @@
 
 #include "sitos/param_store.hpp"
 
-#include "list_prefix_validation.hpp"
-
 #include <algorithm>
 #include <cstdint>
 #include <memory>
@@ -15,6 +13,9 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#include "ack_client.hpp"
+#include "list_prefix_validation.hpp"
 
 namespace sitos {
 namespace {
@@ -109,10 +110,9 @@ struct ListReplyContext {
   std::string_view prefix;
 };
 
-Result<void> DecodeListReply(
-    const ListReplyContext& context, std::string_view full_key,
-    std::span<const std::byte> payload, const Encoding& encoding,
-    std::vector<std::pair<std::string, ParamValue>>& values) {
+Result<void> DecodeListReply(const ListReplyContext& context, std::string_view full_key,
+                             std::span<const std::byte> payload, const Encoding& encoding,
+                             std::vector<std::pair<std::string, ParamValue>>& values) {
   auto parsed = ParseKey(context.config_prefix, full_key);
   if (!parsed || !IsExpectedKind(*parsed, context.scope) || parsed->is_batch ||
       !IsUnderSafeParent(parsed->relative_key, context.safe_parent)) {
@@ -174,8 +174,28 @@ Result<void> ParamStore::ValidateListPrefix(std::string_view prefix) {
   return param_detail::ValidateListPrefix(prefix);
 }
 
+namespace {
+
+Result<void> MapAcknowledgement(Result<AckResultV1>& acknowledgement,
+                                AckOperationKind expected_kind) {
+  if (!acknowledgement.IsOk()) return Result<void>::ErrFrom(acknowledgement);
+  const auto& result = acknowledgement.Value();
+  if (result.operation_kind != expected_kind) {
+    return Result<void>::Err(Status::Error, "acknowledgement operation kind mismatch");
+  }
+  if (result.status == Status::Ok) return Result<void>::Ok();
+  return Result<void>::Err(result.status, result.message);
+}
+
+}  // namespace
+
 Result<void> ParamStore::Put(std::string_view scope, std::string_view key,
                              const ParamValue& value) {
+  return Put(scope, key, value, WriteOptions{});
+}
+
+Result<void> ParamStore::Put(std::string_view scope, std::string_view key, const ParamValue& value,
+                             WriteOptions options) {
   if (!transport_) return InvalidArgument("moved-from ParamStore");
   auto parsed_scope = ParseAndValidateScope(scope);
   if (!parsed_scope.IsOk()) return Result<void>::ErrFrom(parsed_scope);
@@ -184,25 +204,41 @@ Result<void> ParamStore::Put(std::string_view scope, std::string_view key,
   if (parsed_scope.Value().kind == ScopeKind::Snap) {
     return Result<void>::Err(Status::ReadOnly, "snapshot scope is read-only");
   }
+  if (options.ack && options.ack_timeout.count() <= 0) {
+    return InvalidArgument("acknowledgement deadline must be positive");
+  }
   auto full_key = BuildKey(config_.prefix, scope, key);
   if (!full_key.has_value()) return InvalidKey("invalid parameter key");
   auto payload = value.Encode();
-  auto result =
-      transport_->Put(*full_key, payload, Encoding{std::string(Encoding::kSitosV1)}, PutOptions{});
-  if (!result.IsOk()) return Result<void>::ErrFrom(result);
-  return Result<void>::Ok();
+  if (!options.ack) {
+    auto result = transport_->Put(*full_key, payload, Encoding{std::string(Encoding::kSitosV1)},
+                                  PutOptions{});
+    if (!result.IsOk()) return Result<void>::ErrFrom(result);
+    return Result<void>::Ok();
+  }
+  auto acknowledgement =
+      SubmitAcknowledgedWrite(*transport_, config_.prefix, *full_key, payload,
+                              Encoding{std::string(Encoding::kSitosV1)}, options.ack_timeout);
+  return MapAcknowledgement(acknowledgement, AckOperationKind::Put);
 }
 
 Result<void> ParamStore::PutBatch(std::string_view scope, std::span<const BatchEntry> entries) {
+  return PutBatch(scope, entries, WriteOptions{});
+}
+
+Result<void> ParamStore::PutBatch(std::string_view scope, std::span<const BatchEntry> entries,
+                                  WriteOptions options) {
   if (!transport_) return InvalidArgument("moved-from ParamStore");
   auto parsed_scope = ParseAndValidateScope(scope);
   if (!parsed_scope.IsOk()) return Result<void>::ErrFrom(parsed_scope);
   if (parsed_scope.Value().kind == ScopeKind::Snap) {
     return Result<void>::Err(Status::ReadOnly, "snapshot scope is read-only");
   }
-  if (!BuildBatchKey(config_.prefix, scope).has_value()) {
-    return InvalidKey("invalid batch scope");
+  if (options.ack && options.ack_timeout.count() <= 0) {
+    return InvalidArgument("acknowledgement deadline must be positive");
   }
+  auto key = BuildBatchKey(config_.prefix, scope);
+  if (!key.has_value()) return InvalidKey("invalid batch scope");
   for (const auto& entry : entries) {
     auto key_result = ValidateUserKey(entry.key);
     if (!key_result.IsOk()) return key_result;
@@ -210,11 +246,16 @@ Result<void> ParamStore::PutBatch(std::string_view scope, std::span<const BatchE
   if (entries.empty()) return Result<void>::Ok();
 
   auto payload = EncodeBatch(entries);
-  auto key = BuildBatchKey(config_.prefix, scope);
-  auto result =
-      transport_->Put(*key, payload, Encoding{std::string(Encoding::kSitosV1Batch)}, PutOptions{});
-  if (!result.IsOk()) return Result<void>::ErrFrom(result);
-  return Result<void>::Ok();
+  if (!options.ack) {
+    auto result = transport_->Put(*key, payload, Encoding{std::string(Encoding::kSitosV1Batch)},
+                                  PutOptions{});
+    if (!result.IsOk()) return Result<void>::ErrFrom(result);
+    return Result<void>::Ok();
+  }
+  auto acknowledgement =
+      SubmitAcknowledgedWrite(*transport_, config_.prefix, *key, payload,
+                              Encoding{std::string(Encoding::kSitosV1Batch)}, options.ack_timeout);
+  return MapAcknowledgement(acknowledgement, AckOperationKind::Batch);
 }
 
 Result<void> ParamStore::Delete(std::string_view scope, std::string_view key) {
@@ -250,8 +291,8 @@ Result<ParamValue> ParamStore::Get(std::string_view scope, std::string_view key)
   std::optional<Result<ParamValue>> callback_result;
   auto transport_result = transport_->Get(
       *full_key,
-      [&callback_result, &full_key](std::string_view actual_key,
-                                    std::span<const std::byte> payload, Encoding encoding) {
+      [&callback_result, &full_key](std::string_view actual_key, std::span<const std::byte> payload,
+                                    Encoding encoding) {
         if (callback_result.has_value()) return false;
         callback_result = DecodeReply(*full_key, actual_key, payload, encoding);
         return callback_result->IsOk();
@@ -288,8 +329,7 @@ Result<void> ParamStore::List(std::string_view scope, std::string_view prefix,
   auto transport_result = transport_->Get(
       selector,
       [&context, &callback_error, &values](std::string_view full_key,
-                                           std::span<const std::byte> payload,
-                                           Encoding encoding) {
+                                           std::span<const std::byte> payload, Encoding encoding) {
         auto reply = DecodeListReply(context, full_key, payload, encoding, values);
         if (!reply.IsOk()) {
           callback_error = std::move(reply);

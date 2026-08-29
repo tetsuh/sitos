@@ -14,7 +14,7 @@
 
 namespace sitos::python::detail {
 
-enum class GilBoundary { Constructor, CreateSession, Stop };
+enum class GilBoundary { Constructor, CreateSession, Stop, ParamStoreAck };
 
 void WaitAtGilBoundary(GilBoundary boundary);
 void ArmGilBoundary(std::string_view boundary);

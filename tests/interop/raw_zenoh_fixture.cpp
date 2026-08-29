@@ -44,7 +44,7 @@ class Protocol final {
 bool PutDpAndConfirm(sitos::ParamStore& store, std::string_view key, double value) {
   const auto deadline = std::chrono::steady_clock::now() + 5s;
   while (std::chrono::steady_clock::now() < deadline) {
-    const auto put = store.Put("base", key, value);
+    const auto put = store.Put("base", key, value, sitos::ParamStore::WriteOptions{.ack = false});
     if (!put.IsOk()) return false;
     const auto observed = store.Get<double>("base", key);
     if (observed.IsOk()) return observed.Value() == value;
@@ -69,8 +69,7 @@ bool HandlePutDp(std::istringstream& input, sitos::ParamStore& store, Protocol& 
   return true;
 }
 
-bool HandleCreateSession(std::istringstream& input, sitos::StorageNode& node,
-                         Protocol& protocol) {
+bool HandleCreateSession(std::istringstream& input, sitos::StorageNode& node, Protocol& protocol) {
   std::string session_id;
   std::string trailing;
   if (!(input >> session_id) || (input >> trailing)) {
@@ -86,8 +85,8 @@ bool HandleCreateSession(std::istringstream& input, sitos::StorageNode& node,
   return true;
 }
 
-bool HandleCommand(std::string_view command, sitos::ParamStore& store,
-                   sitos::StorageNode& node, Protocol& protocol) {
+bool HandleCommand(std::string_view command, sitos::ParamStore& store, sitos::StorageNode& node,
+                   Protocol& protocol) {
   std::istringstream input{std::string(command)};
   std::string operation;
   input >> operation;
@@ -107,9 +106,8 @@ int main(int argc, char** argv) {
   if (argc != 3) return 2;
   const std::string prefix = argv[1];
   const std::string port = argv[2];
-  const std::string config =
-      "{mode: 'peer', listen: {endpoints: ['tcp/127.0.0.1:" + port +
-      "']}, scouting: {multicast: {enabled: false}}}";
+  const std::string config = "{mode: 'peer', listen: {endpoints: ['tcp/127.0.0.1:" + port +
+                             "']}, scouting: {multicast: {enabled: false}}}";
 
   auto transport_result = sitos::OpenZenohTransport(config);
   if (!transport_result.IsOk()) {

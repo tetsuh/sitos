@@ -304,8 +304,9 @@ before returning and retains no Session record or other resource after enumerati
 * Relationship with puts around `CreateSession`: the snapshot contains
   “the contents already reflected in the engine at the moment StorageNode processes CreateSession”.
   The caller must confirm completion of all required base writes before starting a session
-  (because put passes through StorageNode receive processing, `ParamStore::Put` only reports
-  Transport submission; acknowledgement and retry policy belong to Issues #14 and #17. §6.2)
+  (because the acknowledged `ParamStore::Put` completes with a StorageNode result; acknowledgement
+  proves node application but not ParamCache visibility. Submission-only callers explicitly select
+  `WriteOptions{.ack = false}`; §6.2)
 * Buffer persistence and zenoh fanout are not atomic. StorageNode is one subscriber and cannot
   retract a sample already observed by another subscriber. A conflicting raw PUT can be observed
   live while durable Get retains the first bytes; it is protocol-invalid and must not be treated
@@ -599,14 +600,12 @@ and compute artifacts belong to the route-selected `buffers/<sid>/durable/**` or
 
 ### 7.2 Put Completion Guarantee
 
-ParamStore write success currently means only that Transport accepted/submitted the operation. It
-does not confirm StorageNode application, durability, or cache visibility. ADR-0028 defines
-acknowledged writes: Issue #14 provides the substrate (typed Transport ACK boundary, codecs,
-StorageNode token registry answering `meta/ack/<uuid>`, and the internal `SubmitAcknowledgedWrite`
-helper with one data submission and a total-deadline query policy; see
-`docs/03_wire_protocol.md` §6), and Issue #17 layers `WriteOptions{ack, ack_timeout}` and the
-ParamStore/Python mapping on top. The acknowledgement proves the StorageNode outcome only, never
-ParamCache or subscriber visibility (#99).
+ParamStore `Put` and `PutBatch` acknowledge StorageNode application by default with
+`WriteOptions{.ack = true, .ack_timeout = 3000ms}`. They submit data once and use ADR-0028's
+`SubmitAcknowledgedWrite` for total-deadline result polling. `WriteOptions{.ack = false}` retains
+submission-only behavior, and `Delete` remains submission-only. Acknowledgement proves the
+StorageNode outcome only, never ParamCache or subscriber visibility (#99); it does not claim
+durability beyond the selected ADR-0028 target.
 
 ### 7.3 ParamStore Subscription
 

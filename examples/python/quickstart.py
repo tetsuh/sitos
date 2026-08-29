@@ -2,7 +2,8 @@
 """Process-isolated Python quickstart for public sitos APIs.
 
 Each spawned role owns one public client. The coordinator owns no Zenoh session.
-READY is local startup only, and PUT is retried because submission is not delivery.
+READY is local startup only. ParamStore PUT acknowledgement confirms StorageNode
+application; cache visibility is observed independently.
 """
 from __future__ import annotations
 
@@ -14,7 +15,12 @@ import uuid
 from multiprocessing.connection import Connection
 from typing import Any, Callable
 
-WORK_SECONDS = 30.0
+# Local process startup, the acknowledged write, and cache snapshot visibility
+# use distinct budgets. Slow Windows discovery must not consume the write or
+# visibility budget.
+STARTUP_SECONDS = 20.0
+WORK_SECONDS = 15.0
+VISIBILITY_SECONDS = 15.0
 FAILURE_SECONDS = 15.0
 # Cleanup sends STOP to every child before sharing one monotonic deadline.
 # The final second is reserved for process-wide terminate and kill phases.
@@ -531,7 +537,7 @@ def run_example(
 
     context = multiprocessing.get_context("spawn")
     children: list[tuple[str, multiprocessing.Process, Connection]] = []
-    deadline = time.monotonic() + WORK_SECONDS
+    startup_deadline = time.monotonic() + STARTUP_SECONDS
     primary: BaseException | None = None
     token = f"{os.getpid()}_{uuid.uuid4().hex}"
     sid = f"session_{token}"
@@ -544,54 +550,90 @@ def run_example(
         ):
             process, connection = _spawn(context, target, args, label)
             children.append((label, process, connection))
-            _wait(connection, process, label, deadline)
+            _wait(connection, process, label, startup_deadline)
         node_process, node_connection = children[0][1:]
         writer_process, writer_connection = children[1][1:]
         # Create the session only after the node and writer report local READY.
-        _request(node_connection, node_process, "node create", deadline, "CREATE", sid)
+        _request(
+            node_connection,
+            node_process,
+            "node create",
+            startup_deadline,
+            "CREATE",
+            sid,
+        )
         cache_process, cache_connection = _spawn(
             context, cache_target, cache_args_factory(sid, key), "cache"
         )
         children.append(("cache", cache_process, cache_connection))
-        _wait(cache_connection, cache_process, "cache", deadline)
-        # Attach may race default-discovery convergence, so retry it boundedly.
-        attached = False
-        while time.monotonic() < deadline:
-            if _request(
-                cache_connection, cache_process, "cache attach", deadline, "ATTACH"
-            ) is not None:
-                attached = True
-                break
-        if not attached:
-            raise TimeoutError("cache did not attach to the created session")
-        # put() is submission-only: resubmit identical data and independently
-        # retry cache observation under the same monotonic deadline.
+        _wait(cache_connection, cache_process, "cache", startup_deadline)
+        operation_deadline = time.monotonic() + WORK_SECONDS
+        # ParamStore put() waits for the StorageNode acknowledgement exactly
+        # once. The cache attaches afterward so its initial snapshot observes
+        # that applied value without relying on subscriber-discovery timing.
+        _request(
+            writer_connection,
+            writer_process,
+            "writer put",
+            operation_deadline,
+            "PUT",
+            *put_args_factory(sid, key, value),
+        )
+        visibility_deadline = time.monotonic() + VISIBILITY_SECONDS
         observed = False
-        while time.monotonic() < deadline:
-            _request(
-                writer_connection,
-                writer_process,
-                "writer put",
-                deadline,
-                "PUT",
-                *put_args_factory(sid, key, value),
-            )
-            if observe(
+        attached = False
+        while time.monotonic() < visibility_deadline and not observed:
+            # Attach may race default-discovery convergence. A successful empty
+            # snapshot is also retried because it may have found no queryable
+            # before discovery converged; the acknowledged PUT is never repeated.
+            while time.monotonic() < visibility_deadline:
+                if _request(
+                    cache_connection,
+                    cache_process,
+                    "cache attach",
+                    visibility_deadline,
+                    "ATTACH",
+                ) is not None:
+                    attached = True
+                    break
+            if not attached:
+                break
+            observed = observe(
                 _request(
                     cache_connection,
                     cache_process,
                     "cache check",
-                    deadline,
+                    visibility_deadline,
                     check_command,
                 )
-            ):
-                observed = True
-                break
+            )
+            if not observed:
+                _request(
+                    cache_connection,
+                    cache_process,
+                    "cache detach",
+                    visibility_deadline,
+                    "DETACH",
+                )
+                attached = False
         if not observed:
             raise TimeoutError("cache did not observe the submitted value")
         # Release the cache view before closing the node-owned session.
-        _request(cache_connection, cache_process, "cache detach", deadline, "DETACH")
-        _request(node_connection, node_process, "node close", deadline, "CLOSE", sid)
+        _request(
+            cache_connection,
+            cache_process,
+            "cache detach",
+            visibility_deadline,
+            "DETACH",
+        )
+        _request(
+            node_connection,
+            node_process,
+            "node close",
+            visibility_deadline,
+            "CLOSE",
+            sid,
+        )
     except BaseException as error:
         primary = error
     # STOP performs public close()/stop() before acknowledging; _cleanup then

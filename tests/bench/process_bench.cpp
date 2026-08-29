@@ -597,12 +597,16 @@ int RoleMain(std::string_view role, std::string_view prefix, std::string_view st
                              value << std::setw(4) << std::setfill('0') << i;
                              return value.str();
                            }(),
-                       Scalar(i))
+                       Scalar(i), sitos::ParamStore::WriteOptions{.ack = false})
                    .IsOk())
             return 22;
         }
         auto lut = Lut();
-        if (!store.Put("base", "n08/v1/lut", sitos::ParamValue(std::move(lut))).IsOk()) return 23;
+        if (!store
+                 .Put("base", "n08/v1/lut", sitos::ParamValue(std::move(lut)),
+                      sitos::ParamStore::WriteOptions{.ack = false})
+                 .IsOk())
+          return 23;
         if (!WriteLine(output_fd, "POPULATED")) return 24;
       }
       if (command.rfind(control_prefix, 0) == 0) {
@@ -627,7 +631,8 @@ int RoleMain(std::string_view role, std::string_view prefix, std::string_view st
         put_input >> sid >> index;
         const auto start = Clock::now();
         const auto result = store.Put("session/" + sid, N09Key(index),
-                                      static_cast<std::int64_t>(0x13579bdf00000000ULL + index));
+                                      static_cast<std::int64_t>(0x13579bdf00000000ULL + index),
+                                      sitos::ParamStore::WriteOptions{.ack = false});
         if (!result.IsOk()) {
           std::ostringstream diagnostic;
           diagnostic << "PUT_ERROR " << static_cast<int>(result.StatusCode()) << ' '
@@ -714,7 +719,8 @@ int RoleMain(std::string_view role, std::string_view prefix, std::string_view st
               const auto sequence = counts[producer];
               auto result =
                   stores[producer]->Put("session/" + sid, ThroughputKey(trial, producer, sequence),
-                                        ThroughputValue(trial, producer, sequence));
+                                        ThroughputValue(trial, producer, sequence),
+                                        sitos::ParamStore::WriteOptions{.ack = false});
               if (!result.IsOk()) {
                 inflight.fetch_sub(1, std::memory_order_release);
                 failed.store(true, std::memory_order_release);

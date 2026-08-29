@@ -20,6 +20,9 @@ EXPECTED_INVALID_DIAGNOSTICS = Counter(
         (8, "arg-type"): 2,
         (10, "call-arg"): 1,
         (12, "call-overload"): 1,
+        (15, "misc"): 1,
+        (16, "arg-type"): 1,
+        (17, "misc"): 1,
     }
 )
 

@@ -63,6 +63,7 @@ inline void Take(const Result<void>& result) {
 }
 
 std::int64_t GetTimeout(const nanobind::handle& value);
+std::int64_t GetWriteTimeout(const nanobind::handle& value, bool ack);
 ParamValue ConvertTyped(const ParamValue& value, const nanobind::object& type);
 std::vector<BatchEntry> MaterializeBatchEntries(const nanobind::handle& entries);
 

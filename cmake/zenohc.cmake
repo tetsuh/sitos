@@ -83,15 +83,6 @@ endif()
 
 target_include_directories(zenohc::zenohc INTERFACE "${ZENOHC_INCLUDE_DIR}")
 
-# Helper: copy the zenohc shared library alongside a test executable so it can
-# be found at runtime on Windows. On Linux, LD_LIBRARY_PATH is handled via the
-# ctest environment.
-function(sitos_copy_zenohc target)
-  if(WIN32)
-    add_custom_command(TARGET ${target} POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${SITOS_ZENOHC_RUNTIME}"
-        "$<TARGET_FILE_DIR:${target}>"
-    )
-  endif()
-endfunction()
+# Stage the Windows runtime once per binary directory before dependent targets
+# link. On Linux, LD_LIBRARY_PATH is handled via the ctest environment.
+include("${CMAKE_CURRENT_LIST_DIR}/StageZenohRuntime.cmake")
