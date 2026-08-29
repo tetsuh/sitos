@@ -17,10 +17,14 @@ NOTICE = ROOT / "NOTICE"
 CMAKE = ROOT / "CMakeLists.txt"
 PYPROJECT = ROOT / "python" / "pyproject.toml"
 WHEELS = ROOT / ".github" / "workflows" / "wheels.yml"
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release-please.yml"
 RELEASE_CONFIG = ROOT / ".github" / "release-please-config.json"
 RELEASE_MANIFEST = ROOT / ".release-please-manifest.json"
 INTEROP_REQUIREMENTS = ROOT / "tests" / "interop" / "requirements.in"
+INTEROP_LATEST_REQUIREMENTS = ROOT / "tests" / "interop" / "requirements-latest.in"
+INTEROP_LOCK = ROOT / "tests" / "interop" / "requirements.txt"
+INTEROP_LATEST_LOCK = ROOT / "tests" / "interop" / "requirements-latest.txt"
 WHEEL_TOOLS_REQUIREMENTS = ROOT / ".github" / "wheel-tools-requirements.txt"
 
 RELEASE_PLEASE_SHA = "45996ed1f6d02564a971a2fa1b5860e934307cf7"
@@ -35,6 +39,7 @@ CANONICAL_VERSION = (
     r"(?:0|[1-9][0-9]*)\."
     r"(?:0|[1-9][0-9]*)"
 )
+PYTEST_VERSION = "9.0.3"
 
 
 def read(path: Path) -> str:
@@ -71,6 +76,28 @@ def yaml_action_step(text: str, owner_repo: str, sha: str) -> str:
     """Return the unique sequence item that invokes one pinned action."""
     lines = yaml_code(text).splitlines()
     expected = f"- uses: {owner_repo}@{sha}"
+    starts = [index for index, line in enumerate(lines) if line.strip() == expected]
+    if len(starts) != 1:
+        raise AssertionError(f"expected one {expected!r} step, found {len(starts)}")
+    start = starts[0]
+    indent = len(lines[start]) - len(lines[start].lstrip(" "))
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        leading = len(line) - len(line.lstrip(" "))
+        if leading == indent and line.lstrip().startswith("- "):
+            end = index
+            break
+        if leading < indent:
+            end = index
+            break
+    return "\n".join(lines[start:end])
+
+
+def yaml_named_step(text: str, name: str) -> str:
+    """Return one uniquely named workflow sequence item."""
+    lines = yaml_code(text).splitlines()
+    expected = f"- name: {name}"
     starts = [index for index, line in enumerate(lines) if line.strip() == expected]
     if len(starts) != 1:
         raise AssertionError(f"expected one {expected!r} step, found {len(starts)}")
@@ -131,6 +158,44 @@ def assert_all_actions_pinned(test: unittest.TestCase, text: str) -> None:
         test.assertRegex(reference, r"^[^@\s]+@[0-9a-f]{40}$")
 
 
+def requirement_block(text: str, component: str) -> str:
+    """Return one complete hash-lock record for a pinned requirement."""
+    lines = text.splitlines()
+    starts = [
+        index
+        for index, line in enumerate(lines)
+        if re.match(rf"^{re.escape(component)}==[^\s\\]+(?:\s|\\|$)", line)
+    ]
+    if len(starts) != 1:
+        raise AssertionError(f"expected one {component!r} requirement, found {len(starts)}")
+    start = starts[0]
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        if line and not line[0].isspace() and not line.startswith("#"):
+            end = index
+            break
+    return "\n".join(lines[start:end])
+
+
+def requirement_version(text: str, component: str) -> str:
+    """Return the exact version from one pinned requirement."""
+    block = requirement_block(text, component)
+    match = re.match(rf"{re.escape(component)}==([^\s\\]+)", block)
+    if match is None:
+        raise AssertionError(f"{component!r} is not exactly pinned")
+    return match.group(1)
+
+
+def requirement_hashes(text: str, component: str) -> list[str]:
+    """Return validated SHA-256 values from one hash-locked requirement."""
+    block = requirement_block(text, component)
+    hashes = re.findall(r"--hash=sha256:([^\s\\]+)", block)
+    if not hashes or any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in hashes):
+        raise AssertionError(f"{component!r} has an invalid hash record")
+    return hashes
+
+
 class ReleaseConfigurationContractTest(unittest.TestCase):
     def test_notice_inventory(self) -> None:
         self.assertTrue(NOTICE.exists(), "NOTICE is missing")
@@ -142,7 +207,7 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
             "scikit-build-core": ("0.10.7", "Apache-2.0"),
             "NumPy": ("2.0.0", "BSD-3-Clause"),
             "Eclipse zenoh Python API": ("1.9.0", "EPL-2.0 OR Apache-2.0"),
-            "pytest": ("8.3.3", "MIT"),
+            "pytest": (PYTEST_VERSION, "MIT"),
             "GoogleTest": ("1.14.0", "BSD-3-Clause"),
             "Google Benchmark": ("1.8.3", "Apache-2.0"),
             "github/gitignore": ("6fb8f99e", "CC0-1.0"),
@@ -180,7 +245,8 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
                 "MIT",
             ),
             "pytest": (
-                "wheel validation test runner; not bundled in the standard wheel.",
+                "Python API, interoperability, and wheel validation test runner; not bundled "
+                "in the standard wheel.",
                 "https://github.com/pytest-dev/pytest",
                 "MIT",
             ),
@@ -229,6 +295,63 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
             self.assertIn(name.group(0).lower(), notice.lower(), requirement)
         license_files = pyproject["tool"]["scikit-build"]["wheel"]["license-files"]
         self.assertIn("../NOTICE", license_files)
+
+    def test_requirement_hash_validation_rejects_malformed_token(self) -> None:
+        malformed = f"pytest=={PYTEST_VERSION} \\\n    --hash=sha256:{'a' * 64}z\n"
+        with self.assertRaises(AssertionError):
+            requirement_hashes(malformed, "pytest")
+
+    def test_pytest_dependency_inventory_is_aligned(self) -> None:
+        requirement_paths = (
+            INTEROP_REQUIREMENTS,
+            INTEROP_LATEST_REQUIREMENTS,
+            INTEROP_LOCK,
+            INTEROP_LATEST_LOCK,
+            WHEEL_TOOLS_REQUIREMENTS,
+        )
+        for path in requirement_paths:
+            with self.subTest(path=path.relative_to(ROOT)):
+                self.assertEqual(
+                    requirement_version(read(path), "pytest"),
+                    PYTEST_VERSION,
+                )
+
+        for path in (INTEROP_LOCK, INTEROP_LATEST_LOCK):
+            with self.subTest(lock=path.relative_to(ROOT)):
+                requirement_hashes(read(path), "pytest")
+
+        ci = read(CI_WORKFLOW)
+        linux_job = yaml_block(ci, "python-param-store-integration", 2)
+        linux_install = yaml_named_step(linux_job, "Install dependencies")
+        self.assertRegex(
+            linux_install,
+            rf"(?m)^\s+python3 -m pip install --break-system-packages "
+            rf"nanobind==2\.9\.2 numpy==2\.4\.2 pytest=={re.escape(PYTEST_VERSION)}$",
+        )
+        windows_job = yaml_block(ci, "build-windows", 2)
+        windows_install = yaml_named_step(
+            windows_job, "Install Python ParamStore test dependencies"
+        )
+        self.assertRegex(
+            windows_install,
+            rf"(?m)^\s+run: python -m pip install nanobind==2\.9\.2 numpy==2\.4\.2 "
+            rf"pytest=={re.escape(PYTEST_VERSION)}$",
+        )
+        ci_versions = re.findall(r"\bpytest==([^\s\\]+)", yaml_code(ci))
+        self.assertEqual(ci_versions, [PYTEST_VERSION, PYTEST_VERSION])
+
+        records = [" ".join(record.split()) for record in read(NOTICE).split("\n\n")]
+        pytest_records = [record for record in records if record.startswith("pytest ")]
+        self.assertEqual(len(pytest_records), 1)
+        record = pytest_records[0]
+        self.assertTrue(record.startswith(f"pytest {PYTEST_VERSION} "))
+        self.assertIn(
+            "- Role: Python API, interoperability, and wheel validation test runner; "
+            "not bundled in the standard wheel.",
+            record,
+        )
+        self.assertIn("- Source: https://github.com/pytest-dev/pytest", record)
+        self.assertIn("- License: MIT", record)
 
     def test_shared_version_and_release_please_config(self) -> None:
         for path in (RELEASE_CONFIG, RELEASE_MANIFEST):
