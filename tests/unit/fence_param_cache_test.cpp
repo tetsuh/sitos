@@ -297,14 +297,19 @@ using sitos::fence_test_access::FenceTestAccess;
 void LoopBackMarker(
     const std::shared_ptr<sitos::fence_test::DeterministicFenceTransport>& transport,
     std::chrono::milliseconds delay = std::chrono::milliseconds{0}) {
+  // Captured weakly: the transport owns this observer, so a strong capture would
+  // create a reference cycle and leak the transport.
+  std::weak_ptr<sitos::fence_test::DeterministicFenceTransport> weak = transport;
   transport->SetPutObserver(
-      [transport, delay](const sitos::fence_test::DeterministicFenceTransport::PutRecord& record) {
+      [weak, delay](const sitos::fence_test::DeterministicFenceTransport::PutRecord& record) {
         if (record.encoding.id != sitos::Encoding::kSitosV1Fence) return;
         if (!record.options.ack_token.has_value()) return;
         const auto route = FenceTestAccess::ParseMarkerRoute(record.key);
         if (!route.has_value()) return;
         if (delay.count() > 0) std::this_thread::sleep_for(delay);
-        transport->Deliver(FenceTestAccess::MakeCacheMarkerSample(
+        const auto owner = weak.lock();
+        if (!owner) return;
+        owner->Deliver(FenceTestAccess::MakeCacheMarkerSample(
             sitos::fence_test::kPrefix, sitos::fence_test::kSid,
             sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA,
             route->through_sequence,
