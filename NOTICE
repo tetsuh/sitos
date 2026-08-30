@@ -71,13 +71,9 @@ Eclipse zenoh Python API (eclipse-zenoh) 1.9.0
 - Source: https://github.com/eclipse-zenoh/zenoh-python
 - License: EPL-2.0 OR Apache-2.0.
 
-pytest 8.3.3
-- Role: interoperability test runner; not bundled in the standard wheel.
-- Source: https://github.com/pytest-dev/pytest
-- License: MIT.
-
 pytest 9.0.3
-- Role: wheel validation test runner; not bundled in the standard wheel.
+- Role: Python API, interoperability, and wheel validation test runner; not
+  bundled in the standard wheel.
 - Source: https://github.com/pytest-dev/pytest
 - License: MIT.
 
