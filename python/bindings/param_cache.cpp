@@ -8,6 +8,7 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <condition_variable>
 #include <cstddef>
 #include <functional>
@@ -29,6 +30,27 @@ namespace nb = nanobind;
 using namespace nb::literals;
 
 namespace sitos::python::detail {
+namespace {
+
+// Same integer discipline as the shared client timeout validator, with this API's
+// own keyword name in every diagnostic. Declared locally because client_binding.hpp
+// is outside Issue #99's frozen allowlist.
+std::int64_t GetLocalDeliveryTimeout(const nb::handle& value) {
+  if (!nb::isinstance<nb::int_>(value) || nb::isinstance<nb::bool_>(value)) {
+    throw nb::type_error("timeout_ms must be a positive int");
+  }
+  std::int64_t converted = 0;
+  try {
+    converted = nb::cast<std::int64_t>(value);
+  } catch (const nb::cast_error&) {
+    throw nb::value_error("timeout_ms is outside the C++ millisecond range");
+  }
+  if (converted <= 0) throw nb::value_error("timeout_ms must be positive");
+  return converted;
+}
+
+}  // namespace
+
 class PyParamCache {
  public:
   explicit PyParamCache(const std::string& prefix, const nb::object& json,
@@ -67,6 +89,14 @@ class PyParamCache {
         return;
       }
       state->phase = Phase::Closing;
+      native = state->native;
+    }
+    // Cancel the native cache first: an admitted WaitForLocalDelivery is completed with
+    // Disconnected instead of being forced to consume its own timeout while close waits
+    // for in_flight to drain.
+    if (native) native->Detach();
+    {
+      std::unique_lock lock(state->mutex);
       state->condition.wait(lock, [&state] { return state->in_flight == 0; });
       native = std::move(state->native);
     }
@@ -104,6 +134,15 @@ class PyParamCache {
     if (!lease.has_value()) return;
     nb::gil_scoped_release release;
     lease->Native().Detach();
+  }
+
+  void WaitForLocalDelivery(const nb::handle& timeout_input) {
+    auto lease = Acquire();
+    const auto timeout = GetLocalDeliveryTimeout(timeout_input);
+    auto result = InvokeNative(std::move(lease), [timeout](ParamCache& cache) {
+      return cache.WaitForLocalDelivery(std::chrono::milliseconds(timeout));
+    });
+    Take(result);
   }
 
   void Put(const nb::handle& key_input, const nb::handle& value) {
@@ -263,6 +302,8 @@ void BindParamCache(nb::module_& python_module) {
            "traceback"_a.none())
       .def("attach", &PyParamCache::Attach, "sid"_a)
       .def("detach", &PyParamCache::Detach)
+      .def("wait_for_local_delivery", &PyParamCache::WaitForLocalDelivery, nb::kw_only(),
+           "timeout_ms"_a)
       .def("put", &PyParamCache::Put, "key"_a, "value"_a)
       .def("put_batch", &PyParamCache::PutBatch, "entries"_a)
       .def(

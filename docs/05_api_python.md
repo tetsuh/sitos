@@ -128,8 +128,15 @@ and returns
 only after owned native resources are released. Operations after close raise
 `ValueError("ParamCache is closed")`; a harmless repeated `detach` is permitted.
 
-Stale/reconnect state, Python callbacks, and `WaitForLocalDelivery` remain
-deferred to Issues #20, #26, and #99. Issue #27 provides
+`ParamCache.wait_for_local_delivery(*, timeout_ms)` mirrors the C++
+`WaitForLocalDelivery` exactly, including covered-prefix, one-pending-wait, and result semantics.
+`timeout_ms` is required, keyword-only, a non-`bool` integer inside the C++ millisecond range, and
+strictly positive; the binding releases the GIL for the complete native wait and raises the existing
+exception types, so a receiver-side `OutcomeUnknown` raises `OutcomeUnknownError`, a disconnected
+cache raises `DisconnectedError`, and an unobserved completion raises `TimeoutError`. `close`
+cancels an admitted wait before draining binding operations, so a blocked wait is released promptly
+instead of consuming its timeout. Stale/reconnect state and Python callbacks remain deferred to
+Issues #20 and #26. Issue #27 provides
 `ParamCache.get_array(key, *, dtype=...)` as a one-dimensional,
 read-only zero-copy view over immutable cached BYTES. It accepts fixed-width numeric and boolean
 NumPy dtypes, preserves explicit byte order without conversion, and does not infer or serialize

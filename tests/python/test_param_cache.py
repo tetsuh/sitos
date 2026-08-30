@@ -33,8 +33,44 @@ def test_wheel_validator_rejects_param_cache_fixture_member(member: str) -> None
 def test_public_param_cache_is_exported_without_deferred_apis() -> None:
     assert hasattr(sitos, "ParamCache")
     assert hasattr(sitos.ParamCache, "get_array")
+    assert hasattr(sitos.ParamCache, "wait_for_local_delivery")
     assert not hasattr(sitos.ParamCache, "attach_base")
     assert not hasattr(sitos.ParamCache, "stale")
+
+
+def test_wait_for_local_delivery_is_keyword_only_and_validates_timeout() -> None:
+    cache = sitos.ParamCache(query_timeout_ms=5000)
+    try:
+        with pytest.raises(TypeError):
+            cache.wait_for_local_delivery(1000)
+        with pytest.raises(TypeError):
+            cache.wait_for_local_delivery()
+        # bool is an int subtype at type-check time, so it is rejected at runtime.
+        with pytest.raises(TypeError):
+            cache.wait_for_local_delivery(timeout_ms=True)
+        with pytest.raises(TypeError):
+            cache.wait_for_local_delivery(timeout_ms="1000")
+        for timeout in (0, -1, 2**63):
+            with pytest.raises(ValueError):
+                cache.wait_for_local_delivery(timeout_ms=timeout)
+    finally:
+        cache.close()
+
+
+def test_closed_wait_for_local_delivery_rejects_before_timeout_conversion() -> None:
+    cache = sitos.ParamCache(query_timeout_ms=5000)
+    cache.close()
+    with pytest.raises(ValueError, match="ParamCache is closed"):
+        cache.wait_for_local_delivery(timeout_ms=object())
+
+
+def test_detached_wait_for_local_delivery_raises_value_error() -> None:
+    cache = sitos.ParamCache(query_timeout_ms=5000)
+    try:
+        with pytest.raises(ValueError):
+            cache.wait_for_local_delivery(timeout_ms=1000)
+    finally:
+        cache.close()
 
 
 def test_closed_get_array_rejects_before_key_and_dtype_conversion() -> None:

@@ -499,10 +499,13 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 ### #99 ParamCache local-delivery fence
 * Milestone: v0.5
 * References: ADR-0029, [02] §4.3/§5, [04] §4
-* Implementation targets: `include/sitos/param_cache.hpp`, `src/param_cache.cpp`, and deterministic
-  fake-Transport plus Zenoh integration tests
-* Scope: expose `WaitForLocalDelivery(timeout)` using the shared same-publisher fence primitive;
-  wait only for the initiating cache subscriber, not peers or StorageNode acknowledgements
+* Implementation targets: `include/sitos/param_cache.hpp`, `src/param_cache.cpp`, `src/fence.cpp`,
+  `src/fence_internal.hpp`, `python/bindings/param_cache.cpp`, `python/sitos/cache.pyi`, and
+  deterministic fake-Transport plus Zenoh integration tests
+* Scope: expose `WaitForLocalDelivery(timeout)` and Python `wait_for_local_delivery` using the
+  shared same-publisher fence primitive; wait only for the initiating cache subscriber, not peers or
+  StorageNode acknowledgements; correct the shared waiter so only a completion that linearizes
+  strictly before the deadline succeeds, and saturate oversized positive deadlines
 * Acceptance criteria: prior local writes observed, later writes excluded, timeout/error mapping,
   concurrent waiter isolation, and Detach/move/destruction quiescence
 * Depends on: #19, #158; Accepted ADR-0029 is the normative ordering authority

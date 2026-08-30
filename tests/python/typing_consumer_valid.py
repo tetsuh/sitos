@@ -28,3 +28,7 @@ def accepts_cache_error(error: CacheSitosError) -> None:
 
 def accepts_store_error(error: StoreSitosError) -> None:
     accepts_root_error(error)
+
+
+def _wait_for_local_delivery(cache: sitos.ParamCache) -> None:
+    cache.wait_for_local_delivery(timeout_ms=1000)
