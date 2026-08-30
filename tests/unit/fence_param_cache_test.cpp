@@ -364,6 +364,33 @@ void LoopBackMarker(
       });
 }
 
+// Delivers a marker for the submitted token whose route carries `through_override`
+// and, optionally, a payload the marker codec rejects.
+void LoopBackMarkerWith(
+    const std::shared_ptr<sitos::fence_test::DeterministicFenceTransport>& transport,
+    std::optional<std::uint64_t> through_override, bool malformed_payload = false) {
+  std::weak_ptr<sitos::fence_test::DeterministicFenceTransport> weak = transport;
+  transport->SetPutObserver(
+      [weak, through_override,
+       malformed_payload](const sitos::fence_test::DeterministicFenceTransport::PutRecord& record) {
+        if (record.encoding.id != sitos::Encoding::kSitosV1Fence) return;
+        if (!record.options.ack_token.has_value()) return;
+        const auto route = FenceTestAccess::ParseMarkerRoute(record.key);
+        if (!route.has_value()) return;
+        const auto owner = weak.lock();
+        if (!owner) return;
+        auto sample = FenceTestAccess::MakeCacheMarkerSample(
+            sitos::fence_test::kPrefix, sitos::fence_test::kSid,
+            sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA,
+            through_override.value_or(route->through_sequence),
+            FenceTestAccess::ClassifyAttachment(
+                sitos::EncodeAckAttachment(*record.options.ack_token)));
+        static constexpr std::array<std::byte, 1> unsupported_marker{std::byte{2}};
+        if (malformed_payload) sample.payload = unsupported_marker;
+        owner->Deliver(sample);
+      });
+}
+
 TEST(FenceParamCacheTest, PublicWaitCoversPriorWritesAndExcludesLaterWrites) {
   auto transport = sitos::fence_test::MakeTransport();
   auto cache_result = sitos::fence_test::OpenAttachedCache(transport);
@@ -423,6 +450,21 @@ TEST(FenceParamCacheTest, PublicWaitCoversPriorWritesAndExcludesLaterWrites) {
                                                           sitos::fence_test::kPublisherA, 3));
   EXPECT_TRUE(cache.WaitForLocalDelivery(sitos::fence_test::kDeadline).IsOk());
   EXPECT_EQ(FenceTestAccess::CacheCompletedThrough(cache), 3U);
+
+  // Same-key Put -> wait -> Put: each write consumes its own sequence and the second
+  // write is excluded from the completed prefix of the first wait.
+  ASSERT_TRUE(cache.Put("same-key", std::int64_t{1}).IsOk());
+  transport->Deliver(FenceTestAccess::MakeCoveredCachePut("sitos/session/s1/same-key",
+                                                          sitos::fence_test::kPublisherA, 4));
+  ASSERT_TRUE(cache.WaitForLocalDelivery(sitos::fence_test::kDeadline).IsOk());
+  EXPECT_EQ(FenceTestAccess::CacheCompletedThrough(cache), 4U);
+  ASSERT_TRUE(cache.Put("same-key", std::int64_t{2}).IsOk());
+  EXPECT_EQ(FenceTestAccess::CacheCompletedThrough(cache), 4U)
+      << "the second same-key write is not in the first wait's prefix";
+  transport->Deliver(FenceTestAccess::MakeCoveredCachePut("sitos/session/s1/same-key",
+                                                          sitos::fence_test::kPublisherA, 5));
+  ASSERT_TRUE(cache.WaitForLocalDelivery(sitos::fence_test::kDeadline).IsOk());
+  EXPECT_EQ(FenceTestAccess::CacheCompletedThrough(cache), 5U);
 
   // Control data never becomes cache content.
   EXPECT_FALSE(FenceTestAccess::CacheContains(cache, ":batch"));
@@ -505,6 +547,42 @@ TEST(FenceParamCacheTest, PublicWaitMapsValidationTimeoutAndReceiverFailure) {
     const auto result = cache.WaitForLocalDelivery(sitos::fence_test::kDeadline);
     ASSERT_FALSE(result.IsOk());
     EXPECT_EQ(result.StatusCode(), sitos::Status::OutcomeUnknown);
+    EXPECT_EQ(result.Error(), sitos::MakeErrorCode(sitos::Status::OutcomeUnknown))
+        << "no native cause is invented for a receiver-side result";
+  }
+
+  {  // A remote Error result maps to Status::Error and claims no native cause: a
+     // receiver-side AckResult carries status and message wire fields only.
+    auto transport = sitos::fence_test::MakeTransport();
+    auto cache_result = sitos::fence_test::OpenAttachedCache(transport);
+    ASSERT_TRUE(cache_result.IsOk());
+    auto cache = std::move(cache_result).Value();
+    ASSERT_TRUE(FenceTestAccess::ConfigureCacheFenceReceiver(
+        cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA));
+    LoopBackMarkerWith(transport, std::nullopt, /*malformed_payload=*/true);
+    const auto result = cache.WaitForLocalDelivery(sitos::fence_test::kDeadline);
+    ASSERT_FALSE(result.IsOk());
+    EXPECT_EQ(result.StatusCode(), sitos::Status::Error);
+    // A receiver-side AckResult carries status and message wire fields only, so the
+    // cause must be the canonical code for that Status and never a native
+    // (transport or OS) category the wire result cannot carry.
+    EXPECT_EQ(result.Error(), sitos::MakeErrorCode(sitos::Status::Error));
+    EXPECT_STREQ(result.Error().category().name(), "sitos.status");
+  }
+
+  {  // An impossible result shape is Status::Error rather than success: the route names
+     // a through value the pending handle never requested.
+    auto transport = sitos::fence_test::MakeTransport();
+    auto cache_result = sitos::fence_test::OpenAttachedCache(transport);
+    ASSERT_TRUE(cache_result.IsOk());
+    auto cache = std::move(cache_result).Value();
+    ASSERT_TRUE(FenceTestAccess::ConfigureCacheFenceReceiver(
+        cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA));
+    LoopBackMarkerWith(transport, /*through_override=*/9);
+    const auto result = cache.WaitForLocalDelivery(sitos::fence_test::kDeadline);
+    ASSERT_FALSE(result.IsOk());
+    EXPECT_EQ(result.StatusCode(), sitos::Status::Error);
+    EXPECT_FALSE(result.Message().empty());
   }
 
   {  // A detached cache rejects the wait before submitting anything.
