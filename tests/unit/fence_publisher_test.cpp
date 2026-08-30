@@ -391,6 +391,34 @@ TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
   EXPECT_EQ(synchronous_replacement_publisher.SubmitPut().StatusCode(),
             sitos::Status::Disconnected);
 
+  // Once terminal publication has sampled the original generation, a later
+  // replacement before marker Put returns cannot discard that immutable result.
+  auto completed_then_replaced_transport = sitos::fence_test::MakeTransport();
+  auto completed_then_replaced_publisher =
+      sitos::fence_test_access::FenceTestAccess::CreatePublisher(
+          *completed_then_replaced_transport, sitos::fence_test::kPublisherB,
+          sitos::fence_test_access::FenceTestAccess::CacheReceiverBinding(
+              sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration));
+  completed_then_replaced_transport->SetPutObserver(
+      [&completed_then_replaced_transport, &completed_then_replaced_publisher](const auto& record) {
+        if (record.encoding.id == sitos::Encoding::kSitosV1Fence &&
+            record.options.ack_token.has_value()) {
+          sitos::fence_test_access::FenceTestAccess::CompletePublisherFence(
+              completed_then_replaced_publisher, *record.options.ack_token);
+          completed_then_replaced_transport->ReplaceGeneration();
+        }
+      });
+  auto completed_then_replaced =
+      completed_then_replaced_publisher.BeginFence(sitos::fence_test::kDeadline);
+  ASSERT_TRUE(completed_then_replaced.IsOk())
+      << "post-Put generation detection discarded a terminal result";
+  const auto retained_completion =
+      completed_then_replaced_publisher.Wait(completed_then_replaced.Value());
+  ASSERT_TRUE(retained_completion.IsOk());
+  EXPECT_EQ(retained_completion.Value().status, sitos::Status::Ok);
+  EXPECT_EQ(completed_then_replaced_publisher.SubmitPut().StatusCode(),
+            sitos::Status::Disconnected);
+
   // The same boundary applies when completion is delayed until after Put
   // returns. In contrast, an Ok completion observed before replacement remains
   // immutable (covered near the end of this test).

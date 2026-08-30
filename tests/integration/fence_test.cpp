@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -352,17 +353,39 @@ TEST(FenceZenohIntegrationTest, QualifiesPublicParamCacheLocalDelivery) {
   ASSERT_TRUE(value.IsOk());
   EXPECT_EQ(value.Value(), 7);
 
-  // A peer cache is never waited for: it may still be behind when the wait returns.
+  // A peer cache on a separate Zenoh session is never waited for. Hold its data
+  // callback before application and prove the initiating cache still completes.
+  auto peer_transport_owner = sitos::MakeZenohTransport();
+  ASSERT_TRUE(peer_transport_owner) << "Failed to open peer zenoh session";
+  std::shared_ptr<sitos::Transport> peer_transport(peer_transport_owner.release());
   sitos::ClientConfig peer_config;
   peer_config.prefix = prefix;
   peer_config.query_timeout = 1s;
   peer_config.log_sink = nullptr;
-  auto peer_opened = sitos::ParamCache::Open(transport, std::move(peer_config));
+  auto peer_opened = sitos::ParamCache::Open(peer_transport, std::move(peer_config));
   ASSERT_TRUE(peer_opened.IsOk());
   auto peer = std::move(peer_opened).Value();
   ASSERT_TRUE(peer.Attach("s1").IsOk());
-  ASSERT_TRUE(cache.Put("peer-independent", std::int64_t{9}).IsOk());
-  EXPECT_TRUE(cache.WaitForLocalDelivery(5s).IsOk());
+  ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::GateCacheCallback(peer));
+  const auto peer_write = cache.Put("peer-independent", std::int64_t{9});
+  if (!peer_write.IsOk()) {
+    static_cast<void>(sitos::fence_test_access::FenceTestAccess::ReleaseCacheCallback(peer));
+    FAIL() << peer_write.Message();
+  }
+  ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::WaitForCacheCallbackBlocked(peer));
+
+  auto initiating_wait =
+      std::async(std::launch::async, [&cache] { return cache.WaitForLocalDelivery(5s); });
+  const auto wait_status = initiating_wait.wait_for(2s);
+  const auto peer_value_while_blocked = peer.Contains("peer-independent");
+  EXPECT_TRUE(sitos::fence_test_access::FenceTestAccess::ReleaseCacheCallback(peer));
+  const auto peer_independent = initiating_wait.get();
+  ASSERT_EQ(wait_status, std::future_status::ready)
+      << "the initiating wait depended on a blocked peer cache";
+  ASSERT_TRUE(peer_independent.IsOk()) << peer_independent.Message();
+  ASSERT_TRUE(peer_value_while_blocked.IsOk());
+  EXPECT_FALSE(peer_value_while_blocked.Value())
+      << "the peer must still be behind when the initiating wait completes";
 
   // Control data never appears as a cache value.
   EXPECT_FALSE(cache.Contains("meta").Value());

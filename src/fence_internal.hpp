@@ -130,6 +130,7 @@ struct FenceWaiterState {
   std::mutex mutex;
   std::condition_variable condition;
   bool terminal = false;
+  bool completed_on_bound_generation = false;
   std::optional<AckResultV1> result;
   /// Monotonic instant at which the terminal result linearized. ADR-0029 makes a
   /// completion successful only when it precedes the handle deadline, so a

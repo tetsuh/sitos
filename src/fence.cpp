@@ -40,6 +40,14 @@ std::optional<AckResultV1> TerminalResultBefore(
   return waiter->result;
 }
 
+bool TerminalResultPublishedOnBoundGenerationBefore(
+    const std::shared_ptr<fence_internal::FenceWaiterState>& waiter,
+    std::chrono::steady_clock::time_point deadline) {
+  std::scoped_lock lock(waiter->mutex);
+  return waiter->terminal && waiter->completed_on_bound_generation && waiter->result.has_value() &&
+         waiter->completed_at.has_value() && *waiter->completed_at < deadline;
+}
+
 }  // namespace
 
 using namespace fence_internal;
@@ -722,6 +730,7 @@ std::optional<bool> fence_internal::FencePublisher::PublishWaiterResult(
     mismatch = true;
     waiter->result = DisconnectedResult(through_sequence);
   }
+  waiter->completed_on_bound_generation = !mismatch;
   waiter->completed_at = std::chrono::steady_clock::now();
   waiter->terminal = true;
   return mismatch;
@@ -869,6 +878,12 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
     may_have_submitted_ = true;
     lane_lock.unlock();
     QuiescePeerOperations();
+    // CheckGeneration permanently disconnects the lane, but it cannot revoke a
+    // result whose final generation sample and terminal publication both occurred
+    // on the old generation before replacement and deadline.
+    if (TerminalResultPublishedOnBoundGenerationBefore(handle.waiter, handle.deadline)) {
+      return Result<FenceHandle>::Ok(std::move(handle));
+    }
     return Result<FenceHandle>::Err(Status::Disconnected);
   }
   return Result<FenceHandle>::Ok(std::move(handle));
