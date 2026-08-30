@@ -697,8 +697,8 @@ void fence_internal::FencePublisher::MarkGenerationMismatch() {
 
 AckResultV1 fence_internal::FencePublisher::DisconnectedResult(
     std::uint64_t through_sequence) const {
-  return {AckOperationKind::Fence, Status::Disconnected, binding_.durability, 0,
-          kAckNoFailedIndex, through_sequence, kAckNoFailedSequence, ""};
+  return {AckOperationKind::Fence, Status::Disconnected, binding_.durability,  0,
+          kAckNoFailedIndex,       through_sequence,     kAckNoFailedSequence, ""};
 }
 
 std::optional<bool> fence_internal::FencePublisher::PublishWaiterResult(
@@ -897,13 +897,22 @@ Result<AckResultV1> fence_internal::FencePublisher::Wait(const FenceHandle& hand
     AckResultV1 retained{
         AckOperationKind::Fence, Status::Disconnected,    binding_.durability,  0,
         kAckNoFailedIndex,       handle.through_sequence, kAckNoFailedSequence, ""};
+    bool completed_before_deadline = false;
     {
       std::scoped_lock waiter_lock(handle.waiter->mutex);
-      if (handle.waiter->terminal && handle.waiter->result.has_value()) {
+      if (handle.waiter->terminal && handle.waiter->result.has_value() &&
+          handle.waiter->completed_at.has_value() &&
+          *handle.waiter->completed_at < handle.deadline) {
         retained = *handle.waiter->result;
+        completed_before_deadline = true;
       } else if (!handle.waiter->terminal) {
-        handle.waiter->result = retained;
+        const auto completed_at = std::chrono::steady_clock::now();
         handle.waiter->terminal = true;
+        if (completed_at < handle.deadline) {
+          handle.waiter->result = retained;
+          handle.waiter->completed_at = completed_at;
+          completed_before_deadline = true;
+        }
       }
     }
     {
@@ -911,6 +920,7 @@ Result<AckResultV1> fence_internal::FencePublisher::Wait(const FenceHandle& hand
       if (pending_.has_value() && pending_->token == handle.token) pending_.reset();
     }
     handle.waiter->condition.notify_all();
+    if (!completed_before_deadline) return Result<AckResultV1>::Err(Status::Timeout);
     return Result<AckResultV1>::Ok(std::move(retained));
   }
   ActiveOperationGuard operation(wait_lifecycle_mutex_, wait_lifecycle_condition_,
@@ -939,14 +949,25 @@ Result<AckResultV1> fence_internal::FencePublisher::Wait(const FenceHandle& hand
     if (result.IsOk()) {
       std::scoped_lock waiter_lock(handle.waiter->mutex);
       if (!handle.waiter->terminal) {
-        handle.waiter->result = result.Value();
-        handle.waiter->terminal = true;
-      } else if (handle.waiter->result.has_value()) {
+        const auto completed_at = std::chrono::steady_clock::now();
+        if (completed_at < handle.deadline) {
+          handle.waiter->result = result.Value();
+          handle.waiter->completed_at = completed_at;
+          handle.waiter->terminal = true;
+        } else {
+          result = Result<AckResultV1>::Err(Status::Timeout);
+        }
+      } else if (handle.waiter->result.has_value() && handle.waiter->completed_at.has_value() &&
+                 *handle.waiter->completed_at < handle.deadline) {
         result = Result<AckResultV1>::Ok(*handle.waiter->result);
+      } else {
+        result = Result<AckResultV1>::Err(Status::Timeout);
       }
     } else {
       std::scoped_lock waiter_lock(handle.waiter->mutex);
-      if (handle.waiter->terminal && handle.waiter->result.has_value()) {
+      if (handle.waiter->terminal && handle.waiter->result.has_value() &&
+          handle.waiter->completed_at.has_value() &&
+          *handle.waiter->completed_at < handle.deadline) {
         result = Result<AckResultV1>::Ok(*handle.waiter->result);
       }
     }

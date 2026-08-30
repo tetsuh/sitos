@@ -8,13 +8,14 @@
 
 #include <cassert>
 #include <chrono>
-#include <cstdint>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -49,10 +50,152 @@ std::int64_t GetLocalDeliveryTimeout(const nb::handle& value) {
   return converted;
 }
 
+#if SITOS_PYTHON_TEST_SUPPORT
+class PythonParamCacheTestBoundary {
+ public:
+  void Reset() {
+    std::lock_guard lock(mutex_);
+    entered_ = false;
+    released_ = false;
+  }
+
+  void SignalEntered() {
+    {
+      std::lock_guard lock(mutex_);
+      entered_ = true;
+    }
+    condition_.notify_all();
+  }
+
+  void EnterAndWait() {
+    std::unique_lock lock(mutex_);
+    entered_ = true;
+    condition_.notify_all();
+    static_cast<void>(
+        condition_.wait_for(lock, std::chrono::seconds{5}, [this] { return released_; }));
+  }
+
+  bool WaitForEntered() {
+    std::unique_lock lock(mutex_);
+    return condition_.wait_for(lock, std::chrono::seconds{5}, [this] { return entered_; });
+  }
+
+  void Release() {
+    {
+      std::lock_guard lock(mutex_);
+      released_ = true;
+    }
+    condition_.notify_all();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable condition_;
+  bool entered_ = false;
+  bool released_ = false;
+};
+
+PythonParamCacheTestBoundary& TestBoundary() {
+  static PythonParamCacheTestBoundary boundary;
+  return boundary;
+}
+
+class PythonParamCacheTestTransport final : public Transport {
+ public:
+  explicit PythonParamCacheTestTransport(std::string mode) : mode_(std::move(mode)) {
+    if (mode_ != "success" && mode_ != "timeout" && mode_ != "outcome_unknown" &&
+        mode_ != "delayed") {
+      throw std::invalid_argument("unknown ParamCache test mode: " + mode_);
+    }
+  }
+
+  bool SupportsFenceProfile() const noexcept override { return true; }
+  std::uint64_t FenceGeneration() const noexcept override { return 1; }
+
+  Result<void> Put(std::string_view key, std::span<const std::byte> payload, Encoding encoding,
+                   PutOptions options) override {
+    const bool marker = encoding.id == Encoding::kSitosV1Fence;
+    if (marker && mode_ == "timeout") {
+      TestBoundary().SignalEntered();
+      return Result<void>::Ok();
+    }
+    if (marker && mode_ == "delayed") TestBoundary().EnterAndWait();
+    if (!marker && mode_ == "outcome_unknown") return Result<void>::Ok();
+
+    std::function<void(const TransportSample&)> callback;
+    {
+      std::lock_guard lock(mutex_);
+      callback = marker ? marker_callback_ : data_callback_;
+    }
+    if (!callback) return Result<void>::Ok();
+
+    AckAttachmentObservation ack = AckAttachmentAbsent{};
+    if (options.ack_token.has_value()) ack = *options.ack_token;
+    FenceLaneObservation lane = FenceLaneAbsent{};
+    if (options.fence_lane.has_value()) lane = *options.fence_lane;
+    const TransportSample sample{std::string(key),           payload,
+                                 std::move(encoding),        std::move(ack),
+                                 TransportSample::Kind::Put, std::move(lane)};
+    callback(sample);
+    return Result<void>::Ok();
+  }
+
+  Result<void> Delete(std::string_view, PutOptions) override { return Result<void>::Ok(); }
+
+  Result<void> Get(std::string_view, const QueryResultSink&, std::chrono::milliseconds) override {
+    return Result<void>::Ok();
+  }
+
+  Result<Subscription> DeclareSubscriber(
+      std::string_view keyexpr, std::function<void(const TransportSample&)> callback) override {
+    std::lock_guard lock(mutex_);
+    if (keyexpr.find("/meta/fence/cache/") != std::string_view::npos) {
+      marker_callback_ = std::move(callback);
+    } else {
+      data_callback_ = std::move(callback);
+    }
+    return Result<Subscription>::Ok(Subscription{});
+  }
+
+  Result<Queryable> DeclareQueryable(std::string_view,
+                                     std::function<void(TransportQuery&)>) override {
+    return Result<Queryable>::Ok(Queryable{});
+  }
+
+ private:
+  const std::string mode_;
+  std::mutex mutex_;
+  std::function<void(const TransportSample&)> data_callback_;
+  std::function<void(const TransportSample&)> marker_callback_;
+};
+#endif
+
 }  // namespace
 
 class PyParamCache {
  public:
+#if SITOS_PYTHON_TEST_SUPPORT
+  static PyParamCache* TestCache(const std::string& mode) {
+    auto transport = std::make_shared<PythonParamCacheTestTransport>(mode);
+    ClientConfig config;
+    config.prefix = "sitos/python_cache_test";
+    config.query_timeout = std::chrono::milliseconds{100};
+    auto opened = ParamCache::Open(std::move(transport), std::move(config));
+    auto cache = std::make_shared<ParamCache>(Take(std::move(opened)));
+    Take(cache->Attach("s1"));
+    return new PyParamCache(std::move(cache));
+  }
+
+  static void ResetTestWait() { TestBoundary().Reset(); }
+
+  static bool WaitForTestWait() {
+    nb::gil_scoped_release release;
+    return TestBoundary().WaitForEntered();
+  }
+
+  static void ReleaseTestWait() { TestBoundary().Release(); }
+#endif
+
   explicit PyParamCache(const std::string& prefix, const nb::object& json,
                         const nb::handle& timeout) {
     ClientConfig config;
@@ -212,6 +355,10 @@ class PyParamCache {
   }
 
  private:
+#if SITOS_PYTHON_TEST_SUPPORT
+  explicit PyParamCache(std::shared_ptr<ParamCache> native) { state_->native = std::move(native); }
+#endif
+
   enum class Phase { Open, Closing, Closed };
 
   struct State {
@@ -278,8 +425,8 @@ class PyParamCache {
   }
 
   template <typename Operation>
-  static auto InvokeNative(OperationLease lease, Operation&& operation)
-      -> std::invoke_result_t<Operation, ParamCache&> {
+  static auto InvokeNative(OperationLease lease,
+                           Operation&& operation) -> std::invoke_result_t<Operation, ParamCache&> {
     nb::gil_scoped_release release;
     return std::forward<Operation>(operation)(lease.Native());
   }
@@ -297,6 +444,12 @@ void BindParamCache(nb::module_& python_module) {
       .def(nb::init<const std::string&, const nb::object&, const nb::handle>(), nb::kw_only(),
            "prefix"_a = "sitos", "zenoh_config_json"_a = nb::none(), "query_timeout_ms"_a = 5000)
       .def("close", &PyParamCache::Close)
+#if SITOS_PYTHON_TEST_SUPPORT
+      .def_static("_test_cache", &PyParamCache::TestCache, "mode"_a, nb::rv_policy::take_ownership)
+      .def_static("_test_reset_wait", &PyParamCache::ResetTestWait)
+      .def_static("_test_wait_entered", &PyParamCache::WaitForTestWait)
+      .def_static("_test_release_wait", &PyParamCache::ReleaseTestWait)
+#endif
       .def("__enter__", &PyParamCache::Enter, nb::rv_policy::reference_internal)
       .def("__exit__", &PyParamCache::Exit, "exc_type"_a.none(), "exc_value"_a.none(),
            "traceback"_a.none())

@@ -241,14 +241,17 @@ jobs:
           ) -join " && "
           cmd /c $commands
 
-      - name: Run Python ParamStore tests with source test support
+      - name: Run Python client tests with source test support
         shell: pwsh
         run: |
           $extension = Get-ChildItem build/dev-windows -Recurse -Filter "_sitos*.pyd" | Select-Object -First 1
           if ($null -eq $extension) { throw "built _sitos extension was not found" }
-          $fixture = Get-ChildItem build/dev-windows -Recurse `
+          $storeFixture = Get-ChildItem build/dev-windows -Recurse `
             -Filter "sitos_python_param_store_fixture.exe" | Select-Object -First 1
-          if ($null -eq $fixture) { throw "ParamStore fixture executable was not found" }
+          if ($null -eq $storeFixture) { throw "ParamStore fixture executable was not found" }
+          $cacheFixture = Get-ChildItem build/dev-windows -Recurse `
+            -Filter "sitos_python_param_cache_fixture.exe" | Select-Object -First 1
+          if ($null -eq $cacheFixture) { throw "ParamCache fixture executable was not found" }
           $destination = Join-Path (Resolve-Path python/sitos) $extension.Name
           Copy-Item $extension.FullName $destination -Force
           $copiedDlls = @()
@@ -260,11 +263,17 @@ jobs:
           try {
             $env:PYTHONPATH = (Resolve-Path python).Path
             $env:PATH = "$(Resolve-Path python/sitos);$env:PATH"
-            $env:SITOS_PYTHON_FIXTURE = $fixture.FullName
+            $env:SITOS_PYTHON_FIXTURE = $storeFixture.FullName
+            $env:SITOS_PYTHON_CACHE_FIXTURE = $cacheFixture.FullName
             $env:SITOS_PYTHON_TEST_SUPPORT = "1"
-            python -m pytest tests/python/test_param_store.py -q
+            python -m pytest `
+              tests/python/test_param_store.py `
+              tests/python/test_param_cache.py `
+              tests/python/test_param_cache_live.py -q
+            if ($LASTEXITCODE -ne 0) { throw "Python client tests failed: $LASTEXITCODE" }
           } finally {
             Remove-Item Env:SITOS_PYTHON_FIXTURE -ErrorAction SilentlyContinue
+            Remove-Item Env:SITOS_PYTHON_CACHE_FIXTURE -ErrorAction SilentlyContinue
             Remove-Item Env:SITOS_PYTHON_TEST_SUPPORT -ErrorAction SilentlyContinue
             Remove-Item $destination -Force -ErrorAction SilentlyContinue
             $copiedDlls | ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }

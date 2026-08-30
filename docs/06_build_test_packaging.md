@@ -293,10 +293,10 @@ Issues #158 and #99 fix these exact Fence acceptance names:
 - `FenceParamCacheTest.PublicWaitMapsValidationTimeoutAndReceiverFailure`
 - `FenceParamCacheTest.PublicWaitRejectsSecondPendingWaitWithoutCorruptingFirst`
 - `FenceLifecycleTest.PublicWaitDetachCancelsAndQuiesces`
-- `FenceZenohIntegrationTest.QualifiesPublicParamCacheLocalDelivery`
 - `FenceStorageNodeTest.DispatchesFenceAndBindsTheSessionGeneration`
 - `FenceCollisionTest.PinsDocumentedUuidAndTokenResidualBoundaries`
 - `FenceLifecycleTest.QuiescesCallbacksAndPreventsPostReturnAccess`
+- `FenceZenohIntegrationTest.QualifiesPublicParamCacheLocalDelivery`
 - `FenceZenohIntegrationTest.QualifiesTopologiesQosAndControlIsolation`
 - `FenceRawZenohInteropTest.QualifiesPayloadTransparencyAndControlIsolation`
 

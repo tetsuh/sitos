@@ -1,6 +1,9 @@
 import sitos
 
 cache = sitos.ParamCache()
+cache.wait_for_local_delivery(1000)  # E: wait timeout_ms is keyword-only
+cache.wait_for_local_delivery()  # E: missing wait timeout_ms
+cache.wait_for_local_delivery(timeout_ms="1000")  # E: wait timeout_ms must be int
 cache.get_array("array")  # E: missing keyword-only dtype
 cache.put("array", bytearray(b"invalid"))  # E: unsupported ParamInput
 cache.get("array", type=list)  # E: unsupported exact built-in type

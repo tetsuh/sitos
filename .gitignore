@@ -88,8 +88,6 @@ dmypy.json
 
 # === Project-specific ===
 /vcpkg_installed/
-/.pi/
-/.pi-subagents/
 
 # Private handoff document is kept out of the public repository.
 HANDOFF.md

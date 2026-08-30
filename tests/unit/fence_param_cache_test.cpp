@@ -5,7 +5,11 @@
 
 #include <array>
 #include <chrono>
+#include <condition_variable>
+#include <future>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <system_error>
 #include <thread>
@@ -292,21 +296,63 @@ TEST(FenceParamCacheTest, CompletesOnlyTheMatchingAttachGeneration) {
 
 using sitos::fence_test_access::FenceTestAccess;
 
-// Loops a submitted cache marker back to the subscriber, optionally after a delay,
-// so a synchronous in-process completion can be observed by the waiter.
+class MarkerCallbackGate {
+ public:
+  void Block() {
+    std::unique_lock lock(mutex_);
+    entered_at_ = std::chrono::steady_clock::now();
+    condition_.notify_all();
+    condition_.wait(lock, [this] { return released_; });
+  }
+
+  bool WaitForEntry(std::chrono::milliseconds timeout) {
+    std::unique_lock lock(mutex_);
+    return condition_.wait_for(lock, timeout, [this] { return entered_at_.has_value(); });
+  }
+
+  std::chrono::steady_clock::time_point EnteredAt() const {
+    std::scoped_lock lock(mutex_);
+    return *entered_at_;
+  }
+
+  void Release() {
+    {
+      std::scoped_lock lock(mutex_);
+      released_ = true;
+    }
+    condition_.notify_all();
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  std::condition_variable condition_;
+  std::optional<std::chrono::steady_clock::time_point> entered_at_;
+  bool released_ = false;
+};
+
+void WaitUntilDeadline(std::chrono::steady_clock::time_point deadline) {
+  std::mutex mutex;
+  std::condition_variable condition;
+  std::unique_lock lock(mutex);
+  static_cast<void>(condition.wait_until(lock, deadline, [] { return false; }));
+}
+
+// Loops a submitted cache marker back to the subscriber, optionally through a
+// deterministic gate, so synchronous in-process completion is observable.
 void LoopBackMarker(
     const std::shared_ptr<sitos::fence_test::DeterministicFenceTransport>& transport,
-    std::chrono::milliseconds delay = std::chrono::milliseconds{0}) {
+    std::shared_ptr<MarkerCallbackGate> gate = {}) {
   // Captured weakly: the transport owns this observer, so a strong capture would
   // create a reference cycle and leak the transport.
   std::weak_ptr<sitos::fence_test::DeterministicFenceTransport> weak = transport;
   transport->SetPutObserver(
-      [weak, delay](const sitos::fence_test::DeterministicFenceTransport::PutRecord& record) {
+      [weak, gate = std::move(gate)](
+          const sitos::fence_test::DeterministicFenceTransport::PutRecord& record) {
         if (record.encoding.id != sitos::Encoding::kSitosV1Fence) return;
         if (!record.options.ack_token.has_value()) return;
         const auto route = FenceTestAccess::ParseMarkerRoute(record.key);
         if (!route.has_value()) return;
-        if (delay.count() > 0) std::this_thread::sleep_for(delay);
+        if (gate) gate->Block();
         const auto owner = weak.lock();
         if (!owner) return;
         owner->Deliver(FenceTestAccess::MakeCacheMarkerSample(
@@ -413,8 +459,18 @@ TEST(FenceParamCacheTest, PublicWaitMapsValidationTimeoutAndReceiverFailure) {
     auto cache = std::move(cache_result).Value();
     ASSERT_TRUE(FenceTestAccess::ConfigureCacheFenceReceiver(
         cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA));
-    LoopBackMarker(transport, std::chrono::milliseconds{60});
-    const auto result = cache.WaitForLocalDelivery(std::chrono::milliseconds{20});
+    constexpr auto timeout = std::chrono::milliseconds{250};
+    auto gate = std::make_shared<MarkerCallbackGate>();
+    LoopBackMarker(transport, gate);
+    auto wait = std::async(std::launch::async, [&] { return cache.WaitForLocalDelivery(timeout); });
+    if (!gate->WaitForEntry(std::chrono::seconds{2})) {
+      gate->Release();
+      FAIL() << "synchronous marker callback did not reach its deterministic gate";
+    }
+    WaitUntilDeadline(gate->EnteredAt() + timeout);
+    gate->Release();
+    ASSERT_EQ(wait.wait_for(std::chrono::seconds{2}), std::future_status::ready);
+    const auto result = wait.get();
     ASSERT_FALSE(result.IsOk()) << "late synchronous completion must not win the deadline race";
     EXPECT_EQ(result.StatusCode(), sitos::Status::Timeout);
   }
@@ -461,7 +517,12 @@ TEST(FenceParamCacheTest, PublicWaitRejectsSecondPendingWaitWithoutCorruptingFir
   transport->GateMarkerCompletion();
   sitos::Result<void> first = sitos::Result<void>::Err(sitos::Status::Error, "unset");
   std::thread waiter([&] { first = cache.WaitForLocalDelivery(std::chrono::seconds{5}); });
-  while (transport->MarkerCount() == 0) std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  if (!sitos::fence_test::WaitUntil([&] { return transport->MarkerCount() == 1; },
+                                    std::chrono::seconds{2})) {
+    transport->ReleaseMarkerCompletion();
+    waiter.join();
+    FAIL() << "first marker was not submitted";
+  }
 
   const auto second = cache.WaitForLocalDelivery(sitos::fence_test::kDeadline);
   ASSERT_FALSE(second.IsOk());

@@ -95,6 +95,132 @@ def _new_cache(config: dict[str, object]):
     return sitos.ParamCache(**config)
 
 
+def _new_fence_cache(config: dict[str, object]) -> sitos.ParamCache:
+    fence_config = dict(config)
+    # Fence capability is intentionally unavailable for caller-supplied Zenoh
+    # configurations because their key-specific QoS cannot be inspected. The
+    # default session still discovers the fixture's peer deterministically.
+    fence_config.pop("zenoh_config_json")
+    return _new_cache(fence_config)
+
+
+def _new_test_cache(mode: str) -> sitos.ParamCache:
+    factory = getattr(sitos.ParamCache, "_test_cache", None)
+    if factory is None:
+        pytest.skip("source-only ParamCache test support is unavailable")
+    return factory(mode)
+
+
+def test_wait_for_local_delivery_succeeds_after_local_write(live_cache_fixture) -> None:
+    _, config = live_cache_fixture
+    cache = _new_fence_cache(config)
+    try:
+        cache.attach("s1")
+        cache.put("waited", 7)
+        cache.wait_for_local_delivery(timeout_ms=5000)
+        assert cache.get("waited") == 7
+    finally:
+        cache.close()
+
+
+def test_wait_for_local_delivery_releases_gil_for_the_whole_call(live_cache_fixture) -> None:
+    cache = _new_test_cache("delayed")
+    reset_wait = getattr(sitos.ParamCache, "_test_reset_wait")
+    wait_entered = getattr(sitos.ParamCache, "_test_wait_entered")
+    release_wait = getattr(sitos.ParamCache, "_test_release_wait")
+    reset_wait()
+    progress = threading.Event()
+    errors: list[BaseException] = []
+
+    def wait() -> None:
+        try:
+            cache.wait_for_local_delivery(timeout_ms=5000)
+        except BaseException as error:  # noqa: BLE001 - asserted below
+            errors.append(error)
+
+    waiter = threading.Thread(target=wait)
+    worker = threading.Thread(target=progress.set)
+    try:
+        waiter.start()
+        assert wait_entered()
+        worker.start()
+        assert progress.wait(timeout=2)
+        assert waiter.is_alive()
+    finally:
+        release_wait()
+        waiter.join(timeout=5)
+        if worker.ident is not None:
+            worker.join(timeout=2)
+        cache.close()
+    assert errors == []
+    assert not waiter.is_alive()
+
+
+def test_wait_for_local_delivery_maps_timeout_and_cancellation(live_cache_fixture) -> None:
+    timeout_cache = _new_test_cache("timeout")
+    try:
+        with pytest.raises(sitos.TimeoutError):
+            timeout_cache.wait_for_local_delivery(timeout_ms=50)
+    finally:
+        timeout_cache.close()
+
+    outcome_cache = _new_test_cache("outcome_unknown")
+    try:
+        outcome_cache.put("covered", 7)
+        with pytest.raises(sitos.OutcomeUnknownError):
+            outcome_cache.wait_for_local_delivery(timeout_ms=1000)
+    finally:
+        outcome_cache.close()
+
+    reset_wait = getattr(sitos.ParamCache, "_test_reset_wait")
+    wait_entered = getattr(sitos.ParamCache, "_test_wait_entered")
+
+    reset_wait()
+    detach_cache = _new_test_cache("timeout")
+    detach_error: list[BaseException] = []
+
+    def wait_until_detached() -> None:
+        try:
+            detach_cache.wait_for_local_delivery(timeout_ms=5000)
+        except BaseException as error:  # noqa: BLE001 - assert the public exception below
+            detach_error.append(error)
+
+    detach_waiter = threading.Thread(target=wait_until_detached)
+    try:
+        detach_waiter.start()
+        assert wait_entered()
+        assert detach_waiter.is_alive()
+        detach_cache.detach()
+    finally:
+        detach_cache.close()
+        detach_waiter.join(timeout=5)
+    assert not detach_waiter.is_alive()
+    assert len(detach_error) == 1
+    assert isinstance(detach_error[0], sitos.DisconnectedError)
+
+    reset_wait()
+    close_cache = _new_test_cache("timeout")
+    close_error: list[BaseException] = []
+
+    def wait_until_closed() -> None:
+        try:
+            close_cache.wait_for_local_delivery(timeout_ms=5000)
+        except BaseException as error:  # noqa: BLE001 - assert the public exception below
+            close_error.append(error)
+
+    close_waiter = threading.Thread(target=wait_until_closed)
+    try:
+        close_waiter.start()
+        assert wait_entered()
+        assert close_waiter.is_alive()
+    finally:
+        close_cache.close()
+        close_waiter.join(timeout=5)
+    assert not close_waiter.is_alive()
+    assert len(close_error) == 1
+    assert isinstance(close_error[0], sitos.DisconnectedError)
+
+
 def test_attach_validation_detach_and_reattach(live_cache_fixture) -> None:
     _, config = live_cache_fixture
     cache = _new_cache(config)

@@ -5,8 +5,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <future>
+#include <mutex>
 #include <system_error>
 #include <thread>
 #include <vector>
@@ -14,6 +16,13 @@
 #include "fence_test_support.hpp"
 
 namespace {
+
+void WaitUntilDeadline(std::chrono::steady_clock::time_point deadline) {
+  std::mutex mutex;
+  std::condition_variable condition;
+  std::unique_lock lock(mutex);
+  static_cast<void>(condition.wait_until(lock, deadline, [] { return false; }));
+}
 
 TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
   auto transport = sitos::fence_test::MakeTransport();
@@ -245,17 +254,15 @@ TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
   // A generation replacement that overlaps data submission makes the possibly
   // submitted call and every later operation permanently disconnected.
   auto data_replacement_transport = sitos::fence_test::MakeTransport();
-  auto data_replacement_publisher =
-      sitos::fence_test_access::FenceTestAccess::CreatePublisher(
-          *data_replacement_transport, sitos::fence_test::kPublisherB,
-          sitos::fence_test_access::FenceTestAccess::CacheReceiverBinding(
-              sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration));
-  data_replacement_transport->SetPutObserver(
-      [&data_replacement_transport](const auto& record) {
-        if (record.encoding.id != sitos::Encoding::kSitosV1Fence) {
-          data_replacement_transport->ReplaceGeneration();
-        }
-      });
+  auto data_replacement_publisher = sitos::fence_test_access::FenceTestAccess::CreatePublisher(
+      *data_replacement_transport, sitos::fence_test::kPublisherB,
+      sitos::fence_test_access::FenceTestAccess::CacheReceiverBinding(
+          sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration));
+  data_replacement_transport->SetPutObserver([&data_replacement_transport](const auto& record) {
+    if (record.encoding.id != sitos::Encoding::kSitosV1Fence) {
+      data_replacement_transport->ReplaceGeneration();
+    }
+  });
   EXPECT_EQ(data_replacement_publisher.SubmitPut().StatusCode(), sitos::Status::Disconnected);
   EXPECT_TRUE(data_replacement_publisher.may_have_submitted());
   EXPECT_EQ(data_replacement_transport->DataSubmissionCount(), 1U);
@@ -273,8 +280,7 @@ TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
               sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration));
   ASSERT_TRUE(synchronous_replacement_publisher.SubmitPut().IsOk());
   synchronous_replacement_transport->SetPutObserver(
-      [&synchronous_replacement_transport, &synchronous_replacement_publisher](
-          const auto& record) {
+      [&synchronous_replacement_transport, &synchronous_replacement_publisher](const auto& record) {
         if (record.encoding.id == sitos::Encoding::kSitosV1Fence &&
             record.options.ack_token.has_value()) {
           synchronous_replacement_transport->ReplaceGeneration();
@@ -321,19 +327,17 @@ TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
   // terminal result. This deterministic transport replacement occurs after the
   // first sample and must still downgrade the hidden provisional Ok result.
   auto completion_race_transport = sitos::fence_test::MakeTransport();
-  auto completion_race_publisher =
-      sitos::fence_test_access::FenceTestAccess::CreatePublisher(
-          *completion_race_transport, sitos::fence_test::kPublisherA,
-          sitos::fence_test_access::FenceTestAccess::CacheReceiverBinding(
-              sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration));
-  completion_race_transport->SetPutObserver(
-      [&completion_race_publisher](const auto& record) {
-        if (record.encoding.id == sitos::Encoding::kSitosV1Fence &&
-            record.options.ack_token.has_value()) {
-          sitos::fence_test_access::FenceTestAccess::CompletePublisherFence(
-              completion_race_publisher, *record.options.ack_token);
-        }
-      });
+  auto completion_race_publisher = sitos::fence_test_access::FenceTestAccess::CreatePublisher(
+      *completion_race_transport, sitos::fence_test::kPublisherA,
+      sitos::fence_test_access::FenceTestAccess::CacheReceiverBinding(
+          sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration));
+  completion_race_transport->SetPutObserver([&completion_race_publisher](const auto& record) {
+    if (record.encoding.id == sitos::Encoding::kSitosV1Fence &&
+        record.options.ack_token.has_value()) {
+      sitos::fence_test_access::FenceTestAccess::CompletePublisherFence(completion_race_publisher,
+                                                                        *record.options.ack_token);
+    }
+  });
   completion_race_transport->GateMarkerCompletion();
   auto completion_race = completion_race_publisher.BeginFence(sitos::fence_test::kDeadline);
   ASSERT_TRUE(completion_race.IsOk());
@@ -342,6 +346,65 @@ TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
   const auto completion_race_result = completion_race_publisher.Wait(completion_race.Value());
   ASSERT_TRUE(completion_race_result.IsOk());
   EXPECT_EQ(completion_race_result.Value().status, sitos::Status::Disconnected);
+
+  // A buffer acknowledgement observed at or after the deadline must not be
+  // restored as a successful waiter result after PollAcknowledgement returns.
+  auto late_buffer_transport = sitos::fence_test::MakeTransport();
+  auto late_buffer_publisher = sitos::fence_test_access::FenceTestAccess::CreatePublisher(
+      *late_buffer_transport, sitos::fence_test::kPublisherB,
+      sitos::fence_test_access::FenceTestAccess::BufferReceiverBinding(
+          sitos::fence_test::kSid, sitos::fence_test::kSessionGeneration,
+          sitos::BufferClass::Durable, sitos::AckDurability::Applied));
+  std::promise<void> late_query_entered;
+  auto late_query_entered_future = late_query_entered.get_future();
+  std::promise<void> release_late_query;
+  auto release_late_query_future = release_late_query.get_future().share();
+  late_buffer_transport->DeclareQueryable(
+      "sitos/meta/ack/**", [&release_late_query_future, &late_query_entered](auto& query) {
+        late_query_entered.set_value();
+        release_late_query_future.wait();
+        const auto acknowledgement =
+            sitos::fence_test::FenceResult(sitos::Status::Ok, sitos::AckDurability::Applied, 0);
+        const auto encoded = sitos::EncodeAckResult(acknowledgement);
+        EXPECT_TRUE(encoded.IsOk());
+        if (encoded.IsOk()) {
+          EXPECT_TRUE(query
+                          .Reply(query.keyexpr, encoded.Value(),
+                                 sitos::Encoding{std::string(sitos::Encoding::kSitosV1Ack)})
+                          .IsOk());
+        }
+      });
+  auto late_buffer_handle = late_buffer_publisher.BeginFence(std::chrono::milliseconds{250});
+  ASSERT_TRUE(late_buffer_handle.IsOk());
+  auto late_buffer_wait = std::async(
+      std::launch::async, [&] { return late_buffer_publisher.Wait(late_buffer_handle.Value()); });
+  if (late_query_entered_future.wait_for(std::chrono::seconds{2}) != std::future_status::ready) {
+    release_late_query.set_value();
+    FAIL() << "buffer acknowledgement query did not start";
+  }
+  WaitUntilDeadline(late_buffer_handle.Value().deadline);
+  release_late_query.set_value();
+  ASSERT_EQ(late_buffer_wait.wait_for(std::chrono::seconds{2}), std::future_status::ready);
+  const auto late_buffer_result = late_buffer_wait.get();
+  ASSERT_FALSE(late_buffer_result.IsOk())
+      << "a buffer completion at the deadline must not be restored as success";
+  EXPECT_EQ(late_buffer_result.StatusCode(), sitos::Status::Timeout);
+
+  // A completion published after the deadline cannot survive the no-admission path.
+  auto late_closed_transport = sitos::fence_test::MakeTransport();
+  auto late_closed_publisher = sitos::fence_test_access::FenceTestAccess::CreatePublisher(
+      *late_closed_transport, sitos::fence_test::kPublisherA,
+      sitos::fence_test_access::FenceTestAccess::CacheReceiverBinding(
+          sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration));
+  auto late_closed_handle = late_closed_publisher.BeginFence(std::chrono::milliseconds{100});
+  ASSERT_TRUE(late_closed_handle.IsOk());
+  WaitUntilDeadline(late_closed_handle.Value().deadline);
+  sitos::fence_test_access::FenceTestAccess::CompletePublisherFence(
+      late_closed_publisher, late_closed_handle.Value().token);
+  late_closed_publisher.Close();
+  const auto late_closed_result = late_closed_publisher.Wait(late_closed_handle.Value());
+  ASSERT_FALSE(late_closed_result.IsOk());
+  EXPECT_EQ(late_closed_result.StatusCode(), sitos::Status::Timeout);
 
   auto buffer_transport = sitos::fence_test::MakeTransport();
   auto buffer_publisher = sitos::fence_test_access::FenceTestAccess::CreatePublisher(

@@ -283,7 +283,13 @@ TEST(FenceLifecycleTest, PublicWaitDetachCancelsAndQuiesces) {
   transport->GateMarkerCompletion();
   auto pending = std::async(std::launch::async,
                             [&cache] { return cache.WaitForLocalDelivery(std::chrono::hours{1}); });
-  while (transport->MarkerCount() == 0) std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  if (!sitos::fence_test::WaitUntil([&] { return transport->MarkerCount() == 1; },
+                                    std::chrono::seconds{2})) {
+    cache.Detach();
+    transport->ReleaseMarkerCompletion();
+    static_cast<void>(pending.wait_for(std::chrono::seconds{2}));
+    FAIL() << "public wait marker was not submitted";
+  }
 
   const auto started = std::chrono::steady_clock::now();
   cache.Detach();
