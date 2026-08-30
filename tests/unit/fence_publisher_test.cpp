@@ -473,6 +473,50 @@ TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
   ASSERT_TRUE(completion_race_result.IsOk());
   EXPECT_EQ(completion_race_result.Value().status, sitos::Status::Disconnected);
 
+  // Time spent waiting behind an earlier lane operation is part of the total
+  // deadline. A synchronous marker completion after that budget cannot succeed.
+  auto lane_deadline_transport = sitos::fence_test::MakeTransport();
+  auto lane_deadline_publisher = sitos::fence_test_access::FenceTestAccess::CreatePublisher(
+      *lane_deadline_transport, sitos::fence_test::kPublisherA,
+      sitos::fence_test_access::FenceTestAccess::CacheReceiverBinding(
+          sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration));
+  std::promise<void> data_put_entered;
+  auto data_put_entered_future = data_put_entered.get_future();
+  std::promise<void> release_data_put;
+  auto release_data_put_future = release_data_put.get_future().share();
+  lane_deadline_transport->SetPutObserver(
+      [&lane_deadline_publisher, &data_put_entered, &release_data_put_future](const auto& record) {
+        if (record.encoding.id == sitos::Encoding::kSitosV1Fence) {
+          if (record.options.ack_token.has_value()) {
+            sitos::fence_test_access::FenceTestAccess::CompletePublisherFence(
+                lane_deadline_publisher, *record.options.ack_token);
+          }
+          return;
+        }
+        data_put_entered.set_value();
+        release_data_put_future.wait();
+      });
+  auto blocking_data_put =
+      std::async(std::launch::async, [&] { return lane_deadline_publisher.SubmitPut(); });
+  if (data_put_entered_future.wait_for(std::chrono::seconds{2}) != std::future_status::ready) {
+    release_data_put.set_value();
+    FAIL() << "data Put did not acquire the publisher lane";
+  }
+  constexpr auto lane_total_deadline = std::chrono::milliseconds{50};
+  lane_deadline_publisher.GateNextOperation();
+  auto lane_deadline_begin = std::async(
+      std::launch::async, [&] { return lane_deadline_publisher.BeginFence(lane_total_deadline); });
+  lane_deadline_publisher.WaitForGatedOperation();
+  WaitUntilDeadline(std::chrono::steady_clock::now() + lane_total_deadline);
+  lane_deadline_publisher.ReleaseGatedOperation();
+  release_data_put.set_value();
+  ASSERT_TRUE(blocking_data_put.get().IsOk());
+  auto lane_deadline_handle = lane_deadline_begin.get();
+  ASSERT_TRUE(lane_deadline_handle.IsOk());
+  EXPECT_EQ(lane_deadline_publisher.Wait(lane_deadline_handle.Value()).StatusCode(),
+            sitos::Status::Timeout)
+      << "lane admission delay must consume the total deadline";
+
   // Terminal publication does not linearize until the final generation sample
   // finishes. Crossing the deadline inside that sample must therefore time out.
   FinalGenerationGateTransport final_sample_transport;
