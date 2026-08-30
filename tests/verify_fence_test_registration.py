@@ -21,10 +21,15 @@ ZENOH_OFF_TESTS = (
     "FenceStorageNodeTest.DispatchesFenceAndBindsTheSessionGeneration",
     "FenceCollisionTest.PinsDocumentedUuidAndTokenResidualBoundaries",
     "FenceLifecycleTest.QuiescesCallbacksAndPreventsPostReturnAccess",
+    "FenceParamCacheTest.PublicWaitCoversPriorWritesAndExcludesLaterWrites",
+    "FenceParamCacheTest.PublicWaitMapsValidationTimeoutAndReceiverFailure",
+    "FenceParamCacheTest.PublicWaitRejectsSecondPendingWaitWithoutCorruptingFirst",
+    "FenceLifecycleTest.PublicWaitDetachCancelsAndQuiesces",
 )
 ZENOH_ON_TESTS = ZENOH_OFF_TESTS + (
     "FenceZenohIntegrationTest.QualifiesTopologiesQosAndControlIsolation",
     "FenceRawZenohInteropTest.QualifiesPayloadTransparencyAndControlIsolation",
+    "FenceZenohIntegrationTest.QualifiesPublicParamCacheLocalDelivery",
 )
 PROFILE_TESTS = {
     "zenoh-off": ZENOH_OFF_TESTS,

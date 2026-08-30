@@ -286,7 +286,6 @@ TEST(FenceParamCacheTest, CompletesOnlyTheMatchingAttachGeneration) {
   }
 }
 
-
 // --------------------------------------------------------------------------
 // Issue #99 public ParamCache::WaitForLocalDelivery
 // --------------------------------------------------------------------------
@@ -295,22 +294,23 @@ using sitos::fence_test_access::FenceTestAccess;
 
 // Loops a submitted cache marker back to the subscriber, optionally after a delay,
 // so a synchronous in-process completion can be observed by the waiter.
-void LoopBackMarker(const std::shared_ptr<sitos::fence_test::DeterministicFenceTransport>& transport,
-                    std::chrono::milliseconds delay = std::chrono::milliseconds{0}) {
-  transport->SetPutObserver([transport, delay](
-                                const sitos::fence_test::DeterministicFenceTransport::PutRecord&
-                                    record) {
-    if (record.encoding.id != sitos::Encoding::kSitosV1Fence) return;
-    if (!record.options.ack_token.has_value()) return;
-    const auto route = FenceTestAccess::ParseMarkerRoute(record.key);
-    if (!route.has_value()) return;
-    if (delay.count() > 0) std::this_thread::sleep_for(delay);
-    transport->Deliver(FenceTestAccess::MakeCacheMarkerSample(
-        sitos::fence_test::kPrefix, sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration,
-        sitos::fence_test::kPublisherA, route->through_sequence,
-        FenceTestAccess::ClassifyAttachment(
-            sitos::EncodeAckAttachment(*record.options.ack_token))));
-  });
+void LoopBackMarker(
+    const std::shared_ptr<sitos::fence_test::DeterministicFenceTransport>& transport,
+    std::chrono::milliseconds delay = std::chrono::milliseconds{0}) {
+  transport->SetPutObserver(
+      [transport, delay](const sitos::fence_test::DeterministicFenceTransport::PutRecord& record) {
+        if (record.encoding.id != sitos::Encoding::kSitosV1Fence) return;
+        if (!record.options.ack_token.has_value()) return;
+        const auto route = FenceTestAccess::ParseMarkerRoute(record.key);
+        if (!route.has_value()) return;
+        if (delay.count() > 0) std::this_thread::sleep_for(delay);
+        transport->Deliver(FenceTestAccess::MakeCacheMarkerSample(
+            sitos::fence_test::kPrefix, sitos::fence_test::kSid,
+            sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA,
+            route->through_sequence,
+            FenceTestAccess::ClassifyAttachment(
+                sitos::EncodeAckAttachment(*record.options.ack_token))));
+      });
 }
 
 TEST(FenceParamCacheTest, PublicWaitCoversPriorWritesAndExcludesLaterWrites) {

@@ -715,6 +715,31 @@ Result<void> ParamCache::PutBatch(std::span<const BatchEntry> entries) {
   return Result<void>::Ok();
 }
 
+Result<void> ParamCache::WaitForLocalDelivery(std::chrono::milliseconds timeout) {
+  if (!impl_) return InvalidArgument("moved-from ParamCache");
+  const auto state = LoadState(*impl_);
+  if (!state) return InvalidArgument("ParamCache is detached");
+  OperationLease lease(state);
+  if (!lease) return InvalidArgument("ParamCache is detached");
+  if (!state->fence_publisher) return InvalidArgument("ParamCache Fence is unavailable");
+
+  // BeginFence validates the deadline and Fence capability, publishes the immutable
+  // waiter and through_sequence under the lane mutex, and submits the sole marker.
+  auto handle = state->fence_publisher->BeginFence(timeout);
+  if (!handle.IsOk()) return Result<void>::ErrFrom(handle);
+  auto observed = state->fence_publisher->Wait(handle.Value());
+  if (!observed.IsOk()) return Result<void>::ErrFrom(observed);
+
+  const AckResultV1& result = observed.Value();
+  if (result.operation_kind != AckOperationKind::Fence ||
+      result.durability != AckDurability::Applied ||
+      result.through_sequence != handle.Value().through_sequence) {
+    return Result<void>::Err(Status::Error, "unexpected Fence result shape");
+  }
+  if (result.status == Status::Ok) return Result<void>::Ok();
+  return Result<void>::Err(result.status, result.message);
+}
+
 Result<void> ParamCache::Attach(std::string_view sid) {
   if (!impl_) return InvalidArgument("moved-from ParamCache");
   if (!IsValidSessionId(sid)) return InvalidKey("invalid session id");

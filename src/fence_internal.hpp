@@ -131,6 +131,11 @@ struct FenceWaiterState {
   std::condition_variable condition;
   bool terminal = false;
   std::optional<AckResultV1> result;
+  /// Monotonic instant at which the terminal result linearized. ADR-0029 makes a
+  /// completion successful only when it precedes the handle deadline, so a
+  /// synchronous callback that runs after the deadline while the marker Put is
+  /// still executing cannot later be reported as success.
+  std::optional<std::chrono::steady_clock::time_point> completed_at;
 };
 
 struct FenceHandle {

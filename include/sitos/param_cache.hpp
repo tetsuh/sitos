@@ -97,6 +97,19 @@ class ParamCache {
 
   Result<void> PutBatch(std::span<const BatchEntry> entries);
 
+  /// Waits until this cache's own subscriber has processed every write this
+  /// cache submitted before the call (ADR-0029 cache-target Fence).
+  ///
+  /// `timeout` is the total deadline and must be strictly positive. Success means
+  /// the initiating cache's matching Attach generation completed the covered
+  /// contiguous prefix; it does not prove peer-cache delivery, StorageNode
+  /// acknowledgement, or durability. Writes admitted after the call are excluded.
+  /// At most one wait may be pending per attached cache: a second concurrent call
+  /// returns Status::InvalidArgument with std::errc::operation_in_progress and
+  /// emits no marker. No valid completion before the deadline is Status::Timeout;
+  /// the data and the marker are never resubmitted.
+  Result<void> WaitForLocalDelivery(std::chrono::milliseconds timeout);
+
  private:
   struct Impl;
   friend struct param_cache_detail::Access;

@@ -314,7 +314,6 @@ TEST(FenceZenohIntegrationTest, QualifiesTopologiesQosAndControlIsolation) {
   EXPECT_FALSE(custom.Value()->SupportsFenceProfile());
 }
 
-
 TEST(FenceZenohIntegrationTest, QualifiesPublicParamCacheLocalDelivery) {
   auto transport_owner = sitos::MakeZenohTransport();
   ASSERT_TRUE(transport_owner) << "Failed to open zenoh session";

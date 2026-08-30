@@ -13,6 +13,35 @@
 #include "sitos/ack.hpp"
 
 namespace sitos {
+
+namespace {
+
+// Same saturation rule as the #169 acknowledgement helper: a positive deadline that
+// exceeds the remaining steady_clock range clamps to time_point::max() instead of
+// wrapping into the past and producing a false timeout. The rule is duplicated rather
+// than shared because src/ack_client.hpp is outside this Issue's frozen allowlist.
+std::chrono::steady_clock::time_point SaturatingFenceDeadline(std::chrono::milliseconds requested) {
+  const auto now = std::chrono::steady_clock::now();
+  const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::time_point::max() - now);
+  if (requested > remaining) return std::chrono::steady_clock::time_point::max();
+  return now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(requested);
+}
+
+// ADR-0029 arbitrates a Fence completion against its deadline monotonically: only a
+// result that linearized strictly before the deadline may succeed. A result published
+// by the waiting thread itself carries no instant and stays authoritative.
+std::optional<AckResultV1> TerminalResultBefore(
+    const std::shared_ptr<fence_internal::FenceWaiterState>& waiter,
+    std::chrono::steady_clock::time_point deadline) {
+  std::scoped_lock lock(waiter->mutex);
+  if (!waiter->terminal || !waiter->result.has_value()) return std::nullopt;
+  if (waiter->completed_at.has_value() && *waiter->completed_at >= deadline) return std::nullopt;
+  return waiter->result;
+}
+
+}  // namespace
+
 using namespace fence_internal;
 namespace {
 
@@ -684,6 +713,7 @@ std::optional<bool> fence_internal::FencePublisher::PublishWaiterResult(
   bool mismatch = generation_changed();
   waiter->result = mismatch ? DisconnectedResult(through_sequence) : std::move(result);
   waiter->terminal = true;
+  waiter->completed_at = std::chrono::steady_clock::now();
   // The terminal result remains hidden under waiter->mutex. This final sample
   // is its generation linearization point: a replacement before it downgrades
   // the provisional result, while a replacement after it cannot invalidate a
@@ -819,7 +849,7 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
   PutOptions options;
   options.ack_token = handle.token;
   const auto payload = EncodeFenceMarker();
-  handle.deadline = std::chrono::steady_clock::now() + total_deadline;
+  handle.deadline = SaturatingFenceDeadline(total_deadline);
   {
     std::scoped_lock waiter_lock(waiter_mutex_);
     if (pending_.has_value() && pending_->token == handle.token) {
@@ -854,18 +884,14 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::PublishWaite
                                     std::make_error_code(std::errc::operation_in_progress));
   }
   FenceHandle handle{fixed_token.value_or(GenerateAckToken()), through_sequence,
-                     std::chrono::steady_clock::now() + total_deadline,
-                     std::make_shared<FenceWaiterState>()};
+                     SaturatingFenceDeadline(total_deadline), std::make_shared<FenceWaiterState>()};
   pending_ = handle;
   return Result<FenceHandle>::Ok(std::move(handle));
 }
 
 Result<AckResultV1> fence_internal::FencePublisher::Wait(const FenceHandle& handle) {
-  {
-    std::scoped_lock waiter_lock(handle.waiter->mutex);
-    if (handle.waiter->terminal && handle.waiter->result.has_value()) {
-      return Result<AckResultV1>::Ok(*handle.waiter->result);
-    }
+  if (auto early = TerminalResultBefore(handle.waiter, handle.deadline); early.has_value()) {
+    return Result<AckResultV1>::Ok(std::move(*early));
   }
   if (!AdmitOperation()) {
     AckResultV1 retained{
@@ -900,9 +926,8 @@ Result<AckResultV1> fence_internal::FencePublisher::Wait(const FenceHandle& hand
   if (binding_.target == FencePublisherTarget::Buffer) {
     auto result = PollAcknowledgement(
         *transport_, binding_.prefix, handle.token, handle.deadline, std::move(latest_error),
-        [waiter = handle.waiter]() -> std::optional<AckResultV1> {
-          std::scoped_lock lock(waiter->mutex);
-          return waiter->terminal ? waiter->result : std::nullopt;
+        [waiter = handle.waiter, deadline = handle.deadline]() -> std::optional<AckResultV1> {
+          return TerminalResultBefore(waiter, deadline);
         },
         [this, waiter = handle.waiter,
          through_sequence = handle.through_sequence](const AckResultV1& observed) {
@@ -936,7 +961,10 @@ Result<AckResultV1> fence_internal::FencePublisher::Wait(const FenceHandle& hand
                                              [&handle] { return handle.waiter->terminal; })) {
       handle.waiter->terminal = true;  // timeout wins atomically against completion
     }
-    result = handle.waiter->result;
+    if (!handle.waiter->completed_at.has_value() ||
+        *handle.waiter->completed_at < handle.deadline) {
+      result = handle.waiter->result;
+    }
   }
   {
     std::scoped_lock lock(waiter_mutex_);

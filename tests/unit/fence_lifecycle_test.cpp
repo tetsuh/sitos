@@ -270,7 +270,6 @@ TEST(FenceLifecycleTest, QuiescesCallbacksAndPreventsPostReturnAccess) {
   activating_node.Stop();
 }
 
-
 TEST(FenceLifecycleTest, PublicWaitDetachCancelsAndQuiesces) {
   // Detach must complete an admitted public wait with Disconnected instead of
   // letting it consume its timeout, and must not access waiter state afterwards.
@@ -302,23 +301,21 @@ TEST(FenceLifecycleTest, PublicWaitDetachCancelsAndQuiesces) {
   const auto after_detach = cache.WaitForLocalDelivery(sitos::fence_test::kDeadline);
   ASSERT_FALSE(after_detach.IsOk());
   EXPECT_EQ(after_detach.StatusCode(), sitos::Status::InvalidArgument);
-}
 
-TEST(FenceLifecycleTest, PublicWaitSurvivesMoveAssignmentAndDestruction) {
-  // Not a fixed acceptance name: guards the move/destroy paths named by the Issue.
-  auto transport = sitos::fence_test::MakeTransport();
-  auto cache_result = sitos::fence_test::OpenAttachedCache(transport);
-  ASSERT_TRUE(cache_result.IsOk());
-  auto cache = std::move(cache_result).Value();
+  // Move assignment and destruction keep the same lifecycle contract.
+  auto move_transport = sitos::fence_test::MakeTransport();
+  auto move_result = sitos::fence_test::OpenAttachedCache(move_transport);
+  ASSERT_TRUE(move_result.IsOk());
+  auto source = std::move(move_result).Value();
   ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::ConfigureCacheFenceReceiver(
-      cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA));
+      source, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA));
   {
-    auto moved = std::move(cache);
-    const auto result = moved.WaitForLocalDelivery(std::chrono::milliseconds{20});
-    ASSERT_FALSE(result.IsOk());
-    EXPECT_EQ(result.StatusCode(), sitos::Status::Timeout);
-  }
-  const auto moved_from = cache.WaitForLocalDelivery(sitos::fence_test::kDeadline);
+    auto destination = std::move(source);
+    const auto moved_to = destination.WaitForLocalDelivery(std::chrono::milliseconds{20});
+    ASSERT_FALSE(moved_to.IsOk());
+    EXPECT_EQ(moved_to.StatusCode(), sitos::Status::Timeout);
+  }  // destruction quiesces without deadlock or post-return access
+  const auto moved_from = source.WaitForLocalDelivery(sitos::fence_test::kDeadline);
   ASSERT_FALSE(moved_from.IsOk());
   EXPECT_EQ(moved_from.StatusCode(), sitos::Status::InvalidArgument);
 }
