@@ -473,8 +473,10 @@ TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
   ASSERT_TRUE(completion_race_result.IsOk());
   EXPECT_EQ(completion_race_result.Value().status, sitos::Status::Disconnected);
 
-  // Time spent waiting behind an earlier lane operation is part of the total
-  // deadline. A synchronous marker completion after that budget cannot succeed.
+  // ADR-0029 step 6: the total deadline starts immediately before the sole marker
+  // Put, after waiter publication. Time spent waiting for admission and the lane
+  // therefore does not consume the caller's Fence budget, and a completion shortly
+  // after submission still succeeds even when the lane delay exceeded the deadline.
   auto lane_deadline_transport = sitos::fence_test::MakeTransport();
   auto lane_deadline_publisher = sitos::fence_test_access::FenceTestAccess::CreatePublisher(
       *lane_deadline_transport, sitos::fence_test::kPublisherA,
@@ -507,15 +509,15 @@ TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
   auto lane_deadline_begin = std::async(
       std::launch::async, [&] { return lane_deadline_publisher.BeginFence(lane_total_deadline); });
   lane_deadline_publisher.WaitForGatedOperation();
-  WaitUntilDeadline(std::chrono::steady_clock::now() + lane_total_deadline);
+  // Hold the Fence behind the lane for longer than its entire deadline.
+  WaitUntilDeadline(std::chrono::steady_clock::now() + 2 * lane_total_deadline);
   lane_deadline_publisher.ReleaseGatedOperation();
   release_data_put.set_value();
   ASSERT_TRUE(blocking_data_put.get().IsOk());
   auto lane_deadline_handle = lane_deadline_begin.get();
   ASSERT_TRUE(lane_deadline_handle.IsOk());
-  EXPECT_EQ(lane_deadline_publisher.Wait(lane_deadline_handle.Value()).StatusCode(),
-            sitos::Status::Timeout)
-      << "lane admission delay must consume the total deadline";
+  EXPECT_TRUE(lane_deadline_publisher.Wait(lane_deadline_handle.Value()).IsOk())
+      << "lane admission delay must not consume the total deadline";
 
   // Terminal publication does not linearize until the final generation sample
   // finishes. Crossing the deadline inside that sample must therefore time out.

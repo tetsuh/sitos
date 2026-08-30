@@ -20,16 +20,12 @@ namespace {
 // exceeds the remaining steady_clock range clamps to time_point::max() instead of
 // wrapping into the past and producing a false timeout. The rule is duplicated rather
 // than shared because src/ack_client.hpp is outside this Issue's frozen allowlist.
-std::chrono::steady_clock::time_point SaturatingFenceDeadlineFrom(
-    std::chrono::steady_clock::time_point started_at, std::chrono::milliseconds requested) {
-  const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::steady_clock::time_point::max() - started_at);
-  if (requested > remaining) return std::chrono::steady_clock::time_point::max();
-  return started_at + std::chrono::duration_cast<std::chrono::steady_clock::duration>(requested);
-}
-
 std::chrono::steady_clock::time_point SaturatingFenceDeadline(std::chrono::milliseconds requested) {
-  return SaturatingFenceDeadlineFrom(std::chrono::steady_clock::now(), requested);
+  const auto now = std::chrono::steady_clock::now();
+  const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::time_point::max() - now);
+  if (requested > remaining) return std::chrono::steady_clock::time_point::max();
+  return now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(requested);
 }
 
 // ADR-0029 arbitrates a Fence completion against its deadline monotonically: only a
@@ -812,7 +808,6 @@ Result<void> fence_internal::FencePublisher::SubmitForTesting(std::string_view o
 
 Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
     std::chrono::milliseconds total_deadline) {
-  const auto started_at = std::chrono::steady_clock::now();
   if (!AdmitOperation()) return Result<FenceHandle>::Err(Status::Disconnected);
   ActiveOperationGuard operation(wait_lifecycle_mutex_, wait_lifecycle_condition_,
                                  active_operations_);
@@ -865,7 +860,10 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
   PutOptions options;
   options.ack_token = handle.token;
   const auto payload = EncodeFenceMarker();
-  handle.deadline = SaturatingFenceDeadlineFrom(started_at, total_deadline);
+  // ADR-0029 step 6: the total deadline starts immediately before invoking the sole
+  // marker Put, after waiter publication. Admission and lane serialization happen
+  // before this point and therefore never consume the caller's Fence budget.
+  handle.deadline = SaturatingFenceDeadline(total_deadline);
   {
     std::scoped_lock waiter_lock(waiter_mutex_);
     if (pending_.has_value() && pending_->token == handle.token) {
