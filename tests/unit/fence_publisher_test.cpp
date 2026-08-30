@@ -7,8 +7,12 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <future>
+#include <memory>
 #include <mutex>
+#include <span>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <vector>
@@ -23,6 +27,100 @@ void WaitUntilDeadline(std::chrono::steady_clock::time_point deadline) {
   std::unique_lock lock(mutex);
   static_cast<void>(condition.wait_until(lock, deadline, [] { return false; }));
 }
+
+class FinalGenerationGateTransport final : public sitos::Transport {
+ public:
+  bool SupportsFenceProfile() const noexcept override { return true; }
+
+  std::uint64_t FenceGeneration() const noexcept override {
+    std::unique_lock lock(mutex_);
+    if (marker_submitted_ && ++post_marker_generation_reads_ == 2 &&
+        gate_final_generation_sample_) {
+      generation_gate_entered_ = true;
+      condition_.notify_all();
+      condition_.wait(lock, [this] { return release_generation_gate_; });
+    }
+    return generation_;
+  }
+
+  std::shared_ptr<sitos::fence_internal::FenceDispatchCoordinator> FenceDispatcher() noexcept
+      override {
+    return dispatcher_;
+  }
+
+  sitos::Result<void> Put(std::string_view, std::span<const std::byte>, sitos::Encoding encoding,
+                          sitos::PutOptions options) override {
+    std::function<void(const sitos::Encoding&, const sitos::PutOptions&)> observer;
+    {
+      std::scoped_lock lock(mutex_);
+      marker_submitted_at_ = std::chrono::steady_clock::now();
+      marker_submitted_ = true;
+      post_marker_generation_reads_ = 0;
+      observer = put_observer_;
+    }
+    if (observer) observer(encoding, options);
+    return sitos::Result<void>::Ok();
+  }
+
+  sitos::Result<void> Delete(std::string_view, sitos::PutOptions) override {
+    return sitos::Result<void>::Ok();
+  }
+  sitos::Result<void> Get(std::string_view, const QueryResultSink&,
+                          std::chrono::milliseconds) override {
+    return sitos::Result<void>::Ok();
+  }
+  sitos::Result<sitos::Subscription> DeclareSubscriber(
+      std::string_view, std::function<void(const sitos::TransportSample&)>) override {
+    return sitos::Result<sitos::Subscription>::Ok(sitos::Subscription{});
+  }
+  sitos::Result<sitos::Queryable> DeclareQueryable(
+      std::string_view, std::function<void(sitos::TransportQuery&)>) override {
+    return sitos::Result<sitos::Queryable>::Ok(sitos::Queryable{});
+  }
+
+  void SetPutObserver(
+      std::function<void(const sitos::Encoding&, const sitos::PutOptions&)> observer) {
+    std::scoped_lock lock(mutex_);
+    put_observer_ = std::move(observer);
+  }
+
+  void GateFinalGenerationSample() {
+    std::scoped_lock lock(mutex_);
+    gate_final_generation_sample_ = true;
+  }
+
+  bool WaitForGenerationGate(std::chrono::milliseconds timeout) {
+    std::unique_lock lock(mutex_);
+    return condition_.wait_for(lock, timeout, [this] { return generation_gate_entered_; });
+  }
+
+  void ReleaseGenerationGate() {
+    {
+      std::scoped_lock lock(mutex_);
+      release_generation_gate_ = true;
+    }
+    condition_.notify_all();
+  }
+
+  std::chrono::steady_clock::time_point MarkerSubmittedAt() const {
+    std::scoped_lock lock(mutex_);
+    return marker_submitted_at_;
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  mutable std::condition_variable condition_;
+  mutable std::size_t post_marker_generation_reads_ = 0;
+  mutable bool generation_gate_entered_ = false;
+  mutable bool release_generation_gate_ = false;
+  bool gate_final_generation_sample_ = false;
+  bool marker_submitted_ = false;
+  std::uint64_t generation_ = 1;
+  std::chrono::steady_clock::time_point marker_submitted_at_{};
+  std::function<void(const sitos::Encoding&, const sitos::PutOptions&)> put_observer_;
+  std::shared_ptr<sitos::fence_internal::FenceDispatchCoordinator> dispatcher_ =
+      std::make_shared<sitos::fence_internal::FenceDispatchCoordinator>();
+};
 
 TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
   auto transport = sitos::fence_test::MakeTransport();
@@ -346,6 +444,36 @@ TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
   const auto completion_race_result = completion_race_publisher.Wait(completion_race.Value());
   ASSERT_TRUE(completion_race_result.IsOk());
   EXPECT_EQ(completion_race_result.Value().status, sitos::Status::Disconnected);
+
+  // Terminal publication does not linearize until the final generation sample
+  // finishes. Crossing the deadline inside that sample must therefore time out.
+  FinalGenerationGateTransport final_sample_transport;
+  auto final_sample_publisher = sitos::fence_test_access::FenceTestAccess::CreatePublisher(
+      final_sample_transport, sitos::fence_test::kPublisherA,
+      sitos::fence_test_access::FenceTestAccess::CacheReceiverBinding(
+          sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration));
+  final_sample_transport.SetPutObserver(
+      [&final_sample_publisher](const auto& encoding, const auto& options) {
+        if (encoding.id == sitos::Encoding::kSitosV1Fence && options.ack_token.has_value()) {
+          sitos::fence_test_access::FenceTestAccess::CompletePublisherFence(final_sample_publisher,
+                                                                            *options.ack_token);
+        }
+      });
+  final_sample_transport.GateFinalGenerationSample();
+  constexpr auto final_sample_deadline = std::chrono::milliseconds{50};
+  auto final_sample_begin = std::async(
+      std::launch::async, [&] { return final_sample_publisher.BeginFence(final_sample_deadline); });
+  if (!final_sample_transport.WaitForGenerationGate(std::chrono::seconds{2})) {
+    final_sample_transport.ReleaseGenerationGate();
+    FAIL() << "final generation sample did not reach the deterministic gate";
+  }
+  WaitUntilDeadline(final_sample_transport.MarkerSubmittedAt() + final_sample_deadline);
+  final_sample_transport.ReleaseGenerationGate();
+  auto final_sample_handle = final_sample_begin.get();
+  ASSERT_TRUE(final_sample_handle.IsOk());
+  const auto final_sample_result = final_sample_publisher.Wait(final_sample_handle.Value());
+  EXPECT_EQ(final_sample_result.StatusCode(), sitos::Status::Timeout)
+      << "a completion cannot use a timestamp from before final generation validation";
 
   // A buffer acknowledgement observed at or after the deadline must not be
   // restored as a successful waiter result after PollAcknowledgement returns.

@@ -391,15 +391,31 @@ TEST(FenceParamCacheTest, PublicWaitCoversPriorWritesAndExcludesLaterWrites) {
       {"covered-batch-one", "covered-batch-two"}));
 
   const auto markers_before = transport->MarkerCount();
-  const auto wait = cache.WaitForLocalDelivery(sitos::fence_test::kDeadline);
-  ASSERT_TRUE(wait.IsOk()) << wait.Message();
-  EXPECT_EQ(transport->MarkerCount(), markers_before + 1) << "exactly one marker per wait";
-  EXPECT_EQ(FenceTestAccess::CacheCompletedThrough(cache), 2U);
+  auto marker_gate = std::make_shared<MarkerCallbackGate>();
+  LoopBackMarker(transport, marker_gate);
+  auto wait = std::async(std::launch::async,
+                         [&] { return cache.WaitForLocalDelivery(sitos::fence_test::kDeadline); });
+  if (!marker_gate->WaitForEntry(std::chrono::seconds{2})) {
+    marker_gate->Release();
+    FAIL() << "public wait marker did not reach the deterministic gate";
+  }
 
-  // A write admitted after the linearization point is excluded from that Fence.
-  ASSERT_TRUE(cache.Put("later-write", std::int64_t{1}).IsOk());
+  // This call starts while the public wait is pending, but lane serialization
+  // admits it only after the Fence linearization point, so it is excluded.
+  std::promise<void> later_write_started;
+  auto later_write = std::async(std::launch::async, [&] {
+    later_write_started.set_value();
+    return cache.Put("later-write", std::int64_t{1});
+  });
+  later_write_started.get_future().wait();
+  marker_gate->Release();
+  const auto later_write_result = later_write.get();
+  ASSERT_TRUE(later_write_result.IsOk()) << later_write_result.Message();
+  const auto wait_result = wait.get();
+  ASSERT_TRUE(wait_result.IsOk()) << wait_result.Message();
+  EXPECT_EQ(transport->MarkerCount(), markers_before + 1) << "exactly one marker per wait";
   EXPECT_EQ(FenceTestAccess::CacheCompletedThrough(cache), 2U)
-      << "the later write is not part of the completed prefix";
+      << "the post-linearization write is not part of the completed prefix";
 
   // An empty PutBatch consumes no sequence.
   ASSERT_TRUE(cache.PutBatch({}).IsOk());

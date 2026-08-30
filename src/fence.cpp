@@ -712,16 +712,18 @@ std::optional<bool> fence_internal::FencePublisher::PublishWaiterResult(
   };
   bool mismatch = generation_changed();
   waiter->result = mismatch ? DisconnectedResult(through_sequence) : std::move(result);
-  waiter->terminal = true;
-  waiter->completed_at = std::chrono::steady_clock::now();
-  // The terminal result remains hidden under waiter->mutex. This final sample
+  // The provisional result remains hidden under waiter->mutex. This final sample
   // is its generation linearization point: a replacement before it downgrades
-  // the provisional result, while a replacement after it cannot invalidate a
-  // completion that already linearized on the original generation.
+  // the result, while a replacement after it cannot invalidate a completion
+  // that already linearized on the original generation. Record completion only
+  // after this potentially blocking sample so strict deadline arbitration uses
+  // the actual terminal-publication instant.
   if (!mismatch && generation_changed()) {
     mismatch = true;
     waiter->result = DisconnectedResult(through_sequence);
   }
+  waiter->completed_at = std::chrono::steady_clock::now();
+  waiter->terminal = true;
   return mismatch;
 }
 
