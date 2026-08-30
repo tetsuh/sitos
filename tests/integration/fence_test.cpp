@@ -314,4 +314,60 @@ TEST(FenceZenohIntegrationTest, QualifiesTopologiesQosAndControlIsolation) {
   EXPECT_FALSE(custom.Value()->SupportsFenceProfile());
 }
 
+
+TEST(FenceZenohIntegrationTest, QualifiesPublicParamCacheLocalDelivery) {
+  auto transport_owner = sitos::MakeZenohTransport();
+  ASSERT_TRUE(transport_owner) << "Failed to open zenoh session";
+  std::shared_ptr<sitos::Transport> transport(transport_owner.release());
+
+  // A non-default prefix must govern the marker route and the wait (X03).
+  const std::string prefix = "sitos/fence_public_wait";
+  sitos::StorageNode node(*transport);
+  ASSERT_TRUE(node.Start(std::make_shared<sitos::InMemoryEngine>(),
+                         sitos::StorageNodeConfig{.prefix = prefix, .log_sink = nullptr})
+                  .IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+
+  sitos::ClientConfig cache_config;
+  cache_config.prefix = prefix;
+  cache_config.query_timeout = 1s;
+  cache_config.log_sink = nullptr;
+  auto cache_opened = sitos::ParamCache::Open(transport, std::move(cache_config));
+  ASSERT_TRUE(cache_opened.IsOk());
+  auto cache = std::move(cache_opened).Value();
+  ASSERT_TRUE(cache.Attach("s1").IsOk());
+
+  // An empty prefix succeeds over a real session.
+  ASSERT_TRUE(cache.WaitForLocalDelivery(5s).IsOk());
+
+  // A covered write must have crossed the initiating cache subscriber before the
+  // wait returns successfully.
+  ASSERT_TRUE(cache.Put("covered", std::int64_t{7}).IsOk());
+  const auto waited = cache.WaitForLocalDelivery(5s);
+  ASSERT_TRUE(waited.IsOk()) << waited.Message();
+  EXPECT_GE(sitos::fence_test_access::FenceTestAccess::CacheCompletedThrough(cache), 1U);
+  const auto value = cache.Get<std::int64_t>("covered");
+  ASSERT_TRUE(value.IsOk());
+  EXPECT_EQ(value.Value(), 7);
+
+  // A peer cache is never waited for: it may still be behind when the wait returns.
+  sitos::ClientConfig peer_config;
+  peer_config.prefix = prefix;
+  peer_config.query_timeout = 1s;
+  peer_config.log_sink = nullptr;
+  auto peer_opened = sitos::ParamCache::Open(transport, std::move(peer_config));
+  ASSERT_TRUE(peer_opened.IsOk());
+  auto peer = std::move(peer_opened).Value();
+  ASSERT_TRUE(peer.Attach("s1").IsOk());
+  ASSERT_TRUE(cache.Put("peer-independent", std::int64_t{9}).IsOk());
+  EXPECT_TRUE(cache.WaitForLocalDelivery(5s).IsOk());
+
+  // Control data never appears as a cache value.
+  EXPECT_FALSE(cache.Contains("meta").Value());
+
+  peer.Detach();
+  cache.Detach();
+  node.Stop();
+}
+
 }  // namespace
