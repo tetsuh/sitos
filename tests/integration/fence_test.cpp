@@ -318,9 +318,12 @@ TEST(FenceZenohIntegrationTest, QualifiesPublicParamCacheLocalDelivery) {
   auto transport_owner = sitos::MakeZenohTransport();
   ASSERT_TRUE(transport_owner) << "Failed to open zenoh session";
   std::shared_ptr<sitos::Transport> transport(transport_owner.release());
+  ASSERT_TRUE(transport->SupportsFenceProfile());
+  const auto transport_generation = transport->FenceGeneration();
+  ASSERT_NE(transport_generation, 0U);
 
-  // A non-default prefix must govern the marker route and the wait (X03).
-  const std::string prefix = "sitos/fence_public_wait";
+  // A non-default, per-session prefix must govern the marker route and the wait (X03).
+  const std::string prefix = "sitos/fence_public_wait_" + std::to_string(transport_generation);
   sitos::StorageNode node(*transport);
   ASSERT_TRUE(node.Start(std::make_shared<sitos::InMemoryEngine>(),
                          sitos::StorageNodeConfig{.prefix = prefix, .log_sink = nullptr})
