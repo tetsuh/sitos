@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the exact Issue #158 Fence CTest registration contract."""
+"""Verify the exact Issues #158 and #99 Fence CTest registration contract."""
 
 from __future__ import annotations
 

@@ -144,6 +144,9 @@ struct FenceHandle {
   std::uint64_t through_sequence = 0;
   std::chrono::steady_clock::time_point deadline;
   std::shared_ptr<FenceWaiterState> waiter;
+  /// Covered-data or marker submission diagnostic frozen before BeginFence
+  /// releases the Publisher lane. Later excluded writes cannot replace it.
+  std::optional<ErrorInfo> timeout_diagnostic;
 };
 
 /// Internal ADR-0029 logical Publisher lane used by later #99/#107 surfaces.
@@ -334,6 +337,7 @@ class FencePublisher {
   [[nodiscard]] std::optional<bool> PublishWaiterResult(
       const std::shared_ptr<FenceWaiterState>& waiter, std::uint64_t through_sequence,
       AckResultV1 result);
+  void CancelPendingWaiter();
   void Disconnect();
 
   Transport* transport_;

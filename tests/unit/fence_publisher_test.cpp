@@ -11,6 +11,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <system_error>
@@ -33,14 +34,24 @@ class FinalGenerationGateTransport final : public sitos::Transport {
   bool SupportsFenceProfile() const noexcept override { return true; }
 
   std::uint64_t FenceGeneration() const noexcept override {
-    std::unique_lock lock(mutex_);
-    if (marker_submitted_ && ++post_marker_generation_reads_ == 2 &&
-        gate_final_generation_sample_) {
-      generation_gate_entered_ = true;
-      condition_.notify_all();
-      condition_.wait(lock, [this] { return release_generation_gate_; });
+    std::function<void()> generation_observer;
+    std::uint64_t generation = 0;
+    {
+      std::unique_lock lock(mutex_);
+      if (marker_submitted_ && ++post_marker_generation_reads_ == 2 &&
+          gate_final_generation_sample_) {
+        generation_gate_entered_ = true;
+        condition_.notify_all();
+        condition_.wait(lock, [this] { return release_generation_gate_; });
+      }
+      generation = generation_;
+      if (marker_submitted_ && generation_observer_ && !generation_observer_fired_) {
+        generation_observer_fired_ = true;
+        generation_observer = generation_observer_;
+      }
     }
-    return generation_;
+    if (generation_observer) generation_observer();
+    return generation;
   }
 
   std::shared_ptr<sitos::fence_internal::FenceDispatchCoordinator> FenceDispatcher() noexcept
@@ -89,6 +100,12 @@ class FinalGenerationGateTransport final : public sitos::Transport {
     gate_final_generation_sample_ = true;
   }
 
+  void SetGenerationObserver(std::function<void()> observer) {
+    std::scoped_lock lock(mutex_);
+    generation_observer_ = std::move(observer);
+    generation_observer_fired_ = false;
+  }
+
   bool WaitForGenerationGate(std::chrono::milliseconds timeout) {
     std::unique_lock lock(mutex_);
     return condition_.wait_for(lock, timeout, [this] { return generation_gate_entered_; });
@@ -113,11 +130,13 @@ class FinalGenerationGateTransport final : public sitos::Transport {
   mutable std::size_t post_marker_generation_reads_ = 0;
   mutable bool generation_gate_entered_ = false;
   mutable bool release_generation_gate_ = false;
+  mutable bool generation_observer_fired_ = false;
   bool gate_final_generation_sample_ = false;
   bool marker_submitted_ = false;
   std::uint64_t generation_ = 1;
   std::chrono::steady_clock::time_point marker_submitted_at_{};
   std::function<void(const sitos::Encoding&, const sitos::PutOptions&)> put_observer_;
+  std::function<void()> generation_observer_;
   std::shared_ptr<sitos::fence_internal::FenceDispatchCoordinator> dispatcher_ =
       std::make_shared<sitos::fence_internal::FenceDispatchCoordinator>();
 };
@@ -519,6 +538,39 @@ TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
   EXPECT_TRUE(lane_deadline_publisher.Wait(lane_deadline_handle.Value()).IsOk())
       << "lane admission delay must not consume the total deadline";
 
+  // Completion must not hold the waiter mutex while sampling Transport generation.
+  // A synchronizing Transport can otherwise deadlock when generation sampling
+  // re-enters completion through another callback.
+  FinalGenerationGateTransport lock_order_transport;
+  auto lock_order_publisher = sitos::fence_test_access::FenceTestAccess::CreatePublisher(
+      lock_order_transport, sitos::fence_test::kPublisherA,
+      sitos::fence_test_access::FenceTestAccess::CacheReceiverBinding(
+          sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration));
+  auto lock_order_handle = lock_order_publisher.BeginFence(std::chrono::seconds{2});
+  ASSERT_TRUE(lock_order_handle.IsOk());
+  std::future<void> concurrent_close;
+  bool close_completed_before_generation_return = false;
+  lock_order_transport.SetGenerationObserver([&] {
+    concurrent_close = std::async(std::launch::async, [&] { lock_order_publisher.Close(); });
+    close_completed_before_generation_return =
+        concurrent_close.wait_for(std::chrono::milliseconds{250}) == std::future_status::ready;
+  });
+  auto sampled_completion = std::async(std::launch::async, [&] {
+    sitos::fence_test_access::FenceTestAccess::CompletePublisherFence(
+        lock_order_publisher, lock_order_handle.Value().token);
+  });
+  ASSERT_EQ(sampled_completion.wait_for(std::chrono::seconds{2}), std::future_status::ready);
+  sampled_completion.get();
+  ASSERT_TRUE(concurrent_close.valid());
+  ASSERT_EQ(concurrent_close.wait_for(std::chrono::seconds{2}), std::future_status::ready);
+  concurrent_close.get();
+  EXPECT_TRUE(close_completed_before_generation_return)
+      << "Transport generation sampling must not run under either waiter lock";
+  const auto cancelled_completion = lock_order_publisher.Wait(lock_order_handle.Value());
+  ASSERT_TRUE(cancelled_completion.IsOk());
+  EXPECT_EQ(cancelled_completion.Value().status, sitos::Status::Disconnected)
+      << "Close must beat a completion that has not terminally published";
+
   // Terminal publication does not linearize until the final generation sample
   // finishes. Crossing the deadline inside that sample must therefore time out.
   FinalGenerationGateTransport final_sample_transport;
@@ -548,6 +600,50 @@ TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
   const auto final_sample_result = final_sample_publisher.Wait(final_sample_handle.Value());
   EXPECT_EQ(final_sample_result.StatusCode(), sitos::Status::Timeout)
       << "a completion cannot use a timestamp from before final generation validation";
+
+  // Generation sampling must not hold the waiter mutex, and the completion
+  // timestamp must be captured only after terminal publication wins that mutex.
+  FinalGenerationGateTransport publication_transport;
+  auto publication_publisher = sitos::fence_test_access::FenceTestAccess::CreatePublisher(
+      publication_transport, sitos::fence_test::kPublisherA,
+      sitos::fence_test_access::FenceTestAccess::CacheReceiverBinding(
+          sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration));
+  constexpr auto publication_deadline = std::chrono::milliseconds{50};
+  auto publication_handle = publication_publisher.BeginFence(publication_deadline);
+  ASSERT_TRUE(publication_handle.IsOk());
+  std::promise<void> waiter_mutex_locked;
+  auto waiter_mutex_locked_future = waiter_mutex_locked.get_future();
+  std::promise<void> release_waiter_mutex;
+  auto release_waiter_mutex_future = release_waiter_mutex.get_future().share();
+  std::promise<void> publication_blocked;
+  auto publication_blocked_future = publication_blocked.get_future();
+  std::future<void> waiter_mutex_blocker;
+  publication_transport.SetGenerationObserver([&] {
+    waiter_mutex_blocker = std::async(std::launch::async, [&] {
+      std::scoped_lock lock(publication_handle.Value().waiter->mutex);
+      waiter_mutex_locked.set_value();
+      release_waiter_mutex_future.wait();
+    });
+    ASSERT_EQ(waiter_mutex_locked_future.wait_for(std::chrono::seconds{2}),
+              std::future_status::ready);
+    publication_blocked.set_value();
+  });
+  auto delayed_publication = std::async(std::launch::async, [&] {
+    sitos::fence_test_access::FenceTestAccess::CompletePublisherFence(
+        publication_publisher, publication_handle.Value().token);
+  });
+  if (publication_blocked_future.wait_for(std::chrono::seconds{2}) != std::future_status::ready) {
+    release_waiter_mutex.set_value();
+    FAIL() << "waiter mutex blocker did not run during generation sampling";
+  }
+  WaitUntilDeadline(publication_handle.Value().deadline);
+  release_waiter_mutex.set_value();
+  ASSERT_TRUE(waiter_mutex_blocker.valid());
+  waiter_mutex_blocker.get();
+  delayed_publication.get();
+  const auto publication_result = publication_publisher.Wait(publication_handle.Value());
+  EXPECT_EQ(publication_result.StatusCode(), sitos::Status::Timeout)
+      << "terminal publication after the deadline cannot retain a pre-lock timestamp";
 
   // A buffer acknowledgement observed at or after the deadline must not be
   // restored as a successful waiter result after PollAcknowledgement returns.
@@ -622,6 +718,48 @@ TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
   const auto disconnected_buffer_result = buffer_publisher.Wait(disconnected_buffer_fence.Value());
   ASSERT_TRUE(disconnected_buffer_result.IsOk());
   EXPECT_EQ(disconnected_buffer_result.Value().status, sitos::Status::Disconnected);
+
+  // Timeout diagnostics are frozen with the Fence prefix. A later excluded write
+  // must not replace the covered diagnostic before Wait observes the timeout.
+  auto diagnostic_transport = sitos::fence_test::MakeTransport();
+  auto diagnostic_publisher = sitos::fence_test_access::FenceTestAccess::CreatePublisher(
+      *diagnostic_transport, sitos::fence_test::kPublisherA,
+      sitos::fence_test_access::FenceTestAccess::CacheReceiverBinding(
+          sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration));
+  diagnostic_transport->SetDataSubmissionResult(
+      sitos::Result<void>::Err(std::make_error_code(std::errc::io_error)));
+  ASSERT_FALSE(diagnostic_publisher.SubmitPut().IsOk());
+  diagnostic_transport->SetDataSubmissionResult(sitos::Result<void>::Ok());
+  auto diagnostic_handle = diagnostic_publisher.BeginFence(std::chrono::milliseconds{20});
+  ASSERT_TRUE(diagnostic_handle.IsOk());
+  diagnostic_transport->SetDataSubmissionResult(
+      sitos::Result<void>::Err(std::make_error_code(std::errc::permission_denied)));
+  std::promise<void> later_write_entered;
+  auto later_write_entered_future = later_write_entered.get_future();
+  std::promise<void> release_later_write;
+  auto release_later_write_future = release_later_write.get_future().share();
+  diagnostic_transport->SetPutObserver([&](const auto&) {
+    later_write_entered.set_value();
+    release_later_write_future.wait();
+  });
+  auto later_write =
+      std::async(std::launch::async, [&] { return diagnostic_publisher.SubmitPut(); });
+  if (later_write_entered_future.wait_for(std::chrono::seconds{2}) != std::future_status::ready) {
+    release_later_write.set_value();
+    FAIL() << "excluded later write did not reach its Transport Put";
+  }
+  auto diagnostic_wait = std::async(
+      std::launch::async, [&] { return diagnostic_publisher.Wait(diagnostic_handle.Value()); });
+  if (diagnostic_wait.wait_for(std::chrono::milliseconds{250}) != std::future_status::ready) {
+    release_later_write.set_value();
+    FAIL() << "Wait blocked behind an excluded later write";
+  }
+  const auto diagnostic_timeout = diagnostic_wait.get();
+  ASSERT_EQ(diagnostic_timeout.StatusCode(), sitos::Status::Timeout);
+  EXPECT_EQ(diagnostic_timeout.Error(), std::make_error_code(std::errc::io_error))
+      << "an excluded later write cannot replace the covered timeout diagnostic";
+  release_later_write.set_value();
+  ASSERT_FALSE(later_write.get().IsOk());
 
   auto timeout_transport = sitos::fence_test::MakeTransport();
   auto timeout_publisher = sitos::fence_test_access::FenceTestAccess::CreatePublisher(

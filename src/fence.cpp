@@ -712,28 +712,42 @@ AckResultV1 fence_internal::FencePublisher::DisconnectedResult(
 std::optional<bool> fence_internal::FencePublisher::PublishWaiterResult(
     const std::shared_ptr<FenceWaiterState>& waiter, std::uint64_t through_sequence,
     AckResultV1 result) {
+  // ADR-0029 forbids holding waiter locks across Transport calls. Competing
+  // completions may sample concurrently, then the waiter mutex selects exactly
+  // one immutable terminal publication. Disconnect can therefore win while a
+  // completion is sampling and cannot be overwritten when sampling returns.
+  bool mismatch = generation_mismatch_.load(std::memory_order_acquire);
+  if (!mismatch) mismatch = transport_->FenceGeneration() != transport_generation_;
+  if (!mismatch) mismatch = transport_->FenceGeneration() != transport_generation_;
+
   std::scoped_lock lock(waiter->mutex);
   if (waiter->terminal) return std::nullopt;
-  const auto generation_changed = [this] {
-    return generation_mismatch_.load(std::memory_order_acquire) ||
-           transport_->FenceGeneration() != transport_generation_;
-  };
-  bool mismatch = generation_changed();
+  const auto completed_at = std::chrono::steady_clock::now();
   waiter->result = mismatch ? DisconnectedResult(through_sequence) : std::move(result);
-  // The provisional result remains hidden under waiter->mutex. This final sample
-  // is its generation linearization point: a replacement before it downgrades
-  // the result, while a replacement after it cannot invalidate a completion
-  // that already linearized on the original generation. Record completion only
-  // after this potentially blocking sample so strict deadline arbitration uses
-  // the actual terminal-publication instant.
-  if (!mismatch && generation_changed()) {
-    mismatch = true;
-    waiter->result = DisconnectedResult(through_sequence);
-  }
   waiter->completed_on_bound_generation = !mismatch;
-  waiter->completed_at = std::chrono::steady_clock::now();
+  waiter->completed_at = completed_at;
   waiter->terminal = true;
   return mismatch;
+}
+
+void fence_internal::FencePublisher::CancelPendingWaiter() {
+  std::optional<FenceHandle> pending;
+  {
+    std::scoped_lock lock(waiter_mutex_);
+    pending = std::move(pending_);
+    pending_.reset();
+  }
+  if (!pending.has_value()) return;
+  {
+    std::scoped_lock lock(pending->waiter->mutex);
+    if (!pending->waiter->terminal) {
+      pending->waiter->result = DisconnectedResult(pending->through_sequence);
+      pending->waiter->completed_on_bound_generation = false;
+      pending->waiter->completed_at = std::chrono::steady_clock::now();
+      pending->waiter->terminal = true;
+    }
+  }
+  pending->waiter->condition.notify_all();
 }
 
 void fence_internal::FencePublisher::Disconnect() {
@@ -742,13 +756,7 @@ void fence_internal::FencePublisher::Disconnect() {
     std::scoped_lock lifecycle_lock(wait_lifecycle_mutex_);
     accepting_operations_ = false;
   }
-  std::optional<FenceHandle> pending;
-  {
-    std::scoped_lock lock(waiter_mutex_);
-    pending = pending_;
-  }
-  if (!pending.has_value()) return;
-  static_cast<void>(Complete(pending->token, DisconnectedResult(pending->through_sequence)));
+  CancelPendingWaiter();
 }
 
 Result<void> fence_internal::FencePublisher::SubmitData(std::string_view key,
@@ -852,7 +860,7 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
   }
 
   FenceHandle handle{
-      GenerateAckToken(), through_sequence, {}, std::make_shared<FenceWaiterState>()};
+      GenerateAckToken(), through_sequence, {}, std::make_shared<FenceWaiterState>(), std::nullopt};
   {
     std::scoped_lock waiter_lock(waiter_mutex_);
     pending_ = handle;  // token/waiter/through are visible before synchronous loopback
@@ -877,6 +885,7 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
     latest_submission_error_ =
         ErrorInfo{result.StatusCode(), std::string(result.Message()), result.Error()};
   }
+  handle.timeout_diagnostic = latest_submission_error_;
   if (!CheckGeneration()) {
     may_have_submitted_ = true;
     lane_lock.unlock();
@@ -904,7 +913,8 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::PublishWaite
                                     std::make_error_code(std::errc::operation_in_progress));
   }
   FenceHandle handle{fixed_token.value_or(GenerateAckToken()), through_sequence,
-                     SaturatingFenceDeadline(total_deadline), std::make_shared<FenceWaiterState>()};
+                     SaturatingFenceDeadline(total_deadline), std::make_shared<FenceWaiterState>(),
+                     std::nullopt};
   pending_ = handle;
   return Result<FenceHandle>::Ok(std::move(handle));
 }
@@ -945,14 +955,14 @@ Result<AckResultV1> fence_internal::FencePublisher::Wait(const FenceHandle& hand
   }
   ActiveOperationGuard operation(wait_lifecycle_mutex_, wait_lifecycle_condition_,
                                  active_operations_);
-  std::optional<ErrorInfo> latest_error;
-  bool generation_current = false;
-  {
-    std::scoped_lock lane_lock(lane_mutex_);
-    generation_current = CheckGeneration();
-    latest_error = latest_submission_error_;
+  auto latest_error = handle.timeout_diagnostic;
+  const bool generation_current = !generation_mismatch_.load(std::memory_order_acquire) &&
+                                  transport_->FenceGeneration() == transport_generation_;
+  if (!generation_current) {
+    MarkGenerationMismatch();
+    CancelPendingWaiter();
+    QuiescePeerOperations();
   }
-  if (!generation_current) QuiescePeerOperations();
   if (binding_.target == FencePublisherTarget::Buffer) {
     auto result = PollAcknowledgement(
         *transport_, binding_.prefix, handle.token, handle.deadline, std::move(latest_error),
@@ -1012,7 +1022,6 @@ Result<AckResultV1> fence_internal::FencePublisher::Wait(const FenceHandle& hand
     if (pending_.has_value() && pending_->token == handle.token) pending_.reset();
   }
   if (!result.has_value()) {
-    std::scoped_lock lane_lock(lane_mutex_);
     if (latest_error.has_value()) {
       return Result<AckResultV1>::Err(Status::Timeout, latest_error->message, latest_error->cause);
     }
@@ -1023,14 +1032,21 @@ Result<AckResultV1> fence_internal::FencePublisher::Wait(const FenceHandle& hand
 
 bool fence_internal::FencePublisher::Complete(const AckToken& token, AckResultV1 result) {
   std::shared_ptr<FenceWaiterState> waiter;
-  std::optional<bool> mismatch;
+  std::uint64_t through_sequence = 0;
   {
     std::scoped_lock lock(waiter_mutex_);
     if (!pending_.has_value() || pending_->token != token) return false;
     waiter = pending_->waiter;
-    mismatch = PublishWaiterResult(waiter, pending_->through_sequence, std::move(result));
-    if (!mismatch.has_value()) return false;
-    pending_.reset();
+    through_sequence = pending_->through_sequence;
+  }
+
+  const auto mismatch = PublishWaiterResult(waiter, through_sequence, std::move(result));
+  if (!mismatch.has_value()) return false;
+  {
+    std::scoped_lock lock(waiter_mutex_);
+    if (pending_.has_value() && pending_->token == token && pending_->waiter == waiter) {
+      pending_.reset();
+    }
   }
   if (*mismatch) MarkGenerationMismatch();
   waiter->condition.notify_all();

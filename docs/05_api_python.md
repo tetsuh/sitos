@@ -132,8 +132,9 @@ only after owned native resources are released. Operations after close raise
 `WaitForLocalDelivery` exactly, including covered-prefix, one-pending-wait, and result semantics.
 `timeout_ms` is required, keyword-only, a non-`bool` integer inside the C++ millisecond range, and
 strictly positive; the binding releases the GIL for the complete native wait and raises the existing
-exception types, so a receiver-side `OutcomeUnknown` raises `OutcomeUnknownError`, a disconnected
-cache raises `DisconnectedError`, and an unobserved completion raises `TimeoutError`. `close`
+exception types, so a receiver-side `OutcomeUnknown` raises `OutcomeUnknownError`, an admitted wait
+cancelled by `detach`/`close` or Transport-generation replacement raises `DisconnectedError`, and an
+unobserved completion raises `TimeoutError`. A new call after `detach` raises `ValueError`; `close`
 cancels an admitted wait before draining binding operations, so a blocked wait is released promptly
 instead of consuming its timeout. Stale/reconnect state and Python callbacks remain deferred to
 Issues #20 and #26. Issue #27 provides
