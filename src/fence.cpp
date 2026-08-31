@@ -822,6 +822,13 @@ Result<void> fence_internal::FencePublisher::SubmitForTesting(std::string_view o
 
 Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
     std::chrono::milliseconds total_deadline) {
+  if (total_deadline.count() <= 0) {
+    // Preserve an already-closed lane's Disconnected precedence without admitting
+    // invalid input or waiting behind an in-flight operation's lane serialization.
+    std::scoped_lock lifecycle_lock(wait_lifecycle_mutex_);
+    if (!accepting_operations_) return Result<FenceHandle>::Err(Status::Disconnected);
+    return Result<FenceHandle>::Err(Status::InvalidArgument, "Fence deadline must be positive");
+  }
   if (!AdmitOperation()) return Result<FenceHandle>::Err(Status::Disconnected);
   ActiveOperationGuard operation(wait_lifecycle_mutex_, wait_lifecycle_condition_,
                                  active_operations_);
@@ -831,9 +838,6 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
     lane_lock.unlock();
     QuiescePeerOperations();
     return Result<FenceHandle>::Err(Status::Disconnected);
-  }
-  if (total_deadline.count() <= 0) {
-    return Result<FenceHandle>::Err(Status::InvalidArgument, "Fence deadline must be positive");
   }
   if (!transport_->SupportsFenceProfile()) {
     return Result<FenceHandle>::Err(Status::InvalidArgument, "Transport does not support Fence");

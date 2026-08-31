@@ -502,6 +502,39 @@ TEST(FenceParamCacheTest, PublicWaitMapsValidationTimeoutAndReceiverFailure) {
     EXPECT_EQ(transport->MarkerCount(), 0U);
   }
 
+  {  // Invalid input is rejected before publisher admission and lane serialization.
+    auto transport = sitos::fence_test::MakeTransport();
+    auto cache_result = sitos::fence_test::OpenAttachedCache(transport);
+    ASSERT_TRUE(cache_result.IsOk());
+    auto cache = std::move(cache_result).Value();
+    auto data_gate = std::make_shared<MarkerCallbackGate>();
+    transport->SetPutObserver(
+        [data_gate](const sitos::fence_test::DeterministicFenceTransport::PutRecord& record) {
+          if (record.encoding.id != sitos::Encoding::kSitosV1Fence) data_gate->Block();
+        });
+
+    auto blocked_put =
+        std::async(std::launch::async, [&] { return cache.Put("blocked", std::int64_t{1}); });
+    if (!data_gate->WaitForEntry(std::chrono::seconds{2})) {
+      data_gate->Release();
+      FAIL() << "covered Put did not reach the deterministic gate";
+    }
+    auto invalid_wait = std::async(std::launch::async, [&] {
+      return cache.WaitForLocalDelivery(std::chrono::milliseconds::zero());
+    });
+    const auto readiness = invalid_wait.wait_for(std::chrono::seconds{2});
+    data_gate->Release();
+
+    EXPECT_EQ(readiness, std::future_status::ready)
+        << "invalid input must not wait for an earlier Transport Put";
+    const auto invalid_result = invalid_wait.get();
+    ASSERT_FALSE(invalid_result.IsOk());
+    EXPECT_EQ(invalid_result.StatusCode(), sitos::Status::InvalidArgument);
+    EXPECT_EQ(transport->MarkerCount(), 0U);
+    const auto put_result = blocked_put.get();
+    EXPECT_TRUE(put_result.IsOk()) << put_result.Message();
+  }
+
   {  // An oversized positive deadline saturates instead of wrapping into a false timeout.
     auto transport = sitos::fence_test::MakeTransport();
     auto cache_result = sitos::fence_test::OpenAttachedCache(transport);
