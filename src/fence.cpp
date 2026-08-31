@@ -716,6 +716,12 @@ std::optional<bool> fence_internal::FencePublisher::PublishWaiterResult(
   // completions may sample concurrently, then the waiter mutex selects exactly
   // one immutable terminal publication. Disconnect can therefore win while a
   // completion is sampling and cannot be overwritten when sampling returns.
+  //
+  // The generation is sampled twice on purpose. `FenceGeneration()` reads live
+  // Transport state, so a replacement can land during the first sample; the
+  // second sample is the final validation whose completion instant the waiter
+  // publishes. Collapsing these into one read lets a replacement that arrived
+  // while the first sample was in flight be reported as a successful completion.
   bool mismatch = generation_mismatch_.load(std::memory_order_acquire);
   if (!mismatch) mismatch = transport_->FenceGeneration() != transport_generation_;
   if (!mismatch) mismatch = transport_->FenceGeneration() != transport_generation_;
