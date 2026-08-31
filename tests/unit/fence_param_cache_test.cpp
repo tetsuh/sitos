@@ -451,16 +451,33 @@ TEST(FenceParamCacheTest, PublicWaitCoversPriorWritesAndExcludesLaterWrites) {
   EXPECT_TRUE(cache.WaitForLocalDelivery(sitos::fence_test::kDeadline).IsOk());
   EXPECT_EQ(FenceTestAccess::CacheCompletedThrough(cache), 3U);
 
-  // Same-key Put -> wait -> Put: each write consumes its own sequence and the second
-  // write is excluded from the completed prefix of the first wait.
+  // Same-key Put -> wait -> Put: start the second write while the marker is gated.
+  // Lane serialization admits it only after the first Fence linearization point,
+  // so it consumes its own sequence outside the first completed prefix.
   ASSERT_TRUE(cache.Put("same-key", std::int64_t{1}).IsOk());
   transport->Deliver(FenceTestAccess::MakeCoveredCachePut("sitos/session/s1/same-key",
                                                           sitos::fence_test::kPublisherA, 4));
-  ASSERT_TRUE(cache.WaitForLocalDelivery(sitos::fence_test::kDeadline).IsOk());
-  EXPECT_EQ(FenceTestAccess::CacheCompletedThrough(cache), 4U);
-  ASSERT_TRUE(cache.Put("same-key", std::int64_t{2}).IsOk());
+  marker_gate = std::make_shared<MarkerCallbackGate>();
+  LoopBackMarker(transport, marker_gate);
+  wait = std::async(std::launch::async,
+                    [&] { return cache.WaitForLocalDelivery(sitos::fence_test::kDeadline); });
+  if (!marker_gate->WaitForEntry(std::chrono::seconds{2})) {
+    marker_gate->Release();
+    FAIL() << "same-key wait marker did not reach the deterministic gate";
+  }
+  later_write_started = std::promise<void>{};
+  later_write = std::async(std::launch::async, [&] {
+    later_write_started.set_value();
+    return cache.Put("same-key", std::int64_t{2});
+  });
+  later_write_started.get_future().wait();
+  marker_gate->Release();
+  const auto same_key_wait_result = wait.get();
+  ASSERT_TRUE(same_key_wait_result.IsOk()) << same_key_wait_result.Message();
+  const auto same_key_write_result = later_write.get();
+  ASSERT_TRUE(same_key_write_result.IsOk()) << same_key_write_result.Message();
   EXPECT_EQ(FenceTestAccess::CacheCompletedThrough(cache), 4U)
-      << "the second same-key write is not in the first wait's prefix";
+      << "the concurrent second same-key write is not in the first wait's prefix";
   transport->Deliver(FenceTestAccess::MakeCoveredCachePut("sitos/session/s1/same-key",
                                                           sitos::fence_test::kPublisherA, 5));
   ASSERT_TRUE(cache.WaitForLocalDelivery(sitos::fence_test::kDeadline).IsOk());
