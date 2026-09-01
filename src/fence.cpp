@@ -712,6 +712,14 @@ AckResultV1 fence_internal::FencePublisher::DisconnectedResult(
 std::optional<bool> fence_internal::FencePublisher::PublishWaiterResult(
     const std::shared_ptr<FenceWaiterState>& waiter, std::uint64_t through_sequence,
     AckResultV1 result) {
+  // Generation replacement is detected by sampling (DEC-99-GENERATION-SAMPLING-001):
+  // a replacement observable by the final validation below downgrades the result to
+  // Disconnected before any success becomes visible, while one that only becomes
+  // observable after that sample linearized is a completion on the bound generation,
+  // which ADR-0029 protects. The residual window is inherent to polling and cannot be
+  // closed by sampling more often; closing it would require Transport-driven
+  // notification, which is a separate seam change.
+  //
   // ADR-0029 forbids holding waiter locks across Transport calls, so generation
   // validation is sampled outside waiter->mutex. Sampling before publication cannot
   // observe a replacement that lands during the sample itself, so publication is
