@@ -137,6 +137,10 @@ struct FenceWaiterState {
   /// synchronous callback that runs after the deadline while the marker Put is
   /// still executing cannot later be reported as success.
   std::optional<std::chrono::steady_clock::time_point> completed_at;
+  /// A completion owns the publication slot while it performs final generation
+  /// validation outside this mutex. Another completion must not publish, but
+  /// cancellation and timeout may still win by setting `terminal`.
+  bool reserved = false;
 };
 
 struct FenceHandle {

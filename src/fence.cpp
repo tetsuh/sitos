@@ -712,27 +712,44 @@ AckResultV1 fence_internal::FencePublisher::DisconnectedResult(
 std::optional<bool> fence_internal::FencePublisher::PublishWaiterResult(
     const std::shared_ptr<FenceWaiterState>& waiter, std::uint64_t through_sequence,
     AckResultV1 result) {
-  // ADR-0029 forbids holding waiter locks across Transport calls. Competing
-  // completions may sample concurrently, then the waiter mutex selects exactly
-  // one immutable terminal publication. Disconnect can therefore win while a
-  // completion is sampling and cannot be overwritten when sampling returns.
-  //
-  // The generation is sampled twice on purpose. `FenceGeneration()` reads live
-  // Transport state, so a replacement can land during the first sample; the
-  // second sample is the final validation whose completion instant the waiter
-  // publishes. Collapsing these into one read lets a replacement that arrived
-  // while the first sample was in flight be reported as a successful completion.
+  // ADR-0029 forbids holding waiter locks across Transport calls, so generation
+  // validation is sampled outside waiter->mutex. Sampling before publication cannot
+  // observe a replacement that lands during the sample itself, so publication is
+  // split: this completion reserves the slot with a provisional result, performs the
+  // final validation without the lock, and only then publishes the immutable terminal
+  // result. A replacement observed by that final sample downgrades the provisional
+  // Ok to Disconnected before any success becomes visible. Cancellation and timeout
+  // may still win against a reservation by setting `terminal` first.
   bool mismatch = generation_mismatch_.load(std::memory_order_acquire);
   if (!mismatch) mismatch = transport_->FenceGeneration() != transport_generation_;
-  if (!mismatch) mismatch = transport_->FenceGeneration() != transport_generation_;
 
-  std::scoped_lock lock(waiter->mutex);
-  if (waiter->terminal) return std::nullopt;
-  const auto completed_at = std::chrono::steady_clock::now();
-  waiter->result = mismatch ? DisconnectedResult(through_sequence) : std::move(result);
-  waiter->completed_on_bound_generation = !mismatch;
-  waiter->completed_at = completed_at;
-  waiter->terminal = true;
+  {
+    std::scoped_lock lock(waiter->mutex);
+    if (waiter->terminal || waiter->reserved) return std::nullopt;
+    waiter->reserved = true;
+    waiter->result = mismatch ? DisconnectedResult(through_sequence) : std::move(result);
+    waiter->completed_on_bound_generation = !mismatch;
+  }
+
+  if (!mismatch) {
+    mismatch = generation_mismatch_.load(std::memory_order_acquire) ||
+               transport_->FenceGeneration() != transport_generation_;
+  }
+
+  {
+    std::scoped_lock lock(waiter->mutex);
+    waiter->reserved = false;
+    // Cancellation or timeout published a terminal result while this completion was
+    // validating; that decision is immutable and must not be overwritten.
+    if (waiter->terminal) return std::nullopt;
+    if (mismatch) {
+      waiter->result = DisconnectedResult(through_sequence);
+      waiter->completed_on_bound_generation = false;
+    }
+    // The completion instant is the final validation, never the earlier sample.
+    waiter->completed_at = std::chrono::steady_clock::now();
+    waiter->terminal = true;
+  }
   return mismatch;
 }
 
