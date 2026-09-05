@@ -38,7 +38,7 @@ class FinalGenerationGateTransport final : public sitos::Transport {
     std::uint64_t generation = 0;
     {
       std::unique_lock lock(mutex_);
-      if (marker_submitted_ && ++post_marker_generation_reads_ == 2 &&
+      if (marker_submitted_ && ++post_marker_generation_reads_ == gate_generation_read_ &&
           gate_final_generation_sample_) {
         generation_gate_entered_ = true;
         condition_.notify_all();
@@ -95,9 +95,13 @@ class FinalGenerationGateTransport final : public sitos::Transport {
     put_observer_ = std::move(observer);
   }
 
-  void GateFinalGenerationSample() {
+  // Blocks the chosen post-marker generation read. Counting restarts here so a
+  // caller can arm the gate after earlier reads have already been observed.
+  void GateFinalGenerationSample(std::size_t post_marker_read = 2) {
     std::scoped_lock lock(mutex_);
     gate_final_generation_sample_ = true;
+    gate_generation_read_ = post_marker_read;
+    post_marker_generation_reads_ = 0;
   }
 
   void SetGenerationObserver(std::function<void()> observer) {
@@ -132,6 +136,7 @@ class FinalGenerationGateTransport final : public sitos::Transport {
   mutable bool release_generation_gate_ = false;
   mutable bool generation_observer_fired_ = false;
   bool gate_final_generation_sample_ = false;
+  std::size_t gate_generation_read_ = 2;
   bool marker_submitted_ = false;
   std::uint64_t generation_ = 1;
   std::chrono::steady_clock::time_point marker_submitted_at_{};
@@ -644,6 +649,54 @@ TEST(FencePublisherTest, LinearizesDataAndMarkerAndBoundsAdmission) {
   const auto publication_result = publication_publisher.Wait(publication_handle.Value());
   EXPECT_EQ(publication_result.StatusCode(), sitos::Status::Timeout)
       << "terminal publication after the deadline cannot retain a pre-lock timestamp";
+
+  // A completion that has only reserved the waiter slot carries a provisional result
+  // that has not yet passed the final generation validation. A wait whose deadline
+  // expires inside that reservation window must report Timeout, never that provisional
+  // result: publishing it would make a success visible before the validation that
+  // DEC-99-GENERATION-SAMPLING-001 requires to be able to downgrade it.
+  FinalGenerationGateTransport reservation_transport;
+  auto reservation_publisher = sitos::fence_test_access::FenceTestAccess::CreatePublisher(
+      reservation_transport, sitos::fence_test::kPublisherA,
+      sitos::fence_test_access::FenceTestAccess::CacheReceiverBinding(
+          sitos::fence_test::kSid, sitos::fence_test::kAttachGeneration));
+  constexpr auto reservation_deadline = std::chrono::milliseconds{500};
+  auto reservation_handle = reservation_publisher.BeginFence(reservation_deadline);
+  ASSERT_TRUE(reservation_handle.IsOk());
+  std::promise<void> reservation_wait_sampled;
+  auto reservation_wait_sampled_future = reservation_wait_sampled.get_future();
+  reservation_transport.SetGenerationObserver([&] { reservation_wait_sampled.set_value(); });
+  auto reservation_wait = std::async(
+      std::launch::async, [&] { return reservation_publisher.Wait(reservation_handle.Value()); });
+  ASSERT_EQ(reservation_wait_sampled_future.wait_for(std::chrono::seconds{2}),
+            std::future_status::ready)
+      << "the wait must sample the Transport generation before the completion runs";
+  // Counting restarts at the arming point: read 1 is the reservation sample and read 2
+  // is the final validation that precedes terminal publication.
+  reservation_transport.GateFinalGenerationSample(2);
+  auto reservation_completion = std::async(std::launch::async, [&] {
+    sitos::fence_test_access::FenceTestAccess::CompletePublisherFence(
+        reservation_publisher, reservation_handle.Value().token);
+  });
+  if (!reservation_transport.WaitForGenerationGate(std::chrono::seconds{2})) {
+    reservation_transport.ReleaseGenerationGate();
+    reservation_completion.get();
+    static_cast<void>(reservation_wait.get());
+    FAIL() << "the final generation validation did not reach the deterministic gate";
+  }
+  ASSERT_LT(std::chrono::steady_clock::now(), reservation_handle.Value().deadline)
+      << "the reservation must still be in flight when the wait deadline is crossed";
+  WaitUntilDeadline(reservation_handle.Value().deadline);
+  // The wait must resolve on its own deadline while the reservation is still gated, so
+  // the observed result is the one the waiter chose with the validation outstanding.
+  ASSERT_EQ(reservation_wait.wait_for(std::chrono::seconds{2}), std::future_status::ready)
+      << "the wait did not time out while the final generation validation was gated";
+  const auto reservation_result = reservation_wait.get();
+  reservation_transport.ReleaseGenerationGate();
+  reservation_completion.get();
+  EXPECT_EQ(reservation_result.StatusCode(), sitos::Status::Timeout)
+      << "a wait that expires inside the reservation window must not publish the "
+         "provisional result";
 
   // A buffer acknowledgement observed at or after the deadline must not be
   // restored as a successful waiter result after PollAcknowledgement returns.

@@ -29,14 +29,16 @@ std::chrono::steady_clock::time_point SaturatingFenceDeadline(std::chrono::milli
 }
 
 // ADR-0029 arbitrates a Fence completion against its deadline monotonically: only a
-// result that linearized strictly before the deadline may succeed. A result published
-// by the waiting thread itself carries no instant and stays authoritative.
+// result that linearized strictly before the deadline may succeed. The completion
+// instant is what records that linearization, so a result carrying no instant is the
+// provisional value a reservation left behind and is never authoritative
+// (DEC-99-GENERATION-SAMPLING-001).
 std::optional<AckResultV1> TerminalResultBefore(
     const std::shared_ptr<fence_internal::FenceWaiterState>& waiter,
     std::chrono::steady_clock::time_point deadline) {
   std::scoped_lock lock(waiter->mutex);
   if (!waiter->terminal || !waiter->result.has_value()) return std::nullopt;
-  if (waiter->completed_at.has_value() && *waiter->completed_at >= deadline) return std::nullopt;
+  if (!waiter->completed_at.has_value() || *waiter->completed_at >= deadline) return std::nullopt;
   return waiter->result;
 }
 
@@ -1047,8 +1049,10 @@ Result<AckResultV1> fence_internal::FencePublisher::Wait(const FenceHandle& hand
                                              [&handle] { return handle.waiter->terminal; })) {
       handle.waiter->terminal = true;  // timeout wins atomically against completion
     }
-    if (!handle.waiter->completed_at.has_value() ||
-        *handle.waiter->completed_at < handle.deadline) {
+    // A reservation that has not reached its final generation validation leaves a
+    // provisional result behind and sets no instant. Requiring the instant keeps that
+    // value invisible, so no success can precede the validation that may downgrade it.
+    if (handle.waiter->completed_at.has_value() && *handle.waiter->completed_at < handle.deadline) {
       result = handle.waiter->result;
     }
   }
