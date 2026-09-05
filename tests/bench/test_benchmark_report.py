@@ -334,6 +334,20 @@ def test_raw_fixtures_reject_fractional_negative_and_truncated_evidence() -> Non
     with pytest.raises(ValueError): _raw_expectations(raw)
 
 
+def _put_session_arguments(source: str) -> list[str]:
+    """Session-id argument of every ``store.Put`` call in ``source``.
+
+    Whitespace between ``store``, ``.``, ``Put``, ``(`` and the first argument is
+    insignificant to the compiler, so it must be insignificant here: clang-format rewraps
+    these calls whenever an argument is added, and a substring guard that assumes one
+    spelling stops guarding silently.
+    """
+    return [
+        re.sub(r"\s+", " ", argument).strip()
+        for argument in re.findall(r"store\s*\.\s*Put\s*\(\s*([^,]+),", source)
+    ]
+
+
 def test_policy_and_workload_fences() -> None:
     policy = json.loads((ROOT / "tests/bench/benchmark_policy.json").read_text(encoding="utf-8"))
     assert policy["actual_thresholds"] == "none—not established"
@@ -407,13 +421,13 @@ def test_policy_and_workload_fences() -> None:
     assert process_target is not None
     source = (ROOT / "tests/bench/process_bench.cpp").read_text(encoding="utf-8")
     assert "n08/v1/scalar/" in source and "n09/v1/value/" in source
-    assert 'store.Put("session/" + sid' in source
     assert 'N09Key' in source and 'std::setw(6)' in source
     assert 'sitos/bench/n09/v1/' in source
     assert 'ThroughputSequence' in source and 'std::setw(10)' in source
     assert '(trial << 48) | (producer << 40) | sequence' in source
-    assert 'store.Put("base"' in source
-    assert 'store.Put("",' not in source
+    put_sessions = _put_session_arguments(source)
+    assert '"base"' in put_sessions and '"session/" + sid' in put_sessions
+    assert '""' not in put_sessions
     assert 'VERIFY_BASE' in source and 'BASE_READY' in source
     assert 'BASE_STATUS ' in source and 'base readiness resubmission failed' in source
     assert 'ParamValue::Decode(value)' in source and 'AsSpan<std::byte>()' in source
@@ -640,12 +654,40 @@ def test_report_cli_rejects_final_incomplete_reference(tmp_path: Path) -> None:
     assert escaped.returncode == 2 and 'escapes artifact root' in escaped.stderr
 
 
+def test_put_session_guard_survives_reformatting() -> None:
+    """The store.Put session-id guard must not depend on clang-format's wrapping (#177).
+
+    The guard exists to pin which session id the benchmark writes to, and in particular
+    to reject an empty one. An assertion that only matches a single-line spelling stops
+    guarding the moment the formatter wraps the call, and does so silently on the
+    negative half. Every spelling below is the same call.
+    """
+    single_line = 'store.Put("base", "n08/v1/lut", value);'
+    wrapped_arguments = 'store.Put(\n    "base",\n    "n08/v1/lut", value);'
+    wrapped_receiver = 'if (!store\n         .Put(\n             "base",\n             "n08/v1/lut", value)\n         .IsOk())'
+    for spelling in (single_line, wrapped_arguments, wrapped_receiver):
+        assert _put_session_arguments(spelling) == ['"base"']
+
+    # The negative half must reject an empty session id in every spelling too.
+    for spelling in (
+        'store.Put("", "n08/v1/lut", value);',
+        'if (!store\n         .Put(\n             "",\n             "n08/v1/lut", value)\n         .IsOk())',
+    ):
+        assert _put_session_arguments(spelling) == ['""']
+
+    # Expressions, not just literals, survive extraction.
+    assert _put_session_arguments('store.Put("session/" + sid, N09Key(index), value);') == [
+        '"session/" + sid'
+    ]
+
+
 def main() -> None:
     for test in (
         test_expected_artifacts_exist, test_decimal_statistics_are_exact,
         test_synthetic_regression_is_flagged, test_workflow_security_and_truth_table,
         test_trial_zero_cache_ready_requires_unambiguous_sentinel,
         test_policy_and_workload_fences,
+        test_put_session_guard_survives_reformatting,
     ):
         test()
     print("benchmark contract tests passed")
