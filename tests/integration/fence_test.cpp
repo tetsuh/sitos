@@ -118,13 +118,15 @@ bool PublishUntilObserved(const std::function<bool(std::int64_t)>& publish,
   std::int64_t probe_value = 0;
   while (std::chrono::steady_clock::now() < budget) {
     if (!publish(++probe_value)) return false;
-    const auto poll_until = std::chrono::steady_clock::now() + 200ms;
+    // Each poll window is clamped to the budget so an observation is only ever reported
+    // from inside it; after expiry the answer is false even if a late callback lands.
+    const auto poll_until = std::min(std::chrono::steady_clock::now() + 200ms, budget);
     while (std::chrono::steady_clock::now() < poll_until) {
       if (observed()) return true;
       std::this_thread::sleep_for(10ms);
     }
   }
-  return observed();
+  return false;
 }
 
 TEST(FenceZenohIntegrationTest, QualifiesTopologiesQosAndControlIsolation) {
