@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -312,6 +313,86 @@ TEST(FenceZenohIntegrationTest, QualifiesTopologiesQosAndControlIsolation) {
   auto custom = sitos::OpenZenohTransport("{}");
   ASSERT_TRUE(custom.IsOk());
   EXPECT_FALSE(custom.Value()->SupportsFenceProfile());
+}
+
+TEST(FenceZenohIntegrationTest, QualifiesPublicParamCacheLocalDelivery) {
+  auto transport_owner = sitos::MakeZenohTransport();
+  ASSERT_TRUE(transport_owner) << "Failed to open zenoh session";
+  std::shared_ptr<sitos::Transport> transport(transport_owner.release());
+  ASSERT_TRUE(transport->SupportsFenceProfile());
+  const auto transport_generation = transport->FenceGeneration();
+  ASSERT_NE(transport_generation, 0U);
+
+  // A non-default, per-session prefix must govern the marker route and the wait (X03).
+  const std::string prefix = "sitos/fence_public_wait_" + std::to_string(transport_generation);
+  sitos::StorageNode node(*transport);
+  ASSERT_TRUE(node.Start(std::make_shared<sitos::InMemoryEngine>(),
+                         sitos::StorageNodeConfig{.prefix = prefix, .log_sink = nullptr})
+                  .IsOk());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+
+  sitos::ClientConfig cache_config;
+  cache_config.prefix = prefix;
+  cache_config.query_timeout = 1s;
+  cache_config.log_sink = nullptr;
+  auto cache_opened = sitos::ParamCache::Open(transport, std::move(cache_config));
+  ASSERT_TRUE(cache_opened.IsOk());
+  auto cache = std::move(cache_opened).Value();
+  ASSERT_TRUE(cache.Attach("s1").IsOk());
+
+  // An empty prefix succeeds over a real session.
+  ASSERT_TRUE(cache.WaitForLocalDelivery(5s).IsOk());
+
+  // A covered write must have crossed the initiating cache subscriber before the
+  // wait returns successfully.
+  ASSERT_TRUE(cache.Put("covered", std::int64_t{7}).IsOk());
+  const auto waited = cache.WaitForLocalDelivery(5s);
+  ASSERT_TRUE(waited.IsOk()) << waited.Message();
+  EXPECT_GE(sitos::fence_test_access::FenceTestAccess::CacheCompletedThrough(cache), 1U);
+  const auto value = cache.Get<std::int64_t>("covered");
+  ASSERT_TRUE(value.IsOk());
+  EXPECT_EQ(value.Value(), 7);
+
+  // A peer cache on a separate Zenoh session is never waited for. Hold its data
+  // callback before application and prove the initiating cache still completes.
+  auto peer_transport_owner = sitos::MakeZenohTransport();
+  ASSERT_TRUE(peer_transport_owner) << "Failed to open peer zenoh session";
+  std::shared_ptr<sitos::Transport> peer_transport(peer_transport_owner.release());
+  sitos::ClientConfig peer_config;
+  peer_config.prefix = prefix;
+  peer_config.query_timeout = 1s;
+  peer_config.log_sink = nullptr;
+  auto peer_opened = sitos::ParamCache::Open(peer_transport, std::move(peer_config));
+  ASSERT_TRUE(peer_opened.IsOk());
+  auto peer = std::move(peer_opened).Value();
+  ASSERT_TRUE(peer.Attach("s1").IsOk());
+  ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::GateCacheCallback(peer));
+  const auto peer_write = cache.Put("peer-independent", std::int64_t{9});
+  if (!peer_write.IsOk()) {
+    static_cast<void>(sitos::fence_test_access::FenceTestAccess::ReleaseCacheCallback(peer));
+    FAIL() << peer_write.Message();
+  }
+  ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::WaitForCacheCallbackBlocked(peer));
+
+  auto initiating_wait =
+      std::async(std::launch::async, [&cache] { return cache.WaitForLocalDelivery(5s); });
+  const auto wait_status = initiating_wait.wait_for(2s);
+  const auto peer_value_while_blocked = peer.Contains("peer-independent");
+  EXPECT_TRUE(sitos::fence_test_access::FenceTestAccess::ReleaseCacheCallback(peer));
+  const auto peer_independent = initiating_wait.get();
+  ASSERT_EQ(wait_status, std::future_status::ready)
+      << "the initiating wait depended on a blocked peer cache";
+  ASSERT_TRUE(peer_independent.IsOk()) << peer_independent.Message();
+  ASSERT_TRUE(peer_value_while_blocked.IsOk());
+  EXPECT_FALSE(peer_value_while_blocked.Value())
+      << "the peer must still be behind when the initiating wait completes";
+
+  // Control data never appears as a cache value.
+  EXPECT_FALSE(cache.Contains("meta").Value());
+
+  peer.Detach();
+  cache.Detach();
+  node.Stop();
 }
 
 }  // namespace

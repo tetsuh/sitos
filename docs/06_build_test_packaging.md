@@ -281,7 +281,7 @@ major behaviors.
 | `BufferKeyTest.InvalidBufferRoutesAreRejected` | C06 | Reject malformed routes, unknown classes, and undefined BufferClass values |
 | `BufferKeyTest.BufferClassIsReservedOnlyInTheClassPosition` | C06 | Permit durable/ephemeral chunks inside a hierarchical user key |
 
-Issue #158 additionally fixes these exact Fence acceptance names:
+Issues #158 and #99 fix these exact Fence acceptance names:
 
 - `FenceLaneCodecTest.GoldenAndNegativeForms`
 - `FenceAckResultTest.GoldenFailureMatrixRows`
@@ -289,15 +289,20 @@ Issue #158 additionally fixes these exact Fence acceptance names:
 - `FencePublisherTest.LinearizesDataAndMarkerAndBoundsAdmission`
 - `FenceReceiverTest.EvaluatesPrefixesFailuresBoundsAndCapacityPoison`
 - `FenceParamCacheTest.CompletesOnlyTheMatchingAttachGeneration`
+- `FenceParamCacheTest.PublicWaitCoversPriorWritesAndExcludesLaterWrites`
+- `FenceParamCacheTest.PublicWaitMapsValidationTimeoutAndReceiverFailure`
+- `FenceParamCacheTest.PublicWaitRejectsSecondPendingWaitWithoutCorruptingFirst`
+- `FenceLifecycleTest.PublicWaitDetachCancelsAndQuiesces`
 - `FenceStorageNodeTest.DispatchesFenceAndBindsTheSessionGeneration`
 - `FenceCollisionTest.PinsDocumentedUuidAndTokenResidualBoundaries`
 - `FenceLifecycleTest.QuiescesCallbacksAndPreventsPostReturnAccess`
+- `FenceZenohIntegrationTest.QualifiesPublicParamCacheLocalDelivery`
 - `FenceZenohIntegrationTest.QualifiesTopologiesQosAndControlIsolation`
 - `FenceRawZenohInteropTest.QualifiesPayloadTransparencyAndControlIsolation`
 
 `tests/verify_fence_test_registration.py` parses `ctest --show-only=json-v1` and must pass for
 `zenoh-off`, `sanitizer`, or `zenoh-on` before filtered execution; CTest's zero-match success is not
-qualification. The first nine names are Zenoh-independent. The final two are process-isolated,
+qualification. The first thirteen names are Zenoh-independent. The final three are process-isolated,
 run serially, and qualify the pinned and latest-supported 1.x Linux/Windows paths. The six
 Publisher/receiver/component/collision/lifecycle tests run under both TSan and ASan/UBSan.
 Golden Fence lane, marker, and result bytes live under `tests/fixtures/fence_v1/` and are generated

@@ -270,7 +270,8 @@ before returning and retains no Session record or other resource after enumerati
 ### 4.3 Consistency Model
 
 > **Normative implementation:** Accepted ADR-0029 owns the same-publisher Fence mechanism below;
-> #158 implements the shared primitive consumed later by #99 and #107.
+> #158 implements the shared primitive, #99 exposes it through ParamCache local-delivery waits, and
+> #107 consumes it later for synchronized buffer publication.
 
 * Same-publisher Fence ordering is not inferred from a Zenoh session alone. ADR-0029 defines a
   sitos logical Publisher as a serialized UUIDv4-and-sequence lane whose covered data and marker
@@ -522,8 +523,10 @@ which this protocol cannot distinguish from an empty one) attaches as an empty c
 ParamCache is session-only: applications normally create the session before attaching, but
 Attach validates only the session-id syntax. The current protocol does not perform a session
 existence preflight, so an unknown or empty session may attach successfully with an empty cache.
-`Detach()` closes callback admission, undeclares the subscription, waits for admitted callbacks,
-and only then clears state. No callback mutates the cache after Detach returns.
+`Detach()` stops new callback and Fence admission, completes an admitted local-delivery waiter with
+`Disconnected`, undeclares the subscription, and waits for admitted operations and callbacks before
+clearing state. Move assignment and destruction use the same cancellation and quiescence boundary.
+No callback mutates the cache after Detach returns.
 
 ### 5.2 Data Structures and Zero-Copy Reads [N01]
 
@@ -538,6 +541,7 @@ class ParamCache {
     Result<void> Put(std::string_view key, const ParamValue& value);
     template <ParamInput T> Result<void> Put(std::string_view key, T&& value);
     Result<void> PutBatch(std::span<const BatchEntry> entries);
+    Result<void> WaitForLocalDelivery(std::chrono::milliseconds total_deadline);
 };
 ```
 
@@ -554,6 +558,12 @@ class ParamCache {
   deduplication or global ordering across caches. `PutBatch` preserves caller order and duplicate
   keys in one canonical message, but readers may observe partially applied batch entries because
   batch application is not reader-visible transaction isolation.
+* `WaitForLocalDelivery` covers writes admitted earlier on the same ParamCache Publisher lane and
+  waits for the initiating Attach generation to process their contiguous prefix and the matching
+  marker. It neither waits for peer caches nor proves StorageNode acknowledgement or persistence.
+  Only one wait may be pending, and completion succeeds only when it linearizes strictly before the
+  saturating monotonic deadline; Detach, move assignment, or destruction cancels an admitted wait
+  with `Disconnected` and quiesces admitted work.
 
 ### 5.3 Session Overlay Deletion
 

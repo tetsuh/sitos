@@ -462,6 +462,7 @@ if(SITOS_WITH_ZENOH)
             -k test_raw_zenoh_fence_payload_and_control_isolation)
   set_tests_properties(
     FenceZenohIntegrationTest.QualifiesTopologiesQosAndControlIsolation
+    FenceZenohIntegrationTest.QualifiesPublicParamCacheLocalDelivery
     FenceRawZenohInteropTest.QualifiesPayloadTransparencyAndControlIsolation
     PROPERTIES RUN_SERIAL TRUE TIMEOUT 120)
   set_tests_properties(

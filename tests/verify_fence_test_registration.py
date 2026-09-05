@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the exact Issue #158 Fence CTest registration contract."""
+"""Verify the exact Issues #158 and #99 Fence CTest registration contract."""
 
 from __future__ import annotations
 
@@ -21,10 +21,15 @@ ZENOH_OFF_TESTS = (
     "FenceStorageNodeTest.DispatchesFenceAndBindsTheSessionGeneration",
     "FenceCollisionTest.PinsDocumentedUuidAndTokenResidualBoundaries",
     "FenceLifecycleTest.QuiescesCallbacksAndPreventsPostReturnAccess",
+    "FenceParamCacheTest.PublicWaitCoversPriorWritesAndExcludesLaterWrites",
+    "FenceParamCacheTest.PublicWaitMapsValidationTimeoutAndReceiverFailure",
+    "FenceParamCacheTest.PublicWaitRejectsSecondPendingWaitWithoutCorruptingFirst",
+    "FenceLifecycleTest.PublicWaitDetachCancelsAndQuiesces",
 )
 ZENOH_ON_TESTS = ZENOH_OFF_TESTS + (
     "FenceZenohIntegrationTest.QualifiesTopologiesQosAndControlIsolation",
     "FenceRawZenohInteropTest.QualifiesPayloadTransparencyAndControlIsolation",
+    "FenceZenohIntegrationTest.QualifiesPublicParamCacheLocalDelivery",
 )
 PROFILE_TESTS = {
     "zenoh-off": ZENOH_OFF_TESTS,
@@ -70,11 +75,13 @@ def main() -> None:
         _fail("ctest JSON does not contain a tests array")
 
     names: list[str] = []
+    fence_entries: dict[str, dict[str, object]] = {}
     for entry in document["tests"]:
         if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
             _fail("ctest JSON contains a test without a string name")
         if entry["name"].startswith("Fence"):
             names.append(entry["name"])
+            fence_entries[entry["name"]] = entry
 
     expected = set(PROFILE_TESTS[arguments.profile])
     counts = Counter(names)
@@ -88,6 +95,26 @@ def main() -> None:
         failures.append("duplicate: " + ", ".join(duplicates))
     if unexpected:
         failures.append("unexpected: " + ", ".join(unexpected))
+
+    serial_tests = ZENOH_ON_TESTS[len(ZENOH_OFF_TESTS) :]
+    not_serial: list[str] = []
+    for name in serial_tests:
+        entry = fence_entries.get(name)
+        if entry is None:
+            continue
+        properties = entry.get("properties")
+        run_serial = False
+        if isinstance(properties, list):
+            run_serial = any(
+                isinstance(prop, dict)
+                and prop.get("name") == "RUN_SERIAL"
+                and prop.get("value") is True
+                for prop in properties
+            )
+        if not run_serial:
+            not_serial.append(name)
+    if not_serial:
+        failures.append("not RUN_SERIAL: " + ", ".join(not_serial))
     if failures:
         _fail("; ".join(failures))
 

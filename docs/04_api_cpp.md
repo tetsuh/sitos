@@ -407,7 +407,22 @@ Writes use per-cache last-serialized-wins ordering; there is no self-echo dedupl
 ordering across caches. `PutBatch` preserves caller order and duplicate keys in one canonical
 message, and is not reader-visible transaction isolation, so concurrent readers may observe
 partial application. All APIs use the Result/Status model; `GetOr` substitutes only `NotFound`.
-`WaitForLocalDelivery` is deferred to #99, and stale/reconnect behavior is future #20 behavior.
+`WaitForLocalDelivery(std::chrono::milliseconds timeout)` waits until this cache's own subscriber
+has processed every write admitted to its Transport lane before the ADR-0029 cache-target Fence
+linearization point. The timeout is the total deadline and must be strictly positive; an oversized
+positive value saturates instead of wrapping. Success proves initiating-cache subscriber
+completion only: it does not prove peer-cache delivery, StorageNode acknowledgement, or storage
+durability. It is not the same as the immediate local application an accepted write already
+performs. Writes admitted after
+that linearization point are excluded, one `Put` or non-empty `PutBatch` consumes one covered
+sequence, and an empty covered prefix is valid. Exactly one marker is emitted and neither data nor
+marker is ever resubmitted. At most one wait may be pending per attached cache: a second concurrent
+call returns
+`Status::InvalidArgument` with `std::errc::operation_in_progress` and emits no marker. No valid
+completion before the deadline is `Status::Timeout`; a receiver-side failure preserves its exact
+Status and message, including `OutcomeUnknown` and `Disconnected`. `Detach`, move assignment,
+destruction, and Python `close` complete an admitted wait with `Status::Disconnected` and quiesce
+before releasing state. Stale/reconnect behavior is future #20 behavior.
 ## 5. SessionView — Read-Only Composite View
 
 `SessionView` is the host-process facade for an active session. It is opened through the Result-based

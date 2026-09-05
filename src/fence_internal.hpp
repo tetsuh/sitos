@@ -130,7 +130,17 @@ struct FenceWaiterState {
   std::mutex mutex;
   std::condition_variable condition;
   bool terminal = false;
+  bool completed_on_bound_generation = false;
   std::optional<AckResultV1> result;
+  /// Monotonic instant at which the terminal result linearized. ADR-0029 makes a
+  /// completion successful only when it precedes the handle deadline, so a
+  /// synchronous callback that runs after the deadline while the marker Put is
+  /// still executing cannot later be reported as success.
+  std::optional<std::chrono::steady_clock::time_point> completed_at;
+  /// A completion owns the publication slot while it performs final generation
+  /// validation outside this mutex. Another completion must not publish, but
+  /// cancellation and timeout may still win by setting `terminal`.
+  bool reserved = false;
 };
 
 struct FenceHandle {
@@ -138,6 +148,9 @@ struct FenceHandle {
   std::uint64_t through_sequence = 0;
   std::chrono::steady_clock::time_point deadline;
   std::shared_ptr<FenceWaiterState> waiter;
+  /// Covered-data or marker submission diagnostic frozen before BeginFence
+  /// releases the Publisher lane. Later excluded writes cannot replace it.
+  std::optional<ErrorInfo> timeout_diagnostic;
 };
 
 /// Internal ADR-0029 logical Publisher lane used by later #99/#107 surfaces.
@@ -328,6 +341,7 @@ class FencePublisher {
   [[nodiscard]] std::optional<bool> PublishWaiterResult(
       const std::shared_ptr<FenceWaiterState>& waiter, std::uint64_t through_sequence,
       AckResultV1 result);
+  void CancelPendingWaiter();
   void Disconnect();
 
   Transport* transport_;

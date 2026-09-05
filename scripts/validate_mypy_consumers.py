@@ -13,16 +13,19 @@ from pathlib import Path
 
 EXPECTED_INVALID_DIAGNOSTICS = Counter(
     {
-        (4, "call-arg"): 1,
-        (5, "arg-type"): 1,
+        (4, "misc"): 1,
+        (5, "call-arg"): 1,
         (6, "arg-type"): 1,
-        (7, "arg-type"): 1,
-        (8, "arg-type"): 2,
-        (10, "call-arg"): 1,
-        (12, "call-overload"): 1,
-        (15, "misc"): 1,
-        (16, "arg-type"): 1,
-        (17, "misc"): 1,
+        (7, "call-arg"): 1,
+        (8, "arg-type"): 1,
+        (9, "arg-type"): 1,
+        (10, "arg-type"): 1,
+        (11, "arg-type"): 2,
+        (13, "call-arg"): 1,
+        (15, "call-overload"): 1,
+        (18, "misc"): 1,
+        (19, "arg-type"): 1,
+        (20, "misc"): 1,
     }
 )
 

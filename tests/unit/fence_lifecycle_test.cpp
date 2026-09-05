@@ -6,6 +6,7 @@
 #include <chrono>
 #include <future>
 #include <memory>
+#include <thread>
 
 #include "fence_test_support.hpp"
 
@@ -267,6 +268,62 @@ TEST(FenceLifecycleTest, QuiescesCallbacksAndPreventsPostReturnAccess) {
   EXPECT_FALSE(sitos::fence_test_access::FenceTestAccess::BufferValueExists(activating_node,
                                                                             "activating", "value"));
   activating_node.Stop();
+}
+
+TEST(FenceLifecycleTest, PublicWaitDetachCancelsAndQuiesces) {
+  // Detach must complete an admitted public wait with Disconnected instead of
+  // letting it consume its timeout, and must not access waiter state afterwards.
+  auto transport = sitos::fence_test::MakeTransport();
+  auto cache_result = sitos::fence_test::OpenAttachedCache(transport);
+  ASSERT_TRUE(cache_result.IsOk());
+  auto cache = std::move(cache_result).Value();
+  ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::ConfigureCacheFenceReceiver(
+      cache, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA));
+
+  transport->GateMarkerCompletion();
+  auto pending = std::async(std::launch::async,
+                            [&cache] { return cache.WaitForLocalDelivery(std::chrono::hours{1}); });
+  if (!sitos::fence_test::WaitUntil([&] { return transport->MarkerCount() == 1; },
+                                    std::chrono::seconds{2})) {
+    cache.Detach();
+    transport->ReleaseMarkerCompletion();
+    static_cast<void>(pending.wait_for(std::chrono::seconds{2}));
+    FAIL() << "public wait marker was not submitted";
+  }
+
+  const auto started = std::chrono::steady_clock::now();
+  cache.Detach();
+  ASSERT_EQ(pending.wait_for(std::chrono::seconds{5}), std::future_status::ready)
+      << "Detach must release the admitted wait promptly";
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  EXPECT_LT(elapsed, std::chrono::seconds{5}) << "the wait must not consume its own timeout";
+
+  const auto result = pending.get();
+  ASSERT_FALSE(result.IsOk());
+  EXPECT_EQ(result.StatusCode(), sitos::Status::Disconnected);
+
+  // A detached cache is inert; a late marker replay must not revive the terminal waiter.
+  EXPECT_NO_THROW(transport->ReleaseMarkerCompletion());
+  const auto after_detach = cache.WaitForLocalDelivery(sitos::fence_test::kDeadline);
+  ASSERT_FALSE(after_detach.IsOk());
+  EXPECT_EQ(after_detach.StatusCode(), sitos::Status::InvalidArgument);
+
+  // Move assignment and destruction keep the same lifecycle contract.
+  auto move_transport = sitos::fence_test::MakeTransport();
+  auto move_result = sitos::fence_test::OpenAttachedCache(move_transport);
+  ASSERT_TRUE(move_result.IsOk());
+  auto source = std::move(move_result).Value();
+  ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::ConfigureCacheFenceReceiver(
+      source, sitos::fence_test::kAttachGeneration, sitos::fence_test::kPublisherA));
+  {
+    auto destination = std::move(source);
+    const auto moved_to = destination.WaitForLocalDelivery(std::chrono::milliseconds{20});
+    ASSERT_FALSE(moved_to.IsOk());
+    EXPECT_EQ(moved_to.StatusCode(), sitos::Status::Timeout);
+  }  // destruction quiesces without deadlock or post-return access
+  const auto moved_from = source.WaitForLocalDelivery(sitos::fence_test::kDeadline);
+  ASSERT_FALSE(moved_from.IsOk());
+  EXPECT_EQ(moved_from.StatusCode(), sitos::Status::InvalidArgument);
 }
 
 }  // namespace
