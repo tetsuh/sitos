@@ -70,10 +70,13 @@ exactly-once guarantee.
 - `InMemoryEngine` reports `kVolatileNoop`. Its `Sync()` joins the implementation's existing
   mutation order and returns success, proving only the ordering of in-process applied state. It
   never qualifies a durable BufferPublisher `kSynced` receipt.
-- `RocksDBEngine` reports `kPowerLossDurable`. It explicitly keeps WAL enabled, keeps per-write
-  synchronization disabled, joins the engine mutation order, and calls RocksDB 11.1.2
-  `DB::FlushWAL(true)`. This covers RocksDB's optional internal WAL buffer and then performs
-  `SyncWAL`; `SyncWAL()` alone is not the implementation.
+- `RocksDBEngine` reports `kPowerLossDurable` only in a build configured with
+  `SITOS_WITH_ROCKSDB=ON` and from an engine returned by a successful `Open()`. It explicitly keeps
+  WAL enabled, keeps per-write synchronization disabled, joins the engine mutation order, and calls
+  RocksDB 11.1.2 `DB::FlushWAL(true)`. This covers RocksDB's optional internal WAL buffer and then
+  performs `SyncWAL`; `SyncWAL()` alone is not the implementation. With RocksDB disabled, `Open()`
+  returns `Status::Error` with `std::errc::operation_not_supported`, so no RocksDB engine can
+  advertise durable synchronization or reach downstream durable admission.
 - A third-party engine inherits unsupported behavior unless it overrides both operations. Returning
   success without advertising `kPowerLossDurable` cannot enable a durable synchronized Fence.
 
