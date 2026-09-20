@@ -7,6 +7,7 @@
 
 #include <map>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace sitos {
@@ -38,6 +39,15 @@ class SnapshotCopy : public StorageReader {
 };
 
 }  // namespace
+
+SyncCapability StorageEngine::GetSyncCapability() const noexcept {
+  return SyncCapability::kUnsupported;
+}
+
+Result<void> StorageEngine::Sync() {
+  return Result<void>::Err(Status::Error, "Storage synchronization is not supported",
+                           std::make_error_code(std::errc::operation_not_supported));
+}
 
 std::shared_ptr<const StorageReader> StorageEngine::TakeSnapshot() const {
   std::map<std::string, std::vector<std::byte>, std::less<>> data;

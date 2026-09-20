@@ -106,10 +106,18 @@ public:
     virtual bool List(std::string_view prefix, const EntrySink& sink) const = 0;
 };
 
+enum class SyncCapability {
+    kUnsupported = 0,
+    kVolatileNoop = 1,
+    kPowerLossDurable = 2,
+};
+
 class StorageEngine : public StorageReader {
 public:
     virtual bool Put(std::string_view key, Bytes value) = 0;
     virtual bool Delete(std::string_view key)           = 0;
+    virtual SyncCapability GetSyncCapability() const noexcept;
+    virtual Result<void> Sync();
 
     /// Return a consistent read view at that point in time.
     /// Default implementation: an InMemory view copied in full via List (O(n)) [N03].
@@ -129,6 +137,25 @@ Conventions:
   value views remain valid for the sink call, and `List` enumerates a consistent read set.
   `InMemoryEngine` uses `std::shared_mutex`; RocksDB uses its native guarantees
 * The view returned by `TakeSnapshot()` is not affected by Put/Delete operations after the call
+* Put/Delete completion means **applied** to the engine. For a persistent engine, the value may also
+  be **persisted** in recoverable storage without yet being disk-synchronized. Only a successful
+  `Sync()` from an engine advertising `kPowerLossDurable` establishes the explicit
+  **disk-synchronized** boundary under that backend's documented platform and storage assumptions.
+* Put, Delete, and Sync share one engine-local linearizable mutation order. A successful Sync covers
+  every successful mutation ordered before its linearization point; an overlapping mutation may be
+  ordered on either side. Ordinary writes do not synchronize individually.
+* The default capability is `kUnsupported`, and default Sync returns `Status::Error` with
+  `operation_not_supported`. InMemory reports `kVolatileNoop`: its successful no-op proves only
+  in-process ordering. A successfully opened RocksDB-enabled engine reports
+  `kPowerLossDurable`, writes through enabled WAL with per-write sync disabled, and uses
+  `FlushWAL(true)` at the barrier.
+* Adding these virtual methods changes the public C++ ABI; consumers must rebuild. The owner must
+  quiesce method calls before destruction. Sync does not change ADR-0033 snapshot ownership or
+  authorize filesystem removal.
+* The process hard-stop recovery test exercises recovery without orderly destructors, but process
+  termination leaves the OS page cache intact. It is not a complete physical power-loss emulator;
+  the durable claim remains bounded by RocksDB, filesystem, OS, and hardware synchronization
+  contracts together with native-call evidence.
 
 ## 4. StorageNode
 

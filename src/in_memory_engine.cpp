@@ -19,6 +19,15 @@ bool InMemoryEngine::Delete(std::string_view key) {
   return true;
 }
 
+SyncCapability InMemoryEngine::GetSyncCapability() const noexcept {
+  return SyncCapability::kVolatileNoop;
+}
+
+Result<void> InMemoryEngine::Sync() {
+  std::unique_lock lock(mutex_);
+  return Result<void>::Ok();
+}
+
 bool InMemoryEngine::Get(std::string_view key, const EntrySink& sink) const {
   std::string owned_key;
   std::vector<std::byte> owned_value;

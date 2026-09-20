@@ -19,6 +19,38 @@ INSTANTIATE_STORAGE_ENGINE_CONTRACT_SUITE(InMemoryEngineContractTest, [] {
   return std::make_unique<sitos::InMemoryEngine>();
 });
 
+TEST(InMemoryEngineSyncTest, ReportsVolatileNoopAndSucceeds) {
+  sitos::InMemoryEngine engine;
+  sitos_contract::SyncCapabilityContract(
+      engine, sitos::SyncCapability::kVolatileNoop, true);
+}
+
+TEST(InMemoryEngineSyncTest, RetainsEveryCompletedMutationAcrossTheBarrier) {
+  sitos::InMemoryEngine engine;
+  constexpr int kMutations = 64;
+  for (int i = 0; i < kMutations; ++i) {
+    ASSERT_TRUE(engine.Put(
+        "sync/" + std::to_string(i),
+        std::vector<std::byte>{std::byte{static_cast<unsigned char>(i)}}));
+  }
+
+  ASSERT_TRUE(engine.Sync().IsOk());
+
+  for (int i = 0; i < kMutations; ++i) {
+    bool value_matches = false;
+    ASSERT_TRUE(engine.Get("sync/" + std::to_string(i),
+                           [i, &value_matches](std::string_view, sitos::Bytes value) {
+                             EXPECT_EQ(value.size(), 1u);
+                             if (value.size() == 1) {
+                               value_matches =
+                                   value[0] == std::byte{static_cast<unsigned char>(i)};
+                             }
+                             return true;
+                           }));
+    EXPECT_TRUE(value_matches);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Concurrent read/write stress test (TSan-ready).
 // ---------------------------------------------------------------------------

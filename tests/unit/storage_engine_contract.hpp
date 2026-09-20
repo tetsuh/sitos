@@ -28,6 +28,7 @@
 #include <future>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -70,6 +71,18 @@ inline std::vector<std::byte> BytesFromString(std::string_view s) {
   v.reserve(s.size());
   for (char c : s) v.push_back(static_cast<std::byte>(c));
   return v;
+}
+
+inline void SyncCapabilityContract(sitos::StorageEngine& engine,
+                                   sitos::SyncCapability expected_capability,
+                                   bool expected_success) {
+  EXPECT_EQ(engine.GetSyncCapability(), expected_capability);
+  const auto result = engine.Sync();
+  EXPECT_EQ(result.IsOk(), expected_success);
+  if (!expected_success) {
+    EXPECT_EQ(result.StatusCode(), sitos::Status::Error);
+    EXPECT_EQ(result.Error(), std::make_error_code(std::errc::operation_not_supported));
+  }
 }
 
 // Runs a potentially reentrant operation without allowing a regression to

@@ -16,6 +16,8 @@
 #include <span>
 #include <string_view>
 
+#include "sitos/result.hpp"
+
 namespace sitos {
 
 /// A view into a value stored in the engine.  The pointed-to bytes are
@@ -28,6 +30,13 @@ using Bytes = std::span<const std::byte>;
 /// sink, so the sink may call methods on the same engine. Return false from
 /// the sink to abort iteration early (List will stop and return false).
 using EntrySink = std::function<bool(std::string_view key, Bytes value)>;
+
+/// Stable synchronization capability identifiers. Values are append-only.
+enum class SyncCapability {
+  kUnsupported = 0,
+  kVolatileNoop = 1,
+  kPowerLossDurable = 2,
+};
 
 /// Read-only view of the stored state.  Both the engine itself and
 /// lightweight snapshots implement this interface.
@@ -62,6 +71,15 @@ class StorageEngine : public StorageReader {
   /// Remove the key and its value.  Deleting a non-existent key is a
   /// no-op and should return true.
   virtual bool Delete(std::string_view key) = 0;
+
+  /// Reports the engine's explicit synchronization guarantee. Custom engines
+  /// inherit kUnsupported unless they override both this method and Sync().
+  virtual SyncCapability GetSyncCapability() const noexcept;
+
+  /// Establishes an engine-local mutation barrier. A successful result covers
+  /// each successful Put/Delete ordered before the barrier's linearization
+  /// point. The default implementation reports operation_not_supported.
+  virtual Result<void> Sync();
 
   /// Return a consistent read-only view of the state at this point in
   /// time.  The returned snapshot is not affected by subsequent Put or

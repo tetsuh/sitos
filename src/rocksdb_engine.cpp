@@ -70,6 +70,21 @@ rocksdb::Status NativeDelete(rocksdb::DB& db, const rocksdb::WriteOptions& optio
   return db.Delete(options, key);
 }
 
+rocksdb::Status NativeFlushWAL(rocksdb::DB& db, bool sync) { return db.FlushWAL(sync); }
+
+rocksdb::WriteOptions UnsynchronizedWalWriteOptions() {
+  rocksdb::WriteOptions options;
+  options.disableWAL = false;
+  options.sync = false;
+  return options;
+}
+
+std::string BoundedDiagnostic(std::string message) {
+  constexpr std::size_t kMaxDiagnosticBytes = 1024;
+  if (message.size() > kMaxDiagnosticBytes) message.resize(kMaxDiagnosticBytes);
+  return message;
+}
+
 rocksdb::Status NativeGet(rocksdb::DB& db, const rocksdb::ReadOptions& options,
                           const rocksdb::Slice& key, std::string* value) {
   return db.Get(options, key, value);
@@ -101,26 +116,28 @@ void NativeReleaseSnapshot(rocksdb::DB& db, const rocksdb::Snapshot* snapshot) {
 #if defined(SITOS_ROCKSDB_TEST_SEAM)
 struct OperationAdapter {
   using Put = std::function<rocksdb::Status(rocksdb::DB&, const rocksdb::WriteOptions&,
-                                             const rocksdb::Slice&, const rocksdb::Slice&)>;
+                                            const rocksdb::Slice&, const rocksdb::Slice&)>;
   using Delete = std::function<rocksdb::Status(rocksdb::DB&, const rocksdb::WriteOptions&,
-                                                const rocksdb::Slice&)>;
+                                               const rocksdb::Slice&)>;
+  using FlushWal = std::function<rocksdb::Status(rocksdb::DB&, bool)>;
   using Get = std::function<rocksdb::Status(rocksdb::DB&, const rocksdb::ReadOptions&,
-                                             const rocksdb::Slice&, std::string*)>;
-  using List = std::function<rocksdb::Status(
-      rocksdb::DB&, const rocksdb::ReadOptions&, std::string_view, EntryBuffer&)>;
+                                            const rocksdb::Slice&, std::string*)>;
+  using List = std::function<rocksdb::Status(rocksdb::DB&, const rocksdb::ReadOptions&,
+                                             std::string_view, EntryBuffer&)>;
   using GetSnapshot = std::function<const rocksdb::Snapshot*(rocksdb::DB&)>;
   using ReleaseSnapshot = std::function<void(rocksdb::DB&, const rocksdb::Snapshot*)>;
 
   Put put;
   Delete delete_key;
+  FlushWal flush_wal;
   Get get;
   List list;
   GetSnapshot get_snapshot;
   ReleaseSnapshot release_snapshot;
 };
 
-using OpenOperation = std::function<rocksdb::Status(
-    const rocksdb::Options&, const std::string&, std::unique_ptr<rocksdb::DB>*)>;
+using OpenOperation = std::function<rocksdb::Status(const rocksdb::Options&, const std::string&,
+                                                    std::unique_ptr<rocksdb::DB>*)>;
 
 struct OpenOperationState {
   std::mutex mutex;
@@ -157,6 +174,7 @@ OperationAdapter MakeOperationAdapter(unsigned int failures = 0) {
     }
     return NativeDelete(db, options, key);
   };
+  adapter.flush_wal = NativeFlushWAL;
   adapter.get = [failures](rocksdb::DB& db, const rocksdb::ReadOptions& options,
                            const rocksdb::Slice& key, std::string* value) {
     if ((failures & rocksdb_test::kGet) != 0) {
@@ -197,10 +215,18 @@ struct DatabaseState {
 #endif
 
   std::shared_ptr<rocksdb::DB> db;
+  std::mutex mutation_mutex;
 #if defined(SITOS_ROCKSDB_TEST_SEAM)
   std::shared_ptr<rocksdb_test::EventLog> events;
   std::mutex operations_mutex;
   OperationAdapter operations = MakeOperationAdapter();
+  rocksdb_test::SyncFailureMode sync_failure_mode = rocksdb_test::SyncFailureMode::kNone;
+  rocksdb_test::WriteObservation put_observation;
+  rocksdb_test::WriteObservation delete_observation;
+  rocksdb_test::SyncObservation sync_observation;
+  std::shared_ptr<rocksdb_test::OperationBlock> put_block;
+  std::shared_ptr<rocksdb_test::OperationBlock> delete_block;
+  std::shared_ptr<rocksdb_test::OperationBlock> sync_block;
   std::atomic<std::size_t> snapshot_calls{0};
   std::atomic<std::size_t> enumeration_calls{0};
 #endif
@@ -211,27 +237,89 @@ OperationAdapter Operations(const std::shared_ptr<DatabaseState>& state) {
   std::lock_guard lock(state->operations_mutex);
   return state->operations;
 }
+
+std::shared_ptr<rocksdb_test::OperationBlock> TakeOperationBlock(
+    const std::shared_ptr<DatabaseState>& state, rocksdb_test::MutationOperation operation) {
+  std::lock_guard lock(state->operations_mutex);
+  std::shared_ptr<rocksdb_test::OperationBlock>* block = nullptr;
+  switch (operation) {
+    case rocksdb_test::MutationOperation::kPut:
+      block = &state->put_block;
+      break;
+    case rocksdb_test::MutationOperation::kDelete:
+      block = &state->delete_block;
+      break;
+    case rocksdb_test::MutationOperation::kSync:
+      block = &state->sync_block;
+      break;
+  }
+  return block == nullptr ? nullptr : std::exchange(*block, nullptr);
+}
+
+bool ConsumePreInvocationSyncFailure(const std::shared_ptr<DatabaseState>& state) {
+  std::lock_guard lock(state->operations_mutex);
+  if (state->sync_failure_mode != rocksdb_test::SyncFailureMode::kBeforeInvocation) {
+    return false;
+  }
+  state->sync_failure_mode = rocksdb_test::SyncFailureMode::kNone;
+  return true;
+}
 #endif
 
 rocksdb::Status PutDatabase(const std::shared_ptr<DatabaseState>& state,
-                            const rocksdb::WriteOptions& options,
-                            const rocksdb::Slice& key, const rocksdb::Slice& value) {
+                            const rocksdb::WriteOptions& options, const rocksdb::Slice& key,
+                            const rocksdb::Slice& value) {
 #if defined(SITOS_ROCKSDB_TEST_SEAM)
-  return Operations(state).put(*state->db, options, key, value);
+  const auto operation = Operations(state).put;
+  {
+    std::lock_guard lock(state->operations_mutex);
+    ++state->put_observation.invocation_count;
+    state->put_observation.disable_wal = options.disableWAL;
+    state->put_observation.sync = options.sync;
+  }
+  rocksdb_test::WaitOnOperationBlock(
+      TakeOperationBlock(state, rocksdb_test::MutationOperation::kPut));
+  return operation(*state->db, options, key, value);
 #else
   return NativePut(*state->db, options, key, value);
 #endif
 }
 
 rocksdb::Status DeleteDatabase(const std::shared_ptr<DatabaseState>& state,
-                               const rocksdb::WriteOptions& options,
-                               const rocksdb::Slice& key) {
+                               const rocksdb::WriteOptions& options, const rocksdb::Slice& key) {
 #if defined(SITOS_ROCKSDB_TEST_SEAM)
-  return Operations(state).delete_key(*state->db, options, key);
+  const auto operation = Operations(state).delete_key;
+  {
+    std::lock_guard lock(state->operations_mutex);
+    ++state->delete_observation.invocation_count;
+    state->delete_observation.disable_wal = options.disableWAL;
+    state->delete_observation.sync = options.sync;
+  }
+  rocksdb_test::WaitOnOperationBlock(
+      TakeOperationBlock(state, rocksdb_test::MutationOperation::kDelete));
+  return operation(*state->db, options, key);
 #else
   return NativeDelete(*state->db, options, key);
 #endif
 }
+
+#if defined(SITOS_ROCKSDB_TEST_SEAM)
+OperationAdapter::FlushWal FlushWalOperation(const std::shared_ptr<DatabaseState>& state) {
+  return Operations(state).flush_wal;
+}
+
+rocksdb::Status InvokeFlushWalForTest(const std::shared_ptr<DatabaseState>& state,
+                                      const OperationAdapter::FlushWal& operation, bool sync) {
+  {
+    std::lock_guard lock(state->operations_mutex);
+    ++state->sync_observation.invocation_count;
+    state->sync_observation.last_sync_argument = sync;
+  }
+  rocksdb_test::WaitOnOperationBlock(
+      TakeOperationBlock(state, rocksdb_test::MutationOperation::kSync));
+  return operation(*state->db, sync);
+}
+#endif
 
 rocksdb::Status GetDatabase(const std::shared_ptr<DatabaseState>& state,
                             const rocksdb::ReadOptions& options,
@@ -414,6 +502,7 @@ Result<std::unique_ptr<RocksDBEngine>> RocksDBEngine::Open(const std::string& pa
   }
   rocksdb::Options options;
   options.create_if_missing = true;
+  options.manual_wal_flush = false;
   std::unique_ptr<rocksdb::DB> owned_db;
   if (const rocksdb::Status status = OpenDatabase(options, path, &owned_db); !status.ok()) {
     return Result<std::unique_ptr<RocksDBEngine>>::Err(
@@ -447,7 +536,8 @@ Result<std::unique_ptr<RocksDBEngine>> RocksDBEngine::Open(const std::string& pa
 
 bool RocksDBEngine::Put(std::string_view key, Bytes value) {
 #if defined(SITOS_WITH_ROCKSDB)
-  return PutDatabase(impl_->state, rocksdb::WriteOptions{},
+  std::lock_guard lock(impl_->state->mutation_mutex);
+  return PutDatabase(impl_->state, UnsynchronizedWalWriteOptions(),
                      rocksdb::Slice(key.data(), key.size()),
                      rocksdb::Slice(reinterpret_cast<const char*>(value.data()), value.size()))
       .ok();
@@ -460,12 +550,66 @@ bool RocksDBEngine::Put(std::string_view key, Bytes value) {
 
 bool RocksDBEngine::Delete(std::string_view key) {
 #if defined(SITOS_WITH_ROCKSDB)
-  return DeleteDatabase(impl_->state, rocksdb::WriteOptions{},
+  std::lock_guard lock(impl_->state->mutation_mutex);
+  return DeleteDatabase(impl_->state, UnsynchronizedWalWriteOptions(),
                         rocksdb::Slice(key.data(), key.size()))
       .ok();
 #else
   static_cast<void>(key);
   return false;
+#endif
+}
+
+SyncCapability RocksDBEngine::GetSyncCapability() const noexcept {
+#if defined(SITOS_WITH_ROCKSDB)
+  return SyncCapability::kPowerLossDurable;
+#else
+  return SyncCapability::kUnsupported;
+#endif
+}
+
+Result<void> RocksDBEngine::Sync() {
+#if defined(SITOS_WITH_ROCKSDB)
+  bool native_invoked = false;
+  try {
+    std::lock_guard lock(impl_->state->mutation_mutex);
+#if defined(SITOS_ROCKSDB_TEST_SEAM)
+    if (ConsumePreInvocationSyncFailure(impl_->state)) {
+      return Result<void>::Err(Status::Error,
+                               "RocksDB synchronization failed before native invocation",
+                               std::make_error_code(std::errc::operation_canceled));
+    }
+    const auto operation = FlushWalOperation(impl_->state);
+    native_invoked = true;
+    const rocksdb::Status status = InvokeFlushWalForTest(impl_->state, operation, true);
+#else
+    native_invoked = true;
+    const rocksdb::Status status = NativeFlushWAL(*impl_->state->db, true);
+#endif
+    if (!status.ok()) {
+      return Result<void>::Err(
+          Status::OutcomeUnknown,
+          BoundedDiagnostic(std::format("RocksDB FlushWAL failed: {}", status.ToString())),
+          MakeRocksDBError(status));
+    }
+    return Result<void>::Ok();
+  } catch (const std::system_error& exception) {
+    return Result<void>::Err(
+        native_invoked ? Status::OutcomeUnknown : Status::Error,
+        BoundedDiagnostic(std::format("RocksDB FlushWAL threw: {}", exception.what())),
+        exception.code());
+  } catch (const std::exception& exception) {
+    return Result<void>::Err(
+        native_invoked ? Status::OutcomeUnknown : Status::Error,
+        BoundedDiagnostic(std::format("RocksDB FlushWAL threw: {}", exception.what())),
+        std::make_error_code(std::errc::io_error));
+  } catch (...) {
+    return Result<void>::Err(native_invoked ? Status::OutcomeUnknown : Status::Error,
+                             "RocksDB FlushWAL threw an unknown exception",
+                             std::make_error_code(std::errc::io_error));
+  }
+#else
+  return StorageEngine::Sync();
 #endif
 }
 
@@ -506,6 +650,27 @@ std::shared_ptr<const StorageReader> RocksDBEngine::TakeSnapshot() const {
 #if defined(SITOS_WITH_ROCKSDB) && defined(SITOS_ROCKSDB_TEST_SEAM)
 namespace rocksdb_test {
 
+bool OperationBlock::WaitUntilEntered() {
+  std::unique_lock lock(mutex_);
+  return condition_.wait_for(lock, std::chrono::seconds(5), [this] { return entered_; });
+}
+
+void OperationBlock::Release() {
+  {
+    std::lock_guard lock(mutex_);
+    released_ = true;
+  }
+  condition_.notify_all();
+}
+
+void WaitOnOperationBlock(const std::shared_ptr<OperationBlock>& block) {
+  if (block == nullptr) return;
+  std::unique_lock lock(block->mutex_);
+  block->entered_ = true;
+  block->condition_.notify_all();
+  block->condition_.wait(lock, [&block] { return block->released_; });
+}
+
 void SetOpenFailureForTest() {
   auto& state = GetOpenOperationState();
   std::lock_guard lock(state.mutex);
@@ -534,6 +699,61 @@ void SetFailures(const RocksDBEngine& engine, unsigned int failures) {
   if (state == nullptr) return;
   std::lock_guard lock(state->operations_mutex);
   state->operations = MakeOperationAdapter(failures);
+  state->sync_failure_mode = SyncFailureMode::kNone;
+}
+
+void SetSyncFailureModeForTest(const RocksDBEngine& engine, SyncFailureMode mode) {
+  const auto state = StateFor(&engine);
+  if (state == nullptr) return;
+  std::lock_guard lock(state->operations_mutex);
+  state->sync_failure_mode = mode;
+  state->operations.flush_wal = NativeFlushWAL;
+  if (mode == SyncFailureMode::kNativeStatus) {
+    state->operations.flush_wal = [](rocksdb::DB&, bool) {
+      return rocksdb::Status::IOError("injected FlushWAL failure");
+    };
+  } else if (mode == SyncFailureMode::kNativeException) {
+    state->operations.flush_wal = [](rocksdb::DB&, bool) -> rocksdb::Status {
+      throw std::system_error(std::make_error_code(std::errc::io_error),
+                              "injected FlushWAL exception");
+    };
+  }
+}
+
+std::shared_ptr<OperationBlock> BlockNextMutationForTest(const RocksDBEngine& engine,
+                                                         MutationOperation operation) {
+  const auto state = StateFor(&engine);
+  if (state == nullptr) return nullptr;
+  auto block = std::make_shared<OperationBlock>();
+  std::lock_guard lock(state->operations_mutex);
+  switch (operation) {
+    case MutationOperation::kPut:
+      state->put_block = block;
+      break;
+    case MutationOperation::kDelete:
+      state->delete_block = block;
+      break;
+    case MutationOperation::kSync:
+      state->sync_block = block;
+      break;
+  }
+  return block;
+}
+
+void GetWriteObservationsForTest(const RocksDBEngine& engine, WriteObservation& put,
+                                 WriteObservation& delete_key) {
+  const auto state = StateFor(&engine);
+  if (state == nullptr) return;
+  std::lock_guard lock(state->operations_mutex);
+  put = state->put_observation;
+  delete_key = state->delete_observation;
+}
+
+SyncObservation GetSyncObservationForTest(const RocksDBEngine& engine) {
+  const auto state = StateFor(&engine);
+  if (state == nullptr) return {};
+  std::lock_guard lock(state->operations_mutex);
+  return state->sync_observation;
 }
 
 void GetSnapshotStats(const RocksDBEngine& engine, std::size_t& snapshot_calls,

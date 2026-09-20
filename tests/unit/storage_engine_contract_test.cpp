@@ -68,6 +68,16 @@ class MockEngine : public sitos::StorageEngine {
 
 }  // namespace
 
+static_assert(static_cast<int>(sitos::SyncCapability::kUnsupported) == 0);
+static_assert(static_cast<int>(sitos::SyncCapability::kVolatileNoop) == 1);
+static_assert(static_cast<int>(sitos::SyncCapability::kPowerLossDurable) == 2);
+
+TEST(StorageEngineSyncContractTest, InheritedDefaultIsSourceCompatibleAndUnsupported) {
+  MockEngine engine;
+  sitos_contract::SyncCapabilityContract(
+      engine, sitos::SyncCapability::kUnsupported, false);
+}
+
 INSTANTIATE_STORAGE_ENGINE_CONTRACT_SUITE(MockEngineContractTest, [] {
   return std::make_unique<MockEngine>();
 });

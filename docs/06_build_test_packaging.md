@@ -281,6 +281,24 @@ major behaviors.
 | `BufferKeyTest.InvalidBufferRoutesAreRejected` | C06 | Reject malformed routes, unknown classes, and undefined BufferClass values |
 | `BufferKeyTest.BufferClassIsReservedOnlyInTheClassPosition` | C06 | Permit durable/ephemeral chunks inside a hierarchical user key |
 
+Issue #105 fixes these exact durability-barrier acceptance names:
+
+- `StorageEngineSyncContractTest.InheritedDefaultIsSourceCompatibleAndUnsupported`
+- `InMemoryEngineSyncTest.ReportsVolatileNoopAndSucceeds`
+- `InMemoryEngineSyncTest.RetainsEveryCompletedMutationAcrossTheBarrier`
+- `RocksDBEngineSyncTest.ReportsPowerLossDurableAndSucceeds`
+- `RocksDBEngineTestSeam.SyncUsesExactNativeCallAndUnsynchronizedWalWrites`
+- `RocksDBEngineTestSeam.SyncMapsPreAndPostInvocationFailures`
+- `RocksDBEngineTestSeam.MutationAndSyncUseOneProductionOrder`
+- `RocksDBEngineCrashDurability.HardStopAfterSuccessfulSyncRecoversExactValues`
+
+The RocksDB seam verifies `FlushWAL(true)`, enabled WAL with ordinary `sync = false` writes, native
+failure ambiguity, and a deterministic blocked-operation order through the production mutation
+lock. The cross-platform crash test starts a child writer, requires successful Sync, terminates via
+`_Exit` without engine destruction, then reopens and checks exact values. Process termination does
+not evict the OS page cache and is therefore paired with the native-call seam rather than presented
+as a physical power-loss emulator.
+
 Issues #158 and #99 fix these exact Fence acceptance names:
 
 - `FenceLaneCodecTest.GoldenAndNegativeForms`

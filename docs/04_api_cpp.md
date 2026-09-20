@@ -237,6 +237,32 @@ public:
 };
 ```
 
+`SyncCapability` has stable append-only values `kUnsupported = 0`, `kVolatileNoop = 1`, and
+`kPowerLossDurable = 2`. `StorageEngine::GetSyncCapability()` and `StorageEngine::Sync()` are
+non-pure virtual methods so existing custom derived engines remain source-compatible and safely
+inherit explicit unsupported behavior. The added virtuals change the C++ ABI, so all consumers must
+rebuild against this sitos version.
+
+A normal Put/Delete success means the mutation was applied. A persistent backend may make it
+recoverable before it is disk-synchronized, but callers receive that stronger guarantee only after
+successful Sync from an engine reporting `kPowerLossDurable`. Put, Delete, and Sync share one
+engine-local linearizable mutation order. Sync covers successful mutations ordered before its
+linearization point and need not cover an overlapping mutation ordered after it. There is no
+implicit per-write synchronization.
+
+InMemory reports `kVolatileNoop` and returns successful Sync after joining its in-process mutation
+order; that capability never qualifies a durable synchronized Fence. A successfully opened
+RocksDB-enabled engine reports `kPowerLossDurable`, keeps WAL enabled, uses unsynchronized ordinary
+writes, and invokes `FlushWAL(true)` for Sync. A native non-OK return or exception after that
+invocation maps to `OutcomeUnknown` unless definite non-effect is proven; a pre-invocation failure
+is `Error`. Native causes and bounded diagnostics are retained, and sitos performs no automatic
+retry. A standalone Sync is not declared inherently non-idempotent.
+
+Engine owners must quiesce calls before destruction. Sync does not alter ADR-0033 snapshot lifetime
+or filesystem-cleanup ownership. Hard-stop/reopen tests omit orderly destructors but do not emulate
+physical power loss because the OS page cache remains; the durable guarantee depends on the combined
+RocksDB, filesystem, OS, and hardware synchronization contracts.
+
 The RocksDB-ON installed package reconstructs the exact RocksDB version used at build time. The
 installed consumer validates configure and compile/link only; runtime deployment remains with the
 application or package manager. Exact version equality is necessary but not sufficient for ABI
