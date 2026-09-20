@@ -41,4 +41,4 @@ status so the offline documentation contract can detect index drift.
 | [0031](0031-cross-platform-vcpkg-foundation.md) | Establish a cross-platform vcpkg foundation | Accepted |
 | [0032](0032-mixed-session-buffer-routes.md) | Define mixed durable and ephemeral session buffer routes | Accepted |
 | [0033](0033-rocksdb-engine-snapshot-and-package-boundary.md) | Define the RocksDB engine, snapshot, and installed-package boundary | Accepted |
-| [0034](0034-storage-durability-barrier.md) | Define explicit storage durability barriers | Proposed |
+| [0034](0034-storage-durability-barrier.md) | Define explicit storage durability barriers | Accepted |
