@@ -74,6 +74,9 @@ class StorageEngine : public StorageReader {
 
   /// Reports the engine's explicit synchronization guarantee. Custom engines
   /// inherit kUnsupported unless they override both this method and Sync().
+  /// Source compatibility requires that an existing derived class does not
+  /// declare the same signature with an incompatible return type; rename such
+  /// a member before implementing this override.
   virtual SyncCapability GetSyncCapability() const noexcept;
 
   /// Establishes an engine-local mutation barrier. A successful result covers

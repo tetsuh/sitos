@@ -239,9 +239,11 @@ public:
 
 `SyncCapability` has stable append-only values `kUnsupported = 0`, `kVolatileNoop = 1`, and
 `kPowerLossDurable = 2`. `StorageEngine::GetSyncCapability()` and `StorageEngine::Sync()` are
-non-pure virtual methods so existing custom derived engines remain source-compatible and safely
-inherit explicit unsupported behavior. The added virtuals change the C++ ABI, so all consumers must
-rebuild against this sitos version.
+non-pure virtual methods so existing custom derived engines that do not already declare a
+same-signature member with an incompatible return type remain source-compatible and safely inherit
+explicit unsupported behavior. A custom engine with such a collision must rename its old member and
+implement the corresponding sitos override. The added virtuals change the C++ ABI, so all consumers
+must rebuild against this sitos version.
 
 A normal Put/Delete success means the mutation was applied. A persistent backend may make it
 recoverable before it is disk-synchronized, but callers receive that stronger guarantee only after

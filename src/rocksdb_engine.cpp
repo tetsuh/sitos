@@ -205,6 +205,12 @@ rocksdb::Status OpenDatabase(const rocksdb::Options& options, const std::string&
 #endif
 }
 
+enum class MutationKind {
+  kPut,
+  kDelete,
+  kSync,
+};
+
 struct DatabaseState {
 #if defined(SITOS_ROCKSDB_TEST_SEAM)
   DatabaseState(std::shared_ptr<rocksdb::DB> database,
@@ -227,6 +233,9 @@ struct DatabaseState {
   std::shared_ptr<rocksdb_test::OperationBlock> put_block;
   std::shared_ptr<rocksdb_test::OperationBlock> delete_block;
   std::shared_ptr<rocksdb_test::OperationBlock> sync_block;
+  std::shared_ptr<rocksdb_test::OperationBlock> put_contention_block;
+  std::shared_ptr<rocksdb_test::OperationBlock> delete_contention_block;
+  std::shared_ptr<rocksdb_test::OperationBlock> sync_contention_block;
   std::atomic<std::size_t> snapshot_calls{0};
   std::atomic<std::size_t> enumeration_calls{0};
 #endif
@@ -256,6 +265,24 @@ std::shared_ptr<rocksdb_test::OperationBlock> TakeOperationBlock(
   return block == nullptr ? nullptr : std::exchange(*block, nullptr);
 }
 
+std::shared_ptr<rocksdb_test::OperationBlock> TakeContentionBlock(
+    const std::shared_ptr<DatabaseState>& state, MutationKind operation) {
+  std::lock_guard lock(state->operations_mutex);
+  std::shared_ptr<rocksdb_test::OperationBlock>* block = nullptr;
+  switch (operation) {
+    case MutationKind::kPut:
+      block = &state->put_contention_block;
+      break;
+    case MutationKind::kDelete:
+      block = &state->delete_contention_block;
+      break;
+    case MutationKind::kSync:
+      block = &state->sync_contention_block;
+      break;
+  }
+  return block == nullptr ? nullptr : std::exchange(*block, nullptr);
+}
+
 bool ConsumePreInvocationSyncFailure(const std::shared_ptr<DatabaseState>& state) {
   std::lock_guard lock(state->operations_mutex);
   if (state->sync_failure_mode != rocksdb_test::SyncFailureMode::kBeforeInvocation) {
@@ -265,6 +292,21 @@ bool ConsumePreInvocationSyncFailure(const std::shared_ptr<DatabaseState>& state
   return true;
 }
 #endif
+
+std::unique_lock<std::mutex> LockMutation(const std::shared_ptr<DatabaseState>& state,
+                                          MutationKind operation) {
+  std::unique_lock lock(state->mutation_mutex, std::defer_lock);
+#if defined(SITOS_ROCKSDB_TEST_SEAM)
+  if (!lock.try_lock()) {
+    rocksdb_test::WaitOnOperationBlock(TakeContentionBlock(state, operation));
+    lock.lock();
+  }
+#else
+  static_cast<void>(operation);
+  lock.lock();
+#endif
+  return lock;
+}
 
 rocksdb::Status PutDatabase(const std::shared_ptr<DatabaseState>& state,
                             const rocksdb::WriteOptions& options, const rocksdb::Slice& key,
@@ -536,7 +578,7 @@ Result<std::unique_ptr<RocksDBEngine>> RocksDBEngine::Open(const std::string& pa
 
 bool RocksDBEngine::Put(std::string_view key, Bytes value) {
 #if defined(SITOS_WITH_ROCKSDB)
-  std::lock_guard lock(impl_->state->mutation_mutex);
+  auto mutation_lock = LockMutation(impl_->state, MutationKind::kPut);
   return PutDatabase(impl_->state, UnsynchronizedWalWriteOptions(),
                      rocksdb::Slice(key.data(), key.size()),
                      rocksdb::Slice(reinterpret_cast<const char*>(value.data()), value.size()))
@@ -550,7 +592,7 @@ bool RocksDBEngine::Put(std::string_view key, Bytes value) {
 
 bool RocksDBEngine::Delete(std::string_view key) {
 #if defined(SITOS_WITH_ROCKSDB)
-  std::lock_guard lock(impl_->state->mutation_mutex);
+  auto mutation_lock = LockMutation(impl_->state, MutationKind::kDelete);
   return DeleteDatabase(impl_->state, UnsynchronizedWalWriteOptions(),
                         rocksdb::Slice(key.data(), key.size()))
       .ok();
@@ -572,7 +614,7 @@ Result<void> RocksDBEngine::Sync() {
 #if defined(SITOS_WITH_ROCKSDB)
   bool native_invoked = false;
   try {
-    std::lock_guard lock(impl_->state->mutation_mutex);
+    auto mutation_lock = LockMutation(impl_->state, MutationKind::kSync);
 #if defined(SITOS_ROCKSDB_TEST_SEAM)
     if (ConsumePreInvocationSyncFailure(impl_->state)) {
       return Result<void>::Err(Status::Error,
@@ -735,6 +777,26 @@ std::shared_ptr<OperationBlock> BlockNextMutationForTest(const RocksDBEngine& en
       break;
     case MutationOperation::kSync:
       state->sync_block = block;
+      break;
+  }
+  return block;
+}
+
+std::shared_ptr<OperationBlock> BlockNextContentionForTest(const RocksDBEngine& engine,
+                                                           MutationOperation operation) {
+  const auto state = StateFor(&engine);
+  if (state == nullptr) return nullptr;
+  auto block = std::make_shared<OperationBlock>();
+  std::lock_guard lock(state->operations_mutex);
+  switch (operation) {
+    case MutationOperation::kPut:
+      state->put_contention_block = block;
+      break;
+    case MutationOperation::kDelete:
+      state->delete_contention_block = block;
+      break;
+    case MutationOperation::kSync:
+      state->sync_contention_block = block;
       break;
   }
   return block;

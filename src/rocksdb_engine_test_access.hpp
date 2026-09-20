@@ -89,6 +89,8 @@ void SetFailures(const RocksDBEngine& engine, unsigned int failures);
 void SetSyncFailureModeForTest(const RocksDBEngine& engine, SyncFailureMode mode);
 std::shared_ptr<OperationBlock> BlockNextMutationForTest(const RocksDBEngine& engine,
                                                          MutationOperation operation);
+std::shared_ptr<OperationBlock> BlockNextContentionForTest(const RocksDBEngine& engine,
+                                                           MutationOperation operation);
 void GetWriteObservationsForTest(const RocksDBEngine& engine, WriteObservation& put,
                                  WriteObservation& delete_key);
 SyncObservation GetSyncObservationForTest(const RocksDBEngine& engine);

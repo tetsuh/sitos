@@ -263,16 +263,20 @@ TEST(RocksDBEngineTestSeam, MutationAndSyncUseOneProductionOrder) {
   const bool put_entered = put_block->WaitUntilEntered();
   if (!put_entered) put_block->Release();
   ASSERT_TRUE(put_entered);
-  std::promise<void> first_sync_started;
-  auto first_sync_started_future = first_sync_started.get_future();
-  auto first_sync = std::async(std::launch::async, [&] {
-    first_sync_started.set_value();
-    return engine->Sync();
-  });
-  first_sync_started_future.wait();
+  auto sync_contention = sitos::rocksdb_test::BlockNextContentionForTest(
+      *engine, sitos::rocksdb_test::MutationOperation::kSync);
+  ASSERT_NE(sync_contention, nullptr);
+  auto first_sync = std::async(std::launch::async, [&] { return engine->Sync(); });
+  const bool sync_contended = sync_contention->WaitUntilEntered();
+  if (!sync_contended) {
+    sync_contention->Release();
+    put_block->Release();
+  }
+  ASSERT_TRUE(sync_contended);
   EXPECT_EQ(sitos::rocksdb_test::GetSyncObservationForTest(*engine).invocation_count, 0u);
   put_block->Release();
   ASSERT_TRUE(put.get());
+  sync_contention->Release();
   ASSERT_TRUE(first_sync.get().IsOk());
 
   auto sync_block = sitos::rocksdb_test::BlockNextMutationForTest(
@@ -285,13 +289,18 @@ TEST(RocksDBEngineTestSeam, MutationAndSyncUseOneProductionOrder) {
   sitos::rocksdb_test::WriteObservation put_before;
   sitos::rocksdb_test::WriteObservation delete_before;
   sitos::rocksdb_test::GetWriteObservationsForTest(*engine, put_before, delete_before);
-  std::promise<void> later_put_started;
-  auto later_put_started_future = later_put_started.get_future();
+  auto put_contention = sitos::rocksdb_test::BlockNextContentionForTest(
+      *engine, sitos::rocksdb_test::MutationOperation::kPut);
+  ASSERT_NE(put_contention, nullptr);
   auto later_put = std::async(std::launch::async, [&] {
-    later_put_started.set_value();
     return engine->Put("after", std::vector<std::byte>{std::byte{0x02}});
   });
-  later_put_started_future.wait();
+  const bool put_contended = put_contention->WaitUntilEntered();
+  if (!put_contended) {
+    put_contention->Release();
+    sync_block->Release();
+  }
+  ASSERT_TRUE(put_contended);
   sitos::rocksdb_test::WriteObservation put_while_sync;
   sitos::rocksdb_test::WriteObservation delete_while_sync;
   sitos::rocksdb_test::GetWriteObservationsForTest(*engine, put_while_sync, delete_while_sync);
@@ -299,6 +308,7 @@ TEST(RocksDBEngineTestSeam, MutationAndSyncUseOneProductionOrder) {
   EXPECT_EQ(delete_while_sync.invocation_count, delete_before.invocation_count);
   sync_block->Release();
   ASSERT_TRUE(second_sync.get().IsOk());
+  put_contention->Release();
   ASSERT_TRUE(later_put.get());
 
   engine.reset();
