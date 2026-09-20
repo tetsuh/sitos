@@ -112,17 +112,20 @@ const std::string& RunUniquePrefixSuffix() {
 // test that is about to assert on a cross-session delivery must first prove the path is
 // live: keep publishing a probe until the far side observes one, within a bounded budget.
 // Returns false when a publish fails or the budget expires without an observation.
+using ClockNow = std::function<std::chrono::steady_clock::time_point()>;
+
 bool PublishUntilObserved(const std::function<bool(std::int64_t)>& publish,
-                          const std::function<bool()>& observed) {
-  const auto budget = std::chrono::steady_clock::now() + 10s;
+                          const std::function<bool()>& observed,
+                          ClockNow now = [] { return std::chrono::steady_clock::now(); }) {
+  const auto budget = now() + 10s;
   std::int64_t probe_value = 0;
-  while (std::chrono::steady_clock::now() < budget) {
+  while (now() < budget) {
     if (!publish(++probe_value)) return false;
     // Each poll window is clamped to the budget so an observation is only ever reported
     // from inside it; after expiry the answer is false even if a late callback lands.
-    const auto poll_until = std::min(std::chrono::steady_clock::now() + 200ms, budget);
-    while (std::chrono::steady_clock::now() < poll_until) {
-      if (observed()) return true;
+    const auto poll_until = std::min(now() + 200ms, budget);
+    while (now() < poll_until) {
+      if (observed()) return now() < budget;
       std::this_thread::sleep_for(10ms);
     }
   }
@@ -130,6 +133,20 @@ bool PublishUntilObserved(const std::function<bool(std::int64_t)>& publish,
 }
 
 TEST(FenceZenohIntegrationTest, QualifiesTopologiesQosAndControlIsolation) {
+  auto fake_now = std::chrono::steady_clock::time_point{};
+  std::size_t publish_calls = 0;
+  EXPECT_FALSE(PublishUntilObserved(
+      [&](std::int64_t) {
+        ++publish_calls;
+        return true;
+      },
+      [&] {
+        fake_now = std::chrono::steady_clock::time_point{} + 11s;
+        return true;
+      },
+      [&] { return fake_now; }));
+  EXPECT_EQ(publish_calls, 1U);
+
   auto opened = sitos::OpenZenohTransport();
   ASSERT_TRUE(opened.IsOk());
   std::shared_ptr<sitos::Transport> transport(std::move(opened).Value());
