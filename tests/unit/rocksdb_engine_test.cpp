@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <barrier>
+#include <cerrno>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -41,7 +42,11 @@ int RunCrashHelper(const std::filesystem::path& path) {
   }
   if (child < 0) return -1;
   int status = 0;
-  if (::waitpid(child, &status, 0) < 0) return -1;
+  pid_t waited = -1;
+  do {
+    waited = ::waitpid(child, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+  if (waited < 0) return -1;
   return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
 #endif
 }
