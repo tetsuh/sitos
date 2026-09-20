@@ -66,6 +66,7 @@ Values that must remain stable across releases because callers persist, compare,
 | Identifier set | Contract | Implementation | Normative spec | Design authority | Stability rule / notes |
 |---|---|---|---|---|---|
 | `Status` enum numeric values (`Ok`..`Error`) | Normative | Implemented | [04](04_api_cpp.md) §1.1 | — | Append-only; existing values are never renumbered |
+| Storage synchronization capability (`SyncCapability::{kUnsupported,kVolatileNoop,kPowerLossDurable}`) | Planned | Planned | [ADR-0034](adr/0034-storage-durability-barrier.md) | ADR-0034 | Values 0/1/2 are stable and append-only; `kVolatileNoop` is ordering-only, and only `kPowerLossDurable` qualifies a durable synchronized Fence |
 | `Status` append: `OutcomeUnknown = 9` | Normative | Implemented | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | Client-only `Timeout = 3` is excluded from AckResult v1 wire values |
 | Python exception hierarchy (`sitos.SitosError` and current subclasses, Status mapping) | Normative | Implemented | [05](05_api_python.md) §2.1 | — | One registered class per name; mapping extends only when `Status` extends |
 | Python exception: `OutcomeUnknownError` | Normative | Implemented | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | Maps `Status::OutcomeUnknown` for C++/Python parity |
