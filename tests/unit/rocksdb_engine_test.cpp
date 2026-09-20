@@ -17,12 +17,34 @@
 #if defined(_WIN32)
 #include <process.h>
 #else
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
 #include "sitos/rocksdb_engine.hpp"
 
 namespace {
+
+int RunCrashHelper(const std::filesystem::path& path) {
+  const std::string helper = SITOS_ROCKSDB_SYNC_CRASH_HELPER;
+  const std::string database_path = path.string();
+#if defined(_WIN32)
+  return static_cast<int>(_spawnl(_P_WAIT, helper.c_str(), helper.c_str(),
+                                  database_path.c_str(),
+                                  static_cast<const char*>(nullptr)));
+#else
+  const pid_t child = ::fork();
+  if (child == 0) {
+    ::execl(helper.c_str(), helper.c_str(), database_path.c_str(),
+            static_cast<char*>(nullptr));
+    std::_Exit(127);
+  }
+  if (child < 0) return -1;
+  int status = 0;
+  if (::waitpid(child, &status, 0) < 0) return -1;
+  return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+#endif
+}
 
 std::filesystem::path MakeTestPath() {
   static std::atomic<unsigned int> next_id{0};
@@ -137,10 +159,7 @@ TEST(RocksDBEngineSyncTest, ReportsPowerLossDurableAndSucceeds) {
 
 TEST(RocksDBEngineCrashDurability, HardStopAfterSuccessfulSyncRecoversExactValues) {
   const auto path = MakeTestPath();
-  const std::string command =
-      std::string("\"") + SITOS_ROCKSDB_SYNC_CRASH_HELPER + "\" \"" +
-      path.string() + "\"";
-  ASSERT_EQ(std::system(command.c_str()), 0);
+  ASSERT_EQ(RunCrashHelper(path), 0);
 
   auto result = sitos::RocksDBEngine::Open(path.string());
   ASSERT_TRUE(result.IsOk());
