@@ -5,6 +5,8 @@
 
 #include <atomic>
 #include <barrier>
+#include <cerrno>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -16,12 +18,38 @@
 #if defined(_WIN32)
 #include <process.h>
 #else
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
 #include "sitos/rocksdb_engine.hpp"
 
 namespace {
+
+int RunCrashHelper(const std::filesystem::path& path) {
+  const std::string helper = SITOS_ROCKSDB_SYNC_CRASH_HELPER;
+  const std::string database_path = path.string();
+#if defined(_WIN32)
+  return static_cast<int>(_spawnl(_P_WAIT, helper.c_str(), helper.c_str(),
+                                  database_path.c_str(),
+                                  static_cast<const char*>(nullptr)));
+#else
+  const pid_t child = ::fork();
+  if (child == 0) {
+    ::execl(helper.c_str(), helper.c_str(), database_path.c_str(),
+            static_cast<char*>(nullptr));
+    std::_Exit(127);
+  }
+  if (child < 0) return -1;
+  int status = 0;
+  pid_t waited = -1;
+  do {
+    waited = ::waitpid(child, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+  if (waited < 0) return -1;
+  return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+#endif
+}
 
 std::filesystem::path MakeTestPath() {
   static std::atomic<unsigned int> next_id{0};
@@ -120,6 +148,55 @@ std::unique_ptr<sitos::StorageEngine> MakeContractEngine() {
 }  // namespace
 
 INSTANTIATE_STORAGE_ENGINE_CONTRACT_SUITE(RocksDBEngineContractTest, MakeContractEngine);
+
+TEST(RocksDBEngineSyncTest, ReportsPowerLossDurableAndSucceeds) {
+  const auto path = MakeTestPath();
+  auto result = sitos::RocksDBEngine::Open(path.string());
+  ASSERT_TRUE(result.IsOk());
+  auto engine = std::move(result).Value();
+  sitos_contract::SyncCapabilityContract(
+      *engine, sitos::SyncCapability::kPowerLossDurable, true);
+  engine.reset();
+  std::error_code error;
+  std::filesystem::remove_all(path, error);
+  EXPECT_FALSE(error);
+}
+
+TEST(RocksDBEngineCrashDurability, HardStopAfterSuccessfulSyncRecoversExactValues) {
+  const auto path = MakeTestPath();
+  ASSERT_EQ(RunCrashHelper(path), 0);
+
+  auto result = sitos::RocksDBEngine::Open(path.string());
+  ASSERT_TRUE(result.IsOk());
+  auto engine = std::move(result).Value();
+  bool alpha_matches = false;
+  EXPECT_TRUE(engine->Get(
+      "durable/alpha", [&alpha_matches](std::string_view, sitos::Bytes value) {
+        EXPECT_EQ(value.size(), 3u);
+        if (value.size() == 3) {
+          alpha_matches = value[0] == std::byte{0x00} &&
+                          value[1] == std::byte{0x7f} &&
+                          value[2] == std::byte{0xff};
+        }
+        return true;
+      }));
+  EXPECT_TRUE(alpha_matches);
+  bool beta_matches = false;
+  EXPECT_TRUE(engine->Get(
+      "durable/beta", [&beta_matches](std::string_view, sitos::Bytes value) {
+        EXPECT_EQ(value.size(), 1u);
+        if (value.size() == 1) beta_matches = value[0] == std::byte{0x42};
+        return true;
+      }));
+  EXPECT_TRUE(beta_matches);
+  EXPECT_FALSE(engine->Get(
+      "durable/deleted", [](std::string_view, sitos::Bytes) { return true; }));
+
+  engine.reset();
+  std::error_code error;
+  std::filesystem::remove_all(path, error);
+  EXPECT_FALSE(error);
+}
 
 TEST(RocksDBEngineOpenApi, EmptyPathIsInvalidArgument) {
   const auto result = sitos::RocksDBEngine::Open("");

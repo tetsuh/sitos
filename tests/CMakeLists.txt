@@ -207,10 +207,18 @@ gtest_discover_tests(sitos_storage_engine_contract_test DISCOVERY_MODE PRE_TEST)
 if(SITOS_WITH_ROCKSDB)
   # The contract suite links the production archive so it exercises the exact
   # RocksDB implementation that is installed for consumers.
+  add_executable(sitos_rocksdb_sync_crash_helper
+    integration/rocksdb_sync_crash_helper.cpp)
+  target_link_libraries(sitos_rocksdb_sync_crash_helper PRIVATE sitos::sitos)
+  sitos_enable_warnings(sitos_rocksdb_sync_crash_helper)
+
   add_executable(sitos_rocksdb_engine_test
     unit/rocksdb_engine_test.cpp)
   target_link_libraries(sitos_rocksdb_engine_test
     PRIVATE GTest::gtest_main sitos::sitos)
+  target_compile_definitions(sitos_rocksdb_engine_test PRIVATE
+    SITOS_ROCKSDB_SYNC_CRASH_HELPER="$<TARGET_FILE:sitos_rocksdb_sync_crash_helper>")
+  add_dependencies(sitos_rocksdb_engine_test sitos_rocksdb_sync_crash_helper)
   sitos_enable_warnings(sitos_rocksdb_engine_test)
   gtest_discover_tests(sitos_rocksdb_engine_test DISCOVERY_MODE PRE_TEST)
 

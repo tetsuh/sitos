@@ -28,6 +28,8 @@ class RocksDBEngine : public StorageEngine {
 
   bool Put(std::string_view key, Bytes value) override;
   bool Delete(std::string_view key) override;
+  SyncCapability GetSyncCapability() const noexcept override;
+  Result<void> Sync() override;
   bool Get(std::string_view key, const EntrySink& sink) const override;
   bool List(std::string_view prefix, const EntrySink& sink) const override;
   std::shared_ptr<const StorageReader> TakeSnapshot() const override;

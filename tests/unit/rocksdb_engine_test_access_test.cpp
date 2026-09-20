@@ -5,8 +5,11 @@
 
 #include <atomic>
 #include <filesystem>
+#include <future>
 #include <memory>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -16,8 +19,8 @@
 #include <unistd.h>
 #endif
 
-#include "sitos/rocksdb_engine.hpp"
 #include "rocksdb_engine_test_access.hpp"
+#include "sitos/rocksdb_engine.hpp"
 
 namespace {
 
@@ -29,9 +32,9 @@ std::filesystem::path MakeSeamTestPath() {
 #else
   const auto process_id = getpid();
 #endif
-  const auto path = std::filesystem::temp_directory_path() /
-                    ("sitos-rocksdb-seam-test-" + std::to_string(process_id) + "-" +
-                     std::to_string(id));
+  const auto path =
+      std::filesystem::temp_directory_path() /
+      ("sitos-rocksdb-seam-test-" + std::to_string(process_id) + "-" + std::to_string(id));
   std::error_code error;
   std::filesystem::remove_all(path, error);
   EXPECT_FALSE(error);
@@ -172,6 +175,146 @@ TEST(RocksDBEngineTestSeam, InjectedReleaseFailureFallsBackWithoutTerminating) {
   EXPECT_EQ(recorded[4], "db_close");
   EXPECT_EQ(recorded[5], "directory_remove");
   EXPECT_FALSE(std::filesystem::exists(path));
+}
+
+TEST(RocksDBEngineTestSeam, SyncUsesExactNativeCallAndUnsynchronizedWalWrites) {
+  const auto path = MakeSeamTestPath();
+  auto result = sitos::RocksDBEngine::Open(path.string());
+  ASSERT_TRUE(result.IsOk());
+  auto engine = std::move(result).Value();
+  ASSERT_EQ(engine->GetSyncCapability(), sitos::SyncCapability::kPowerLossDurable);
+
+  ASSERT_TRUE(engine->Put("put", std::vector<std::byte>{std::byte{0x01}}));
+  ASSERT_TRUE(engine->Delete("put"));
+  ASSERT_TRUE(engine->Sync().IsOk());
+
+  sitos::rocksdb_test::WriteObservation put;
+  sitos::rocksdb_test::WriteObservation delete_key;
+  sitos::rocksdb_test::GetWriteObservationsForTest(*engine, put, delete_key);
+  EXPECT_EQ(put.invocation_count, 1u);
+  EXPECT_FALSE(put.disable_wal);
+  EXPECT_FALSE(put.sync);
+  EXPECT_EQ(delete_key.invocation_count, 1u);
+  EXPECT_FALSE(delete_key.disable_wal);
+  EXPECT_FALSE(delete_key.sync);
+  const auto sync = sitos::rocksdb_test::GetSyncObservationForTest(*engine);
+  EXPECT_EQ(sync.invocation_count, 1u);
+  EXPECT_TRUE(sync.last_sync_argument);
+
+  engine.reset();
+  std::error_code error;
+  std::filesystem::remove_all(path, error);
+  EXPECT_FALSE(error);
+}
+
+TEST(RocksDBEngineTestSeam, SyncMapsPreAndPostInvocationFailures) {
+  const auto path = MakeSeamTestPath();
+  auto result = sitos::RocksDBEngine::Open(path.string());
+  ASSERT_TRUE(result.IsOk());
+  auto engine = std::move(result).Value();
+
+  sitos::rocksdb_test::SetSyncFailureModeForTest(
+      *engine, sitos::rocksdb_test::SyncFailureMode::kBeforeInvocation);
+  auto sync = engine->Sync();
+  ASSERT_FALSE(sync.IsOk());
+  EXPECT_EQ(sync.StatusCode(), sitos::Status::Error);
+  EXPECT_EQ(sync.Error(), std::make_error_code(std::errc::operation_canceled));
+  EXPECT_EQ(sitos::rocksdb_test::GetSyncObservationForTest(*engine).invocation_count, 0u);
+
+  sitos::rocksdb_test::SetSyncFailureModeForTest(
+      *engine, sitos::rocksdb_test::SyncFailureMode::kNativeStatus);
+  sync = engine->Sync();
+  ASSERT_FALSE(sync.IsOk());
+  EXPECT_EQ(sync.StatusCode(), sitos::Status::OutcomeUnknown);
+  EXPECT_EQ(sync.Error().category().name(), std::string_view("sitos.rocksdb"));
+  EXPECT_TRUE(sync.Error());
+  EXPECT_FALSE(sync.Message().empty());
+  EXPECT_LE(sync.Message().size(), 1024u);
+  EXPECT_EQ(sitos::rocksdb_test::GetSyncObservationForTest(*engine).invocation_count, 1u);
+
+  sitos::rocksdb_test::SetSyncFailureModeForTest(
+      *engine, sitos::rocksdb_test::SyncFailureMode::kNativeException);
+  sync = engine->Sync();
+  ASSERT_FALSE(sync.IsOk());
+  EXPECT_EQ(sync.StatusCode(), sitos::Status::OutcomeUnknown);
+  EXPECT_EQ(sync.Error(), std::make_error_code(std::errc::io_error));
+  EXPECT_FALSE(sync.Message().empty());
+  EXPECT_LE(sync.Message().size(), 1024u);
+  EXPECT_EQ(sitos::rocksdb_test::GetSyncObservationForTest(*engine).invocation_count, 2u);
+
+  engine.reset();
+  std::error_code error;
+  std::filesystem::remove_all(path, error);
+  EXPECT_FALSE(error);
+}
+
+TEST(RocksDBEngineTestSeam, MutationAndSyncUseOneProductionOrder) {
+  const auto path = MakeSeamTestPath();
+  auto result = sitos::RocksDBEngine::Open(path.string());
+  ASSERT_TRUE(result.IsOk());
+  auto engine = std::move(result).Value();
+
+  auto put_block = sitos::rocksdb_test::BlockNextMutationForTest(
+      *engine, sitos::rocksdb_test::MutationOperation::kPut);
+  ASSERT_NE(put_block, nullptr);
+  auto put = std::async(std::launch::async, [&] {
+    return engine->Put("before", std::vector<std::byte>{std::byte{0x01}});
+  });
+  const bool put_entered = put_block->WaitUntilEntered();
+  if (!put_entered) put_block->Release();
+  ASSERT_TRUE(put_entered);
+  auto sync_contention = sitos::rocksdb_test::BlockNextContentionForTest(
+      *engine, sitos::rocksdb_test::MutationOperation::kSync);
+  ASSERT_NE(sync_contention, nullptr);
+  auto first_sync = std::async(std::launch::async, [&] { return engine->Sync(); });
+  const bool sync_contended = sync_contention->WaitUntilEntered();
+  if (!sync_contended) {
+    sync_contention->Release();
+    put_block->Release();
+  }
+  ASSERT_TRUE(sync_contended);
+  EXPECT_EQ(sitos::rocksdb_test::GetSyncObservationForTest(*engine).invocation_count, 0u);
+  put_block->Release();
+  ASSERT_TRUE(put.get());
+  sync_contention->Release();
+  ASSERT_TRUE(first_sync.get().IsOk());
+
+  auto sync_block = sitos::rocksdb_test::BlockNextMutationForTest(
+      *engine, sitos::rocksdb_test::MutationOperation::kSync);
+  ASSERT_NE(sync_block, nullptr);
+  auto second_sync = std::async(std::launch::async, [&] { return engine->Sync(); });
+  const bool sync_entered = sync_block->WaitUntilEntered();
+  if (!sync_entered) sync_block->Release();
+  ASSERT_TRUE(sync_entered);
+  sitos::rocksdb_test::WriteObservation put_before;
+  sitos::rocksdb_test::WriteObservation delete_before;
+  sitos::rocksdb_test::GetWriteObservationsForTest(*engine, put_before, delete_before);
+  auto put_contention = sitos::rocksdb_test::BlockNextContentionForTest(
+      *engine, sitos::rocksdb_test::MutationOperation::kPut);
+  ASSERT_NE(put_contention, nullptr);
+  auto later_put = std::async(std::launch::async, [&] {
+    return engine->Put("after", std::vector<std::byte>{std::byte{0x02}});
+  });
+  const bool put_contended = put_contention->WaitUntilEntered();
+  if (!put_contended) {
+    put_contention->Release();
+    sync_block->Release();
+  }
+  ASSERT_TRUE(put_contended);
+  sitos::rocksdb_test::WriteObservation put_while_sync;
+  sitos::rocksdb_test::WriteObservation delete_while_sync;
+  sitos::rocksdb_test::GetWriteObservationsForTest(*engine, put_while_sync, delete_while_sync);
+  EXPECT_EQ(put_while_sync.invocation_count, put_before.invocation_count);
+  EXPECT_EQ(delete_while_sync.invocation_count, delete_before.invocation_count);
+  sync_block->Release();
+  ASSERT_TRUE(second_sync.get().IsOk());
+  put_contention->Release();
+  ASSERT_TRUE(later_put.get());
+
+  engine.reset();
+  std::error_code error;
+  std::filesystem::remove_all(path, error);
+  EXPECT_FALSE(error);
 }
 
 TEST(RocksDBEngineTestSeam, NativeFailuresPreserveStorageContracts) {
