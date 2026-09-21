@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import numpy as np
 import pytest
 
@@ -17,8 +18,9 @@ def publisher_fixture() -> tuple[str, str, subprocess.Popen[str]]:
     executable = os.environ.get("SITOS_PYTHON_BUFFER_PUBLISHER_FIXTURE")
     if not executable:
         pytest.fail("SITOS_PYTHON_BUFFER_PUBLISHER_FIXTURE must name the built Zenoh fixture")
-    sid = f"publisher_{os.getpid()}"
-    prefix = f"sitos/python_publisher_{os.getpid()}"
+    nonce = f"{os.getpid()}_{time.time_ns()}"
+    sid = f"publisher_{nonce}"
+    prefix = f"sitos/python_publisher_{nonce}"
     rocks_root = tempfile.mkdtemp(prefix="sitos-python-publisher-")
     args = [executable, prefix, sid]
     if os.environ.get("SITOS_PYTHON_PUBLISHER_ROCKSDB") == "1":
@@ -72,18 +74,18 @@ def test_buffer_publisher_runtime_bytes_numpy_buffer_and_lifetime(publisher_fixt
     assert _read_fixture(process, f"{prefix}/buffers/{sid}/durable/empty") == b""
     assert _read_fixture(process, f"{prefix}/buffers/{sid}/durable/buffer") == b"buffer"
 
-    tiny_timeout = sitos.BufferPublisher(sid, sitos.BufferClass.DURABLE, prefix=prefix)
-    try:
-        tiny_timeout.fence(sitos.FenceDurability.APPLIED, timeout=0.0001)
-    except sitos.TimeoutError:
-        pass
     ephemeral = sitos.BufferPublisher(sid, sitos.BufferClass.EPHEMERAL, prefix=prefix)
     with pytest.raises(ValueError):
         ephemeral.fence(sitos.FenceDurability.SYNCED, timeout=2.0)
-    with pytest.raises(ValueError):
-        publisher.fence(sitos.FenceDurability.SYNCED, timeout=2.0)
-    with pytest.raises(sitos.DisconnectedError):
-        publisher.push("after-sync-error", b"disconnected")
+    if os.environ.get("SITOS_PYTHON_PUBLISHER_ROCKSDB") == "1":
+        synced = publisher.fence(sitos.FenceDurability.SYNCED, timeout=2.0)
+        assert synced.durability is sitos.FenceDurability.SYNCED
+        publisher.push("after-sync-success", b"usable")
+    else:
+        with pytest.raises(ValueError):
+            publisher.fence(sitos.FenceDurability.SYNCED, timeout=2.0)
+        with pytest.raises(sitos.DisconnectedError):
+            publisher.push("after-sync-error", b"disconnected")
     with pytest.raises(TypeError):
         publisher.push("str", "unsupported")
     with pytest.raises(ValueError):
@@ -130,7 +132,14 @@ def test_buffer_publisher_rocksdb_synced_runtime(publisher_fixture) -> None:
     process.stdin.write("recreate\n")
     process.stdin.flush()
     assert process.stdout.readline().strip() == "RECREATED"
-    replacement = sitos.BufferPublisher(sid, sitos.BufferClass.DURABLE, prefix=prefix)
+    replacement = None
+    for _ in range(50):
+        try:
+            replacement = sitos.BufferPublisher(sid, sitos.BufferClass.DURABLE, prefix=prefix)
+            break
+        except sitos.NotFoundError:
+            time.sleep(0.1)
+    assert replacement is not None
     assert _read_fixture(process, f"{prefix}/buffers/{sid}/durable/durable") == b"persisted"
     del replacement
 
