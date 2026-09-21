@@ -53,9 +53,24 @@ def _read_fixture(process: subprocess.Popen[str], key: str) -> bytes:
     return bytes.fromhex(line.removeprefix("VALUE").strip())
 
 
+def _open_fixture_publisher(
+    sid: str, buffer_class: sitos.BufferClass, prefix: str
+) -> sitos.BufferPublisher:
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            return sitos.BufferPublisher(
+                sid, buffer_class, prefix=prefix, query_timeout_ms=500
+            )
+        except sitos.NotFoundError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+
+
 def test_buffer_publisher_runtime_bytes_numpy_buffer_and_lifetime(publisher_fixture) -> None:
     prefix, sid, process = publisher_fixture
-    publisher = sitos.BufferPublisher(sid, sitos.BufferClass.DURABLE, prefix=prefix)
+    publisher = _open_fixture_publisher(sid, sitos.BufferClass.DURABLE, prefix)
     source = np.arange(8, dtype=np.int16)
     expected = source.tobytes()
     publisher.push("numpy", source)
@@ -74,7 +89,7 @@ def test_buffer_publisher_runtime_bytes_numpy_buffer_and_lifetime(publisher_fixt
     assert _read_fixture(process, f"{prefix}/buffers/{sid}/durable/empty") == b""
     assert _read_fixture(process, f"{prefix}/buffers/{sid}/durable/buffer") == b"buffer"
 
-    ephemeral = sitos.BufferPublisher(sid, sitos.BufferClass.EPHEMERAL, prefix=prefix)
+    ephemeral = _open_fixture_publisher(sid, sitos.BufferClass.EPHEMERAL, prefix)
     with pytest.raises(ValueError):
         ephemeral.fence(sitos.FenceDurability.SYNCED, timeout=2.0)
     tiny_timeout = ephemeral
@@ -98,10 +113,9 @@ def test_buffer_publisher_runtime_bytes_numpy_buffer_and_lifetime(publisher_fixt
         publisher.push("noncontiguous", source[::2])
 
 
-
 def test_buffer_publisher_recreate_old_fence_timeout_then_disconnects(publisher_fixture) -> None:
     prefix, sid, process = publisher_fixture
-    publisher = sitos.BufferPublisher(sid, sitos.BufferClass.DURABLE, prefix=prefix)
+    publisher = _open_fixture_publisher(sid, sitos.BufferClass.DURABLE, prefix)
     publisher.push("before", b"before")
     assert process.stdin is not None and process.stdout is not None
     process.stdin.write("recreate\n")
@@ -129,7 +143,7 @@ def test_buffer_publisher_rocksdb_synced_runtime(publisher_fixture) -> None:
     if os.environ.get("SITOS_PYTHON_PUBLISHER_ROCKSDB") != "1":
         pytest.skip("RocksDB runtime lane is provisioned separately")
     prefix, sid, process = publisher_fixture
-    publisher = sitos.BufferPublisher(sid, sitos.BufferClass.DURABLE, prefix=prefix)
+    publisher = _open_fixture_publisher(sid, sitos.BufferClass.DURABLE, prefix)
     publisher.push("durable", b"persisted")
     receipt = publisher.fence(sitos.FenceDurability.APPLIED, timeout=5.0)
     assert receipt.durability is sitos.FenceDurability.APPLIED
@@ -139,14 +153,7 @@ def test_buffer_publisher_rocksdb_synced_runtime(publisher_fixture) -> None:
     process.stdin.write("recreate\n")
     process.stdin.flush()
     assert process.stdout.readline().strip() == "RECREATED"
-    replacement = None
-    for _ in range(50):
-        try:
-            replacement = sitos.BufferPublisher(sid, sitos.BufferClass.DURABLE, prefix=prefix)
-            break
-        except sitos.NotFoundError:
-            time.sleep(0.1)
-    assert replacement is not None
+    replacement = _open_fixture_publisher(sid, sitos.BufferClass.DURABLE, prefix)
     assert _read_fixture(process, f"{prefix}/buffers/{sid}/durable/durable") == b"persisted"
     del replacement
 
