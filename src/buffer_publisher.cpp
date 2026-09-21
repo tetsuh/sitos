@@ -26,6 +26,182 @@ struct BufferPublisher::Impl {
 
 namespace {
 
+class SessionMetadataParser {
+ public:
+  explicit SessionMetadataParser(std::string_view text) : text_(text) {}
+
+  bool Parse(FenceUuid* generation) {
+    if (text_.size() > 16384) return false;
+    SkipWhitespace();
+    if (!Consume('{')) return false;
+    bool state_seen = false;
+    bool created_seen = false;
+    bool generation_seen = false;
+    std::string state;
+    std::string created_at;
+    std::string generation_text;
+    SkipWhitespace();
+    if (Consume('}')) return false;
+    for (;;) {
+      std::string key;
+      if (!ParseString(&key)) return false;
+      SkipWhitespace();
+      if (!Consume(':')) return false;
+      SkipWhitespace();
+      if (key == "state" || key == "created_at" || key == "generation_uuid") {
+        bool* seen = key == "state"        ? &state_seen
+                     : key == "created_at" ? &created_seen
+                                           : &generation_seen;
+        if (*seen || !ParseString(key == "state"        ? &state
+                                  : key == "created_at" ? &created_at
+                                                        : &generation_text)) {
+          return false;
+        }
+        *seen = true;
+      } else if (!SkipValue(0)) {
+        return false;
+      }
+      SkipWhitespace();
+      if (Consume('}')) break;
+      if (!Consume(',')) return false;
+      SkipWhitespace();
+    }
+    SkipWhitespace();
+    if (position_ != text_.size() || !state_seen || !created_seen || !generation_seen ||
+        state != "active") {
+      return false;
+    }
+    const auto parsed = fence_internal::ParseFenceUuid(generation_text);
+    if (!parsed.has_value() || fence_internal::FormatFenceUuid(*parsed) != generation_text) {
+      return false;
+    }
+    *generation = *parsed;
+    return true;
+  }
+
+ private:
+  static bool IsHex(char value) {
+    return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f') ||
+           (value >= 'A' && value <= 'F');
+  }
+
+  void SkipWhitespace() {
+    while (position_ < text_.size()) {
+      const auto value = static_cast<unsigned char>(text_[position_]);
+      if (value != ' ' && value != '\t' && value != '\n' && value != '\r') break;
+      ++position_;
+    }
+  }
+
+  bool Consume(char expected) {
+    if (position_ >= text_.size() || text_[position_] != expected) return false;
+    ++position_;
+    return true;
+  }
+
+  bool ParseString(std::string* output) {
+    if (!Consume('"')) return false;
+    output->clear();
+    while (position_ < text_.size()) {
+      const auto value = static_cast<unsigned char>(text_[position_++]);
+      if (value == '"') return true;
+      if (value < 0x20) return false;
+      if (value != '\\') {
+        output->push_back(static_cast<char>(value));
+        continue;
+      }
+      if (position_ >= text_.size()) return false;
+      const char escaped = text_[position_++];
+      switch (escaped) {
+        case '"':
+        case '\\':
+        case '/':
+          output->push_back(escaped);
+          break;
+        case 'b':
+          output->push_back('\b');
+          break;
+        case 'f':
+          output->push_back('\f');
+          break;
+        case 'n':
+          output->push_back('\n');
+          break;
+        case 'r':
+          output->push_back('\r');
+          break;
+        case 't':
+          output->push_back('\t');
+          break;
+        case 'u':
+          if (position_ + 4 > text_.size() || !IsHex(text_[position_]) ||
+              !IsHex(text_[position_ + 1]) || !IsHex(text_[position_ + 2]) ||
+              !IsHex(text_[position_ + 3]))
+            return false;
+          position_ += 4;
+          output->push_back('?');
+          break;
+        default:
+          return false;
+      }
+    }
+    return false;
+  }
+
+  bool SkipValue(unsigned depth) {
+    if (depth > 16 || position_ >= text_.size()) return false;
+    if (text_[position_] == '"') {
+      std::string ignored;
+      return ParseString(&ignored);
+    }
+    if (text_[position_] == '{') {
+      ++position_;
+      SkipWhitespace();
+      if (Consume('}')) return true;
+      for (;;) {
+        std::string ignored;
+        if (!ParseString(&ignored)) return false;
+        SkipWhitespace();
+        if (!Consume(':')) return false;
+        SkipWhitespace();
+        if (!SkipValue(depth + 1)) return false;
+        SkipWhitespace();
+        if (Consume('}')) return true;
+        if (!Consume(',')) return false;
+        SkipWhitespace();
+      }
+    }
+    if (text_[position_] == '[') {
+      ++position_;
+      SkipWhitespace();
+      if (Consume(']')) return true;
+      for (;;) {
+        if (!SkipValue(depth + 1)) return false;
+        SkipWhitespace();
+        if (Consume(']')) return true;
+        if (!Consume(',')) return false;
+        SkipWhitespace();
+      }
+    }
+    for (const auto literal :
+         {std::string_view{"true"}, std::string_view{"false"}, std::string_view{"null"}}) {
+      if (text_.substr(position_).starts_with(literal)) {
+        position_ += literal.size();
+        return true;
+      }
+    }
+    const auto begin = position_;
+    while (position_ < text_.size() &&
+           std::string_view("-+0123456789.eE").find(text_[position_]) != std::string_view::npos) {
+      ++position_;
+    }
+    return position_ > begin;
+  }
+
+  std::string_view text_;
+  std::size_t position_ = 0;
+};
+
 Result<FenceUuid> DiscoverSessionGeneration(Transport& transport, const ClientConfig& config,
                                             std::string_view sid) {
   const auto metadata_key = BuildMetaSessionKey(config.prefix, sid);
@@ -52,29 +228,12 @@ Result<FenceUuid> DiscoverSessionGeneration(Transport& transport, const ClientCo
           invalid_reply = true;
           return false;
         }
-        const std::string_view json = *json_value;
-        constexpr std::string_view prefix = R"({"state":"active","created_at":")";
-        constexpr std::string_view middle = R"(","generation_uuid":")";
-        constexpr std::string_view suffix = R"("})";
-        if (!json.starts_with(prefix) || !json.ends_with(suffix)) {
+        FenceUuid parsed{};
+        if (!SessionMetadataParser(*json_value).Parse(&parsed)) {
           invalid_reply = true;
           return false;
         }
-        const auto middle_position = json.find(middle, prefix.size());
-        if (middle_position == std::string_view::npos ||
-            middle_position + middle.size() > json.size() - suffix.size()) {
-          invalid_reply = true;
-          return false;
-        }
-        const auto generation_text =
-            json.substr(middle_position + middle.size(),
-                        json.size() - suffix.size() - (middle_position + middle.size()));
-        auto parsed = fence_internal::ParseFenceUuid(generation_text);
-        if (!parsed.has_value() || fence_internal::FormatFenceUuid(*parsed) != generation_text) {
-          invalid_reply = true;
-          return false;
-        }
-        generation = *parsed;
+        generation = parsed;
         return true;
       },
       config.query_timeout);

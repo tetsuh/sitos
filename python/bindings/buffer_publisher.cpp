@@ -39,6 +39,9 @@ class ScopedPyBuffer {
   ScopedPyBuffer(const ScopedPyBuffer&) = delete;
   ScopedPyBuffer& operator=(const ScopedPyBuffer&) = delete;
   bool acquired() const noexcept { return acquired_; }
+  bool valid() const noexcept {
+    return acquired_ && view_.len >= 0 && (view_.len == 0 || view_.buf != nullptr);
+  }
   const Py_buffer& view() const noexcept { return view_; }
 
  private:
@@ -84,7 +87,7 @@ class PyBufferPublisher {
       owned = std::move(*bytes);
     } else {
       ScopedPyBuffer view(value);
-      if (!view.acquired()) {
+      if (!view.valid()) {
         PyErr_Clear();
         throw nb::type_error("push accepts bytes or a contiguous buffer-protocol object");
       }
@@ -145,5 +148,3 @@ void BindBufferPublisher(nb::module_& module) {
       .def("push", &PyBufferPublisher::Push, "key"_a, "value"_a)
       .def("fence", &PyBufferPublisher::Fence, "durability"_a, "timeout"_a);
 }
-
-}  // namespace sitos::python::detail

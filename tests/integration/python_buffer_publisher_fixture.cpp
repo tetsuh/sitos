@@ -1,10 +1,15 @@
 // Copyright 2026 sitos contributors
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
+#include <cstddef>
+#include <iomanip>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #if SITOS_WITH_ROCKSDB
 #include "sitos/rocksdb_engine.hpp"
@@ -49,6 +54,41 @@ int main(int argc, char** argv) {
   }
   std::cout << "READY\n" << std::flush;
   std::string command;
-  std::getline(std::cin, command);
+  while (std::getline(std::cin, command)) {
+    if (command == "stop") break;
+    if (command == "recreate") {
+      const auto closed = node.CloseSession(sid);
+      const auto recreated =
+          closed.IsOk()
+              ? node.CreateSession(sid, {.durable_buffers = true, .ephemeral_buffers = true})
+              : sitos::Result<void>::ErrFrom(closed);
+      std::cout << (recreated.IsOk() ? "RECREATED\n" : "ERROR\n") << std::flush;
+      continue;
+    }
+    constexpr std::string_view read_prefix = "read ";
+    if (!command.starts_with(read_prefix) || command.size() > 256) {
+      std::cout << "ERROR\n" << std::flush;
+      continue;
+    }
+    const auto key = std::string_view(command).substr(read_prefix.size());
+    std::vector<std::byte> value;
+    std::size_t replies = 0;
+    const auto result = transport->Get(
+        key,
+        [&](std::string_view, std::span<const std::byte> payload, sitos::Encoding) {
+          value.assign(payload.begin(), payload.end());
+          ++replies;
+          return true;
+        },
+        std::chrono::seconds{2});
+    if (!result.IsOk() || replies == 0) {
+      std::cout << "NOT_FOUND\n" << std::flush;
+      continue;
+    }
+    std::ostringstream encoded;
+    encoded << std::hex << std::setfill('0');
+    for (const auto byte : value) encoded << std::setw(2) << std::to_integer<unsigned int>(byte);
+    std::cout << "VALUE " << encoded.str() << '\n' << std::flush;
+  }
   return 0;
 }

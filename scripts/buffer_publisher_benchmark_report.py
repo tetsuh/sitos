@@ -36,13 +36,15 @@ def main() -> None:
         ]
         if len(samples) != 5 or any(not isinstance(value, Decimal) for value in samples):
             raise SystemExit(f"expected five numeric samples for {benchmark_name}")
-        samples.sort()
-        median = samples[2]
+        # The benchmark iteration performs an unpaced batch, not a wall-clock rate.
+        # Report the amortized per-push overhead for a one-second target-load batch.
+        per_push = sorted(value / Decimal(rate) for value in samples)
+        median = per_push[2]
         records.append(
             {
                 "schema_version": "benchmark-v1",
                 "scenario_id": scenario,
-                "metric": "push_latency_ns",
+                "metric": "per_push_overhead_ns",
                 "unit": "ns/op",
                 "statistic": "median",
                 "value": format(median.quantize(Decimal("0.000001")), "f"),
@@ -50,7 +52,10 @@ def main() -> None:
                 "classification": "informational",
                 "workload": {
                     "target_pushes_per_second": rate,
+                    "batch_pushes": rate,
                     "payload_bytes": payload_bytes,
+                    "paced": False,
+                    "rate_semantics": "unpaced batch representing one second of target load",
                     "benchmark_name": benchmark_name,
                     "transport": "injected-fake-transport",
                 },

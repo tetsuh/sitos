@@ -62,8 +62,19 @@ TEST(BufferPublisherRocksDbIntegrationTest, SyncedFenceSurvivesCloseAndReopen) {
   ASSERT_TRUE(opened.IsOk()) << opened.Message();
   auto publisher = std::move(opened).Value();
   ASSERT_TRUE(publisher.Push("before", std::vector<std::byte>{std::byte{1}}).IsOk());
+  ASSERT_TRUE(publisher.Fence(sitos::FenceDurability::kApplied, std::chrono::seconds{5}).IsOk());
   ASSERT_TRUE(publisher.Fence(sitos::FenceDurability::kSynced, std::chrono::seconds{5}).IsOk());
   ASSERT_TRUE(node.CloseSession("sid").IsOk());
+
+  auto first_persisted = sitos::RocksDBEngine::Open((root / "sid").string());
+  ASSERT_TRUE(first_persisted.IsOk());
+  std::vector<std::byte> before_value;
+  ASSERT_TRUE(
+      std::move(first_persisted).Value()->Get("before", [&](std::string_view, sitos::Bytes bytes) {
+        before_value.assign(bytes.begin(), bytes.end());
+        return true;
+      }));
+  EXPECT_EQ(before_value, (std::vector<std::byte>{std::byte{1}}));
   EXPECT_EQ(publisher.Push("closed", std::vector<std::byte>{std::byte{2}}).StatusCode(),
             sitos::Status::Disconnected);
 

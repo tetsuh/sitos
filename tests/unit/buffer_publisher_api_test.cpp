@@ -142,6 +142,32 @@ TEST(BufferPublisherApiTest, MapsMetadataDiscoveryOutcomes) {
                 .StatusCode(),
             Status::TypeMismatch);
 
+  auto reordered = std::make_shared<MetadataTransport>();
+  reordered->metadata_json =
+      R"({ "extra": {"nested": [true, 2]}, "generation_uuid": "6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab", "state": "active", "created_at": "2026-09-21T00:00:00Z" })";
+  EXPECT_TRUE(BufferPublisher::Open(reordered, ClientConfig{}, "sid", BufferClass::Durable).IsOk());
+
+  auto duplicate = std::make_shared<MetadataTransport>();
+  duplicate->metadata_json =
+      R"({"state":"active","state":"active","created_at":"now","generation_uuid":"6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab"})";
+  EXPECT_EQ(
+      BufferPublisher::Open(duplicate, ClientConfig{}, "sid", BufferClass::Durable).StatusCode(),
+      Status::TypeMismatch);
+
+  auto non_string = std::make_shared<MetadataTransport>();
+  non_string->metadata_json =
+      R"({"state":true,"created_at":"now","generation_uuid":"6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab"})";
+  EXPECT_EQ(
+      BufferPublisher::Open(non_string, ClientConfig{}, "sid", BufferClass::Durable).StatusCode(),
+      Status::TypeMismatch);
+
+  auto trailing = std::make_shared<MetadataTransport>();
+  trailing->metadata_json =
+      R"({"state":"active","created_at":"now","generation_uuid":"6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab"} trailing)";
+  EXPECT_EQ(
+      BufferPublisher::Open(trailing, ClientConfig{}, "sid", BufferClass::Durable).StatusCode(),
+      Status::TypeMismatch);
+
   auto uppercase = std::make_shared<MetadataTransport>();
   uppercase->metadata_json =
       R"({"state":"active","created_at":"2026-09-21T00:00:00Z","generation_uuid":"6F1C2D3E-4A5B-4C6D-8E9F-0123456789AB"})";

@@ -32,9 +32,10 @@ class BenchmarkTransport final : public sitos::Transport {
   sitos::Result<void> Get(std::string_view key, const QueryResultSink& sink,
                           std::chrono::milliseconds) override {
     if (key.find("/meta/ack/") != std::string_view::npos) return sitos::Result<void>::Ok();
-    const auto value = sitos::ParamValue(
-        R"({"state":"active","created_at":"benchmark","generation_uuid":"6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab"})")
-                           .Encode();
+    const auto value =
+        sitos::ParamValue(
+            R"({"state":"active","created_at":"benchmark","generation_uuid":"6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab"})")
+            .Encode();
     sink(key, value, sitos::Encoding{std::string(sitos::Encoding::kSitosV1)});
     return sitos::Result<void>::Ok();
   }
@@ -51,6 +52,7 @@ class BenchmarkTransport final : public sitos::Transport {
 void BufferPublisherPush(benchmark::State& state) {
   const auto pushes_per_second = static_cast<std::size_t>(state.range(0));
   const auto value_bytes = static_cast<std::size_t>(state.range(1));
+  state.SetLabel("unpaced_batch=one_second_target_load");
   auto transport = std::make_shared<BenchmarkTransport>();
   auto opened = sitos::BufferPublisher::Open(transport, sitos::ClientConfig{}, "bench",
                                              sitos::BufferClass::Ephemeral);

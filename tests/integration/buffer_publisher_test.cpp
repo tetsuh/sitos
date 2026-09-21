@@ -96,14 +96,39 @@ TEST(BufferPublisherZenohIntegrationTest, AppliedFenceAndEphemeralValidation) {
                                              sitos::BufferClass::Ephemeral);
   ASSERT_TRUE(opened.IsOk()) << opened.Message();
   auto publisher = std::move(opened).Value();
-  const std::array<std::byte, 4> value{std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}};
+  std::array<std::byte, 4> value{std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}};
   ASSERT_TRUE(publisher.Push("value", value).IsOk());
+  value.fill(std::byte{0xff});
   const auto receipt = publisher.Fence(sitos::FenceDurability::kApplied, std::chrono::seconds{5});
   ASSERT_TRUE(receipt.IsOk()) << receipt.Message();
   EXPECT_EQ(receipt.Value().through_publish_sequence, 1U);
   EXPECT_EQ(receipt.Value().durability, sitos::FenceDurability::kApplied);
   EXPECT_EQ(publisher.Fence(sitos::FenceDurability::kSynced, std::chrono::seconds{1}).StatusCode(),
             sitos::Status::InvalidArgument);
+  auto durable_open = sitos::BufferPublisher::Open(publisher_transport, config, "s107",
+                                                   sitos::BufferClass::Durable);
+  ASSERT_TRUE(durable_open.IsOk()) << durable_open.Message();
+  auto durable_publisher = std::move(durable_open).Value();
+  std::array<std::byte, 4> durable_value{std::byte{5}, std::byte{6}, std::byte{7}, std::byte{8}};
+  const auto expected_value = durable_value;
+  ASSERT_TRUE(durable_publisher.Push("value", durable_value).IsOk());
+  durable_value.fill(std::byte{0xff});
+  ASSERT_TRUE(
+      durable_publisher.Fence(sitos::FenceDurability::kApplied, std::chrono::seconds{5}).IsOk());
+  std::vector<std::byte> observed;
+  std::size_t replies = 0;
+  ASSERT_TRUE(publisher_transport
+                  ->Get(
+                      prefix + "/buffers/s107/durable/value",
+                      [&](std::string_view, std::span<const std::byte> bytes, sitos::Encoding) {
+                        observed.assign(bytes.begin(), bytes.end());
+                        ++replies;
+                        return true;
+                      },
+                      std::chrono::seconds{2})
+                  .IsOk());
+  ASSERT_EQ(replies, 1U);
+  EXPECT_EQ(observed, std::vector<std::byte>(expected_value.begin(), expected_value.end()));
 
   auto configured = config;
   configured.zenoh_config_json = R"({"mode":"peer"})";
