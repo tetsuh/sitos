@@ -29,16 +29,21 @@ def main() -> None:
     raw = json.loads(raw_bytes, parse_float=Decimal, parse_int=Decimal)
     records = []
     for benchmark_name, (scenario, rate, payload_bytes) in CASES.items():
-        samples = [
-            row.get("real_time", row.get("cpu_time"))
+        matched = [
+            row
             for row in raw.get("benchmarks", [])
-            if row.get("name") == benchmark_name or row.get("name") == benchmark_name + "/manual_time"
+            if row.get("name") in (benchmark_name, benchmark_name + "/manual_time")
         ]
-        if len(samples) != 5 or any(not isinstance(value, Decimal) for value in samples):
-            raise SystemExit(f"expected five numeric samples for {benchmark_name}")
+        if len(matched) != 5:
+            raise SystemExit(f"expected five repetition samples for {benchmark_name}")
+        if any(row.get("time_unit") != "ns" for row in matched):
+            raise SystemExit(f"expected time_unit ns for {benchmark_name}")
+        samples = [row.get("real_time") for row in matched]
+        if any(not isinstance(value, Decimal) or value <= 0 for value in samples):
+            raise SystemExit(f"expected positive real_time samples for {benchmark_name}")
         # Each benchmark iteration paces exactly one second of target load.
-        durations = sorted(samples)
-        median = durations[2]
+        median = sorted(samples)[2]
+        achieved = (Decimal(rate) * Decimal(1000000000)) / median
         records.append(
             {
                 "schema_version": "benchmark-v1",
@@ -54,7 +59,10 @@ def main() -> None:
                     "batch_pushes": rate,
                     "payload_bytes": payload_bytes,
                     "paced": True,
-                    "rate_semantics": "paced one-second batch at target pushes per second", "achieved_pushes_per_second": rate,
+                    "rate_semantics": "paced one-second batch at target pushes per second",
+                    "achieved_pushes_per_second": format(
+                        achieved.quantize(Decimal("0.000001")), "f"
+                    ),
                     "benchmark_name": benchmark_name,
                     "transport": "injected-fake-transport",
                 },

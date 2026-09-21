@@ -300,6 +300,9 @@ before returning and retains no Session record or other resource after enumerati
 > #158 implements the shared primitive, #99 exposes it through ParamCache local-delivery waits, and
 > #107 consumes it later for synchronized buffer publication.
 
+> **Planned, not yet normative:** Issue/ADR #107/ADR-0035 owns the BufferPublisher discovery and
+> receipt mechanism. Implementers must not treat this outline as a finalized contract.
+
 * BufferPublisher discovery is bound to the active Session incarnation returned by the existing
   `meta/session/<sid>` metadata query. The `generation_uuid` is immutable for one publisher;
   same-SID recreation creates a new value and an old publisher fails closed. ADR-0035 owns this

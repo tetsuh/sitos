@@ -40,8 +40,8 @@ class BufferPublisher {
   BufferPublisher& operator=(BufferPublisher&& other) noexcept;
   ~BufferPublisher();
 
-  /// Submit an owned byte value. Caller memory may be released or reused once Push returns;
-  /// no borrowed span is retained after the underlying Transport::Put returns.
+  /// Submit a borrowed byte span during the call. Caller memory may be released or reused once
+  /// Push returns; no borrowed span is retained after the underlying Transport::Put returns.
   Result<void> Push(std::string_view key, std::span<const std::byte> value);
   Result<FenceReceipt> Fence(FenceDurability durability, std::chrono::milliseconds timeout);
 

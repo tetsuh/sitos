@@ -91,6 +91,9 @@ Subscriptions remain outside Issue #23. Issue #17 maps acknowledged remote statu
 
 ### 2.2 BufferPublisher
 
+> **Planned, not yet normative:** Issue/ADR #107/ADR-0035 owns this public mechanism. Implementers
+> must not treat this outline as a finalized contract.
+
 `BufferPublisher` mirrors the C++ explicit byte-publication API. Construction binds one active
 Session generation by querying `meta/session/<sid>` with the configured query timeout; a missing
 reply raises `NotFoundError`, while malformed metadata raises `TypeMismatchError`. `push` accepts `bytes`, supported contiguous fixed-width NumPy arrays, and contiguous
@@ -99,8 +102,9 @@ buffer-protocol objects, copying the value before returning; non-contiguous arra
 positive timeout in seconds, returning a `FenceReceipt` with `through_publish_sequence` and
 `durability`. Synced fences are invalid for an ephemeral publisher. A non-OK fence after marker
 submission disconnects the publisher. Push/Fence are externally serialized; destruction releases
-native state without stopping shared StorageNode/Transport objects. Custom `zenoh_config_json`
-retains the inherited transport Fence-profile limitation. See ADR-0035.
+native state without stopping shared StorageNode/Transport objects. Custom `zenoh_config_json` is
+currently rejected by normal BufferPublisher Open because the transport cannot prove that the
+required Fence QoS profile is configured. See ADR-0035.
 
 ```python
 publisher = sitos.BufferPublisher("sid", sitos.BufferClass.DURABLE)
@@ -235,7 +239,7 @@ role, and verifies the canonical `zenoh/bytes;sitos.v1` payload-v1 representatio
   native work may block. Python input conversion and result construction occur with the GIL held
 * `ParamCache.get_array` retains the GIL while validating dtype and constructing the NumPy view;
   its ndarray owner releases only a C++ shared owner and never calls Python from a native callback
-* In a StorageNode that uses a Python engine (§2.3), zenoh threads call into Python,
+* In a StorageNode that uses a Python engine (§2.4), zenoh threads call into Python,
   so GIL acquisition occurs. State explicitly that C++ engines are recommended for production use
 
 ## 4. Type Stubs and Documentation

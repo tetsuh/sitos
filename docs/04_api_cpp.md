@@ -413,8 +413,9 @@ A positive per-call timeout is required. Push/Fence calls are externally seriali
 transfers identity; moved-from calls return `Disconnected`. Move assignment and destruction
 quiesce callbacks, ignore late replies, and do not stop a shared StorageNode or Transport. A
 non-OK result after marker submission disconnects the publisher; definite local validation before
-marker submission does not. Custom `zenoh_config_json` is applied only by normal Open and retains
-the inherited transport Fence-profile limitation. See ADR-0035. The `std::span` view is borrowed
+marker submission does not. Custom `zenoh_config_json` is currently rejected by normal
+BufferPublisher Open because the transport cannot prove that the required Fence QoS profile is configured. See ADR-0035. The
+`std::span` view is borrowed
 only for the duration of Transport::Put; callers may release or reuse memory after Push returns.
 
 ## 5. ParamCache — Subscriber-Side Hot Path
