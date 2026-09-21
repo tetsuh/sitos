@@ -182,6 +182,11 @@ target_link_libraries(sitos_key_test PRIVATE GTest::gtest_main sitos::sitos)
 sitos_enable_warnings(sitos_key_test)
 gtest_add_tests(TARGET sitos_key_test SOURCES unit/key_test.cpp)
 
+add_executable(sitos_buffer_publisher_api_test unit/buffer_publisher_api_test.cpp)
+target_link_libraries(sitos_buffer_publisher_api_test PRIVATE GTest::gtest_main sitos::sitos)
+sitos_enable_warnings(sitos_buffer_publisher_api_test)
+gtest_add_tests(TARGET sitos_buffer_publisher_api_test SOURCES unit/buffer_publisher_api_test.cpp)
+
 # sitos_storage_engine_contract_test and sitos_in_memory_engine_test are
 # intentionally NOT migrated to gtest_add_tests: their TEST_P cases come from
 # INSTANTIATE_STORAGE_ENGINE_CONTRACT_SUITE (storage_engine_contract.hpp),
