@@ -412,7 +412,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m pip install --break-system-packages nanobind==2.9.2 numpy==2.4.2 pytest==9.0.3
+          python3 -m pip install --only-binary=:all: --break-system-packages nanobind==2.9.2 numpy==2.4.2 pytest==9.0.3
           nanobind_dir="$(python3 -c 'import nanobind; print(nanobind.cmake_dir())')"
           cmake -S . -B build/vcpkg-python-rocks -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug -DSITOS_BUILD_TESTS=ON -DSITOS_BUILD_PYTHON=ON \

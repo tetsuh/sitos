@@ -337,6 +337,19 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
             finally:
                 globals()["WHEEL_TOOLS_REQUIREMENTS"] = original_path
 
+    def test_ci_pip_install_is_binary_only(self) -> None:
+        ci = read(CI_WORKFLOW)
+        linux_job = yaml_block(ci, "vcpkg-linux", 2)
+        install = yaml_named_step(
+            linux_job,
+            "Run Python BufferPublisher against combined Zenoh+RocksDB fixture",
+        )
+        self.assertRegex(
+            install,
+            r"(?m)^\s+python3 -m pip install --only-binary=:all: "
+            r"--break-system-packages nanobind==2\.9\.2 numpy==2\.4\.2 pytest==9\.0\.3$",
+        )
+
     def test_pytest_dependency_inventory_is_aligned(self) -> None:
         requirement_paths = (
             INTEROP_REQUIREMENTS,
@@ -374,7 +387,10 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
             rf"pytest=={re.escape(PYTEST_VERSION)}$",
         )
         ci_versions = re.findall(r"\bpytest==([^\s\\]+)", yaml_code(ci))
-        self.assertEqual(ci_versions, [PYTEST_VERSION, PYTEST_VERSION])
+        self.assertEqual(
+            ci_versions,
+            [PYTEST_VERSION, PYTEST_VERSION, PYTEST_VERSION],
+        )
 
         records = [" ".join(record.split()) for record in read(NOTICE).split("\n\n")]
         pytest_records = [record for record in records if record.startswith("pytest ")]
@@ -388,6 +404,11 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         )
         self.assertIn("- Source: https://github.com/pytest-dev/pytest", record)
         self.assertIn("- License: MIT", record)
+
+    def test_buffer_publisher_binding_uses_nanobind_python_boundary(self) -> None:
+        source = read(ROOT / "python" / "bindings" / "buffer_publisher.cpp")
+        self.assertIn("#include <nanobind/nb_python.h>", source)
+        self.assertNotIn("#include <Python.h>", source)
 
     def test_shared_version_and_release_please_config(self) -> None:
         for path in (RELEASE_CONFIG, RELEASE_MANIFEST):

@@ -3,7 +3,7 @@
 
 #include "sitos/buffer_publisher.hpp"
 
-#include <Python.h>
+#include <nanobind/nb_python.h>
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/string.h>
 
