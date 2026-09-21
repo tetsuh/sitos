@@ -6,6 +6,7 @@
 #include <charconv>
 #include <cstdint>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include "ack_client.hpp"
@@ -964,15 +965,19 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
       pending_->deadline = handle.deadline;
     }
   }
+  // Data submission errors recorded before this fence belong only to this fence's
+  // covered range. Move the diagnostic into the handle before submitting the
+  // marker, so the next fence starts with a clean diagnostic state.
+  std::optional<ErrorInfo> fence_submission_error = std::exchange(first_submission_error_, std::nullopt);
   const auto result = transport_->Put(*key, payload, Encoding{std::string(Encoding::kSitosV1Fence)},
                                       std::move(options));
   if (!result.IsOk()) {
     may_have_submitted_ = true;
     const ErrorInfo marker_error{result.StatusCode(), SanitizeFenceDiagnostic(result.Message()),
                                  result.Error()};
-    if (!first_submission_error_.has_value()) first_submission_error_ = marker_error;
+    if (!fence_submission_error.has_value()) fence_submission_error = marker_error;
   }
-  handle.timeout_diagnostic = first_submission_error_;
+  handle.timeout_diagnostic = std::move(fence_submission_error);
   if (!CheckGeneration()) {
     may_have_submitted_ = true;
     lane_lock.unlock();

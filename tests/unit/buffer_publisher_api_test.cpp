@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <tuple>
@@ -33,11 +34,22 @@ class MetadataTransport final : public sitos::Transport {
     last_options = std::move(options);
     if (last_encoding == sitos::Encoding::kSitosV1Fence) {
       marker_count++;
+      marker_keys.emplace_back(key);
+      const auto separator = marker_keys.back().find_last_of('/');
+      marker_sequences.push_back(separator == std::string::npos
+                                     ? 0U
+                                     : std::stoull(marker_keys.back().substr(separator + 1)));
       if (marker_status.has_value()) {
         return sitos::Result<void>::Err(*marker_status, marker_message);
       }
-    } else if (data_status.has_value()) {
-      return sitos::Result<void>::Err(*data_status, data_message);
+    } else {
+      data_keys.emplace_back(key);
+      data_sequences.push_back(last_options.fence_lane.has_value()
+                                   ? last_options.fence_lane->sequence
+                                   : 0U);
+      if (data_status.has_value()) {
+        return sitos::Result<void>::Err(*data_status, data_message);
+      }
     }
     return sitos::Result<void>::Ok();
   }
@@ -62,6 +74,9 @@ class MetadataTransport final : public sitos::Transport {
           is_put ? 0U : ack_through_sequence, sitos::kAckNoFailedSequence, "fence result"});
       if (!payload.IsOk()) return sitos::Result<void>::ErrFrom(payload);
       sink(keyexpr, payload.Value(), sitos::Encoding{std::string(sitos::Encoding::kSitosV1Ack)});
+      if (ack_duplicate_reply) {
+        sink(keyexpr, payload.Value(), sitos::Encoding{std::string(sitos::Encoding::kSitosV1Ack)});
+      }
       return sitos::Result<void>::Ok();
     }
     const auto json =
@@ -90,11 +105,16 @@ class MetadataTransport final : public sitos::Transport {
   std::string last_encoding;
   sitos::PutOptions last_options;
   std::size_t marker_count = 0;
+  std::vector<std::string> marker_keys;
+  std::vector<std::uint64_t> marker_sequences;
+  std::vector<std::string> data_keys;
+  std::vector<std::uint64_t> data_sequences;
   sitos::Status ack_status = sitos::Status::Ok;
   sitos::AckOperationKind ack_kind = sitos::AckOperationKind::Fence;
   sitos::AckDurability ack_durability = sitos::AckDurability::Applied;
   std::uint64_t ack_through_sequence = 1;
   bool ack_timeout = false;
+  bool ack_duplicate_reply = false;
   std::optional<sitos::Status> marker_status;
   std::string marker_message;
   std::optional<sitos::Status> data_status;
@@ -287,6 +307,66 @@ TEST(BufferPublisherApiTest, AppliedFenceReturnsReceiptAndSyncedEphemeralIsLocal
   EXPECT_EQ(ephemeral_transport->marker_count, 0U);
 }
 
+TEST(BufferPublisherApiTest, MultiplePushesRemainScopedToAppliedAndSyncedFences) {
+  auto transport = std::make_shared<MetadataTransport>();
+  auto opened = BufferPublisher::Open(transport, ClientConfig{}, "sid", BufferClass::Durable);
+  ASSERT_TRUE(opened.IsOk()) << opened.Message();
+  auto publisher = std::move(opened).Value();
+
+  ASSERT_TRUE(publisher.Push("first", std::vector<std::byte>{std::byte{1}}).IsOk());
+  ASSERT_TRUE(publisher.Push("second", std::vector<std::byte>{std::byte{2}}).IsOk());
+  transport->ack_through_sequence = 2;
+  const auto applied = publisher.Fence(FenceDurability::kApplied, std::chrono::milliseconds{100});
+  ASSERT_TRUE(applied.IsOk()) << applied.Message();
+  ASSERT_EQ(applied.Value().through_publish_sequence, 2U);
+  EXPECT_EQ(transport->data_sequences, (std::vector<std::uint64_t>{1U, 2U}));
+  EXPECT_EQ(transport->marker_sequences, (std::vector<std::uint64_t>{2U}));
+
+  transport->ack_durability = AckDurability::Synced;
+  transport->ack_through_sequence = 3;
+  ASSERT_TRUE(publisher.Push("third", std::vector<std::byte>{std::byte{3}}).IsOk());
+  const auto synced = publisher.Fence(FenceDurability::kSynced, std::chrono::milliseconds{100});
+  ASSERT_TRUE(synced.IsOk()) << synced.Message();
+  EXPECT_EQ(synced.Value().through_publish_sequence, 3U);
+  EXPECT_EQ(transport->data_sequences, (std::vector<std::uint64_t>{1U, 2U, 3U}));
+  EXPECT_EQ(transport->marker_sequences, (std::vector<std::uint64_t>{2U, 3U}));
+}
+
+TEST(BufferPublisherApiTest, EmptyFenceExcludesLaterPushes) {
+  auto transport = std::make_shared<MetadataTransport>();
+  auto opened = BufferPublisher::Open(transport, ClientConfig{}, "sid", BufferClass::Durable);
+  ASSERT_TRUE(opened.IsOk()) << opened.Message();
+  auto publisher = std::move(opened).Value();
+
+  transport->ack_through_sequence = 0;
+  const auto empty = publisher.Fence(FenceDurability::kApplied, std::chrono::milliseconds{100});
+  ASSERT_TRUE(empty.IsOk()) << empty.Message();
+  EXPECT_EQ(empty.Value().through_publish_sequence, 0U);
+  ASSERT_TRUE(publisher.Push("later", std::vector<std::byte>{std::byte{2}}).IsOk());
+  transport->ack_through_sequence = 1;
+  const auto later = publisher.Fence(FenceDurability::kApplied, std::chrono::milliseconds{100});
+  ASSERT_TRUE(later.IsOk()) << later.Message();
+  EXPECT_EQ(later.Value().through_publish_sequence, 1U);
+  EXPECT_EQ(transport->marker_sequences, (std::vector<std::uint64_t>{0U, 1U}));
+}
+
+TEST(BufferPublisherApiTest, PublishersUseIsolatedFenceMarkerKeys) {
+  auto transport = std::make_shared<MetadataTransport>();
+  auto first_open = BufferPublisher::Open(transport, ClientConfig{}, "sid", BufferClass::Durable);
+  ASSERT_TRUE(first_open.IsOk()) << first_open.Message();
+  auto first = std::move(first_open).Value();
+  ASSERT_TRUE(first.Push("first", std::vector<std::byte>{std::byte{1}}).IsOk());
+  ASSERT_TRUE(first.Fence(FenceDurability::kApplied, std::chrono::milliseconds{100}).IsOk());
+  const auto first_marker = transport->marker_keys.back();
+
+  auto second_open = BufferPublisher::Open(transport, ClientConfig{}, "sid", BufferClass::Durable);
+  ASSERT_TRUE(second_open.IsOk()) << second_open.Message();
+  auto second = std::move(second_open).Value();
+  ASSERT_TRUE(second.Push("second", std::vector<std::byte>{std::byte{2}}).IsOk());
+  ASSERT_TRUE(second.Fence(FenceDurability::kApplied, std::chrono::milliseconds{100}).IsOk());
+  EXPECT_NE(first_marker, transport->marker_keys.back());
+}
+
 TEST(BufferPublisherApiTest, CoveredDataSubmissionFailureDoesNotPreemptFence) {
   auto transport = std::make_shared<MetadataTransport>();
   transport->data_status = Status::Error;
@@ -319,6 +399,39 @@ TEST(BufferPublisherApiTest, DiagnosticsAreBoundedSanitizedAndPreserveFirstFailu
   EXPECT_LE(failed.Message().size(), sitos::kAckResultMaxMessageLength);
   EXPECT_NE(failed.Message().find("later failure"), 0U);
   EXPECT_NE(failed.Message().find('?'), std::string_view::npos);
+}
+
+TEST(BufferPublisherApiTest, DuplicateAcknowledgementDoesNotCompleteTwice) {
+  auto transport = std::make_shared<MetadataTransport>();
+  transport->ack_duplicate_reply = true;
+  auto opened = BufferPublisher::Open(transport, ClientConfig{}, "sid", BufferClass::Durable);
+  ASSERT_TRUE(opened.IsOk()) << opened.Message();
+  auto publisher = std::move(opened).Value();
+  ASSERT_TRUE(publisher.Push("value", std::vector<std::byte>{std::byte{1}}).IsOk());
+  const auto receipt = publisher.Fence(FenceDurability::kApplied, std::chrono::milliseconds{100});
+  ASSERT_TRUE(receipt.IsOk()) << receipt.Message();
+  EXPECT_EQ(receipt.Value().through_publish_sequence, 1U);
+  EXPECT_EQ(transport->marker_count, 1U);
+}
+
+TEST(BufferPublisherApiTest, FenceDiagnosticsDoNotCarryIntoLaterFence) {
+  auto transport = std::make_shared<MetadataTransport>();
+  transport->data_status = Status::Error;
+  transport->data_message = "covered data failure";
+  auto opened = BufferPublisher::Open(transport, ClientConfig{}, "sid", BufferClass::Durable);
+  ASSERT_TRUE(opened.IsOk()) << opened.Message();
+  auto publisher = std::move(opened).Value();
+
+  EXPECT_EQ(publisher.Push("failed", std::vector<std::byte>{std::byte{1}}).StatusCode(),
+            Status::Error);
+  const auto completed = publisher.Fence(FenceDurability::kApplied, std::chrono::milliseconds{100});
+  ASSERT_TRUE(completed.IsOk()) << completed.Message();
+
+  transport->data_status.reset();
+  transport->ack_timeout = true;
+  const auto timed_out = publisher.Fence(FenceDurability::kApplied, std::chrono::milliseconds{10});
+  EXPECT_EQ(timed_out.StatusCode(), Status::Timeout);
+  EXPECT_EQ(timed_out.Message().find("covered data failure"), std::string_view::npos);
 }
 
 TEST(BufferPublisherApiTest, MarkerSubmissionFailureMayStillCompleteFence) {
