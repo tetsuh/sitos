@@ -110,7 +110,7 @@
       ],
       "classification": "informational",
       "target_ns": null,
-      "rate_semantics": "unpaced batch of 3 or 300 pushes representing one second of target load; report divides elapsed batch time by batch size"
+      "rate_semantics": "paced one-second batch at 3 or 300 pushes per second; report records elapsed batch duration"
     }
   },
   "workload_identity": {

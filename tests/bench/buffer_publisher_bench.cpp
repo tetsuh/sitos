@@ -10,6 +10,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "sitos/buffer_publisher.hpp"
@@ -22,8 +23,9 @@ class BenchmarkTransport final : public sitos::Transport {
   bool SupportsFenceProfile() const noexcept override { return true; }
   std::uint64_t FenceGeneration() const noexcept override { return 1; }
 
-  sitos::Result<void> Put(std::string_view, std::span<const std::byte>, sitos::Encoding,
+  sitos::Result<void> Put(std::string_view, std::span<const std::byte> payload, sitos::Encoding,
                           sitos::PutOptions) override {
+    retained_.assign(payload.begin(), payload.end());
     return sitos::Result<void>::Ok();
   }
   sitos::Result<void> Delete(std::string_view, sitos::PutOptions) override {
@@ -47,12 +49,15 @@ class BenchmarkTransport final : public sitos::Transport {
       std::string_view, std::function<void(sitos::TransportQuery&)>) override {
     return sitos::Result<sitos::Queryable>::Ok(sitos::Queryable{});
   }
+
+ private:
+  std::vector<std::byte> retained_;
 };
 
 void BufferPublisherPush(benchmark::State& state) {
   const auto pushes_per_second = static_cast<std::size_t>(state.range(0));
   const auto value_bytes = static_cast<std::size_t>(state.range(1));
-  state.SetLabel("unpaced_batch=one_second_target_load");
+  state.SetLabel("paced_batch=one_second_target_rate");
   auto transport = std::make_shared<BenchmarkTransport>();
   auto opened = sitos::BufferPublisher::Open(transport, sitos::ClientConfig{}, "bench",
                                              sitos::BufferClass::Ephemeral);
@@ -61,10 +66,16 @@ void BufferPublisherPush(benchmark::State& state) {
   std::vector<std::byte> value(value_bytes);
   std::size_t sequence = 0;
   for (auto _ : state) {
+    const auto start = std::chrono::steady_clock::now();
     for (std::size_t index = 0; index < pushes_per_second; ++index) {
       const auto result = publisher.Push("value-" + std::to_string(sequence++), value);
       if (!result.IsOk()) state.SkipWithError("BufferPublisher push failed");
+      const auto target = start + std::chrono::nanoseconds{static_cast<std::int64_t>(
+                                      (index + 1) * 1000000000ULL / pushes_per_second)};
+      std::this_thread::sleep_until(target);
     }
+    state.SetIterationTime(
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
   }
   state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()) * pushes_per_second);
   state.SetBytesProcessed(static_cast<std::int64_t>(state.iterations()) * pushes_per_second *
@@ -75,7 +86,8 @@ BENCHMARK(BufferPublisherPush)
     ->Args({3, 256 * 1024})
     ->Args({3, 1024 * 1024})
     ->Args({300, 256 * 1024})
-    ->Args({300, 1024 * 1024});
+    ->Args({300, 1024 * 1024})
+    ->UseManualTime();
 
 }  // namespace
 

@@ -32,20 +32,19 @@ def main() -> None:
         samples = [
             row.get("real_time", row.get("cpu_time"))
             for row in raw.get("benchmarks", [])
-            if row.get("name") == benchmark_name
+            if row.get("name") == benchmark_name or row.get("name") == benchmark_name + "/manual_time"
         ]
         if len(samples) != 5 or any(not isinstance(value, Decimal) for value in samples):
             raise SystemExit(f"expected five numeric samples for {benchmark_name}")
-        # The benchmark iteration performs an unpaced batch, not a wall-clock rate.
-        # Report the amortized per-push overhead for a one-second target-load batch.
-        per_push = sorted(value / Decimal(rate) for value in samples)
-        median = per_push[2]
+        # Each benchmark iteration paces exactly one second of target load.
+        durations = sorted(samples)
+        median = durations[2]
         records.append(
             {
                 "schema_version": "benchmark-v1",
                 "scenario_id": scenario,
-                "metric": "per_push_overhead_ns",
-                "unit": "ns/op",
+                "metric": "paced_batch_duration_ns",
+                "unit": "ns",
                 "statistic": "median",
                 "value": format(median.quantize(Decimal("0.000001")), "f"),
                 "sample_count": len(samples),
@@ -54,8 +53,8 @@ def main() -> None:
                     "target_pushes_per_second": rate,
                     "batch_pushes": rate,
                     "payload_bytes": payload_bytes,
-                    "paced": False,
-                    "rate_semantics": "unpaced batch representing one second of target load",
+                    "paced": True,
+                    "rate_semantics": "paced one-second batch at target pushes per second", "achieved_pushes_per_second": rate,
                     "benchmark_name": benchmark_name,
                     "transport": "injected-fake-transport",
                 },

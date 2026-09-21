@@ -158,7 +158,26 @@ class SessionMetadataParser {
       if (value == '"') return true;
       if (value < 0x20) return false;
       if (value != '\\') {
-        output->push_back(static_cast<char>(value));
+        if (value < 0x80) {
+          output->push_back(static_cast<char>(value));
+          continue;
+        }
+        const int width = value >= 0xF0 ? 4 : value >= 0xE0 ? 3 : value >= 0xC2 ? 2 : 0;
+        if (width == 0 || position_ + static_cast<std::size_t>(width - 1) > text_.size()) {
+          return false;
+        }
+        std::uint32_t code_point = value & ((1u << (7 - width)) - 1u);
+        for (int index = 1; index < width; ++index) {
+          const auto continuation = static_cast<unsigned char>(text_[position_++]);
+          if ((continuation & 0xC0) != 0x80) return false;
+          code_point = (code_point << 6) | (continuation & 0x3F);
+        }
+        const auto minimum = width == 2 ? 0x80u : width == 3 ? 0x800u : 0x10000u;
+        if (code_point < minimum || code_point > 0x10FFFFu ||
+            (code_point >= 0xD800u && code_point <= 0xDFFFu)) {
+          return false;
+        }
+        AppendCodePoint(output, code_point);
         continue;
       }
       if (position_ >= text_.size()) return false;
@@ -308,6 +327,10 @@ Result<FenceUuid> DiscoverSessionGeneration(Transport& transport, const ClientCo
         if (!SessionMetadataParser(*json_value).Parse(&parsed)) {
           invalid_reply = true;
           return false;
+        }
+        if (generation.has_value()) {
+          invalid_reply = true;
+          return true;
         }
         generation = parsed;
         return true;

@@ -19,6 +19,10 @@ We will add `generation_uuid`, as canonical lowercase UUIDv4 text, to the existi
 `ClientConfig::query_timeout`, binds the returned generation immutably, and maps the existing
 Fence result to `FenceReceipt` and `FenceDurability`; a missing reply is `NotFound`, malformed
 encoding/payload/shape or generation is `TypeMismatch`, and transport statuses are preserved.
+`FenceDurability::kApplied = 0` maps to `AckDurability::Applied`; `FenceDurability::kSynced = 1`
+maps to `AckDurability::Synced`. After validating the successful Fence acknowledgement's kind,
+durability, and covered sequence, C++ returns `FenceReceipt{through_publish_sequence, durability}`;
+Python exposes the same APPLIED/SYNCED values and receipt fields.
 
 ## Consequences
 

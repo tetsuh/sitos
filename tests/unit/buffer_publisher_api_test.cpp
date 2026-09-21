@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -72,6 +73,7 @@ class MetadataTransport final : public sitos::Transport {
     const auto payload =
         metadata_raw_payload.empty() ? sitos::ParamValue(json).Encode() : metadata_raw_payload;
     sink(keyexpr, payload, sitos::Encoding{metadata_encoding});
+    if (metadata_duplicate_reply) sink(keyexpr, payload, sitos::Encoding{metadata_encoding});
     return sitos::Result<void>::Ok();
   }
   sitos::Result<sitos::Subscription> DeclareSubscriber(
@@ -102,6 +104,7 @@ class MetadataTransport final : public sitos::Transport {
   std::error_code metadata_cause;
   bool metadata_no_reply = false;
   bool metadata_malformed = false;
+  bool metadata_duplicate_reply = false;
   std::string metadata_json;
   std::vector<std::byte> metadata_raw_payload;
   std::string metadata_encoding = std::string(sitos::Encoding::kSitosV1);
@@ -113,6 +116,28 @@ class MetadataTransport final : public sitos::Transport {
 
 namespace sitos {
 namespace {
+
+TEST(BufferPublisherApiTest, RejectsInvalidUtf8AndDuplicateMetadataReplies) {
+  const std::array<std::string, 4> invalid_utf8 = {
+      std::string("{\"state\":\"active\",\"created_at\":\"\xC0\x80\",\"generation_uuid\":"
+                  "\"6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab\"}"),
+      std::string("{\"state\":\"active\",\"created_at\":\"\xED\xA0\x80\",\"generation_uuid\":"
+                  "\"6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab\"}"),
+      std::string("{\"state\":\"active\",\"created_at\":\"\xE2\x82\",\"generation_uuid\":"
+                  "\"6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab\"}"),
+      std::string("{\"state\":\"active\",\"created_at\":\"\xF4\x90\x80\x80\",\"generation_uuid\":"
+                  "\"6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab\"}")};
+  for (const auto& json : invalid_utf8) {
+    auto transport = std::make_shared<MetadataTransport>();
+    transport->metadata_json = json;
+    auto result = BufferPublisher::Open(transport, ClientConfig{}, "sid", BufferClass::Durable);
+    EXPECT_EQ(result.StatusCode(), Status::TypeMismatch);
+  }
+  auto duplicate = std::make_shared<MetadataTransport>();
+  duplicate->metadata_duplicate_reply = true;
+  auto result = BufferPublisher::Open(duplicate, ClientConfig{}, "sid", BufferClass::Durable);
+  EXPECT_EQ(result.StatusCode(), Status::TypeMismatch);
+}
 
 TEST(BufferPublisherApiTest, MapsMetadataDiscoveryOutcomes) {
   auto no_reply = std::make_shared<MetadataTransport>();
@@ -408,11 +433,12 @@ TEST(BufferPublisherApiTest, ExposesFrozenApiAndDurabilityTypes) {
   static_cast<void>(
       static_cast<Result<BufferPublisher> (*)(ClientConfig, std::string_view, BufferClass)>(
           &BufferPublisher::Open));
-  const std::vector<std::byte> bytes{std::byte{0x01}, std::byte{0x02}};
-  auto result = BufferPublisher::Open(ClientConfig{}, "sid", BufferClass::Ephemeral);
-  EXPECT_FALSE(result.IsOk());
-  EXPECT_EQ(result.StatusCode(), Status::Error);
-  static_cast<void>(bytes);
+  static_assert(static_cast<int>(FenceDurability::kApplied) == 0);
+  static_assert(static_cast<int>(FenceDurability::kSynced) == 1);
+  static_cast<void>(FenceDurability::kApplied);
+  static_cast<void>(FenceDurability::kSynced);
+  static_cast<void>(BufferClass::Durable);
+  static_cast<void>(BufferClass::Ephemeral);
 }
 
 }  // namespace

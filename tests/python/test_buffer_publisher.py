@@ -72,13 +72,38 @@ def test_buffer_publisher_runtime_bytes_numpy_buffer_and_lifetime(publisher_fixt
     assert _read_fixture(process, f"{prefix}/buffers/{sid}/durable/empty") == b""
     assert _read_fixture(process, f"{prefix}/buffers/{sid}/durable/buffer") == b"buffer"
 
+    tiny_timeout = sitos.BufferPublisher(sid, sitos.BufferClass.DURABLE, prefix=prefix)
+    try:
+        tiny_timeout.fence(sitos.FenceDurability.APPLIED, timeout=0.0001)
+    except sitos.TimeoutError:
+        pass
     ephemeral = sitos.BufferPublisher(sid, sitos.BufferClass.EPHEMERAL, prefix=prefix)
     with pytest.raises(ValueError):
         ephemeral.fence(sitos.FenceDurability.SYNCED, timeout=2.0)
+    with pytest.raises(ValueError):
+        publisher.fence(sitos.FenceDurability.SYNCED, timeout=2.0)
+    with pytest.raises(sitos.DisconnectedError):
+        publisher.push("after-sync-error", b"disconnected")
     with pytest.raises(TypeError):
         publisher.push("str", "unsupported")
     with pytest.raises(ValueError):
         publisher.push("noncontiguous", source[::2])
+
+
+def test_buffer_publisher_recreate_old_fence_timeout_then_disconnects(publisher_fixture) -> None:
+    prefix, sid, process = publisher_fixture
+    publisher = sitos.BufferPublisher(sid, sitos.BufferClass.DURABLE, prefix=prefix)
+    publisher.push("before", b"before")
+    assert process.stdin is not None and process.stdout is not None
+    process.stdin.write("recreate\n")
+    process.stdin.flush()
+    assert process.stdout.readline().strip() == "RECREATED"
+    with pytest.raises(sitos.TimeoutError):
+        publisher.fence(sitos.FenceDurability.APPLIED, timeout=0.1)
+    with pytest.raises(sitos.DisconnectedError):
+        publisher.push("later", b"later")
+    with pytest.raises(TypeError):
+        publisher.fence(sitos.FenceDurability.APPLIED, timeout=True)
 
 
 def test_buffer_publisher_missing_session_maps_not_found() -> None:

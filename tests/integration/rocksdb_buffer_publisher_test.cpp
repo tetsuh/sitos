@@ -78,8 +78,15 @@ TEST(BufferPublisherRocksDbIntegrationTest, SyncedFenceSurvivesCloseAndReopen) {
     }));
   }
   EXPECT_EQ(before_value, (std::vector<std::byte>{std::byte{1}}));
-  EXPECT_EQ(publisher.Push("closed", std::vector<std::byte>{std::byte{2}}).StatusCode(),
+  EXPECT_TRUE(publisher.Push("closed", std::vector<std::byte>{std::byte{2}}).IsOk());
+  const auto old_fence =
+      publisher.Fence(sitos::FenceDurability::kApplied, std::chrono::milliseconds{1500});
+  EXPECT_FALSE(old_fence.IsOk());
+  EXPECT_EQ(publisher.Push("later", std::vector<std::byte>{std::byte{2}}).StatusCode(),
             sitos::Status::Disconnected);
+  EXPECT_EQ(
+      publisher.Fence(sitos::FenceDurability::kApplied, std::chrono::milliseconds{50}).StatusCode(),
+      sitos::Status::Disconnected);
 
   ASSERT_TRUE(node.CreateSession("sid", {.durable_buffers = true}).IsOk());
   auto reopened =

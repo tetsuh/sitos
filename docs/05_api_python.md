@@ -95,10 +95,12 @@ Subscriptions remain outside Issue #23. Issue #17 maps acknowledged remote statu
 Session generation by querying `meta/session/<sid>` with the configured query timeout; a missing
 reply raises `NotFoundError`, while malformed metadata raises `TypeMismatchError`. `push` accepts `bytes`, supported contiguous fixed-width NumPy arrays, and contiguous
 buffer-protocol objects, copying the value before returning; non-contiguous arrays are rejected.
-`fence` takes `FenceDurability.APPLIED` or `.SYNCED` and a positive timeout in seconds, returning a
-`FenceReceipt` with `through_publish_sequence` and `durability`. Synced fences are invalid for an
-ephemeral publisher. A non-OK fence after marker submission disconnects the publisher. See
-ADR-0035.
+`fence` takes `FenceDurability.APPLIED` (stable value 0) or `.SYNCED` (stable value 1) and a
+positive timeout in seconds, returning a `FenceReceipt` with `through_publish_sequence` and
+`durability`. Synced fences are invalid for an ephemeral publisher. A non-OK fence after marker
+submission disconnects the publisher. Push/Fence are externally serialized; destruction releases
+native state without stopping shared StorageNode/Transport objects. Custom `zenoh_config_json`
+retains the inherited transport Fence-profile limitation. See ADR-0035.
 
 ```python
 publisher = sitos.BufferPublisher("sid", sitos.BufferClass.DURABLE)
@@ -161,7 +163,7 @@ NumPy dtypes, preserves explicit byte order without conversion, and does not inf
 shape. The array keeps the exact cached value alive across overwrite, detach, close, and cache
 destruction.
 
-### 2.3 StorageNode / Engines (Issue #25)
+### 2.4 StorageNode / Engines (Issue #25)
 
 ```python
 engine = sitos.InMemoryEngine()  # opaque StorageNode-owned engine
@@ -181,7 +183,7 @@ Issue #28.
 Independent StorageNode, ParamStore, and ParamCache sessions must run in separate processes while
 using the pinned zenoh-c 1.9.0 runtime. Same-process independently opened sessions are unsupported.
 
-### 2.4 SessionView (Issue #25)
+### 2.5 SessionView (Issue #25)
 
 `SessionView` is a read-only, owned view over the StorageNode session overlay and snapshot.
 It exposes exact built-in typed reads, absence-only defaults, `contains`, and eager lexical
@@ -203,7 +205,7 @@ by `items` remains usable after session close or node stop; subsequent reads thr
 callbacks, spans, NumPy, and zero-copy APIs are intentionally not part of SessionView.
 Large binary values use the disk-backed buffers API, not the session overlay or ParamCache.
 
-### 2.5 Source-only examples (Issue #32)
+### 2.6 Source-only examples (Issue #32)
 
 The repository provides `examples/python/quickstart.py`, `examples/python/numpy_lut.py`, and
 `examples/python/raw_zenoh.py` as source-only tutorials. They are not installed into the wheel and do not add package entry points.

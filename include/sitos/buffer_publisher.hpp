@@ -19,7 +19,7 @@
 
 namespace sitos {
 
-enum class FenceDurability { kApplied, kSynced };
+enum class FenceDurability { kApplied = 0, kSynced = 1 };
 
 struct FenceReceipt {
   std::uint64_t through_publish_sequence = 0;

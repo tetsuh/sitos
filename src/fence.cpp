@@ -945,8 +945,8 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
     return Result<FenceHandle>::Err(Status::InvalidArgument, "invalid Fence binding");
   }
 
-  FenceHandle handle{GenerateAckToken(), through_sequence, {}, std::make_shared<FenceWaiterState>(),
-                     std::nullopt,       std::nullopt};
+  FenceHandle handle{
+      GenerateAckToken(), through_sequence, {}, std::make_shared<FenceWaiterState>(), std::nullopt};
   {
     std::scoped_lock waiter_lock(waiter_mutex_);
     pending_ = handle;  // token/waiter/through are visible before synchronous loopback
@@ -970,7 +970,6 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
     may_have_submitted_ = true;
     const ErrorInfo marker_error{result.StatusCode(), SanitizeFenceDiagnostic(result.Message()),
                                  result.Error()};
-    handle.submission_diagnostic = marker_error;
     if (!first_submission_error_.has_value()) first_submission_error_ = marker_error;
   }
   handle.timeout_diagnostic = first_submission_error_;
@@ -1000,11 +999,8 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::PublishWaite
     return Result<FenceHandle>::Err(Status::InvalidArgument, "Fence already pending",
                                     std::make_error_code(std::errc::operation_in_progress));
   }
-  FenceHandle handle{fixed_token.value_or(GenerateAckToken()),
-                     through_sequence,
-                     SaturatingFenceDeadline(total_deadline),
-                     std::make_shared<FenceWaiterState>(),
-                     std::nullopt,
+  FenceHandle handle{fixed_token.value_or(GenerateAckToken()), through_sequence,
+                     SaturatingFenceDeadline(total_deadline), std::make_shared<FenceWaiterState>(),
                      std::nullopt};
   pending_ = handle;
   return Result<FenceHandle>::Ok(std::move(handle));

@@ -1,10 +1,9 @@
 // Copyright 2026 sitos contributors
 // SPDX-License-Identifier: Apache-2.0
 
+#include "sitos/buffer_publisher.hpp"
+
 #include <Python.h>
-
-#include "numpy_api.hpp"
-
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/string.h>
 
@@ -16,9 +15,9 @@
 #include <string>
 
 #include "client_binding.hpp"
+#include "numpy_api.hpp"
 #include "numpy_binding.hpp"
 #include "param_value_conversion.hpp"
-#include "sitos/buffer_publisher.hpp"
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -89,8 +88,10 @@ class PyBufferPublisher {
         PyErr_Clear();
         throw nb::type_error("push accepts bytes or a contiguous buffer-protocol object");
       }
-      const auto* data = static_cast<const std::byte*>(view.view().buf);
-      owned.assign(data, data + view.view().len);
+      if (view.view().len != 0) {
+        const auto* data = static_cast<const std::byte*>(view.view().buf);
+        owned.assign(data, data + view.view().len);
+      }
     }
     auto result = [&] {
       nb::gil_scoped_release release;
@@ -100,14 +101,15 @@ class PyBufferPublisher {
   }
 
   FenceReceipt Fence(FenceDurability durability, const nb::handle& timeout) {
-    if (!nb::isinstance<nb::float_>(timeout) && !nb::isinstance<nb::int_>(timeout)) {
+    if (nb::isinstance<nb::bool_>(timeout) ||
+        (!nb::isinstance<nb::float_>(timeout) && !nb::isinstance<nb::int_>(timeout))) {
       throw nb::type_error("timeout must be a positive number of seconds");
     }
     const double seconds = nb::cast<double>(timeout);
     if (!std::isfinite(seconds) || seconds <= 0.0) {
       throw nb::value_error("timeout must be positive");
     }
-    const double milliseconds = seconds * 1000.0;
+    const double milliseconds = std::ceil(seconds * 1000.0);
     if (milliseconds > static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
       throw nb::value_error("timeout is outside the C++ duration range");
     }

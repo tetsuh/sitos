@@ -151,8 +151,6 @@ struct FenceHandle {
   /// Covered-data or marker submission diagnostic frozen before BeginFence
   /// releases the Publisher lane. Later excluded writes cannot replace it.
   std::optional<ErrorInfo> timeout_diagnostic;
-  /// Marker submission failure; unlike timeout_diagnostic this is terminal for the Publisher.
-  std::optional<ErrorInfo> submission_diagnostic;
 };
 
 /// Internal ADR-0029 logical Publisher lane used by later #99/#107 surfaces.

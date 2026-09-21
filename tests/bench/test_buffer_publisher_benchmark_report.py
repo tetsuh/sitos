@@ -41,7 +41,8 @@ def test_buffer_publisher_report_contains_all_workloads(tmp_path: Path) -> None:
         "N107_PUSH_300PS_256KIB_V1",
         "N107_PUSH_300PS_1MIB_V1",
     ]
-    assert all(record["metric"] == "per_push_overhead_ns" for record in report["records"])
+    assert all(record["metric"] == "paced_batch_duration_ns" for record in report["records"])
     assert [record["workload"]["target_pushes_per_second"] for record in report["records"]] == [3, 3, 300, 300]
-    assert all(record["workload"]["paced"] is False for record in report["records"])
+    assert all(record["workload"]["paced"] is True for record in report["records"])
+    assert all(record["workload"]["achieved_pushes_per_second"] in (3, 300) for record in report["records"])
     assert [record["workload"]["payload_bytes"] for record in report["records"]] == [262144, 1048576, 262144, 1048576]
