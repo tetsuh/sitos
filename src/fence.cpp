@@ -872,7 +872,7 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
     return Result<FenceHandle>::Err(Status::InvalidArgument, "Transport does not support Fence");
   }
   if (binding_.target == FencePublisherTarget::Buffer &&
-      binding_.durability == AckDurability::Synced && !binding_.allow_synced) {
+      binding_.durability == AckDurability::Synced && !synced_allowed_) {
     return Result<FenceHandle>::Err(Status::InvalidArgument,
                                     "synchronized Fence requires the #105 barrier");
   }
@@ -898,8 +898,8 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
     return Result<FenceHandle>::Err(Status::InvalidArgument, "invalid Fence binding");
   }
 
-  FenceHandle handle{
-      GenerateAckToken(), through_sequence, {}, std::make_shared<FenceWaiterState>(), std::nullopt};
+  FenceHandle handle{GenerateAckToken(), through_sequence, {}, std::make_shared<FenceWaiterState>(),
+                     std::nullopt,       std::nullopt};
   {
     std::scoped_lock waiter_lock(waiter_mutex_);
     pending_ = handle;  // token/waiter/through are visible before synchronous loopback
@@ -921,10 +921,10 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
                                       std::move(options));
   if (!result.IsOk()) {
     may_have_submitted_ = true;
-    if (!first_submission_error_.has_value()) {
-      first_submission_error_ =
-          ErrorInfo{result.StatusCode(), std::string(result.Message()), result.Error()};
-    }
+    const ErrorInfo marker_error{result.StatusCode(), std::string(result.Message()),
+                                 result.Error()};
+    handle.submission_diagnostic = marker_error;
+    if (!first_submission_error_.has_value()) first_submission_error_ = marker_error;
   }
   handle.timeout_diagnostic = first_submission_error_;
   if (!CheckGeneration()) {
@@ -953,8 +953,11 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::PublishWaite
     return Result<FenceHandle>::Err(Status::InvalidArgument, "Fence already pending",
                                     std::make_error_code(std::errc::operation_in_progress));
   }
-  FenceHandle handle{fixed_token.value_or(GenerateAckToken()), through_sequence,
-                     SaturatingFenceDeadline(total_deadline), std::make_shared<FenceWaiterState>(),
+  FenceHandle handle{fixed_token.value_or(GenerateAckToken()),
+                     through_sequence,
+                     SaturatingFenceDeadline(total_deadline),
+                     std::make_shared<FenceWaiterState>(),
+                     std::nullopt,
                      std::nullopt};
   pending_ = handle;
   return Result<FenceHandle>::Ok(std::move(handle));

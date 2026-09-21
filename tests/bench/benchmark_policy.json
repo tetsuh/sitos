@@ -100,6 +100,16 @@
       ],
       "classification": "informational",
       "target_ns": 10000000
+    },
+    "N107": {
+      "scenario_ids": [
+        "N107_PUSH_3PS_256KIB_V1",
+        "N107_PUSH_3PS_1MIB_V1",
+        "N107_PUSH_300PS_256KIB_V1",
+        "N107_PUSH_300PS_1MIB_V1"
+      ],
+      "classification": "informational",
+      "target_ns": null
     }
   },
   "workload_identity": {

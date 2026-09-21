@@ -124,7 +124,6 @@ struct FencePublisherBinding {
   FenceUuid receiver_generation{};
   std::optional<BufferClass> buffer_class;
   AckDurability durability = AckDurability::Applied;
-  bool allow_synced = false;
 };
 
 struct FenceWaiterState {
@@ -152,6 +151,8 @@ struct FenceHandle {
   /// Covered-data or marker submission diagnostic frozen before BeginFence
   /// releases the Publisher lane. Later excluded writes cannot replace it.
   std::optional<ErrorInfo> timeout_diagnostic;
+  /// Marker submission failure; unlike timeout_diagnostic this is terminal for the Publisher.
+  std::optional<ErrorInfo> submission_diagnostic;
 };
 
 /// Internal ADR-0029 logical Publisher lane used by later #99/#107 surfaces.
@@ -320,6 +321,7 @@ class FencePublisher {
   bool Complete(const AckToken& token, AckResultV1 result);
   void Close();
   void SetDurability(AckDurability durability) noexcept { binding_.durability = durability; }
+  void AllowSynced() noexcept { synced_allowed_ = true; }
 
   void SetLastSequenceForTesting(std::uint64_t sequence) noexcept;
   [[nodiscard]] std::uint64_t last_sequence() const noexcept;
@@ -368,6 +370,7 @@ class FencePublisher {
   std::optional<ErrorInfo> first_submission_error_;
   std::atomic<bool> generation_mismatch_{false};
   bool disconnected_ = false;
+  bool synced_allowed_ = false;
   std::optional<FenceHandle> pending_;
 };
 

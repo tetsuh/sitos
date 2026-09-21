@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <thread>
+#include <tuple>
 
 #include "fence_test_support.hpp"
 #include "storage_node_test_access.hpp"
@@ -54,6 +55,142 @@ void ExpectRemoteFence(const sitos::AckResultV1& result, sitos::Status status,
   EXPECT_EQ(result.failed_index, sitos::kAckNoFailedIndex);
   EXPECT_EQ(result.through_sequence, through);
   EXPECT_EQ(result.failed_sequence, failed);
+}
+
+class UnsupportedSyncEngine final : public sitos::InMemoryEngine {
+ public:
+  explicit UnsupportedSyncEngine(std::shared_ptr<std::size_t> sync_calls)
+      : sync_calls_(std::move(sync_calls)) {}
+
+  sitos::Result<void> Sync() override {
+    ++*sync_calls_;
+    return sitos::Result<void>::Ok();
+  }
+
+ private:
+  std::shared_ptr<std::size_t> sync_calls_;
+};
+
+class SyncTrackingEngine final : public sitos::InMemoryEngine {
+ public:
+  explicit SyncTrackingEngine(std::shared_ptr<std::size_t> sync_calls)
+      : sync_calls_(std::move(sync_calls)) {}
+
+  sitos::SyncCapability GetSyncCapability() const noexcept override {
+    return sitos::SyncCapability::kPowerLossDurable;
+  }
+
+  sitos::Result<void> Sync() override {
+    ++*sync_calls_;
+    return sitos::Result<void>::Ok();
+  }
+
+ private:
+  std::shared_ptr<std::size_t> sync_calls_;
+};
+
+enum class SyncOutcome { Error, Throw };
+
+class SyncOutcomeEngine final : public sitos::InMemoryEngine {
+ public:
+  explicit SyncOutcomeEngine(SyncOutcome outcome) : outcome_(outcome) {}
+
+  sitos::SyncCapability GetSyncCapability() const noexcept override {
+    return sitos::SyncCapability::kPowerLossDurable;
+  }
+
+  sitos::Result<void> Sync() override {
+    if (outcome_ == SyncOutcome::Throw) throw std::runtime_error("production sync uncertain");
+    return sitos::Result<void>::Err(sitos::Status::Error, "production sync failed");
+  }
+
+ private:
+  SyncOutcome outcome_;
+};
+
+TEST(FenceStorageNodeTest, ProductionSyncedFenceInvokesDurableEngineSync) {
+  auto transport = sitos::fence_test::MakeTransport();
+  auto sync_calls = std::make_shared<std::size_t>(0);
+  auto node = sitos::fence_test::StartNode(transport, [sync_calls](std::string_view) {
+    return sitos::Result<std::unique_ptr<sitos::StorageEngine>>::Ok(
+        std::make_unique<SyncTrackingEngine>(sync_calls));
+  });
+  ASSERT_NE(node, nullptr);
+  ASSERT_TRUE(
+      node->CreateSession(sitos::fence_test::kSid, sitos::fence_test::DurableSessionOptions())
+          .IsOk());
+  ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::SetSessionGeneration(
+      *node, sitos::fence_test::kSid, sitos::fence_test::kSessionGeneration));
+
+  transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeCoveredBufferPut(
+      "sitos/buffers/s1/durable/sync-value", sitos::fence_test::kPublisherA, 1));
+  const auto token = sitos::fence_test::Token(std::byte{0x7a});
+  transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeBufferMarker(
+      "sitos", sitos::fence_test::kSid, sitos::fence_test::kSessionGeneration,
+      sitos::BufferClass::Durable, sitos::fence_test::kPublisherA, sitos::AckDurability::Synced, 1,
+      token));
+  const auto result = sitos::fence_test_access::FenceTestAccess::FindAckResult(*node, token);
+  ASSERT_TRUE(result.has_value());
+  ExpectRemoteFence(*result, sitos::Status::Ok, sitos::AckDurability::Synced, 1,
+                    sitos::kAckNoFailedSequence);
+  EXPECT_EQ(*sync_calls, 1U);
+}
+
+TEST(FenceStorageNodeTest, ProductionSyncedFenceMapsSyncFailureAndThrow) {
+  for (const auto& [outcome, expected, tail] :
+       {std::tuple{SyncOutcome::Error, sitos::Status::Error, std::byte{0x7c}},
+        std::tuple{SyncOutcome::Throw, sitos::Status::OutcomeUnknown, std::byte{0x7d}}}) {
+    auto transport = sitos::fence_test::MakeTransport();
+    auto node = sitos::fence_test::StartNode(transport, [outcome](std::string_view) {
+      return sitos::Result<std::unique_ptr<sitos::StorageEngine>>::Ok(
+          std::make_unique<SyncOutcomeEngine>(outcome));
+    });
+    ASSERT_NE(node, nullptr);
+    ASSERT_TRUE(
+        node->CreateSession(sitos::fence_test::kSid, sitos::fence_test::DurableSessionOptions())
+            .IsOk());
+    ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::SetSessionGeneration(
+        *node, sitos::fence_test::kSid, sitos::fence_test::kSessionGeneration));
+    transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeCoveredBufferPut(
+        "sitos/buffers/s1/durable/sync-failure", sitos::fence_test::kPublisherA, 1));
+    const auto token = sitos::fence_test::Token(tail);
+    transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeBufferMarker(
+        "sitos", sitos::fence_test::kSid, sitos::fence_test::kSessionGeneration,
+        sitos::BufferClass::Durable, sitos::fence_test::kPublisherA, sitos::AckDurability::Synced,
+        1, token));
+    const auto result = sitos::fence_test_access::FenceTestAccess::FindAckResult(*node, token);
+    ASSERT_TRUE(result.has_value());
+    ExpectRemoteFence(*result, expected, sitos::AckDurability::Synced, 1,
+                      sitos::kAckNoFailedSequence);
+  }
+}
+
+TEST(FenceStorageNodeTest, UnsupportedSyncedFenceDoesNotInvokeSync) {
+  auto transport = sitos::fence_test::MakeTransport();
+  auto sync_calls = std::make_shared<std::size_t>(0);
+  auto node = sitos::fence_test::StartNode(transport, [sync_calls](std::string_view) {
+    return sitos::Result<std::unique_ptr<sitos::StorageEngine>>::Ok(
+        std::make_unique<UnsupportedSyncEngine>(sync_calls));
+  });
+  ASSERT_NE(node, nullptr);
+  ASSERT_TRUE(
+      node->CreateSession(sitos::fence_test::kSid, sitos::fence_test::DurableSessionOptions())
+          .IsOk());
+  ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::SetSessionGeneration(
+      *node, sitos::fence_test::kSid, sitos::fence_test::kSessionGeneration));
+
+  transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeCoveredBufferPut(
+      "sitos/buffers/s1/durable/unsupported-sync", sitos::fence_test::kPublisherA, 1));
+  const auto token = sitos::fence_test::Token(std::byte{0x7b});
+  transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeBufferMarker(
+      "sitos", sitos::fence_test::kSid, sitos::fence_test::kSessionGeneration,
+      sitos::BufferClass::Durable, sitos::fence_test::kPublisherA, sitos::AckDurability::Synced, 1,
+      token));
+  const auto result = sitos::fence_test_access::FenceTestAccess::FindAckResult(*node, token);
+  ASSERT_TRUE(result.has_value());
+  ExpectRemoteFence(*result, sitos::Status::InvalidArgument, sitos::AckDurability::Synced, 1,
+                    sitos::kAckNoFailedSequence);
+  EXPECT_EQ(*sync_calls, 0U);
 }
 
 TEST(FenceStorageNodeTest, DispatchesFenceAndBindsTheSessionGeneration) {
@@ -467,8 +604,8 @@ TEST(FenceStorageNodeTest, DispatchesFenceAndBindsTheSessionGeneration) {
   auto engine_mode = std::make_shared<BufferEngineMode>(BufferEngineMode::Healthy);
   auto put_calls = std::make_shared<std::size_t>(0);
   auto failing_transport = sitos::fence_test::MakeTransport();
-  auto failing_node = sitos::fence_test::StartNode(
-      failing_transport, [engine_mode, put_calls](std::string_view) {
+  auto failing_node =
+      sitos::fence_test::StartNode(failing_transport, [engine_mode, put_calls](std::string_view) {
         return sitos::Result<std::unique_ptr<sitos::StorageEngine>>::Ok(
             std::make_unique<ControlledBufferEngine>(engine_mode, put_calls));
       });

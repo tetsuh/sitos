@@ -118,9 +118,9 @@ Result<BufferPublisher> BufferPublisher::OpenWithTransport(std::shared_ptr<Trans
   binding.receiver_generation = generation.Value();
   binding.buffer_class = buffer_class;
   binding.durability = AckDurability::Applied;
-  binding.allow_synced = true;
   auto internal = std::make_unique<fence_internal::FencePublisher>(
       *transport, fence_internal::GenerateFenceUuid(), std::move(binding));
+  internal->AllowSynced();
   return Result<BufferPublisher>::Ok(BufferPublisher(std::make_unique<BufferPublisher::Impl>(
       BufferPublisher::Impl{std::move(transport), std::move(internal), std::string(config.prefix),
                             std::string(sid), buffer_class})));
@@ -171,6 +171,11 @@ Result<FenceReceipt> BufferPublisher::Fence(FenceDurability durability,
                                                                          : AckDurability::Applied);
   auto handle = impl_->publisher->BeginFence(timeout);
   if (!handle.IsOk()) return Result<FenceReceipt>::ErrFrom(handle);
+  if (handle.Value().submission_diagnostic.has_value()) {
+    const auto error = *handle.Value().submission_diagnostic;
+    impl_->publisher->Close();
+    return Result<FenceReceipt>::Err(error.status, error.message, error.cause);
+  }
   auto result = impl_->publisher->Wait(handle.Value());
   if (!result.IsOk()) {
     impl_->publisher->Close();

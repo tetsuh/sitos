@@ -1065,17 +1065,28 @@ void StorageNode::ApplyBufferFenceMarker(const std::shared_ptr<State>& state,
           std::scoped_lock lock(state->fence_test_mutex);
           barrier = state->fence_test_durability_barrier;
         }
-        if (!barrier || !record->durable_buffers) {
+        if (!record->durable_buffers) {
+          result.status = Status::InvalidArgument;
+        } else if (!barrier && record->durable_buffers->GetSyncCapability() !=
+                                   SyncCapability::kPowerLossDurable) {
           result.status = Status::InvalidArgument;
         } else if (route.through_sequence > 0) {
-          {
-            std::scoped_lock lock(state->fence_test_mutex);
-            ++state->fence_test_barrier_calls;
-          }
           try {
-            const auto synchronized = barrier(*record->durable_buffers);
+            Result<void> synchronized = Result<void>::Err(Status::InvalidArgument);
+            if (barrier) {
+              {
+                std::scoped_lock lock(state->fence_test_mutex);
+                ++state->fence_test_barrier_calls;
+              }
+              synchronized = barrier(*record->durable_buffers);
+            } else if (record->durable_buffers->GetSyncCapability() ==
+                       SyncCapability::kPowerLossDurable) {
+              synchronized = record->durable_buffers->Sync();
+            }
             if (!synchronized.IsOk()) {
               result.status = synchronized.StatusCode();
+              result.message =
+                  std::string(synchronized.Message()).substr(0, kAckResultMaxMessageLength);
               if (!ValidateAckResult(result).IsOk()) result.status = Status::Error;
             }
           } catch (...) {

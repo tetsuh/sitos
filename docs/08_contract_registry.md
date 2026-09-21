@@ -51,7 +51,8 @@ open decision (`—` when settled); implementers and consumers are listed separa
 | Payload v1 (single value: type tag + LE body, canonical NaN; golden fixtures `tests/fixtures/payload_v1/`) | Normative | Implemented | [03](03_wire_protocol.md) §2.1 | — | `ParamValue` codec |
 | zenoh Encoding identifiers and normalization (`kSitosV1`, `kSitosV1Batch`, legacy spelling, absent/unknown fallback) | Normative | Implemented | [03](03_wire_protocol.md) §2.2 | — | `include/sitos/transport.hpp` |
 | Batch v1 (`:batch` multi-entry payload) | Normative | Implemented | [03](03_wire_protocol.md) §5 | — | batch codec |
-| `meta/session/<sid>` reply (session metadata JSON, including `generation_uuid`) | Normative | Implemented | [03](03_wire_protocol.md) §7.1; ADR-0035 | — | StorageNode meta route; #107 discovery |
+| `meta/session/<sid>` reply (existing session metadata JSON) | Normative | Implemented | [03](03_wire_protocol.md) §7.1 | — | StorageNode meta route |
+| `meta/session/<sid>.generation_uuid` field (active Session incarnation UUIDv4 text) | Planned | Implemented | [ADR-0035](adr/0035-buffer-publisher-fences.md) | ADR-0035 | StorageNode metadata; #107 discovery |
 | `meta/ack/<uuid>` **route behavior** (token lifecycle, AckResult payload, query semantics) | Normative | Implemented | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | #14, #17; Fence reuse by #158, #107 |
 | `AckAttachmentV1` (17-byte acknowledged-operation UUIDv4 attachment) | Normative | Implemented | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | #14, #17; Fence reuse by #158, #107 |
 | Acknowledgement result Encoding (`sitos.v1.ack`, canonical `zenoh/bytes;sitos.v1.ack`) | Normative | Implemented | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | #14, #17; Fence reuse by #158, #107 |

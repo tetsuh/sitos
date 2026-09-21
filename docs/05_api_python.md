@@ -93,8 +93,8 @@ Subscriptions remain outside Issue #23. Issue #17 maps acknowledged remote statu
 
 `BufferPublisher` mirrors the C++ explicit byte-publication API. Construction binds one active
 Session generation by querying `meta/session/<sid>` with the configured query timeout; a missing
-reply raises `NotFoundError`, while malformed metadata raises `TypeMismatchError`. `push` accepts
-`bytes` and supported contiguous, fixed-width NumPy arrays, copying the value before returning.
+reply raises `NotFoundError`, while malformed metadata raises `TypeMismatchError`. `push` accepts `bytes`, supported contiguous fixed-width NumPy arrays, and contiguous
+buffer-protocol objects, copying the value before returning; non-contiguous arrays are rejected.
 `fence` takes `FenceDurability.APPLIED` or `.SYNCED` and a positive timeout in seconds, returning a
 `FenceReceipt` with `through_publish_sequence` and `durability`. Synced fences are invalid for an
 ephemeral publisher. A non-OK fence after marker submission disconnects the publisher. See

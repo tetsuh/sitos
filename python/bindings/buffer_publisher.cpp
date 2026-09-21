@@ -1,6 +1,12 @@
 // Copyright 2026 sitos contributors
 // SPDX-License-Identifier: Apache-2.0
 
+#include <Python.h>
+
+#define SITOS_NUMPY_IMPORT
+#include "numpy_api.hpp"
+#undef SITOS_NUMPY_IMPORT
+
 #include "sitos/buffer_publisher.hpp"
 
 #include <nanobind/nanobind.h>
@@ -38,15 +44,28 @@ class PyBufferPublisher {
   }
 
   void Push(const std::string& key, const nb::handle& value) {
-    auto converted = ParamValueFromPython(value);
-    if (converted.type() != ValueType::Bytes) {
-      throw nb::type_error("push accepts bytes or supported contiguous numpy arrays");
+    std::vector<std::byte> owned;
+    if (PyArray_Check(value.ptr()) || nb::isinstance<nb::bytes>(value)) {
+      auto converted = ParamValueFromPython(value);
+      if (converted.type() != ValueType::Bytes) {
+        throw nb::type_error("push accepts bytes or supported contiguous arrays");
+      }
+      const auto bytes = converted.As<std::vector<std::byte>>();
+      if (!bytes.has_value()) throw nb::type_error("push value is not bytes");
+      owned = std::move(*bytes);
+    } else {
+      Py_buffer view{};
+      if (PyObject_GetBuffer(value.ptr(), &view, PyBUF_CONTIG_RO) != 0) {
+        PyErr_Clear();
+        throw nb::type_error("push accepts bytes or a contiguous buffer-protocol object");
+      }
+      const auto* data = static_cast<const std::byte*>(view.buf);
+      owned.assign(data, data + view.len);
+      PyBuffer_Release(&view);
     }
-    const auto bytes = converted.As<std::vector<std::byte>>();
-    if (!bytes.has_value()) throw nb::type_error("push value is not bytes");
     auto result = [&] {
       nb::gil_scoped_release release;
-      return native_->Push(key, *bytes);
+      return native_->Push(key, owned);
     }();
     Take(std::move(result));
   }
