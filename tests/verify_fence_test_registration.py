@@ -21,6 +21,7 @@ ZENOH_OFF_TESTS = (
     "FenceStorageNodeTest.DispatchesFenceAndBindsTheSessionGeneration",
     "FenceStorageNodeTest.ProductionSyncedFenceInvokesDurableEngineSync",
     "FenceStorageNodeTest.ProductionSyncedFenceMapsSyncFailureAndThrow",
+    "FenceStorageNodeTest.SyncFailureMessageRemainsEncodableAtUtf8Boundary",
     "FenceStorageNodeTest.UnsupportedSyncedFenceDoesNotInvokeSync",
     "FenceCollisionTest.PinsDocumentedUuidAndTokenResidualBoundaries",
     "FenceLifecycleTest.QuiescesCallbacksAndPreventsPostReturnAccess",

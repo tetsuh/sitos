@@ -1087,7 +1087,10 @@ void StorageNode::ApplyBufferFenceMarker(const std::shared_ptr<State>& state,
               result.status = synchronized.StatusCode();
               result.message =
                   std::string(synchronized.Message()).substr(0, kAckResultMaxMessageLength);
-              if (!ValidateAckResult(result).IsOk()) result.status = Status::Error;
+              if (!ValidateAckResult(result).IsOk()) {
+                result.status = Status::Error;
+                result.message = "durability synchronization failed";
+              }
             }
           } catch (...) {
             result.status = Status::OutcomeUnknown;

@@ -42,6 +42,7 @@ int main(int argc, char** argv) {
                std::move(opened).Value());
          }
 #else
+         static_cast<void>(root);
          static_cast<void>(sid_value);
 #endif
          return sitos::Result<std::unique_ptr<sitos::StorageEngine>>::Ok(

@@ -176,6 +176,9 @@ if(SITOS_BUILD_PYTHON)
     SITOS_PYTHON_VERSION="${PROJECT_VERSION}"
     SITOS_PYTHON_WITH_ZENOH=$<BOOL:${SITOS_WITH_ZENOH}>
     SITOS_PYTHON_TEST_SUPPORT=$<BOOL:${SITOS_PYTHON_TEST_SUPPORT}>)
+  if(SITOS_WITH_ZENOH)
+    sitos_copy_zenohc(_sitos)
+  endif()
   if(MSVC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
     # The local Python 3.14 headers expose debug refcount macros under MSVC
     # Debug builds, while the installed interpreter exports the release ABI.

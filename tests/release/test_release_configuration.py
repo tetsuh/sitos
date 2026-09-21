@@ -405,10 +405,34 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         self.assertIn("- Source: https://github.com/pytest-dev/pytest", record)
         self.assertIn("- License: MIT", record)
 
+    def test_linux_wheel_rocky_validation_keeps_nested_filter_in_script(self) -> None:
+        workflow = read(WHEELS)
+        linux_job = yaml_block(workflow, "linux", 2)
+        run = yaml_named_run(
+            linux_job,
+            "Validate contents, native dependencies, and clean installation",
+        )
+        run_lines = run.splitlines()
+        docker_start = next(
+            index for index, line in enumerate(run_lines) if "rockylinux/rockylinux@" in line
+        )
+        docker_command = "\n".join(run_lines[docker_start : docker_start + 2])
+        self.assertIn("bash -ceu '", docker_command)
+        self.assertIn(r'-k \"enum_surface or missing_session\" -q;', docker_command)
+        self.assertNotIn("-k 'enum_surface or missing_session'", docker_command)
+        self.assertIn("test_storage_node_live.py -q'", docker_command)
+        self.assertLess(
+            docker_command.index(r'-k \"enum_surface or missing_session\" -q;'),
+            docker_command.index("test_storage_node_live.py -q'"),
+        )
+
     def test_buffer_publisher_binding_uses_nanobind_python_boundary(self) -> None:
         source = read(ROOT / "python" / "bindings" / "buffer_publisher.cpp")
         self.assertIn("#include <nanobind/nb_python.h>", source)
-        self.assertNotIn("#include <Python.h>", source)
+        self.assertNotRegex(
+            source,
+            r"(?m)^\s*#\s*include\s*[<\"]Python\.h[>\"]",
+        )
 
     def test_shared_version_and_release_please_config(self) -> None:
         for path in (RELEASE_CONFIG, RELEASE_MANIFEST):
