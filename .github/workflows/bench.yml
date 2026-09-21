@@ -47,7 +47,7 @@ jobs:
           echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
           "$RUNNER_TEMP/vcpkg/vcpkg" install --feature-flags=manifests --x-feature=rocksdb --x-manifest-root="$GITHUB_WORKSPACE" --triplet=x64-linux
       - name: Run report contract tests
-        run: python3 -m pytest -q tests/bench/test_benchmark_report.py
+        run: python3 -m pytest -q tests/bench/test_benchmark_report.py tests/bench/test_buffer_publisher_benchmark_report.py
       - name: Configure N01 Release tree
         run: |
           cmake -S . -B build/bench-n01 -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -63,7 +63,11 @@ jobs:
             --benchmark_repetitions=5 --benchmark_min_time=1s --benchmark_report_aggregates_only=true \
             --benchmark_format=json > artifacts/n01_google_benchmark.json
           build/bench-n01/tests/bench/sitos_buffer_publisher_bench \
-            --benchmark_min_time=1s --benchmark_format=json > artifacts/n107_buffer_publisher_benchmark.json
+            --benchmark_repetitions=5 --benchmark_min_time=1s --benchmark_format=json > artifacts/n107_buffer_publisher_benchmark.json
+          python3 scripts/buffer_publisher_benchmark_report.py \
+            --input artifacts/n107_buffer_publisher_benchmark.json \
+            --output artifacts/n107_buffer_publisher_report.json \
+            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
       - name: Configure N02/N08/N09 Release tree
         run: |
           cmake -S . -B build/bench-live -G Ninja -DCMAKE_BUILD_TYPE=Release \

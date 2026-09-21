@@ -16,6 +16,53 @@ namespace sitos {
 
 namespace {
 
+std::string SanitizeFenceDiagnostic(std::string_view input) {
+  std::string output;
+  output.reserve(input.size() < kAckResultMaxMessageLength ? input.size()
+                                                           : kAckResultMaxMessageLength);
+  std::size_t index = 0;
+  while (index < input.size() && output.size() < kAckResultMaxMessageLength) {
+    const auto first = static_cast<unsigned char>(input[index]);
+    std::size_t width = 1;
+    if (first >= 0xC2 && first <= 0xDF) {
+      width = 2;
+    } else if (first >= 0xE0 && first <= 0xEF) {
+      width = 3;
+    } else if (first >= 0xF0 && first <= 0xF4) {
+      width = 4;
+    } else if ((first >= 0x20 && first <= 0x7E) || first == '\t' || first == '\n' ||
+               first == '\r') {
+      output.push_back(static_cast<char>(first));
+      ++index;
+      continue;
+    } else {
+      output.push_back('?');
+      ++index;
+      continue;
+    }
+    bool valid = index + width <= input.size();
+    for (std::size_t offset = 1; valid && offset < width; ++offset) {
+      valid = (static_cast<unsigned char>(input[index + offset]) & 0xC0) == 0x80;
+    }
+    if (valid && width == 3) {
+      const auto second = static_cast<unsigned char>(input[index + 1]);
+      valid = !(first == 0xE0 && second < 0xA0) && !(first == 0xED && second >= 0xA0);
+    }
+    if (valid && width == 4) {
+      const auto second = static_cast<unsigned char>(input[index + 1]);
+      valid = !(first == 0xF0 && second < 0x90) && !(first == 0xF4 && second >= 0x90);
+    }
+    if (!valid || output.size() + width > kAckResultMaxMessageLength) {
+      output.push_back('?');
+      ++index;
+      continue;
+    }
+    output.append(input, index, width);
+    index += width;
+  }
+  return output;
+}
+
 // Same saturation rule as the #169 acknowledgement helper: a positive deadline that
 // exceeds the remaining steady_clock range clamps to time_point::max() instead of
 // wrapping into the past and producing a false timeout. The rule is duplicated rather
@@ -819,7 +866,7 @@ Result<void> fence_internal::FencePublisher::SubmitData(std::string_view key,
     may_have_submitted_ = true;
     if (!first_submission_error_.has_value()) {
       first_submission_error_ =
-          ErrorInfo{result.StatusCode(), std::string(result.Message()), result.Error()};
+          ErrorInfo{result.StatusCode(), SanitizeFenceDiagnostic(result.Message()), result.Error()};
     }
   }
   if (!CheckGeneration()) {
@@ -921,7 +968,7 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
                                       std::move(options));
   if (!result.IsOk()) {
     may_have_submitted_ = true;
-    const ErrorInfo marker_error{result.StatusCode(), std::string(result.Message()),
+    const ErrorInfo marker_error{result.StatusCode(), SanitizeFenceDiagnostic(result.Message()),
                                  result.Error()};
     handle.submission_diagnostic = marker_error;
     if (!first_submission_error_.has_value()) first_submission_error_ = marker_error;

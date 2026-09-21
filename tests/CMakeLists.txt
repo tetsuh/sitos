@@ -12,6 +12,16 @@ FetchContent_MakeAvailable(googletest)
 
 include(GoogleTest)
 
+if(TARGET _sitos)
+  find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+  add_test(
+    NAME PythonBindingImportTest
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/import_extension.py"
+            "$<TARGET_FILE_DIR:_sitos>")
+  set_tests_properties(PythonBindingImportTest PROPERTIES
+    ENVIRONMENT "PYTHONPATH=$<TARGET_FILE_DIR:_sitos>")
+endif()
+
 set(SITOS_FIXTURE_DIR "${CMAKE_SOURCE_DIR}/tests/fixtures/payload_v1")
 
 # Issue #158 fixed-name Zenoh-OFF Fence tests. Keep these as ordinary TEST/TEST_F
@@ -480,6 +490,15 @@ if(SITOS_WITH_ZENOH)
   gtest_add_tests(
     TARGET sitos_buffer_publisher_zenoh_integration_test
     SOURCES integration/buffer_publisher_test.cpp)
+
+  add_executable(sitos_python_buffer_publisher_fixture
+    integration/python_buffer_publisher_fixture.cpp)
+  target_link_libraries(sitos_python_buffer_publisher_fixture PRIVATE sitos::sitos)
+  if(SITOS_WITH_ROCKSDB)
+    target_compile_definitions(sitos_python_buffer_publisher_fixture PRIVATE SITOS_WITH_ROCKSDB=1)
+  endif()
+  sitos_enable_warnings(sitos_python_buffer_publisher_fixture)
+  sitos_copy_zenohc(sitos_python_buffer_publisher_fixture)
 
   if(SITOS_WITH_ROCKSDB)
     add_executable(sitos_buffer_publisher_rocksdb_integration_test

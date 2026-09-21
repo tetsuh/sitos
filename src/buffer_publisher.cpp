@@ -70,7 +70,7 @@ Result<FenceUuid> DiscoverSessionGeneration(Transport& transport, const ClientCo
             json.substr(middle_position + middle.size(),
                         json.size() - suffix.size() - (middle_position + middle.size()));
         auto parsed = fence_internal::ParseFenceUuid(generation_text);
-        if (!parsed.has_value()) {
+        if (!parsed.has_value() || fence_internal::FormatFenceUuid(*parsed) != generation_text) {
           invalid_reply = true;
           return false;
         }
@@ -139,6 +139,9 @@ Result<BufferPublisher> BufferPublisher::Open(ClientConfig config, std::string_v
   if (config.zenoh_config_json.has_value()) json = *config.zenoh_config_json;
   auto transport = OpenZenohTransport(json);
   if (!transport.IsOk()) return Result<BufferPublisher>::ErrFrom(transport);
+  // The normal overload applies zenoh_config_json while opening the transport. The
+  // injected overload must reject that field, so clear it only after transport creation.
+  config.zenoh_config_json.reset();
   return OpenWithTransport(std::shared_ptr<Transport>(std::move(transport).Value()),
                            std::move(config), session_id, buffer_class);
 }

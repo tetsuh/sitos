@@ -115,6 +115,7 @@ string(CONCAT _combined_test_regex
   "StorageNodeBufferApiTest|StorageNodeBufferLifecycleTest|StorageNodeBufferRoutingTest|"
   "BufferLateJoinTest|RawZenohClientCanUseMixedSessionBuffers|"
   "RawZenohDurableLateJoinPreservesDistinctKeys|RawZenohBufferInteropFixtureBoundaries|"
+  "BufferPublisherZenohIntegrationTest|BufferPublisherRocksDbIntegrationTest|"
   "RocksDBBufferLifecycleTest|CppQuickstartRuns|SitobolonHelpDocumentsOptions|"
   "SitobolonRejectsInvalidArguments|SitobolonStartsAndStopsCleanly|"
   "SitobolonRocksDbReleasesPath")

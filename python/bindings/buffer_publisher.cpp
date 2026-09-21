@@ -7,8 +7,6 @@
 #include "numpy_api.hpp"
 #undef SITOS_NUMPY_IMPORT
 
-#include "sitos/buffer_publisher.hpp"
-
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/string.h>
 
@@ -20,13 +18,33 @@
 #include <string>
 
 #include "client_binding.hpp"
+#include "numpy_binding.hpp"
 #include "param_value_conversion.hpp"
+#include "sitos/buffer_publisher.hpp"
 
 namespace nb = nanobind;
 using namespace nb::literals;
 
 namespace sitos::python::detail {
 namespace {
+
+class ScopedPyBuffer {
+ public:
+  explicit ScopedPyBuffer(const nb::handle& value) {
+    acquired_ = PyObject_GetBuffer(value.ptr(), &view_, PyBUF_CONTIG_RO) == 0;
+  }
+  ~ScopedPyBuffer() {
+    if (acquired_) PyBuffer_Release(&view_);
+  }
+  ScopedPyBuffer(const ScopedPyBuffer&) = delete;
+  ScopedPyBuffer& operator=(const ScopedPyBuffer&) = delete;
+  bool acquired() const noexcept { return acquired_; }
+  const Py_buffer& view() const noexcept { return view_; }
+
+ private:
+  Py_buffer view_{};
+  bool acquired_ = false;
+};
 
 class PyBufferPublisher {
  public:
@@ -43,25 +61,35 @@ class PyBufferPublisher {
     native_ = std::make_shared<BufferPublisher>(Take(std::move(opened)));
   }
 
+  ~PyBufferPublisher() {
+    auto native = std::move(native_);
+    nb::gil_scoped_release release;
+    native.reset();
+  }
+
   void Push(const std::string& key, const nb::handle& value) {
     std::vector<std::byte> owned;
-    if (PyArray_Check(value.ptr()) || nb::isinstance<nb::bytes>(value)) {
-      auto converted = ParamValueFromPython(value);
+    if (PyArray_Check(value.ptr())) {
+      auto converted = ParamValueFromNumpy(value);
       if (converted.type() != ValueType::Bytes) {
         throw nb::type_error("push accepts bytes or supported contiguous arrays");
       }
       const auto bytes = converted.As<std::vector<std::byte>>();
       if (!bytes.has_value()) throw nb::type_error("push value is not bytes");
       owned = std::move(*bytes);
+    } else if (nb::isinstance<nb::bytes>(value)) {
+      auto converted = ParamValueFromPython(value);
+      const auto bytes = converted.As<std::vector<std::byte>>();
+      if (!bytes.has_value()) throw nb::type_error("push value is not bytes");
+      owned = std::move(*bytes);
     } else {
-      Py_buffer view{};
-      if (PyObject_GetBuffer(value.ptr(), &view, PyBUF_CONTIG_RO) != 0) {
+      ScopedPyBuffer view(value);
+      if (!view.acquired()) {
         PyErr_Clear();
         throw nb::type_error("push accepts bytes or a contiguous buffer-protocol object");
       }
-      const auto* data = static_cast<const std::byte*>(view.buf);
-      owned.assign(data, data + view.len);
-      PyBuffer_Release(&view);
+      const auto* data = static_cast<const std::byte*>(view.view().buf);
+      owned.assign(data, data + view.view().len);
     }
     auto result = [&] {
       nb::gil_scoped_release release;
@@ -95,8 +123,11 @@ class PyBufferPublisher {
 };
 
 }  // namespace
+}  // namespace sitos::python::detail
 
 void BindBufferPublisher(nb::module_& module) {
+  using namespace sitos;
+  using namespace sitos::python::detail;
   nb::enum_<BufferClass>(module, "BufferClass")
       .value("DURABLE", BufferClass::Durable)
       .value("EPHEMERAL", BufferClass::Ephemeral);

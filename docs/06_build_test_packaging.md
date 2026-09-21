@@ -320,7 +320,9 @@ Issues #158 and #99 fix these exact Fence acceptance names:
 
 Issue #107 adds deterministic `BufferPublisherApiTest.*` API/discovery/failure coverage and
 `FenceStorageNodeTest.ProductionSyncedFence*` production barrier coverage; the Zenoh integration
-lane covers applied fences and the Zenoh+RocksDB lane covers synced fences plus close/reopen.
+lane covers applied fences and same-SID generation replacement, while the Zenoh+RocksDB lane
+covers synced fences plus close/reopen. The Python lane launches the built StorageNode fixture,
+and the N107 benchmark report records all four rate/payload workloads with provenance.
 
 `tests/verify_fence_test_registration.py` parses `ctest --show-only=json-v1` and must pass for
 `zenoh-off`, `sanitizer`, or `zenoh-on` before filtered execution; CTest's zero-match success is not
