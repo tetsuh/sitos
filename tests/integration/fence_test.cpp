@@ -10,11 +10,20 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <string>
+#include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 #include "ack_client.hpp"
 #include "fence_internal.hpp"
@@ -22,6 +31,7 @@
 #include "sitos/ack.hpp"
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/param_cache.hpp"
+#include "sitos/param_value.hpp"
 #include "sitos/storage_node.hpp"
 #include "sitos/transport.hpp"
 #include "storage_node_test_access.hpp"
@@ -76,7 +86,67 @@ struct OwnedObservation {
   sitos::FenceLaneObservation lane;
 };
 
+// Separates this process's Zenoh routes from any other process running these tests on
+// the same host. The fence generation alone cannot do that: every freshly opened session
+// reports generation 1, so two concurrent runs build the same prefix, subscribe to each
+// other's writes, and collide on the shared lane. The process id distinguishes live
+// processes and the random draw distinguishes a reused id, both from the standard
+// library so the tests stay runnable from a plain developer shell.
+const std::string& RunUniquePrefixSuffix() {
+  static const std::string suffix = [] {
+#if defined(_WIN32)
+    const auto process_id = _getpid();
+#else
+    const auto process_id = getpid();
+#endif
+    std::random_device device;
+    const auto draw = (static_cast<std::uint64_t>(device()) << 32) | device();
+    return std::to_string(process_id) + "_" + std::to_string(draw);
+  }();
+  return suffix;
+}
+
+// A subscriber that lives on a session opened a moment ago is matched to a publishing
+// session asynchronously, and a publication issued before that completes is not delivered
+// at all. Zenoh offers no matching signal on the ad-hoc Put path this library uses, so a
+// test that is about to assert on a cross-session delivery must first prove the path is
+// live: keep publishing a probe until the far side observes one, within a bounded budget.
+// Returns false when a publish fails or the budget expires without an observation.
+using ClockNow = std::function<std::chrono::steady_clock::time_point()>;
+
+bool PublishUntilObserved(const std::function<bool(std::int64_t)>& publish,
+                          const std::function<bool()>& observed,
+                          ClockNow now = [] { return std::chrono::steady_clock::now(); }) {
+  const auto budget = now() + 10s;
+  std::int64_t probe_value = 0;
+  while (now() < budget) {
+    if (!publish(++probe_value)) return false;
+    // Each poll window is clamped to the budget so an observation is only ever reported
+    // from inside it; after expiry the answer is false even if a late callback lands.
+    const auto poll_until = std::min(now() + 200ms, budget);
+    while (now() < poll_until) {
+      if (observed()) return now() < budget;
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  return false;
+}
+
 TEST(FenceZenohIntegrationTest, QualifiesTopologiesQosAndControlIsolation) {
+  auto fake_now = std::chrono::steady_clock::time_point{};
+  std::size_t publish_calls = 0;
+  EXPECT_FALSE(PublishUntilObserved(
+      [&](std::int64_t) {
+        ++publish_calls;
+        return true;
+      },
+      [&] {
+        fake_now = std::chrono::steady_clock::time_point{} + 11s;
+        return true;
+      },
+      [&] { return fake_now; }));
+  EXPECT_EQ(publish_calls, 1U);
+
   auto opened = sitos::OpenZenohTransport();
   ASSERT_TRUE(opened.IsOk());
   std::shared_ptr<sitos::Transport> transport(std::move(opened).Value());
@@ -84,8 +154,9 @@ TEST(FenceZenohIntegrationTest, QualifiesTopologiesQosAndControlIsolation) {
   ASSERT_NE(transport->FenceGeneration(), 0U);
   EXPECT_TRUE(sitos::transport_test_access::UsesFencePutProfile());
 
-  const std::string prefix =
-      "sitos/fence_integration_" + std::to_string(transport->FenceGeneration());
+  const std::string prefix = "sitos/fence_integration_" +
+                             std::to_string(transport->FenceGeneration()) + "_" +
+                             RunUniquePrefixSuffix();
   std::mutex mutex;
   std::condition_variable condition;
   std::vector<OwnedObservation> observations;
@@ -204,6 +275,20 @@ TEST(FenceZenohIntegrationTest, QualifiesTopologiesQosAndControlIsolation) {
   auto remote_opened = sitos::OpenZenohTransport();
   ASSERT_TRUE(remote_opened.IsOk());
   std::shared_ptr<sitos::Transport> remote(std::move(remote_opened).Value());
+  // Both cache subscribers were declared before `remote` opened, so one observed data
+  // probe shows `remote` has learned this session's declarations.
+  ASSERT_TRUE(PublishUntilObserved(
+      [&](std::int64_t value) {
+        return remote
+            ->Put(node_prefix + "/session/s1/probe", sitos::ParamValue(value).Encode(),
+                  sitos::Encoding{std::string(sitos::Encoding::kSitosV1)}, sitos::PutOptions{})
+            .IsOk();
+      },
+      [&] {
+        const auto contains = cache.Contains("probe");
+        return contains.IsOk() && contains.Value();
+      }))
+      << "the remote session never matched this session's cache subscribers";
   std::string uppercase_receiver = sitos::fence_internal::FormatFenceUuid(kPublisherB);
   std::transform(
       uppercase_receiver.begin(), uppercase_receiver.end(), uppercase_receiver.begin(),
@@ -324,7 +409,8 @@ TEST(FenceZenohIntegrationTest, QualifiesPublicParamCacheLocalDelivery) {
   ASSERT_NE(transport_generation, 0U);
 
   // A non-default, per-session prefix must govern the marker route and the wait (X03).
-  const std::string prefix = "sitos/fence_public_wait_" + std::to_string(transport_generation);
+  const std::string prefix = "sitos/fence_public_wait_" + std::to_string(transport_generation) +
+                             "_" + RunUniquePrefixSuffix();
   sitos::StorageNode node(*transport);
   ASSERT_TRUE(node.Start(std::make_shared<sitos::InMemoryEngine>(),
                          sitos::StorageNodeConfig{.prefix = prefix, .log_sink = nullptr})
@@ -366,6 +452,13 @@ TEST(FenceZenohIntegrationTest, QualifiesPublicParamCacheLocalDelivery) {
   ASSERT_TRUE(peer_opened.IsOk());
   auto peer = std::move(peer_opened).Value();
   ASSERT_TRUE(peer.Attach("s1").IsOk());
+  ASSERT_TRUE(PublishUntilObserved(
+      [&](std::int64_t value) { return cache.Put("peer-probe", value).IsOk(); },
+      [&] {
+        const auto contains = peer.Contains("peer-probe");
+        return contains.IsOk() && contains.Value();
+      }))
+      << "the initiating session never matched the peer's subscriber";
   ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::GateCacheCallback(peer));
   const auto peer_write = cache.Put("peer-independent", std::int64_t{9});
   if (!peer_write.IsOk()) {
