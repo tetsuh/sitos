@@ -77,6 +77,12 @@ def test_buffer_publisher_runtime_bytes_numpy_buffer_and_lifetime(publisher_fixt
     ephemeral = sitos.BufferPublisher(sid, sitos.BufferClass.EPHEMERAL, prefix=prefix)
     with pytest.raises(ValueError):
         ephemeral.fence(sitos.FenceDurability.SYNCED, timeout=2.0)
+    tiny_timeout = ephemeral
+    try:
+        tiny_receipt = tiny_timeout.fence(sitos.FenceDurability.APPLIED, timeout=0.0001)
+        assert tiny_receipt.durability is sitos.FenceDurability.APPLIED
+    except sitos.TimeoutError:
+        pass
     if os.environ.get("SITOS_PYTHON_PUBLISHER_ROCKSDB") == "1":
         synced = publisher.fence(sitos.FenceDurability.SYNCED, timeout=2.0)
         assert synced.durability is sitos.FenceDurability.SYNCED
@@ -90,6 +96,7 @@ def test_buffer_publisher_runtime_bytes_numpy_buffer_and_lifetime(publisher_fixt
         publisher.push("str", "unsupported")
     with pytest.raises(ValueError):
         publisher.push("noncontiguous", source[::2])
+
 
 
 def test_buffer_publisher_recreate_old_fence_timeout_then_disconnects(publisher_fixture) -> None:
