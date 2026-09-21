@@ -89,7 +89,24 @@ idempotent, rejects later calls, and allows already-admitted native operations t
 Subscriptions remain outside Issue #23. Issue #17 maps acknowledged remote statuses, including
 `OutcomeUnknownError`, and releases the GIL around the complete synchronous write and ACK polling.
 
-### 2.2 ParamCache
+### 2.2 BufferPublisher
+
+`BufferPublisher` mirrors the C++ explicit byte-publication API. Construction binds one active
+Session generation by querying `meta/session/<sid>` with the configured query timeout; a missing
+reply raises `NotFoundError`, while malformed metadata raises `TypeMismatchError`. `push` accepts
+`bytes` and supported contiguous, fixed-width NumPy arrays, copying the value before returning.
+`fence` takes `FenceDurability.APPLIED` or `.SYNCED` and a positive timeout in seconds, returning a
+`FenceReceipt` with `through_publish_sequence` and `durability`. Synced fences are invalid for an
+ephemeral publisher. A non-OK fence after marker submission disconnects the publisher. See
+ADR-0035.
+
+```python
+publisher = sitos.BufferPublisher("sid", sitos.BufferClass.DURABLE)
+publisher.push("images/0001", b"owned bytes")
+receipt = publisher.fence(sitos.FenceDurability.SYNCED, timeout=2.0)
+```
+
+### 2.3 ParamCache
 
 Issue #24 provides a non-callback, session-only Python facade over C++ ParamCache under ADR-0022 and
 ADR-0023. Each instance opens and owns its Transport/session from `zenoh_config_json`; it has no

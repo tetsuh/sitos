@@ -416,7 +416,7 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 
 ### #107 BufferPublisher applied and synchronized fences
 * Milestone: v0.5
-* References: ADR-0029, ADR-0032, [02] §4.3, [04]
+* References: ADR-0029, ADR-0032, ADR-0035, [02] §4.3, [03] §7.1, [04], [05]
 * Implementation targets: C++ and Python BufferPublisher APIs plus deterministic/integration tests
   over `buffers/<sid>/{durable|ephemeral}/**`
 * Scope: explicit application-controlled `Push` plus applied or synchronized `Fence`; no automatic

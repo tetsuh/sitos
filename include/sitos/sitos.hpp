@@ -6,6 +6,7 @@
 
 #include "sitos/ack.hpp"
 #include "sitos/batch.hpp"
+#include "sitos/buffer_publisher.hpp"
 #include "sitos/client_config.hpp"
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/key.hpp"

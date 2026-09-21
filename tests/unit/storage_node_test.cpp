@@ -1285,6 +1285,7 @@ TEST(StorageNodeSessionTest, MetaSessionReflectsLifecycle) {
   ASSERT_TRUE(json.has_value());
   EXPECT_NE(json->find("\"state\":\"active\""), std::string::npos) << *json;
   EXPECT_NE(json->find("\"created_at\""), std::string::npos) << *json;
+  EXPECT_NE(json->find("\"generation_uuid\":\""), std::string::npos) << *json;
 
   ASSERT_TRUE(node.CloseSession("s1").IsOk());
   EXPECT_TRUE(transport.Invoke("sitos/meta/session/s1").empty());

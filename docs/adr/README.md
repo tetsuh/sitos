@@ -42,3 +42,4 @@ status so the offline documentation contract can detect index drift.
 | [0032](0032-mixed-session-buffer-routes.md) | Define mixed durable and ephemeral session buffer routes | Accepted |
 | [0033](0033-rocksdb-engine-snapshot-and-package-boundary.md) | Define the RocksDB engine, snapshot, and installed-package boundary | Accepted |
 | [0034](0034-storage-durability-barrier.md) | Define explicit storage durability barriers | Accepted |
+| [0035](0035-buffer-publisher-fences.md) | Define BufferPublisher fence discovery and public mapping | Proposed |

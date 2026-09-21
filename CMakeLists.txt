@@ -114,6 +114,7 @@ add_library(sitos STATIC
   src/ack_client.cpp
   src/ack_registry.cpp
   src/fence.cpp
+  src/buffer_publisher.cpp
   src/sha256.cpp
   src/key.cpp
   src/storage_engine.cpp
@@ -160,6 +161,7 @@ endif()
 
 if(SITOS_BUILD_PYTHON)
   nanobind_add_module(_sitos MODULE
+    python/bindings/buffer_publisher.cpp
     python/bindings/client_binding.cpp
     python/bindings/gil_boundary.cpp
     python/bindings/module.cpp
@@ -189,11 +191,13 @@ if(SITOS_BUILD_PYTHON)
   install(FILES
     python/sitos/__init__.py
     python/sitos/cache.py
+    python/sitos/publisher.py
     python/sitos/store.py
     python/sitos/node.py
     python/sitos/__init__.pyi
     python/sitos/_sitos.pyi
     python/sitos/cache.pyi
+    python/sitos/publisher.pyi
     python/sitos/store.pyi
     python/sitos/node.pyi
     python/sitos/py.typed

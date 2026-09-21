@@ -318,6 +318,10 @@ Issues #158 and #99 fix these exact Fence acceptance names:
 - `FenceZenohIntegrationTest.QualifiesTopologiesQosAndControlIsolation`
 - `FenceRawZenohInteropTest.QualifiesPayloadTransparencyAndControlIsolation`
 
+Issue #107 adds `BufferPublisherApiTest.DiscoversGenerationAndOwnsPushPayloadSubmission` and
+`BufferPublisherApiTest.ExposesFrozenApiAndDurabilityTypes` as deterministic API/discovery coverage;
+real Zenoh and RocksDB applied/synced coverage remains required in the integration lanes.
+
 `tests/verify_fence_test_registration.py` parses `ctest --show-only=json-v1` and must pass for
 `zenoh-off`, `sanitizer`, or `zenoh-on` before filtered execution; CTest's zero-match success is not
 qualification. The first thirteen names are Zenoh-independent. The final three are process-isolated,

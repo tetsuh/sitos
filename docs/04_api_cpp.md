@@ -379,6 +379,36 @@ contract in ADR-0032, not ParamStore or ParamCache APIs. The key API uses
 components or an undefined enum value. Existing non-buffer parsed keys leave `buffer_class`
 disengaged.
 
+## 4. BufferPublisher — explicit buffer publication fences
+
+```cpp
+enum class FenceDurability { kApplied, kSynced };
+struct FenceReceipt {
+  std::uint64_t through_publish_sequence;
+  FenceDurability durability;
+};
+
+class BufferPublisher {
+ public:
+  static Result<BufferPublisher> Open(ClientConfig config, std::string_view session_id,
+                                       BufferClass buffer_class);
+  static Result<BufferPublisher> Open(std::shared_ptr<Transport> transport, ClientConfig config,
+                                       std::string_view session_id, BufferClass buffer_class);
+  Result<void> Push(std::string_view key, std::span<const std::byte> value);
+  Result<FenceReceipt> Fence(FenceDurability durability,
+                             std::chrono::milliseconds timeout);
+};
+```
+
+`Open` validates the existing `ClientConfig`, queries exactly `meta/session/<sid>` with
+`query_timeout`, and immutably binds the returned `generation_uuid`. Zero replies are `NotFound`;
+wrong encoding, malformed payload/JSON, or an invalid or missing generation is `TypeMismatch`.
+`Push` owns no caller memory after return and submits opaque `zenoh/bytes` values explicitly.
+Applied fences are supported for both buffer classes; synced fences are locally
+`InvalidArgument` for ephemeral publishers and require the durable synchronization capability.
+A positive per-call timeout is required. A non-OK result after marker submission disconnects the
+publisher; definite local validation before marker submission does not. See ADR-0035.
+
 ## 4. ParamCache — Subscriber-Side Hot Path
 
 ```cpp

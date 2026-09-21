@@ -817,8 +817,10 @@ Result<void> fence_internal::FencePublisher::SubmitData(std::string_view key,
   auto result = transport_->Put(key, payload, std::move(encoding), std::move(options));
   if (!result.IsOk()) {
     may_have_submitted_ = true;
-    latest_submission_error_ =
-        ErrorInfo{result.StatusCode(), std::string(result.Message()), result.Error()};
+    if (!first_submission_error_.has_value()) {
+      first_submission_error_ =
+          ErrorInfo{result.StatusCode(), std::string(result.Message()), result.Error()};
+    }
   }
   if (!CheckGeneration()) {
     may_have_submitted_ = true;
@@ -870,7 +872,7 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
     return Result<FenceHandle>::Err(Status::InvalidArgument, "Transport does not support Fence");
   }
   if (binding_.target == FencePublisherTarget::Buffer &&
-      binding_.durability == AckDurability::Synced) {
+      binding_.durability == AckDurability::Synced && !binding_.allow_synced) {
     return Result<FenceHandle>::Err(Status::InvalidArgument,
                                     "synchronized Fence requires the #105 barrier");
   }
@@ -919,10 +921,12 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
                                       std::move(options));
   if (!result.IsOk()) {
     may_have_submitted_ = true;
-    latest_submission_error_ =
-        ErrorInfo{result.StatusCode(), std::string(result.Message()), result.Error()};
+    if (!first_submission_error_.has_value()) {
+      first_submission_error_ =
+          ErrorInfo{result.StatusCode(), std::string(result.Message()), result.Error()};
+    }
   }
-  handle.timeout_diagnostic = latest_submission_error_;
+  handle.timeout_diagnostic = first_submission_error_;
   if (!CheckGeneration()) {
     may_have_submitted_ = true;
     lane_lock.unlock();

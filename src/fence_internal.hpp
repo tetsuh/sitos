@@ -124,6 +124,7 @@ struct FencePublisherBinding {
   FenceUuid receiver_generation{};
   std::optional<BufferClass> buffer_class;
   AckDurability durability = AckDurability::Applied;
+  bool allow_synced = false;
 };
 
 struct FenceWaiterState {
@@ -318,6 +319,7 @@ class FencePublisher {
   [[nodiscard]] Result<AckResultV1> Wait(const FenceHandle& handle);
   bool Complete(const AckToken& token, AckResultV1 result);
   void Close();
+  void SetDurability(AckDurability durability) noexcept { binding_.durability = durability; }
 
   void SetLastSequenceForTesting(std::uint64_t sequence) noexcept;
   [[nodiscard]] std::uint64_t last_sequence() const noexcept;
@@ -363,7 +365,7 @@ class FencePublisher {
   std::uint64_t last_sequence_ = 0;
   bool exhausted_ = false;
   bool may_have_submitted_ = false;
-  std::optional<ErrorInfo> latest_submission_error_;
+  std::optional<ErrorInfo> first_submission_error_;
   std::atomic<bool> generation_mismatch_{false};
   bool disconnected_ = false;
   std::optional<FenceHandle> pending_;

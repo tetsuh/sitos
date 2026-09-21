@@ -396,8 +396,12 @@ For checking session existence and debugging. StorageNode creates it on CreateSe
 The value is JSON encoded as payload v1 STR:
 
 ```json
-{"state": "active", "created_at": "2026-07-07T01:23:45Z"}
+{"state": "active", "created_at": "2026-07-07T01:23:45Z", "generation_uuid": "6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab"}
 ```
+
+`generation_uuid` is the canonical lowercase UUIDv4 text for the active Session incarnation. It
+changes on same-SID recreation and is required for Issue #107 BufferPublisher discovery; malformed
+or missing values are a type mismatch to that client. See ADR-0035.
 
 Deleted by CloseSession.
 
