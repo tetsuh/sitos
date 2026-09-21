@@ -44,8 +44,11 @@ class PyBufferPublisher {
     }
     const auto bytes = converted.As<std::vector<std::byte>>();
     if (!bytes.has_value()) throw nb::type_error("push value is not bytes");
-    nb::gil_scoped_release release;
-    Take(native_->Push(key, *bytes));
+    auto result = [&] {
+      nb::gil_scoped_release release;
+      return native_->Push(key, *bytes);
+    }();
+    Take(std::move(result));
   }
 
   FenceReceipt Fence(FenceDurability durability, const nb::handle& timeout) {
@@ -60,9 +63,12 @@ class PyBufferPublisher {
     if (milliseconds > static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
       throw nb::value_error("timeout is outside the C++ duration range");
     }
-    nb::gil_scoped_release release;
-    return Take(native_->Fence(durability,
-                               std::chrono::milliseconds(static_cast<std::int64_t>(milliseconds))));
+    auto result = [&] {
+      nb::gil_scoped_release release;
+      return native_->Fence(durability,
+                            std::chrono::milliseconds(static_cast<std::int64_t>(milliseconds)));
+    }();
+    return Take(std::move(result));
   }
 
  private:
