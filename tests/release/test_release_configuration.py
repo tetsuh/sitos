@@ -418,11 +418,12 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         )
         docker_command = "\n".join(run_lines[docker_start : docker_start + 2])
         self.assertIn("bash -ceu '", docker_command)
-        self.assertIn(r'-k \"enum_surface or missing_session\" -q;', docker_command)
+        self.assertIn('-k "enum_surface or missing_session" -q;', docker_command)
         self.assertNotIn("-k 'enum_surface or missing_session'", docker_command)
+        self.assertNotIn(r'-k \"enum_surface or missing_session\" -q;', docker_command)
         self.assertIn("test_storage_node_live.py -q'", docker_command)
         self.assertLess(
-            docker_command.index(r'-k \"enum_surface or missing_session\" -q;'),
+            docker_command.index('-k "enum_surface or missing_session" -q;'),
             docker_command.index("test_storage_node_live.py -q'"),
         )
 
