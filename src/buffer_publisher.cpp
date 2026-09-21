@@ -80,9 +80,60 @@ class SessionMetadataParser {
   }
 
  private:
-  static bool IsHex(char value) {
-    return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f') ||
-           (value >= 'A' && value <= 'F');
+  static int HexValue(char value) {
+    if (value >= '0' && value <= '9') return value - '0';
+    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+    if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+    return -1;
+  }
+
+  bool ReadHex4(std::uint16_t* value) {
+    if (position_ + 4 > text_.size()) return false;
+    std::uint16_t result = 0;
+    for (std::size_t index = 0; index != 4; ++index) {
+      const auto digit = HexValue(text_[position_ + index]);
+      if (digit < 0) return false;
+      result = static_cast<std::uint16_t>((result << 4) | digit);
+    }
+    position_ += 4;
+    *value = result;
+    return true;
+  }
+
+  static void AppendCodePoint(std::string* output, std::uint32_t code_point) {
+    if (code_point <= 0x7F) {
+      output->push_back(static_cast<char>(code_point));
+    } else if (code_point <= 0x7FF) {
+      output->push_back(static_cast<char>(0xC0 | (code_point >> 6)));
+      output->push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+    } else if (code_point <= 0xFFFF) {
+      output->push_back(static_cast<char>(0xE0 | (code_point >> 12)));
+      output->push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
+      output->push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+    } else {
+      output->push_back(static_cast<char>(0xF0 | (code_point >> 18)));
+      output->push_back(static_cast<char>(0x80 | ((code_point >> 12) & 0x3F)));
+      output->push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
+      output->push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+    }
+  }
+
+  bool ParseUnicodeEscape(std::string* output) {
+    std::uint16_t first = 0;
+    if (!ReadHex4(&first)) return false;
+    if (first >= 0xDC00 && first <= 0xDFFF) return false;
+    std::uint32_t code_point = first;
+    if (first >= 0xD800 && first <= 0xDBFF) {
+      if (position_ + 2 > text_.size() || text_[position_] != '\\' || text_[position_ + 1] != 'u')
+        return false;
+      position_ += 2;
+      std::uint16_t second = 0;
+      if (!ReadHex4(&second) || second < 0xDC00 || second > 0xDFFF) return false;
+      code_point = 0x10000 + ((static_cast<std::uint32_t>(first) - 0xD800) << 10) +
+                   (static_cast<std::uint32_t>(second) - 0xDC00);
+    }
+    AppendCodePoint(output, code_point);
+    return true;
   }
 
   void SkipWhitespace() {
@@ -134,12 +185,7 @@ class SessionMetadataParser {
           output->push_back('\t');
           break;
         case 'u':
-          if (position_ + 4 > text_.size() || !IsHex(text_[position_]) ||
-              !IsHex(text_[position_ + 1]) || !IsHex(text_[position_ + 2]) ||
-              !IsHex(text_[position_ + 3]))
-            return false;
-          position_ += 4;
-          output->push_back('?');
+          if (!ParseUnicodeEscape(output)) return false;
           break;
         default:
           return false;
@@ -190,12 +236,42 @@ class SessionMetadataParser {
         return true;
       }
     }
-    const auto begin = position_;
-    while (position_ < text_.size() &&
-           std::string_view("-+0123456789.eE").find(text_[position_]) != std::string_view::npos) {
-      ++position_;
+    if (text_[position_] != '-' && (text_[position_] < '0' || text_[position_] > '9')) {
+      return false;
     }
-    return position_ > begin;
+    if (text_[position_] == '-') ++position_;
+    if (position_ >= text_.size()) return false;
+    if (text_[position_] == '0') {
+      ++position_;
+      if (position_ < text_.size() && text_[position_] >= '0' && text_[position_] <= '9') {
+        return false;
+      }
+    } else {
+      if (text_[position_] < '1' || text_[position_] > '9') return false;
+      while (position_ < text_.size() && text_[position_] >= '0' && text_[position_] <= '9') {
+        ++position_;
+      }
+    }
+    if (position_ < text_.size() && text_[position_] == '.') {
+      ++position_;
+      const auto fraction_begin = position_;
+      while (position_ < text_.size() && text_[position_] >= '0' && text_[position_] <= '9') {
+        ++position_;
+      }
+      if (position_ == fraction_begin) return false;
+    }
+    if (position_ < text_.size() && (text_[position_] == 'e' || text_[position_] == 'E')) {
+      ++position_;
+      if (position_ < text_.size() && (text_[position_] == '+' || text_[position_] == '-')) {
+        ++position_;
+      }
+      const auto exponent_begin = position_;
+      while (position_ < text_.size() && text_[position_] >= '0' && text_[position_] <= '9') {
+        ++position_;
+      }
+      if (position_ == exponent_begin) return false;
+    }
+    return true;
   }
 
   std::string_view text_;
@@ -333,17 +409,21 @@ Result<FenceReceipt> BufferPublisher::Fence(FenceDurability durability,
                                                                          : AckDurability::Applied);
   auto handle = impl_->publisher->BeginFence(timeout);
   if (!handle.IsOk()) return Result<FenceReceipt>::ErrFrom(handle);
-  if (handle.Value().submission_diagnostic.has_value()) {
-    const auto error = *handle.Value().submission_diagnostic;
-    impl_->publisher->Close();
-    return Result<FenceReceipt>::Err(error.status, error.message, error.cause);
-  }
   auto result = impl_->publisher->Wait(handle.Value());
   if (!result.IsOk()) {
     impl_->publisher->Close();
     return Result<FenceReceipt>::ErrFrom(result);
   }
   const auto& acknowledgement = result.Value();
+  const auto expected_durability =
+      durability == FenceDurability::kSynced ? AckDurability::Synced : AckDurability::Applied;
+  if (acknowledgement.operation_kind != AckOperationKind::Fence ||
+      acknowledgement.durability != expected_durability ||
+      acknowledgement.through_sequence != handle.Value().through_sequence) {
+    impl_->publisher->Close();
+    return Result<FenceReceipt>::Err(Status::TypeMismatch,
+                                     "Fence acknowledgement fingerprint mismatch");
+  }
   if (acknowledgement.status != Status::Ok) {
     impl_->publisher->Close();
     return Result<FenceReceipt>::Err(acknowledgement.status, acknowledgement.message);

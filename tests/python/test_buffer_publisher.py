@@ -47,13 +47,13 @@ def _read_fixture(process: subprocess.Popen[str], key: str) -> bytes:
     process.stdin.write(f"read {key}\n")
     process.stdin.flush()
     line = process.stdout.readline().strip()
-    assert line.startswith("VALUE "), line
-    return bytes.fromhex(line.removeprefix("VALUE "))
+    assert line == "VALUE" or line.startswith("VALUE "), line
+    return bytes.fromhex(line.removeprefix("VALUE").strip())
 
 
 def test_buffer_publisher_runtime_bytes_numpy_buffer_and_lifetime(publisher_fixture) -> None:
     prefix, sid, process = publisher_fixture
-    publisher = sitos.BufferPublisher(sid, sitos.BufferClass.EPHEMERAL, prefix=prefix)
+    publisher = sitos.BufferPublisher(sid, sitos.BufferClass.DURABLE, prefix=prefix)
     source = np.arange(8, dtype=np.int16)
     expected = source.tobytes()
     publisher.push("numpy", source)
@@ -67,13 +67,14 @@ def test_buffer_publisher_runtime_bytes_numpy_buffer_and_lifetime(publisher_fixt
     assert receipt.durability is sitos.FenceDurability.APPLIED
     assert receipt.through_publish_sequence == 4
     assert expected != source.tobytes()
-    assert _read_fixture(process, f"{prefix}/buffers/{sid}/ephemeral/numpy") == expected
-    assert _read_fixture(process, f"{prefix}/buffers/{sid}/ephemeral/bytes") == b"owned"
-    assert _read_fixture(process, f"{prefix}/buffers/{sid}/ephemeral/empty") == b""
-    assert _read_fixture(process, f"{prefix}/buffers/{sid}/ephemeral/buffer") == b"buffer"
+    assert _read_fixture(process, f"{prefix}/buffers/{sid}/durable/numpy") == expected
+    assert _read_fixture(process, f"{prefix}/buffers/{sid}/durable/bytes") == b"owned"
+    assert _read_fixture(process, f"{prefix}/buffers/{sid}/durable/empty") == b""
+    assert _read_fixture(process, f"{prefix}/buffers/{sid}/durable/buffer") == b"buffer"
 
+    ephemeral = sitos.BufferPublisher(sid, sitos.BufferClass.EPHEMERAL, prefix=prefix)
     with pytest.raises(ValueError):
-        publisher.fence(sitos.FenceDurability.SYNCED, timeout=2.0)
+        ephemeral.fence(sitos.FenceDurability.SYNCED, timeout=2.0)
     with pytest.raises(TypeError):
         publisher.push("str", "unsupported")
     with pytest.raises(ValueError):

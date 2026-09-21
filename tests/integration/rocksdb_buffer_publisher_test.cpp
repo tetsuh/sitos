@@ -53,7 +53,8 @@ TEST(BufferPublisherRocksDbIntegrationTest, SyncedFenceSurvivesCloseAndReopen) {
 
   auto publisher_transport_result = sitos::OpenZenohTransport();
   ASSERT_TRUE(publisher_transport_result.IsOk());
-  auto publisher_transport = std::move(publisher_transport_result).Value();
+  std::shared_ptr<sitos::Transport> publisher_transport(
+      std::move(publisher_transport_result).Value());
   sitos::ClientConfig config;
   config.prefix = prefix;
   config.query_timeout = std::chrono::seconds{5};
@@ -66,14 +67,16 @@ TEST(BufferPublisherRocksDbIntegrationTest, SyncedFenceSurvivesCloseAndReopen) {
   ASSERT_TRUE(publisher.Fence(sitos::FenceDurability::kSynced, std::chrono::seconds{5}).IsOk());
   ASSERT_TRUE(node.CloseSession("sid").IsOk());
 
-  auto first_persisted = sitos::RocksDBEngine::Open((root / "sid").string());
-  ASSERT_TRUE(first_persisted.IsOk());
   std::vector<std::byte> before_value;
-  ASSERT_TRUE(
-      std::move(first_persisted).Value()->Get("before", [&](std::string_view, sitos::Bytes bytes) {
-        before_value.assign(bytes.begin(), bytes.end());
-        return true;
-      }));
+  {
+    auto first_persisted = sitos::RocksDBEngine::Open((root / "sid").string());
+    ASSERT_TRUE(first_persisted.IsOk());
+    auto first_engine = std::move(first_persisted).Value();
+    ASSERT_TRUE(first_engine->Get("before", [&](std::string_view, sitos::Bytes bytes) {
+      before_value.assign(bytes.begin(), bytes.end());
+      return true;
+    }));
+  }
   EXPECT_EQ(before_value, (std::vector<std::byte>{std::byte{1}}));
   EXPECT_EQ(publisher.Push("closed", std::vector<std::byte>{std::byte{2}}).StatusCode(),
             sitos::Status::Disconnected);
@@ -87,13 +90,16 @@ TEST(BufferPublisherRocksDbIntegrationTest, SyncedFenceSurvivesCloseAndReopen) {
   ASSERT_TRUE(replacement.Fence(sitos::FenceDurability::kSynced, std::chrono::seconds{5}).IsOk());
   ASSERT_TRUE(node.CloseSession("sid").IsOk());
 
-  auto persisted = sitos::RocksDBEngine::Open((root / "sid").string());
-  ASSERT_TRUE(persisted.IsOk());
   std::vector<std::byte> value;
-  ASSERT_TRUE(std::move(persisted).Value()->Get("after", [&](std::string_view, sitos::Bytes bytes) {
-    value.assign(bytes.begin(), bytes.end());
-    return true;
-  }));
+  {
+    auto persisted = sitos::RocksDBEngine::Open((root / "sid").string());
+    ASSERT_TRUE(persisted.IsOk());
+    auto second_engine = std::move(persisted).Value();
+    ASSERT_TRUE(second_engine->Get("after", [&](std::string_view, sitos::Bytes bytes) {
+      value.assign(bytes.begin(), bytes.end());
+      return true;
+    }));
+  }
   EXPECT_EQ(value, (std::vector<std::byte>{std::byte{3}}));
   std::error_code error;
   std::filesystem::remove_all(root, error);

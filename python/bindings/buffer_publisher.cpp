@@ -3,9 +3,7 @@
 
 #include <Python.h>
 
-#define SITOS_NUMPY_IMPORT
 #include "numpy_api.hpp"
-#undef SITOS_NUMPY_IMPORT
 
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/string.h>

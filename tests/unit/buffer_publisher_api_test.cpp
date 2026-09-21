@@ -10,6 +10,7 @@
 #include <span>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <type_traits>
 #include <vector>
 
@@ -54,9 +55,10 @@ class MetadataTransport final : public sitos::Transport {
     }
     if (keyexpr.find("/meta/ack/") != std::string_view::npos) {
       if (ack_timeout) return sitos::Result<void>::Err(sitos::Status::Timeout);
+      const bool is_put = ack_kind == sitos::AckOperationKind::Put;
       const auto payload = sitos::EncodeAckResult(sitos::AckResultV1{
-          sitos::AckOperationKind::Fence, ack_status, sitos::AckDurability::Applied, 0,
-          sitos::kAckNoFailedIndex, 1, sitos::kAckNoFailedSequence, "fence result"});
+          ack_kind, ack_status, ack_durability, is_put ? 1U : 0U, sitos::kAckNoFailedIndex,
+          is_put ? 0U : ack_through_sequence, sitos::kAckNoFailedSequence, "fence result"});
       if (!payload.IsOk()) return sitos::Result<void>::ErrFrom(payload);
       sink(keyexpr, payload.Value(), sitos::Encoding{std::string(sitos::Encoding::kSitosV1Ack)});
       return sitos::Result<void>::Ok();
@@ -87,6 +89,9 @@ class MetadataTransport final : public sitos::Transport {
   sitos::PutOptions last_options;
   std::size_t marker_count = 0;
   sitos::Status ack_status = sitos::Status::Ok;
+  sitos::AckOperationKind ack_kind = sitos::AckOperationKind::Fence;
+  sitos::AckDurability ack_durability = sitos::AckDurability::Applied;
+  std::uint64_t ack_through_sequence = 1;
   bool ack_timeout = false;
   std::optional<sitos::Status> marker_status;
   std::string marker_message;
@@ -167,6 +172,31 @@ TEST(BufferPublisherApiTest, MapsMetadataDiscoveryOutcomes) {
   EXPECT_EQ(
       BufferPublisher::Open(trailing, ClientConfig{}, "sid", BufferClass::Durable).StatusCode(),
       Status::TypeMismatch);
+
+  for (const auto number : {std::string_view{"+1"}, std::string_view{".1"}, std::string_view{"01"},
+                            std::string_view{"1."}, std::string_view{"1e"}}) {
+    auto invalid_number = std::make_shared<MetadataTransport>();
+    invalid_number->metadata_json =
+        std::string(
+            R"({"state":"active","created_at":"now","generation_uuid":"6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab","extra":)") +
+        std::string(number) + "}";
+    EXPECT_EQ(BufferPublisher::Open(invalid_number, ClientConfig{}, "sid", BufferClass::Durable)
+                  .StatusCode(),
+              Status::TypeMismatch);
+  }
+
+  auto valid_unicode = std::make_shared<MetadataTransport>();
+  valid_unicode->metadata_json =
+      R"({"state":"active","created_at":"\uD83D\uDE00","generation_uuid":"6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab"})";
+  EXPECT_TRUE(
+      BufferPublisher::Open(valid_unicode, ClientConfig{}, "sid", BufferClass::Durable).IsOk());
+
+  auto malformed_unicode = std::make_shared<MetadataTransport>();
+  malformed_unicode->metadata_json =
+      R"({"state":"active","created_at":"\uD83D\u0041","generation_uuid":"6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab"})";
+  EXPECT_EQ(BufferPublisher::Open(malformed_unicode, ClientConfig{}, "sid", BufferClass::Durable)
+                .StatusCode(),
+            Status::TypeMismatch);
 
   auto uppercase = std::make_shared<MetadataTransport>();
   uppercase->metadata_json =
@@ -266,16 +296,55 @@ TEST(BufferPublisherApiTest, DiagnosticsAreBoundedSanitizedAndPreserveFirstFailu
   EXPECT_NE(failed.Message().find('?'), std::string_view::npos);
 }
 
-TEST(BufferPublisherApiTest, MarkerSubmissionFailureDisconnectsPublisher) {
+TEST(BufferPublisherApiTest, MarkerSubmissionFailureMayStillCompleteFence) {
   auto transport = std::make_shared<MetadataTransport>();
   transport->marker_status = Status::Error;
+  transport->ack_through_sequence = 0;
   auto opened = BufferPublisher::Open(transport, ClientConfig{}, "sid", BufferClass::Durable);
   ASSERT_TRUE(opened.IsOk());
   auto publisher = std::move(opened).Value();
-  const auto failed = publisher.Fence(FenceDurability::kApplied, std::chrono::milliseconds{100});
-  EXPECT_EQ(failed.StatusCode(), Status::Error);
+  const auto receipt = publisher.Fence(FenceDurability::kApplied, std::chrono::milliseconds{100});
+  ASSERT_TRUE(receipt.IsOk()) << receipt.Message();
+  EXPECT_EQ(receipt.Value().through_publish_sequence, 0U);
+  EXPECT_TRUE(publisher.Push("later", std::vector<std::byte>{std::byte{2}}).IsOk());
+}
+
+TEST(BufferPublisherApiTest, MarkerSubmissionFailureWithoutAckTimesOutAndDisconnects) {
+  auto transport = std::make_shared<MetadataTransport>();
+  transport->marker_status = Status::Error;
+  transport->marker_message = "marker";
+  transport->ack_timeout = true;
+  auto opened = BufferPublisher::Open(transport, ClientConfig{}, "sid", BufferClass::Durable);
+  ASSERT_TRUE(opened.IsOk());
+  auto publisher = std::move(opened).Value();
+  const auto failed = publisher.Fence(FenceDurability::kApplied, std::chrono::milliseconds{10});
+  EXPECT_EQ(failed.StatusCode(), Status::Timeout);
+  EXPECT_NE(failed.Message().find("marker"), std::string_view::npos);
+  EXPECT_LE(failed.Message().size(), sitos::kAckResultMaxMessageLength);
+  EXPECT_TRUE(static_cast<bool>(failed.Error()));
   EXPECT_EQ(publisher.Push("later", std::vector<std::byte>{std::byte{2}}).StatusCode(),
             Status::Disconnected);
+}
+
+TEST(BufferPublisherApiTest, FenceRejectsMismatchedAcknowledgementFingerprint) {
+  for (const auto& [kind, durability, through] :
+       {std::tuple{sitos::AckOperationKind::Put, sitos::AckDurability::Applied, std::uint64_t{1}},
+        std::tuple{sitos::AckOperationKind::Fence, sitos::AckDurability::Synced, std::uint64_t{1}},
+        std::tuple{sitos::AckOperationKind::Fence, sitos::AckDurability::Applied,
+                   std::uint64_t{2}}}) {
+    auto transport = std::make_shared<MetadataTransport>();
+    transport->ack_kind = kind;
+    transport->ack_durability = durability;
+    transport->ack_through_sequence = through;
+    auto opened = BufferPublisher::Open(transport, ClientConfig{}, "sid", BufferClass::Durable);
+    ASSERT_TRUE(opened.IsOk());
+    auto publisher = std::move(opened).Value();
+    ASSERT_TRUE(publisher.Push("value", std::vector<std::byte>{std::byte{1}}).IsOk());
+    const auto failed = publisher.Fence(FenceDurability::kApplied, std::chrono::milliseconds{100});
+    EXPECT_EQ(failed.StatusCode(), Status::TypeMismatch);
+    EXPECT_EQ(publisher.Push("later", std::vector<std::byte>{std::byte{2}}).StatusCode(),
+              Status::Disconnected);
+  }
 }
 
 TEST(BufferPublisherApiTest, GenerationReplacementDisconnectsBoundPublisher) {
@@ -314,6 +383,25 @@ TEST(BufferPublisherApiTest, FenceFailureDisconnectsPublisherAndTimeoutPreserves
   const auto timeout =
       timeout_publisher.Fence(FenceDurability::kApplied, std::chrono::milliseconds{1});
   EXPECT_EQ(timeout.StatusCode(), Status::Timeout);
+}
+
+TEST(BufferPublisherApiTest, MoveTransfersUsabilityAndDisconnectsMovedFrom) {
+  auto transport = std::make_shared<MetadataTransport>();
+  auto first_open = BufferPublisher::Open(transport, ClientConfig{}, "sid", BufferClass::Durable);
+  ASSERT_TRUE(first_open.IsOk());
+  auto first = std::move(first_open).Value();
+  auto moved = std::move(first);
+  EXPECT_EQ(first.Push("moved", std::vector<std::byte>{std::byte{1}}).StatusCode(),
+            Status::Disconnected);
+  EXPECT_TRUE(moved.Push("usable", std::vector<std::byte>{std::byte{2}}).IsOk());
+
+  auto second_open = BufferPublisher::Open(transport, ClientConfig{}, "sid", BufferClass::Durable);
+  ASSERT_TRUE(second_open.IsOk());
+  auto second = std::move(second_open).Value();
+  second = std::move(moved);
+  EXPECT_EQ(moved.Fence(FenceDurability::kApplied, std::chrono::milliseconds{10}).StatusCode(),
+            Status::Disconnected);
+  EXPECT_TRUE(second.Push("assigned", std::vector<std::byte>{std::byte{3}}).IsOk());
 }
 
 TEST(BufferPublisherApiTest, ExposesFrozenApiAndDurabilityTypes) {
