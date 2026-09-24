@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import subprocess
@@ -127,6 +128,15 @@ def test_buffer_publisher_recreate_old_fence_timeout_then_disconnects(publisher_
         publisher.push("later", b"later")
     with pytest.raises(TypeError):
         publisher.fence(sitos.FenceDurability.APPLIED, timeout=True)
+
+
+def test_buffer_publisher_fence_rejects_int64_millisecond_boundary(publisher_fixture) -> None:
+    prefix, sid, _ = publisher_fixture
+    publisher = _open_fixture_publisher(sid, sitos.BufferClass.DURABLE, prefix)
+    timeout = float(2**63) / 1000.0
+    assert math.ceil(timeout * 1000.0) == 2**63
+    with pytest.raises(ValueError, match="timeout is outside the C\\+\\+ duration range"):
+        publisher.fence(sitos.FenceDurability.APPLIED, timeout=timeout)
 
 
 def test_buffer_publisher_missing_session_maps_not_found() -> None:

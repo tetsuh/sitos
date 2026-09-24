@@ -110,7 +110,7 @@ class PyBufferPublisher {
       throw nb::value_error("timeout must be positive");
     }
     const double milliseconds = std::ceil(seconds * 1000.0);
-    if (milliseconds > static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
+    if (milliseconds >= static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
       throw nb::value_error("timeout is outside the C++ duration range");
     }
     auto result = [&] {
