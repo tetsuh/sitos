@@ -73,6 +73,8 @@ class MetadataTransport final : public sitos::Transport {
           ack_kind, ack_status, ack_durability, is_put ? 1U : 0U, sitos::kAckNoFailedIndex,
           is_put ? 0U : ack_through_sequence, sitos::kAckNoFailedSequence, "fence result"});
       if (!payload.IsOk()) return sitos::Result<void>::ErrFrom(payload);
+      ack_result_count++;
+      if (ack_durability == sitos::AckDurability::Synced) synced_ack_result_count++;
       sink(keyexpr, payload.Value(), sitos::Encoding{std::string(sitos::Encoding::kSitosV1Ack)});
       if (ack_duplicate_reply) {
         sink(keyexpr, payload.Value(), sitos::Encoding{std::string(sitos::Encoding::kSitosV1Ack)});
@@ -113,6 +115,8 @@ class MetadataTransport final : public sitos::Transport {
   sitos::AckOperationKind ack_kind = sitos::AckOperationKind::Fence;
   sitos::AckDurability ack_durability = sitos::AckDurability::Applied;
   std::uint64_t ack_through_sequence = 1;
+  std::size_t ack_result_count = 0;
+  std::size_t synced_ack_result_count = 0;
   bool ack_timeout = false;
   bool ack_duplicate_reply = false;
   std::optional<sitos::Status> marker_status;
@@ -323,13 +327,16 @@ TEST(BufferPublisherApiTest, MultiplePushesRemainScopedToAppliedAndSyncedFences)
   EXPECT_EQ(transport->marker_sequences, (std::vector<std::uint64_t>{2U}));
 
   transport->ack_durability = AckDurability::Synced;
-  transport->ack_through_sequence = 3;
+  transport->ack_through_sequence = 4;
   ASSERT_TRUE(publisher.Push("third", std::vector<std::byte>{std::byte{3}}).IsOk());
+  ASSERT_TRUE(publisher.Push("fourth", std::vector<std::byte>{std::byte{4}}).IsOk());
   const auto synced = publisher.Fence(FenceDurability::kSynced, std::chrono::milliseconds{100});
   ASSERT_TRUE(synced.IsOk()) << synced.Message();
-  EXPECT_EQ(synced.Value().through_publish_sequence, 3U);
-  EXPECT_EQ(transport->data_sequences, (std::vector<std::uint64_t>{1U, 2U, 3U}));
-  EXPECT_EQ(transport->marker_sequences, (std::vector<std::uint64_t>{2U, 3U}));
+  EXPECT_EQ(synced.Value().through_publish_sequence, 4U);
+  EXPECT_EQ(transport->data_sequences, (std::vector<std::uint64_t>{1U, 2U, 3U, 4U}));
+  EXPECT_EQ(transport->marker_sequences, (std::vector<std::uint64_t>{2U, 4U}));
+  EXPECT_EQ(transport->ack_result_count, 2U);
+  EXPECT_EQ(transport->synced_ack_result_count, 1U);
 }
 
 TEST(BufferPublisherApiTest, EmptyFenceExcludesLaterPushes) {
