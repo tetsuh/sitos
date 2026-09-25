@@ -140,6 +140,42 @@ def yaml_named_run(text: str, name: str) -> str:
     return "\n".join(body) + "\n"
 
 
+def yaml_folded_scalar(text: str, key: str, indent: int) -> str:
+    """Return the folded value of one uniquely named YAML ``>-`` scalar."""
+    lines = yaml_code(text).splitlines()
+    header = f"{' ' * indent}{key}: >-"
+    starts = [index for index, line in enumerate(lines) if line == header]
+    if len(starts) != 1:
+        raise AssertionError(f"expected one {header!r} scalar, found {len(starts)}")
+    start = starts[0]
+    value: list[str] = []
+    for line in lines[start + 1 :]:
+        leading = len(line) - len(line.lstrip(" "))
+        if leading <= indent:
+            break
+        value.append(line.strip())
+    return " ".join(value)
+
+
+def logical_shell_commands(script: str) -> list[str]:
+    """Join shell backslash continuations while preserving each command's order."""
+    commands: list[str] = []
+    pending: list[str] = []
+    for line in script.splitlines():
+        current = line.strip()
+        if not current:
+            continue
+        if current.endswith("\\"):
+            pending.append(current[:-1].rstrip())
+            continue
+        pending.append(current)
+        commands.append(" ".join(pending))
+        pending = []
+    if pending:
+        raise AssertionError("unterminated shell continuation")
+    return commands
+
+
 def assert_full_sha_action(test: unittest.TestCase, text: str, owner_repo: str, sha: str) -> None:
     """Require an action reference to use one reviewed immutable commit."""
     text = yaml_code(text)
@@ -404,6 +440,92 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         )
         self.assertIn("- Source: https://github.com/pytest-dev/pytest", record)
         self.assertIn("- License: MIT", record)
+
+    def test_linux_installed_buffer_publisher_uses_runner_visible_manylinux_fixture(self) -> None:
+        workflow = read(WHEELS)
+        linux_job = yaml_block(workflow, "linux", 2)
+        self.assertEqual(
+            yaml_folded_scalar(linux_job, "CIBW_BEFORE_ALL_LINUX", 6),
+            "bash -c 'set -eu; echo \"=== compiler ===\"; gcc --version; "
+            "g++ --version; echo \"=== glibc ===\"; getconf GNU_LIBC_VERSION; "
+            "echo \"=== libstdc++ ===\"; libstdcxx=\"$(g++ -print-file-name=libstdc++.so.6)\"; "
+            "strings \"${libstdcxx}\" | grep -E \"^GLIBCXX_[0-9]\" | sort -V | tail -n 1; "
+            "echo \"=== auditwheel (owned by the cibuildwheel manylinux image) ===\"; "
+            "auditwheel --version' && bash /project/scripts/build_manylinux_zenohc.sh "
+            "/opt/zenohc-stage && cp /project/.github/wheel-tools-requirements.txt "
+            "/opt/zenohc-stage/",
+        )
+        fixture_build = yaml_named_run(
+            linux_job, "Build runner-visible manylinux BufferPublisher fixture"
+        )
+        self.assertEqual(
+            fixture_build,
+            "set -eu\ndocker run --rm \\\n"
+            '  -v "$GITHUB_WORKSPACE:/project" \\\n'
+            "  -w /project \\\n"
+            '  "$CIBW_MANYLINUX_X86_64_IMAGE" \\\n'
+            "  bash -ceu '\n"
+            "    bash /project/scripts/build_manylinux_zenohc.sh /opt/zenohc-stage\n"
+            "    cp /project/.github/wheel-tools-requirements.txt /opt/zenohc-stage/\n"
+            "    cmake -S /project -B /tmp/sitos-buffer-fixture -DCMAKE_BUILD_TYPE=Release "
+            "-DSITOS_ZENOHC_ROOT=/opt/zenohc-stage -DSITOS_WITH_ZENOH=ON "
+            "-DSITOS_BUILD_TESTS=ON -DSITOS_BUILD_PYTHON=OFF -DSITOS_BUILD_EXAMPLES=OFF "
+            "-DSITOS_BUILD_BENCHMARKS=OFF\n"
+            "    cmake --build /tmp/sitos-buffer-fixture --target "
+            "sitos_python_buffer_publisher_fixture --parallel 2\n"
+            "    mkdir -p /project/build/wheel-buffer-fixture/lib\n"
+            "    cp /tmp/sitos-buffer-fixture/tests/sitos_python_buffer_publisher_fixture "
+            "/project/build/wheel-buffer-fixture/\n"
+            "    cp /opt/zenohc-stage/lib/libzenohc.so "
+            "/project/build/wheel-buffer-fixture/lib/\n"
+            "    patchelf --set-rpath '\\''$ORIGIN/lib'\\'' "
+            "/project/build/wheel-buffer-fixture/sitos_python_buffer_publisher_fixture\n"
+            "  '\ntest -x \"$GITHUB_WORKSPACE/build/wheel-buffer-fixture/"
+            "sitos_python_buffer_publisher_fixture\"\n",
+        )
+        linux_validation = yaml_named_run(
+            linux_job, "Validate contents, native dependencies, and clean installation"
+        )
+        linux_commands = [
+            command
+            for command in logical_shell_commands(linux_validation)
+            if command.startswith("(cd /tmp") and "test_buffer_publisher.py" in command
+        ]
+        self.assertEqual(
+            linux_commands,
+            [
+                '(cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH '
+                'SITOS_PYTHON_BUFFER_PUBLISHER_FIXTURE="$GITHUB_WORKSPACE/build/'
+                'wheel-buffer-fixture/sitos_python_buffer_publisher_fixture" '
+                '"$venv/bin/python" -m pytest "$tests_dir/test_buffer_publisher.py" -q)',
+                '(cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH '
+                '"$venv/bin/python" -m pytest "$tests_dir/test_buffer_publisher.py" '
+                "-k 'enum_surface or missing_session' -q)",
+            ],
+        )
+        run_lines = linux_validation.splitlines()
+        docker_start = next(
+            index for index, line in enumerate(run_lines) if "rockylinux/rockylinux@" in line
+        )
+        docker_command = "\n".join(run_lines[docker_start : docker_start + 2])
+        docker_script = docker_command.split("bash -ceu '", 1)[1].rsplit("'", 1)[0]
+        rocky_commands = [
+            command.strip()
+            for command in re.findall(
+                r"[^;]*pytest[^;]*test_buffer_publisher\.py[^;]*", docker_script
+            )
+        ]
+        self.assertEqual(
+            rocky_commands,
+            [
+                "env -u LD_LIBRARY_PATH -u PYTHONPATH "
+                "SITOS_PYTHON_BUFFER_PUBLISHER_FIXTURE=/project/build/wheel-buffer-fixture/"
+                "sitos_python_buffer_publisher_fixture /tmp/sitos-wheel/bin/python -m pytest "
+                "/project/tests/python/test_buffer_publisher.py -q",
+                "env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python -m pytest "
+                '/project/tests/python/test_buffer_publisher.py -k "enum_surface or missing_session" -q',
+            ],
+        )
 
     def test_linux_wheel_rocky_validation_keeps_nested_filter_in_script(self) -> None:
         workflow = read(WHEELS)

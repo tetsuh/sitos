@@ -50,12 +50,6 @@ jobs:
         auditwheel --version'
         && bash /project/scripts/build_manylinux_zenohc.sh /opt/zenohc-stage
         && cp /project/.github/wheel-tools-requirements.txt /opt/zenohc-stage/
-        && cmake -S /project -B /tmp/sitos-buffer-fixture -DCMAKE_BUILD_TYPE=Release -DSITOS_ZENOHC_ROOT=/opt/zenohc-stage -DSITOS_WITH_ZENOH=ON -DSITOS_BUILD_TESTS=ON -DSITOS_BUILD_PYTHON=OFF -DSITOS_BUILD_EXAMPLES=OFF -DSITOS_BUILD_BENCHMARKS=OFF
-        && cmake --build /tmp/sitos-buffer-fixture --target sitos_python_buffer_publisher_fixture --parallel 2
-        && mkdir -p /project/build/wheel-buffer-fixture/lib
-        && cp /tmp/sitos-buffer-fixture/tests/sitos_python_buffer_publisher_fixture /project/build/wheel-buffer-fixture/
-        && cp /opt/zenohc-stage/lib/libzenohc.so /project/build/wheel-buffer-fixture/lib/
-        && patchelf --set-rpath '$ORIGIN/lib' /project/build/wheel-buffer-fixture/sitos_python_buffer_publisher_fixture
       # This is cibuildwheel's own build/repair/test-tool constraint input.
       CIBW_DEPENDENCY_VERSIONS: .github/wheel-tools-requirements.txt
       # cibuildwheel forwards these to its build-isolation and test environments.
@@ -75,6 +69,24 @@ jobs:
         run: python3 -B tests/release/test_release_configuration.py -v
       - name: Install hash-locked wheel tools
         run: 'python -m pip install --only-binary=:all: --require-hashes -r .github/wheel-tools-requirements.txt'
+      - name: Build runner-visible manylinux BufferPublisher fixture
+        run: |
+          set -eu
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/project" \
+            -w /project \
+            "$CIBW_MANYLINUX_X86_64_IMAGE" \
+            bash -ceu '
+              bash /project/scripts/build_manylinux_zenohc.sh /opt/zenohc-stage
+              cp /project/.github/wheel-tools-requirements.txt /opt/zenohc-stage/
+              cmake -S /project -B /tmp/sitos-buffer-fixture -DCMAKE_BUILD_TYPE=Release -DSITOS_ZENOHC_ROOT=/opt/zenohc-stage -DSITOS_WITH_ZENOH=ON -DSITOS_BUILD_TESTS=ON -DSITOS_BUILD_PYTHON=OFF -DSITOS_BUILD_EXAMPLES=OFF -DSITOS_BUILD_BENCHMARKS=OFF
+              cmake --build /tmp/sitos-buffer-fixture --target sitos_python_buffer_publisher_fixture --parallel 2
+              mkdir -p /project/build/wheel-buffer-fixture/lib
+              cp /tmp/sitos-buffer-fixture/tests/sitos_python_buffer_publisher_fixture /project/build/wheel-buffer-fixture/
+              cp /opt/zenohc-stage/lib/libzenohc.so /project/build/wheel-buffer-fixture/lib/
+              patchelf --set-rpath '\''$ORIGIN/lib'\'' /project/build/wheel-buffer-fixture/sitos_python_buffer_publisher_fixture
+            '
+          test -x "$GITHUB_WORKSPACE/build/wheel-buffer-fixture/sitos_python_buffer_publisher_fixture"
       - name: Build and repair wheel
         run: python -m cibuildwheel --output-dir wheelhouse python
       - name: Validate contents, native dependencies, and clean installation
