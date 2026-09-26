@@ -7,12 +7,13 @@
 #include <future>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <tuple>
 
-#include "sitos/ack.hpp"
 #include "fence_test_support.hpp"
+#include "sitos/ack.hpp"
 #include "storage_node_test_access.hpp"
 
 namespace {
@@ -121,6 +122,37 @@ class SyncUtf8BoundaryEngine final : public sitos::InMemoryEngine {
     return sitos::Result<void>::Err(sitos::Status::Error, std::move(message));
   }
 };
+
+TEST(FenceStorageNodeTest, LaneFirstFailureDiagnosticIsSanitizedAndCountSaturates) {
+  sitos::fence_internal::FenceLaneState lane;
+  std::string diagnostic = "first";
+  diagnostic.push_back('\x01');
+  diagnostic.append(sitos::kAckResultMaxMessageLength + 32, 'x');
+  lane.RecordRejected(1, sitos::Status::Error, 1, diagnostic);
+
+  const auto first = lane.Evaluate(1);
+  EXPECT_EQ(first.status, sitos::Status::Error);
+  EXPECT_EQ(first.failed_sequence, 1U);
+  EXPECT_EQ(first.message.size(), sitos::kAckResultMaxMessageLength);
+  EXPECT_EQ(first.message.substr(0, 6), "first?");
+  EXPECT_TRUE(sitos::ValidateAckResult(first).IsOk());
+  EXPECT_EQ(lane.later_failure_count(), 0U);
+
+  for (std::size_t index = 0;
+       index < static_cast<std::size_t>(sitos::fence_internal::kFenceLaneLaterFailureCountMax) + 32;
+       ++index) {
+    lane.RecordMalformed(std::nullopt);
+  }
+  const auto after_later_failures = lane.Evaluate(2);
+  EXPECT_EQ(lane.later_failure_count(), sitos::fence_internal::kFenceLaneLaterFailureCountMax);
+  EXPECT_EQ(after_later_failures.status, first.status);
+  EXPECT_EQ(after_later_failures.failed_sequence, first.failed_sequence);
+  EXPECT_EQ(after_later_failures.message, first.message);
+
+  lane.Reset();
+  EXPECT_EQ(lane.later_failure_count(), 0U);
+  EXPECT_EQ(lane.Evaluate(0).status, sitos::Status::Ok);
+}
 
 TEST(FenceStorageNodeTest, ProductionSyncedFenceInvokesDurableEngineSync) {
   auto transport = sitos::fence_test::MakeTransport();
@@ -668,6 +700,32 @@ TEST(FenceStorageNodeTest, DispatchesFenceAndBindsTheSessionGeneration) {
   ASSERT_TRUE(false_result.has_value());
   ExpectRemoteFence(*false_result, sitos::Status::OutcomeUnknown, sitos::AckDurability::Applied, 1,
                     1);
+  EXPECT_EQ(false_result->message, "covered buffer application failed");
+
+  const auto repeated_failure_token = sitos::fence_test::Token(std::byte{0x58});
+  failing_transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeBufferMarker(
+      "sitos", "failures", sitos::fence_test::kSessionGeneration, sitos::BufferClass::Durable,
+      sitos::fence_test::kPublisherA, sitos::AckDurability::Applied, 1, repeated_failure_token));
+  const auto repeated_failure = sitos::fence_test_access::FenceTestAccess::FindAckResult(
+      *failing_node, repeated_failure_token);
+  ASSERT_TRUE(repeated_failure.has_value());
+  EXPECT_EQ(repeated_failure->status, false_result->status);
+  EXPECT_EQ(repeated_failure->failed_sequence, false_result->failed_sequence);
+  EXPECT_EQ(repeated_failure->message, false_result->message);
+
+  *engine_mode = BufferEngineMode::ThrowOnPut;
+  failing_transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeCoveredBufferPut(
+      "sitos/buffers/failures/durable/later-failure", sitos::fence_test::kPublisherA, 2));
+  const auto later_failure_token = sitos::fence_test::Token(std::byte{0x59});
+  failing_transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeBufferMarker(
+      "sitos", "failures", sitos::fence_test::kSessionGeneration, sitos::BufferClass::Durable,
+      sitos::fence_test::kPublisherA, sitos::AckDurability::Applied, 2, later_failure_token));
+  const auto later_failure =
+      sitos::fence_test_access::FenceTestAccess::FindAckResult(*failing_node, later_failure_token);
+  ASSERT_TRUE(later_failure.has_value());
+  EXPECT_EQ(later_failure->status, false_result->status);
+  EXPECT_EQ(later_failure->failed_sequence, false_result->failed_sequence);
+  EXPECT_EQ(later_failure->message, false_result->message);
 
   *engine_mode = BufferEngineMode::ThrowOnPut;
   failing_transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeCoveredBufferPut(

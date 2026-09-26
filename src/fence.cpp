@@ -471,23 +471,28 @@ void fence_internal::FenceDispatchCoordinator::CloseAndWait(Registration& regist
       lock, [&registration] { return registration.state_->admitted == 0; });
 }
 
-void fence_internal::FenceLaneState::Latch(Status status, std::uint64_t sequence) {
-  if (!first_failure_.has_value()) first_failure_ = FenceFirstFailure{status, sequence};
+void fence_internal::FenceLaneState::Latch(Status status, std::uint64_t sequence,
+                                           std::string_view diagnostic) {
+  if (!first_failure_.has_value()) {
+    first_failure_ = FenceFirstFailure{status, sequence, SanitizeFenceDiagnostic(diagnostic)};
+    return;
+  }
+  if (later_failure_count_ < kFenceLaneLaterFailureCountMax) ++later_failure_count_;
 }
 
 bool fence_internal::FenceLaneState::Admit(std::uint64_t sequence) {
   if (sequence == 0) {
-    Latch(Status::Error, kAckNoFailedSequence);
+    Latch(Status::Error, kAckNoFailedSequence, "buffer sequence is zero");
     return false;
   }
   if (sequence > highest_observed_) highest_observed_ = sequence;
   if (reservation_exhausted_ || sequence <= reserved_through_) {
-    Latch(Status::Error, sequence);
+    Latch(Status::Error, sequence, "duplicate or stale buffer sequence");
     return false;
   }
   const std::uint64_t expected = reserved_through_ + 1;
   if (sequence > expected) {
-    Latch(Status::OutcomeUnknown, expected);
+    Latch(Status::OutcomeUnknown, expected, "buffer sequence gap");
     return false;
   }
   reserved_through_ = sequence;
@@ -499,11 +504,14 @@ void fence_internal::FenceLaneState::Complete(std::uint64_t sequence,
                                               std::optional<Status> failure) {
   const std::uint64_t expected = completed_through_ + 1;
   if (sequence != expected || sequence > reserved_through_) {
-    Latch(Status::Error, sequence == 0 ? kAckNoFailedSequence : sequence);
+    Latch(Status::Error, sequence == 0 ? kAckNoFailedSequence : sequence,
+          "buffer completion sequence mismatch");
     return;
   }
   completed_through_ = sequence;
-  if (failure.has_value() && *failure != Status::Ok) Latch(*failure, sequence);
+  if (failure.has_value() && *failure != Status::Ok) {
+    Latch(*failure, sequence, "covered buffer application failed");
+  }
 }
 
 void fence_internal::FenceLaneState::RecordCompleted(std::uint64_t sequence,
@@ -512,27 +520,28 @@ void fence_internal::FenceLaneState::RecordCompleted(std::uint64_t sequence,
 }
 
 void fence_internal::FenceLaneState::RecordRejected(std::uint64_t observed_sequence, Status status,
-                                                    std::uint64_t failed_sequence) {
+                                                    std::uint64_t failed_sequence,
+                                                    std::string_view diagnostic) {
   if (observed_sequence > highest_observed_) highest_observed_ = observed_sequence;
-  Latch(status, failed_sequence);
+  Latch(status, failed_sequence, diagnostic);
 }
 
 void fence_internal::FenceLaneState::RecordOverflow(std::uint64_t observed_sequence) {
   if (observed_sequence > highest_observed_) highest_observed_ = observed_sequence;
   if (reservation_exhausted_ || observed_sequence <= reserved_through_) {
-    Latch(Status::Error, observed_sequence);
+    Latch(Status::Error, observed_sequence, "buffer dispatch overflow on an observed sequence");
   } else {
-    Latch(Status::OutcomeUnknown, reserved_through_ + 1);
+    Latch(Status::OutcomeUnknown, reserved_through_ + 1, "buffer dispatch capacity exceeded");
   }
 }
 
 void fence_internal::FenceLaneState::RecordMalformed(std::optional<std::uint64_t> sequence) {
   if (sequence.has_value()) {
     if (*sequence > highest_observed_) highest_observed_ = *sequence;
-    Latch(Status::Error, *sequence);
+    Latch(Status::Error, *sequence, "malformed buffer lane sequence");
     return;
   }
-  Latch(Status::Error, kAckNoFailedSequence);
+  Latch(Status::Error, kAckNoFailedSequence, "malformed buffer lane metadata");
 }
 
 AckResultV1 fence_internal::FenceLaneState::Evaluate(std::uint64_t through_sequence,
@@ -541,11 +550,13 @@ AckResultV1 fence_internal::FenceLaneState::Evaluate(std::uint64_t through_seque
                             kAckNoFailedIndex,       through_sequence, kAckNoFailedSequence, ""};
   if (first_failure_.has_value() && first_failure_->sequence == kAckNoFailedSequence) {
     result.status = first_failure_->status;
+    result.message = first_failure_->message;
     return result;
   }
   if (first_failure_.has_value() && first_failure_->sequence <= through_sequence) {
     result.status = first_failure_->status;
     result.failed_sequence = first_failure_->sequence;
+    result.message = first_failure_->message;
     return result;
   }
   if (completed_through_ > through_sequence || highest_observed_ > through_sequence) {
@@ -565,6 +576,7 @@ void fence_internal::FenceLaneState::Reset() noexcept {
   reserved_through_ = 0;
   reservation_exhausted_ = false;
   first_failure_.reset();
+  later_failure_count_ = 0;
 }
 
 void fence_internal::FenceLaneState::SetCompletedForTesting(std::uint64_t sequence) noexcept {
@@ -573,6 +585,7 @@ void fence_internal::FenceLaneState::SetCompletedForTesting(std::uint64_t sequen
   reserved_through_ = sequence;
   reservation_exhausted_ = sequence == UINT64_MAX;
   first_failure_.reset();
+  later_failure_count_ = 0;
 }
 
 std::string fence_internal::FenceReceiverRegistry::LaneKey(std::string_view sid,
@@ -669,14 +682,18 @@ AckResultV1 fence_internal::FenceReceiverRegistry::EvaluateBuffer(
   if (lane != lanes_.end()) return lane->second.Evaluate(through_sequence, durability);
   AckResultV1 result{AckOperationKind::Fence, Status::Ok,       durability,           0,
                      kAckNoFailedIndex,       through_sequence, kAckNoFailedSequence, ""};
+  const auto poison = poisoned_scopes_.find(ScopeKey(sid, session_generation, buffer_class));
   if (through_sequence > 0) {
     result.status = Status::OutcomeUnknown;
     result.failed_sequence = 1;
+    result.message = SanitizeFenceDiagnostic(poison != poisoned_scopes_.end() && poison->second
+                                                 ? "buffer receiver lane capacity exceeded"
+                                                 : "covered buffer sequence was not observed");
     return result;
   }
-  const auto poison = poisoned_scopes_.find(ScopeKey(sid, session_generation, buffer_class));
   if (poison != poisoned_scopes_.end() && poison->second) {
     result.status = Status::OutcomeUnknown;
+    result.message = SanitizeFenceDiagnostic("buffer receiver lane capacity exceeded");
   }
   return result;
 }
