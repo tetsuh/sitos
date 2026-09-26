@@ -308,7 +308,8 @@ Result<FenceUuid> DiscoverSessionGeneration(Transport& transport, const ClientCo
   bool invalid_reply = false;
   auto query = transport.Get(
       *metadata_key,
-      [&](std::string_view key, std::span<const std::byte> payload, Encoding encoding) {
+      [&metadata_key, &invalid_reply, &generation](
+          std::string_view key, std::span<const std::byte> payload, Encoding encoding) {
         if (key != *metadata_key || encoding.id != Encoding::kSitosV1) {
           invalid_reply = true;
           return false;

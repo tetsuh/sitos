@@ -97,7 +97,7 @@ class PyBufferPublisher {
       nb::gil_scoped_release release;
       return native_->Push(key, owned);
     }();
-    Take(std::move(result));
+    Take(result);
   }
 
   FenceReceipt Fence(FenceDurability durability, const nb::handle& timeout) {
@@ -128,19 +128,19 @@ class PyBufferPublisher {
 }  // namespace
 }  // namespace sitos::python::detail
 
-void BindBufferPublisher(nb::module_& module) {
+void BindBufferPublisher(nb::module_& python_module) {
   using namespace sitos;
   using namespace sitos::python::detail;
-  nb::enum_<BufferClass>(module, "BufferClass")
+  nb::enum_<BufferClass>(python_module, "BufferClass")
       .value("DURABLE", BufferClass::Durable)
       .value("EPHEMERAL", BufferClass::Ephemeral);
-  nb::enum_<FenceDurability>(module, "FenceDurability")
+  nb::enum_<FenceDurability>(python_module, "FenceDurability")
       .value("APPLIED", FenceDurability::kApplied)
       .value("SYNCED", FenceDurability::kSynced);
-  nb::class_<FenceReceipt>(module, "FenceReceipt")
+  nb::class_<FenceReceipt>(python_module, "FenceReceipt")
       .def_ro("through_publish_sequence", &FenceReceipt::through_publish_sequence)
       .def_ro("durability", &FenceReceipt::durability);
-  nb::class_<PyBufferPublisher>(module, "BufferPublisher")
+  nb::class_<PyBufferPublisher>(python_module, "BufferPublisher")
       .def(nb::init<const std::string&, BufferClass, const std::string&, const nb::object&,
                     const nb::handle&>(),
            "session_id"_a, "buffer_class"_a, "prefix"_a = "sitos",
