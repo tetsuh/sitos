@@ -112,6 +112,8 @@ class SyncOutcomeEngine final : public sitos::InMemoryEngine {
 
 class SyncUtf8BoundaryEngine final : public sitos::InMemoryEngine {
  public:
+  explicit SyncUtf8BoundaryEngine(sitos::Status status) : status_(status) {}
+
   sitos::SyncCapability GetSyncCapability() const noexcept override {
     return sitos::SyncCapability::kPowerLossDurable;
   }
@@ -119,8 +121,11 @@ class SyncUtf8BoundaryEngine final : public sitos::InMemoryEngine {
   sitos::Result<void> Sync() override {
     std::string message(1022, 'a');
     message.append("\xF0\x9F\x92\xA9");
-    return sitos::Result<void>::Err(sitos::Status::Error, std::move(message));
+    return sitos::Result<void>::Err(status_, std::move(message));
   }
+
+ private:
+  sitos::Status status_;
 };
 
 TEST(FenceStorageNodeTest, LaneFirstFailureDiagnosticIsSanitizedAndCountSaturates) {
@@ -212,30 +217,34 @@ TEST(FenceStorageNodeTest, ProductionSyncedFenceMapsSyncFailureAndThrow) {
 }
 
 TEST(FenceStorageNodeTest, SyncFailureMessageRemainsEncodableAtUtf8Boundary) {
-  auto transport = sitos::fence_test::MakeTransport();
-  auto node = sitos::fence_test::StartNode(transport, [](std::string_view) {
-    return sitos::Result<std::unique_ptr<sitos::StorageEngine>>::Ok(
-        std::make_unique<SyncUtf8BoundaryEngine>());
-  });
-  ASSERT_NE(node, nullptr);
-  ASSERT_TRUE(
-      node->CreateSession(sitos::fence_test::kSid, sitos::fence_test::DurableSessionOptions())
-          .IsOk());
-  ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::SetSessionGeneration(
-      *node, sitos::fence_test::kSid, sitos::fence_test::kSessionGeneration));
-  transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeCoveredBufferPut(
-      "sitos/buffers/s1/durable/sync-utf8-boundary", sitos::fence_test::kPublisherA, 1));
-  const auto token = sitos::fence_test::Token(std::byte{0x7e});
-  transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeBufferMarker(
-      "sitos", sitos::fence_test::kSid, sitos::fence_test::kSessionGeneration,
-      sitos::BufferClass::Durable, sitos::fence_test::kPublisherA, sitos::AckDurability::Synced, 1,
-      token));
-  const auto result = sitos::fence_test_access::FenceTestAccess::FindAckResult(*node, token);
-  ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(result->status, sitos::Status::Error);
-  EXPECT_LE(result->message.size(), sitos::kAckResultMaxMessageLength);
-  EXPECT_TRUE(sitos::ValidateAckResult(*result).IsOk());
-  EXPECT_TRUE(sitos::EncodeAckResult(*result).IsOk());
+  for (const auto status : {sitos::Status::Error, sitos::Status::OutcomeUnknown}) {
+    SCOPED_TRACE(static_cast<int>(status));
+    auto transport = sitos::fence_test::MakeTransport();
+    auto node = sitos::fence_test::StartNode(transport, [status](std::string_view) {
+      return sitos::Result<std::unique_ptr<sitos::StorageEngine>>::Ok(
+          std::make_unique<SyncUtf8BoundaryEngine>(status));
+    });
+    ASSERT_NE(node, nullptr);
+    ASSERT_TRUE(
+        node->CreateSession(sitos::fence_test::kSid, sitos::fence_test::DurableSessionOptions())
+            .IsOk());
+    ASSERT_TRUE(sitos::fence_test_access::FenceTestAccess::SetSessionGeneration(
+        *node, sitos::fence_test::kSid, sitos::fence_test::kSessionGeneration));
+    transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeCoveredBufferPut(
+        "sitos/buffers/s1/durable/sync-utf8-boundary", sitos::fence_test::kPublisherA, 1));
+    const auto token = sitos::fence_test::Token(std::byte{0x7e});
+    transport->Deliver(sitos::fence_test_access::FenceTestAccess::MakeBufferMarker(
+        "sitos", sitos::fence_test::kSid, sitos::fence_test::kSessionGeneration,
+        sitos::BufferClass::Durable, sitos::fence_test::kPublisherA, sitos::AckDurability::Synced,
+        1, token));
+    const auto result = sitos::fence_test_access::FenceTestAccess::FindAckResult(*node, token);
+    ASSERT_TRUE(result.has_value());
+    // A message repaired for UTF-8 validity keeps the engine's valid typed status.
+    EXPECT_EQ(result->status, status);
+    EXPECT_LE(result->message.size(), sitos::kAckResultMaxMessageLength);
+    EXPECT_TRUE(sitos::ValidateAckResult(*result).IsOk());
+    EXPECT_TRUE(sitos::EncodeAckResult(*result).IsOk());
+  }
 }
 
 TEST(FenceStorageNodeTest, UnsupportedSyncedFenceDoesNotInvokeSync) {
