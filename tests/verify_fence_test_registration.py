@@ -19,6 +19,7 @@ ZENOH_OFF_TESTS = (
     "FenceReceiverTest.EvaluatesPrefixesFailuresBoundsAndCapacityPoison",
     "FenceParamCacheTest.CompletesOnlyTheMatchingAttachGeneration",
     "FenceStorageNodeTest.DispatchesFenceAndBindsTheSessionGeneration",
+    "FenceStorageNodeTest.LaneFirstFailureDiagnosticIsSanitizedAndCountSaturates",
     "FenceStorageNodeTest.ProductionSyncedFenceInvokesDurableEngineSync",
     "FenceStorageNodeTest.ProductionSyncedFenceMapsSyncFailureAndThrow",
     "FenceStorageNodeTest.SyncFailureMessageRemainsEncodableAtUtf8Boundary",
