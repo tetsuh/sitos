@@ -243,7 +243,7 @@ packaging-policy, and documentation-only edits are N/A where no executable preco
 | multiprocess | gtest + spawn | Attach/delivery/crash recovery with real process isolation | Always (Linux) / nightly (Windows) |
 | interop | pytest + zenoh-python | Read/write using only the wire specification ([03]) without the sitos library [C03] | Always |
 | python | pytest | API parity, NumPy zero-copy (writeable=False, base-buffer identity), GIL (concurrent get inside callback) | Always |
-| bench | Google Benchmark plus the source-only process driver | N01 local ParamCache reads, N02 native RocksDB snapshots, N08 complete session startup/fetch, N09 cross-process visibility/control RTT/callback throughput | opt-in `bench` pull request, nightly, and manual; job summary and 90-day artifacts, no PR comments |
+| bench | Google Benchmark plus the source-only process driver | N01 local ParamCache reads, N02 native RocksDB snapshots, N08 complete session startup/fetch, N09 cross-process visibility/control RTT/callback throughput, N107 BufferPublisher push at 3 and 300 pushes/s with 256 KiB and 1 MiB values | opt-in `bench` pull request, nightly, and manual; job summary and 90-day artifacts, no PR comments |
 
 **Contract-test principle**: Write the `StorageEngine` test suite against the abstraction, in a
 form reusable for InMemory/RocksDB/(future user engines) [X01].
@@ -317,6 +317,12 @@ Issues #158 and #99 fix these exact Fence acceptance names:
 - `FenceZenohIntegrationTest.QualifiesPublicParamCacheLocalDelivery`
 - `FenceZenohIntegrationTest.QualifiesTopologiesQosAndControlIsolation`
 - `FenceRawZenohInteropTest.QualifiesPayloadTransparencyAndControlIsolation`
+
+Issue #107 adds deterministic `BufferPublisherApiTest.*` API/discovery/failure coverage and
+`FenceStorageNodeTest.ProductionSyncedFence*` production barrier coverage; the Zenoh integration
+lane covers applied fences and same-SID generation replacement, while the Zenoh+RocksDB lane
+covers synced fences plus close/reopen. The Python lane launches the built StorageNode fixture,
+and the N107 benchmark report records all four rate/payload workloads with provenance.
 
 `tests/verify_fence_test_registration.py` parses `ctest --show-only=json-v1` and must pass for
 `zenoh-off`, `sanitizer`, or `zenoh-on` before filtered execution; CTest's zero-match success is not

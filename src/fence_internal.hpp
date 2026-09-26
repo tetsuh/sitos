@@ -16,6 +16,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 #include "sitos/ack.hpp"
@@ -27,6 +28,7 @@ namespace sitos::fence_internal {
 
 inline constexpr std::size_t kFenceLaneAttachmentV1Size = 25;
 inline constexpr std::size_t kFenceMarkerV1Size = 1;
+inline constexpr std::uint8_t kFenceLaneLaterFailureCountMax = 255;
 
 [[nodiscard]] bool IsValidFenceUuid(const FenceUuid& uuid) noexcept;
 [[nodiscard]] FenceUuid GenerateFenceUuid();
@@ -80,6 +82,7 @@ struct AttachmentObservations {
 struct FenceFirstFailure {
   Status status = Status::Error;
   std::uint64_t sequence = kAckNoFailedSequence;
+  std::string message;
 };
 
 /// O(1) ADR-0029 proof retained for one target/Publisher lane.
@@ -90,8 +93,8 @@ class FenceLaneState {
   [[nodiscard]] bool Admit(std::uint64_t sequence);
   void Complete(std::uint64_t sequence, std::optional<Status> failure = std::nullopt);
   void RecordCompleted(std::uint64_t sequence, std::optional<Status> failure = std::nullopt);
-  void RecordRejected(std::uint64_t observed_sequence, Status status,
-                      std::uint64_t failed_sequence);
+  void RecordRejected(std::uint64_t observed_sequence, Status status, std::uint64_t failed_sequence,
+                      std::string_view diagnostic = "covered buffer application failed");
   void RecordOverflow(std::uint64_t observed_sequence);
   void RecordMalformed(std::optional<std::uint64_t> sequence);
   [[nodiscard]] AckResultV1 Evaluate(std::uint64_t through_sequence,
@@ -101,18 +104,20 @@ class FenceLaneState {
 
   [[nodiscard]] std::uint64_t completed_through() const noexcept { return completed_through_; }
   [[nodiscard]] std::uint64_t highest_observed() const noexcept { return highest_observed_; }
+  [[nodiscard]] std::uint8_t later_failure_count() const noexcept { return later_failure_count_; }
   [[nodiscard]] std::uint64_t next_expected() const noexcept {
     return reservation_exhausted_ ? UINT64_MAX : reserved_through_ + 1;
   }
 
  private:
-  void Latch(Status status, std::uint64_t sequence);
+  void Latch(Status status, std::uint64_t sequence, std::string_view diagnostic);
 
   std::uint64_t completed_through_ = 0;
   std::uint64_t highest_observed_ = 0;
   std::uint64_t reserved_through_ = 0;
   bool reservation_exhausted_ = false;
   std::optional<FenceFirstFailure> first_failure_;
+  std::uint8_t later_failure_count_ = 0;
 };
 
 enum class FencePublisherTarget { Cache, Buffer };
@@ -318,6 +323,8 @@ class FencePublisher {
   [[nodiscard]] Result<AckResultV1> Wait(const FenceHandle& handle);
   bool Complete(const AckToken& token, AckResultV1 result);
   void Close();
+  void SetDurability(AckDurability durability) noexcept { binding_.durability = durability; }
+  void AllowSynced() noexcept { synced_allowed_ = true; }
 
   void SetLastSequenceForTesting(std::uint64_t sequence) noexcept;
   [[nodiscard]] std::uint64_t last_sequence() const noexcept;
@@ -363,9 +370,10 @@ class FencePublisher {
   std::uint64_t last_sequence_ = 0;
   bool exhausted_ = false;
   bool may_have_submitted_ = false;
-  std::optional<ErrorInfo> latest_submission_error_;
+  std::optional<ErrorInfo> first_submission_error_;
   std::atomic<bool> generation_mismatch_{false};
   bool disconnected_ = false;
+  bool synced_allowed_ = false;
   std::optional<FenceHandle> pending_;
 };
 

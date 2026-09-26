@@ -379,7 +379,46 @@ contract in ADR-0032, not ParamStore or ParamCache APIs. The key API uses
 components or an undefined enum value. Existing non-buffer parsed keys leave `buffer_class`
 disengaged.
 
-## 4. ParamCache — Subscriber-Side Hot Path
+## 4. BufferPublisher — explicit buffer publication fences
+
+> **Planned, not yet normative:** Issue/ADR #107/ADR-0035 owns this public mechanism. Implementers
+> must not treat this outline as a finalized contract.
+
+```cpp
+enum class FenceDurability { kApplied = 0, kSynced = 1 };
+struct FenceReceipt {
+  std::uint64_t through_publish_sequence;
+  FenceDurability durability;
+};
+
+class BufferPublisher {
+ public:
+  static Result<BufferPublisher> Open(ClientConfig config, std::string_view session_id,
+                                       BufferClass buffer_class);
+  static Result<BufferPublisher> Open(std::shared_ptr<Transport> transport, ClientConfig config,
+                                       std::string_view session_id, BufferClass buffer_class);
+  Result<void> Push(std::string_view key, std::span<const std::byte> value);
+  Result<FenceReceipt> Fence(FenceDurability durability,
+                             std::chrono::milliseconds timeout);
+};
+```
+
+`Open` validates the existing `ClientConfig`, queries exactly `meta/session/<sid>` with
+`query_timeout`, and immutably binds the returned `generation_uuid`. Zero replies are `NotFound`;
+wrong encoding, malformed payload/JSON, or an invalid or missing generation is `TypeMismatch`.
+`Push` owns no caller memory after return and submits opaque `zenoh/bytes` values explicitly.
+Applied fences are supported for both buffer classes; synced fences are locally
+`InvalidArgument` for ephemeral publishers and require the durable synchronization capability.
+A positive per-call timeout is required. Push/Fence calls are externally serialized in v1. Move
+transfers identity; moved-from calls return `Disconnected`. Move assignment and destruction
+quiesce callbacks, ignore late replies, and do not stop a shared StorageNode or Transport. A
+non-OK result after marker submission disconnects the publisher; definite local validation before
+marker submission does not. Custom `zenoh_config_json` is currently rejected by normal
+BufferPublisher Open because the transport cannot prove that the required Fence QoS profile is configured. See ADR-0035. The
+`std::span` view is borrowed
+only for the duration of Transport::Put; callers may release or reuse memory after Push returns.
+
+## 5. ParamCache — Subscriber-Side Hot Path
 
 ```cpp
 class ParamCache {
@@ -451,7 +490,7 @@ completion before the deadline is `Status::Timeout`; a receiver-side failure pre
 Status and message, including `OutcomeUnknown` and `Disconnected`. `Detach`, move assignment,
 destruction, and Python `close` complete an admitted wait with `Status::Disconnected` and quiesce
 before releasing state. Stale/reconnect behavior is future #20 behavior.
-## 5. SessionView — Read-Only Composite View
+## 6. SessionView — Read-Only Composite View
 
 `SessionView` is the host-process facade for an active session. It is opened through the Result-based
 factory and does not perform Transport operations or writes.
@@ -476,13 +515,14 @@ caller sink. `GetShared`, `GetSpan`, `Put`, `PutBatch`, and `Delete` are intenti
 Large binary values belong to the route-selected `buffers/<sid>/durable/**` or
 `buffers/<sid>/ephemeral/**` scopes described by ADR-0032. These routes are not SessionView data.
 
-## 6. Thread-Safety Contract
+## 7. Thread-Safety Contract
 
 | Class | Contract |
 |---|---|
 | `ParamValue` | Immutable. Can be freely shared |
 | `ParamStore` | All methods may be called concurrently |
 | `ParamCache` | Attach/Detach and local write sequencing are synchronized internally. Local reads are cache-only; stale/reconnect behavior is future #20 behavior |
+| `BufferPublisher` | Push/Fence are externally serialized in v1. Move assignment/destruction quiesce late callbacks; moved-from calls return `Disconnected`. |
 | `StorageNode` | Ordinary independent-thread calls may run concurrently; `DurableBufferEngineFactory` and `LogSink` must not synchronously call `Stop`, destruction, or another waiting lifecycle operation on the same node, or wait for one |
 | `SessionView` | All methods may be called concurrently. List callbacks run on the caller thread outside internal locks; re-entry and Stop from inside a sink are safe |
 | ParamSubscription callback | Serialized per subscription with no thread affinity. Put/PutBatch must use `WriteOptions{.ack = false}`; Delete remains nonblocking. Blocking reads, acknowledged writes, Subscribe, subscription lifecycle, and Transport/session lifecycle operations are forbidden |

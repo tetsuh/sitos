@@ -627,7 +627,7 @@ Result<void> StorageNode::CreateSession(const std::shared_ptr<State>& state, std
 
   record->snapshot = std::move(snapshot);
   record->overlay = std::make_shared<InMemoryEngine>();
-  record->metadata = SessionMeta{NowIso8601()};
+  record->metadata = SessionMeta{NowIso8601(), FormatFenceUuid(record->generation_uuid)};
 
   if (options.durable_buffers) {
     if (!state->durable_buffer_engine_factory) {
@@ -1065,18 +1065,32 @@ void StorageNode::ApplyBufferFenceMarker(const std::shared_ptr<State>& state,
           std::scoped_lock lock(state->fence_test_mutex);
           barrier = state->fence_test_durability_barrier;
         }
-        if (!barrier || !record->durable_buffers) {
+        if (!record->durable_buffers) {
+          result.status = Status::InvalidArgument;
+        } else if (!barrier && record->durable_buffers->GetSyncCapability() !=
+                                   SyncCapability::kPowerLossDurable) {
           result.status = Status::InvalidArgument;
         } else if (route.through_sequence > 0) {
-          {
-            std::scoped_lock lock(state->fence_test_mutex);
-            ++state->fence_test_barrier_calls;
-          }
           try {
-            const auto synchronized = barrier(*record->durable_buffers);
+            Result<void> synchronized = Result<void>::Err(Status::InvalidArgument);
+            if (barrier) {
+              {
+                std::scoped_lock lock(state->fence_test_mutex);
+                ++state->fence_test_barrier_calls;
+              }
+              synchronized = barrier(*record->durable_buffers);
+            } else if (record->durable_buffers->GetSyncCapability() ==
+                       SyncCapability::kPowerLossDurable) {
+              synchronized = record->durable_buffers->Sync();
+            }
             if (!synchronized.IsOk()) {
               result.status = synchronized.StatusCode();
-              if (!ValidateAckResult(result).IsOk()) result.status = Status::Error;
+              result.message =
+                  std::string(synchronized.Message()).substr(0, kAckResultMaxMessageLength);
+              if (!ValidateAckResult(result).IsOk()) {
+                result.status = Status::Error;
+                result.message = "durability synchronization failed";
+              }
             }
           } catch (...) {
             result.status = Status::OutcomeUnknown;
@@ -1446,8 +1460,8 @@ void StorageNode::ReplyMetaQuery(const std::shared_ptr<State>& state, TransportQ
     }
     admission = it->second->TryAcquire();
     if (!admission.has_value()) return;
-    json =
-        std::format(R"({{"state":"active","created_at":"{}"}})", it->second->metadata.created_at);
+    json = std::format(R"({{"state":"active","created_at":"{}","generation_uuid":"{}"}})",
+                       it->second->metadata.created_at, it->second->metadata.generation_uuid);
   }
   const auto payload = ParamValue(json).Encode();
   query.Reply(query.keyexpr, payload, SitosEncoding());

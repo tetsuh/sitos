@@ -6,6 +6,7 @@
 #include <charconv>
 #include <cstdint>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include "ack_client.hpp"
@@ -15,6 +16,53 @@
 namespace sitos {
 
 namespace {
+
+std::string SanitizeFenceDiagnostic(std::string_view input) {
+  std::string output;
+  output.reserve(input.size() < kAckResultMaxMessageLength ? input.size()
+                                                           : kAckResultMaxMessageLength);
+  std::size_t index = 0;
+  while (index < input.size() && output.size() < kAckResultMaxMessageLength) {
+    const auto first = static_cast<unsigned char>(input[index]);
+    std::size_t width = 1;
+    if (first >= 0xC2 && first <= 0xDF) {
+      width = 2;
+    } else if (first >= 0xE0 && first <= 0xEF) {
+      width = 3;
+    } else if (first >= 0xF0 && first <= 0xF4) {
+      width = 4;
+    } else if ((first >= 0x20 && first <= 0x7E) || first == '\t' || first == '\n' ||
+               first == '\r') {
+      output.push_back(static_cast<char>(first));
+      ++index;
+      continue;
+    } else {
+      output.push_back('?');
+      ++index;
+      continue;
+    }
+    bool valid = index + width <= input.size();
+    for (std::size_t offset = 1; valid && offset < width; ++offset) {
+      valid = (static_cast<unsigned char>(input[index + offset]) & 0xC0) == 0x80;
+    }
+    if (valid && width == 3) {
+      const auto second = static_cast<unsigned char>(input[index + 1]);
+      valid = !(first == 0xE0 && second < 0xA0) && !(first == 0xED && second >= 0xA0);
+    }
+    if (valid && width == 4) {
+      const auto second = static_cast<unsigned char>(input[index + 1]);
+      valid = !(first == 0xF0 && second < 0x90) && !(first == 0xF4 && second >= 0x90);
+    }
+    if (!valid || output.size() + width > kAckResultMaxMessageLength) {
+      output.push_back('?');
+      ++index;
+      continue;
+    }
+    output.append(input, index, width);
+    index += width;
+  }
+  return output;
+}
 
 // Same saturation rule as the #169 acknowledgement helper: a positive deadline that
 // exceeds the remaining steady_clock range clamps to time_point::max() instead of
@@ -423,23 +471,28 @@ void fence_internal::FenceDispatchCoordinator::CloseAndWait(Registration& regist
       lock, [&registration] { return registration.state_->admitted == 0; });
 }
 
-void fence_internal::FenceLaneState::Latch(Status status, std::uint64_t sequence) {
-  if (!first_failure_.has_value()) first_failure_ = FenceFirstFailure{status, sequence};
+void fence_internal::FenceLaneState::Latch(Status status, std::uint64_t sequence,
+                                           std::string_view diagnostic) {
+  if (!first_failure_.has_value()) {
+    first_failure_ = FenceFirstFailure{status, sequence, SanitizeFenceDiagnostic(diagnostic)};
+    return;
+  }
+  if (later_failure_count_ < kFenceLaneLaterFailureCountMax) ++later_failure_count_;
 }
 
 bool fence_internal::FenceLaneState::Admit(std::uint64_t sequence) {
   if (sequence == 0) {
-    Latch(Status::Error, kAckNoFailedSequence);
+    Latch(Status::Error, kAckNoFailedSequence, "buffer sequence is zero");
     return false;
   }
   if (sequence > highest_observed_) highest_observed_ = sequence;
   if (reservation_exhausted_ || sequence <= reserved_through_) {
-    Latch(Status::Error, sequence);
+    Latch(Status::Error, sequence, "duplicate or stale buffer sequence");
     return false;
   }
   const std::uint64_t expected = reserved_through_ + 1;
   if (sequence > expected) {
-    Latch(Status::OutcomeUnknown, expected);
+    Latch(Status::OutcomeUnknown, expected, "buffer sequence gap");
     return false;
   }
   reserved_through_ = sequence;
@@ -451,11 +504,14 @@ void fence_internal::FenceLaneState::Complete(std::uint64_t sequence,
                                               std::optional<Status> failure) {
   const std::uint64_t expected = completed_through_ + 1;
   if (sequence != expected || sequence > reserved_through_) {
-    Latch(Status::Error, sequence == 0 ? kAckNoFailedSequence : sequence);
+    Latch(Status::Error, sequence == 0 ? kAckNoFailedSequence : sequence,
+          "buffer completion sequence mismatch");
     return;
   }
   completed_through_ = sequence;
-  if (failure.has_value() && *failure != Status::Ok) Latch(*failure, sequence);
+  if (failure.has_value() && *failure != Status::Ok) {
+    Latch(*failure, sequence, "covered buffer application failed");
+  }
 }
 
 void fence_internal::FenceLaneState::RecordCompleted(std::uint64_t sequence,
@@ -464,27 +520,28 @@ void fence_internal::FenceLaneState::RecordCompleted(std::uint64_t sequence,
 }
 
 void fence_internal::FenceLaneState::RecordRejected(std::uint64_t observed_sequence, Status status,
-                                                    std::uint64_t failed_sequence) {
+                                                    std::uint64_t failed_sequence,
+                                                    std::string_view diagnostic) {
   if (observed_sequence > highest_observed_) highest_observed_ = observed_sequence;
-  Latch(status, failed_sequence);
+  Latch(status, failed_sequence, diagnostic);
 }
 
 void fence_internal::FenceLaneState::RecordOverflow(std::uint64_t observed_sequence) {
   if (observed_sequence > highest_observed_) highest_observed_ = observed_sequence;
   if (reservation_exhausted_ || observed_sequence <= reserved_through_) {
-    Latch(Status::Error, observed_sequence);
+    Latch(Status::Error, observed_sequence, "buffer dispatch overflow on an observed sequence");
   } else {
-    Latch(Status::OutcomeUnknown, reserved_through_ + 1);
+    Latch(Status::OutcomeUnknown, reserved_through_ + 1, "buffer dispatch capacity exceeded");
   }
 }
 
 void fence_internal::FenceLaneState::RecordMalformed(std::optional<std::uint64_t> sequence) {
   if (sequence.has_value()) {
     if (*sequence > highest_observed_) highest_observed_ = *sequence;
-    Latch(Status::Error, *sequence);
+    Latch(Status::Error, *sequence, "malformed buffer lane sequence");
     return;
   }
-  Latch(Status::Error, kAckNoFailedSequence);
+  Latch(Status::Error, kAckNoFailedSequence, "malformed buffer lane metadata");
 }
 
 AckResultV1 fence_internal::FenceLaneState::Evaluate(std::uint64_t through_sequence,
@@ -493,11 +550,13 @@ AckResultV1 fence_internal::FenceLaneState::Evaluate(std::uint64_t through_seque
                             kAckNoFailedIndex,       through_sequence, kAckNoFailedSequence, ""};
   if (first_failure_.has_value() && first_failure_->sequence == kAckNoFailedSequence) {
     result.status = first_failure_->status;
+    result.message = first_failure_->message;
     return result;
   }
   if (first_failure_.has_value() && first_failure_->sequence <= through_sequence) {
     result.status = first_failure_->status;
     result.failed_sequence = first_failure_->sequence;
+    result.message = first_failure_->message;
     return result;
   }
   if (completed_through_ > through_sequence || highest_observed_ > through_sequence) {
@@ -517,6 +576,7 @@ void fence_internal::FenceLaneState::Reset() noexcept {
   reserved_through_ = 0;
   reservation_exhausted_ = false;
   first_failure_.reset();
+  later_failure_count_ = 0;
 }
 
 void fence_internal::FenceLaneState::SetCompletedForTesting(std::uint64_t sequence) noexcept {
@@ -525,6 +585,7 @@ void fence_internal::FenceLaneState::SetCompletedForTesting(std::uint64_t sequen
   reserved_through_ = sequence;
   reservation_exhausted_ = sequence == UINT64_MAX;
   first_failure_.reset();
+  later_failure_count_ = 0;
 }
 
 std::string fence_internal::FenceReceiverRegistry::LaneKey(std::string_view sid,
@@ -621,14 +682,18 @@ AckResultV1 fence_internal::FenceReceiverRegistry::EvaluateBuffer(
   if (lane != lanes_.end()) return lane->second.Evaluate(through_sequence, durability);
   AckResultV1 result{AckOperationKind::Fence, Status::Ok,       durability,           0,
                      kAckNoFailedIndex,       through_sequence, kAckNoFailedSequence, ""};
+  const auto poison = poisoned_scopes_.find(ScopeKey(sid, session_generation, buffer_class));
   if (through_sequence > 0) {
     result.status = Status::OutcomeUnknown;
     result.failed_sequence = 1;
+    result.message = SanitizeFenceDiagnostic(poison != poisoned_scopes_.end() && poison->second
+                                                 ? "buffer receiver lane capacity exceeded"
+                                                 : "covered buffer sequence was not observed");
     return result;
   }
-  const auto poison = poisoned_scopes_.find(ScopeKey(sid, session_generation, buffer_class));
   if (poison != poisoned_scopes_.end() && poison->second) {
     result.status = Status::OutcomeUnknown;
+    result.message = SanitizeFenceDiagnostic("buffer receiver lane capacity exceeded");
   }
   return result;
 }
@@ -817,8 +882,10 @@ Result<void> fence_internal::FencePublisher::SubmitData(std::string_view key,
   auto result = transport_->Put(key, payload, std::move(encoding), std::move(options));
   if (!result.IsOk()) {
     may_have_submitted_ = true;
-    latest_submission_error_ =
-        ErrorInfo{result.StatusCode(), std::string(result.Message()), result.Error()};
+    if (!first_submission_error_.has_value()) {
+      first_submission_error_ =
+          ErrorInfo{result.StatusCode(), SanitizeFenceDiagnostic(result.Message()), result.Error()};
+    }
   }
   if (!CheckGeneration()) {
     may_have_submitted_ = true;
@@ -870,7 +937,7 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
     return Result<FenceHandle>::Err(Status::InvalidArgument, "Transport does not support Fence");
   }
   if (binding_.target == FencePublisherTarget::Buffer &&
-      binding_.durability == AckDurability::Synced) {
+      binding_.durability == AckDurability::Synced && !synced_allowed_) {
     return Result<FenceHandle>::Err(Status::InvalidArgument,
                                     "synchronized Fence requires the #105 barrier");
   }
@@ -915,14 +982,19 @@ Result<fence_internal::FenceHandle> fence_internal::FencePublisher::BeginFence(
       pending_->deadline = handle.deadline;
     }
   }
+  // Data submission errors recorded before this fence belong only to this fence's
+  // covered range. Move the diagnostic into the handle before submitting the
+  // marker, so the next fence starts with a clean diagnostic state.
+  std::optional<ErrorInfo> fence_submission_error = std::exchange(first_submission_error_, std::nullopt);
   const auto result = transport_->Put(*key, payload, Encoding{std::string(Encoding::kSitosV1Fence)},
                                       std::move(options));
   if (!result.IsOk()) {
     may_have_submitted_ = true;
-    latest_submission_error_ =
-        ErrorInfo{result.StatusCode(), std::string(result.Message()), result.Error()};
+    const ErrorInfo marker_error{result.StatusCode(), SanitizeFenceDiagnostic(result.Message()),
+                                 result.Error()};
+    if (!fence_submission_error.has_value()) fence_submission_error = marker_error;
   }
-  handle.timeout_diagnostic = latest_submission_error_;
+  handle.timeout_diagnostic = std::move(fence_submission_error);
   if (!CheckGeneration()) {
     may_have_submitted_ = true;
     lane_lock.unlock();

@@ -28,6 +28,8 @@ struct SessionOptions {
 struct SessionMeta {
   /// ISO-8601 UTC timestamp captured at CreateSession, e.g. 2026-07-14T01:23:45Z.
   std::string created_at;
+  /// Canonical lowercase UUIDv4 identifying this active Session incarnation.
+  std::string generation_uuid;
 };
 
 /// Legacy sid -> engine-native snapshot map shape retained for source

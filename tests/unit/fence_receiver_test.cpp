@@ -234,11 +234,11 @@ TEST(FenceReceiverTest, EvaluatesPrefixesFailuresBoundsAndCapacityPoison) {
                                         sitos::BufferClass::Durable, row.second,
                                         sitos::AckDurability::Applied, 0),
         sitos::Status::OutcomeUnknown, 0, sitos::kAckNoFailedSequence);
-    ExpectFenceResult(
-        bounded_registry.EvaluateBuffer(row.first, sitos::fence_test::kSessionGeneration,
-                                        sitos::BufferClass::Durable, row.second,
-                                        sitos::AckDurability::Applied, 3),
-        sitos::Status::OutcomeUnknown, 3, 1);
+    const auto capacity_failure = bounded_registry.EvaluateBuffer(
+        row.first, sitos::fence_test::kSessionGeneration, sitos::BufferClass::Durable, row.second,
+        sitos::AckDurability::Applied, 3);
+    ExpectFenceResult(capacity_failure, sitos::Status::OutcomeUnknown, 3, 1);
+    EXPECT_EQ(capacity_failure.message, "buffer receiver lane capacity exceeded");
     ExpectFenceResult(
         bounded_registry.EvaluateBuffer(row.first, sitos::fence_test::kSessionGeneration,
                                         sitos::BufferClass::Durable, row.second,

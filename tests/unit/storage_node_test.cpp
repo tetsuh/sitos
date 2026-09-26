@@ -1285,9 +1285,26 @@ TEST(StorageNodeSessionTest, MetaSessionReflectsLifecycle) {
   ASSERT_TRUE(json.has_value());
   EXPECT_NE(json->find("\"state\":\"active\""), std::string::npos) << *json;
   EXPECT_NE(json->find("\"created_at\""), std::string::npos) << *json;
+  EXPECT_NE(json->find("\"generation_uuid\":\""), std::string::npos) << *json;
 
+  const auto first_json = *json;
+  const auto first_generation =
+      storage_node_test_access::StorageNodeTestAccess::SessionGeneration(node, "s1");
+  ASSERT_TRUE(first_generation.has_value());
   ASSERT_TRUE(node.CloseSession("s1").IsOk());
   EXPECT_TRUE(transport.Invoke("sitos/meta/session/s1").empty());
+  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  auto recreated = transport.Invoke("sitos/meta/session/s1");
+  ASSERT_EQ(recreated.size(), 1u);
+  auto recreated_value = ParamValue::Decode(recreated[0].payload);
+  ASSERT_TRUE(recreated_value.has_value());
+  auto recreated_json = recreated_value->As<std::string>();
+  ASSERT_TRUE(recreated_json.has_value());
+  EXPECT_NE(*recreated_json, first_json);
+  const auto recreated_generation =
+      storage_node_test_access::StorageNodeTestAccess::SessionGeneration(node, "s1");
+  ASSERT_TRUE(recreated_generation.has_value());
+  EXPECT_NE(*recreated_generation, *first_generation);
 }
 
 TEST(StorageNodeSessionTest, CloseSessionReleasesSnapshotAndOverlay) {

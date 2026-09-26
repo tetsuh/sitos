@@ -73,7 +73,7 @@ jobs:
       - name: Qualify Fence C++ and raw zenoh-python paths
         run: >-
           ctest --test-dir build/dev-linux --output-on-failure --timeout 120
-          -R '^Fence(ZenohIntegration|RawZenohInterop)Test\.'
+          -R '^(Fence(ZenohIntegration|RawZenohInterop)Test|BufferPublisher(Zenoh|RocksDb)IntegrationTest)\.'
 
       - name: Fixture validator (Python/struct independent check)
         run: python tests/fixtures/validate_fixtures.py
@@ -111,6 +111,7 @@ jobs:
           export PYTHONPATH="$PWD/python"
           export SITOS_PYTHON_CACHE_FIXTURE="$PWD/build/python/tests/sitos_python_param_cache_fixture"
           export SITOS_PYTHON_FIXTURE="$PWD/build/python/tests/sitos_python_param_store_fixture"
+          export SITOS_PYTHON_BUFFER_PUBLISHER_FIXTURE="$PWD/build/python/tests/sitos_python_buffer_publisher_fixture"
           export SITOS_PYTHON_NODE_LIVE=1
           export SITOS_PYTHON_TEST_SUPPORT=1
           python3 -m pytest \
@@ -118,9 +119,11 @@ jobs:
             tests/python/test_numpy_zero_copy.py \
             tests/python/test_param_store.py \
             tests/python/test_param_cache.py \
-            tests/python/test_param_cache_live.py -q
+            tests/python/test_param_cache_live.py \
+            tests/python/test_buffer_publisher.py -q
           python3 -m pytest \
-            tests/python/test_storage_node.py tests/python/test_storage_node_gil.py -q
+            tests/python/test_storage_node.py tests/python/test_storage_node_gil.py \
+            tests/python/test_buffer_publisher.py -q
           python3 -m pytest tests/python/test_storage_node_live.py -q
           SITOS_EXAMPLE_KEEP_PYTHONPATH=1 python3 tests/examples/test_python_examples.py quickstart
           SITOS_EXAMPLE_KEEP_PYTHONPATH=1 python3 tests/examples/test_python_examples.py numpy-lut
@@ -180,7 +183,7 @@ jobs:
           lifecycle_filter+="TransportGetCompletionTest|ParamStoreSubscribeTest|"
           lifecycle_filter+="ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture|"
           lifecycle_filter+="FencePublisherTest|FenceReceiverTest|FenceParamCacheTest|"
-          lifecycle_filter+="FenceStorageNodeTest|FenceCollisionTest|FenceLifecycleTest"
+          lifecycle_filter+="FenceStorageNodeTest|FenceCollisionTest|FenceLifecycleTest|BufferPublisherApiTest"
           ctest --test-dir build/sanitizer-tsan --output-on-failure --timeout 60 \
             --repeat until-fail:10 -R "$lifecycle_filter"
 
@@ -196,7 +199,7 @@ jobs:
           lifecycle_filter+="TransportGetCompletionTest|ParamStoreSubscribeTest|"
           lifecycle_filter+="ParamCacheTest|ParamCacheReadTest|SessionViewTest|SessionViewFixture|"
           lifecycle_filter+="FencePublisherTest|FenceReceiverTest|FenceParamCacheTest|"
-          lifecycle_filter+="FenceStorageNodeTest|FenceCollisionTest|FenceLifecycleTest"
+          lifecycle_filter+="FenceStorageNodeTest|FenceCollisionTest|FenceLifecycleTest|BufferPublisherApiTest"
           ctest --test-dir build/sanitizer-${{ matrix.name }} \
             --output-on-failure --timeout 60 -R "$lifecycle_filter"
 
@@ -237,7 +240,7 @@ jobs:
             "cmake --build --preset dev-windows"
             "python tests/verify_fence_test_registration.py --build build/dev-windows --profile zenoh-on"
             "ctest --preset dev-windows"
-            "ctest --test-dir build/dev-windows --output-on-failure --timeout 120 -R `"^Fence(ZenohIntegration|RawZenohInterop)Test\.`""
+            "ctest --test-dir build/dev-windows --output-on-failure --timeout 120 -R `"^(Fence(ZenohIntegration|RawZenohInterop)Test|BufferPublisher(Zenoh|RocksDb)IntegrationTest)\.`""
           ) -join " && "
           cmd /c $commands
 
@@ -252,6 +255,9 @@ jobs:
           $cacheFixture = Get-ChildItem build/dev-windows -Recurse `
             -Filter "sitos_python_param_cache_fixture.exe" | Select-Object -First 1
           if ($null -eq $cacheFixture) { throw "ParamCache fixture executable was not found" }
+          $publisherFixture = Get-ChildItem build/dev-windows -Recurse `
+            -Filter "sitos_python_buffer_publisher_fixture.exe" | Select-Object -First 1
+          if ($null -eq $publisherFixture) { throw "BufferPublisher fixture executable was not found" }
           $destination = Join-Path (Resolve-Path python/sitos) $extension.Name
           Copy-Item $extension.FullName $destination -Force
           $copiedDlls = @()
@@ -265,15 +271,18 @@ jobs:
             $env:PATH = "$(Resolve-Path python/sitos);$env:PATH"
             $env:SITOS_PYTHON_FIXTURE = $storeFixture.FullName
             $env:SITOS_PYTHON_CACHE_FIXTURE = $cacheFixture.FullName
+            $env:SITOS_PYTHON_BUFFER_PUBLISHER_FIXTURE = $publisherFixture.FullName
             $env:SITOS_PYTHON_TEST_SUPPORT = "1"
             python -m pytest `
               tests/python/test_param_store.py `
               tests/python/test_param_cache.py `
-              tests/python/test_param_cache_live.py -q
+              tests/python/test_param_cache_live.py `
+              tests/python/test_buffer_publisher.py -q
             if ($LASTEXITCODE -ne 0) { throw "Python client tests failed: $LASTEXITCODE" }
           } finally {
             Remove-Item Env:SITOS_PYTHON_FIXTURE -ErrorAction SilentlyContinue
             Remove-Item Env:SITOS_PYTHON_CACHE_FIXTURE -ErrorAction SilentlyContinue
+            Remove-Item Env:SITOS_PYTHON_BUFFER_PUBLISHER_FIXTURE -ErrorAction SilentlyContinue
             Remove-Item Env:SITOS_PYTHON_TEST_SUPPORT -ErrorAction SilentlyContinue
             Remove-Item $destination -Force -ErrorAction SilentlyContinue
             $copiedDlls | ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
@@ -330,7 +339,7 @@ jobs:
       - name: Install Linux provisioning prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build libssl-dev python3-pip
+          sudo apt-get install -y cmake ninja-build libssl-dev python3-dev python3-pip
 
       - name: Install raw Zenoh interoperability dependencies
         run: >-
@@ -398,6 +407,31 @@ jobs:
             -DWORK_DIR="$GITHUB_WORKSPACE/build/vcpkg-linux" \
             -DTRIPLET=x64-linux -DCMAKE_GENERATOR=Ninja \
             -P tests/vcpkg/validate_vcpkg_provisioning.cmake
+
+      - name: Run Python BufferPublisher against combined Zenoh+RocksDB fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --only-binary=:all: --break-system-packages nanobind==2.9.2 numpy==2.4.2 pytest==9.0.3
+          nanobind_dir="$(python3 -c 'import nanobind; print(nanobind.cmake_dir())')"
+          cmake -S . -B build/vcpkg-python-rocks -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug -DSITOS_BUILD_TESTS=ON -DSITOS_BUILD_PYTHON=ON \
+            -DSITOS_WITH_ZENOH=ON -DSITOS_WITH_ROCKSDB=ON -DSITOS_PYTHON_TEST_SUPPORT=ON \
+            -DCMAKE_PREFIX_PATH="$nanobind_dir" \
+            -DCMAKE_TOOLCHAIN_FILE="$RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_MANIFEST_DIR="$GITHUB_WORKSPACE" -DVCPKG_MANIFEST_FEATURES=rocksdb \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/build/vcpkg-linux/feature-installed"
+          cmake --build build/vcpkg-python-rocks --target _sitos sitos_python_buffer_publisher_fixture --parallel 2
+          extension="$(find build/vcpkg-python-rocks -maxdepth 1 -name '_sitos*.so' -print -quit)"
+          test -n "$extension"
+          cp "$extension" python/sitos/
+          export LD_LIBRARY_PATH="$PWD/build/vcpkg-python-rocks/_deps/zenohc-src/lib:${LD_LIBRARY_PATH:-}"
+          export PYTHONPATH="$PWD/python"
+          export SITOS_PYTHON_BUFFER_PUBLISHER_FIXTURE="$PWD/build/vcpkg-python-rocks/tests/sitos_python_buffer_publisher_fixture"
+          export SITOS_PYTHON_PUBLISHER_ROCKSDB=1
+          python3 -m pytest tests/python/test_buffer_publisher.py -q
+          rm -f python/sitos/_sitos*.so
 
       - name: Guard package discovery against hidden provisioning
         shell: bash

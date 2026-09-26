@@ -27,9 +27,23 @@ constexpr std::string_view kProtocolWrongEncoding =
     "ack protocol error: reply Encoding is not sitos.v1.ack";
 constexpr std::string_view kProtocolMalformed = "ack protocol error: malformed AckResultV1";
 
+std::string SanitizeAckDiagnostic(std::string_view input) {
+  std::string output;
+  output.reserve(std::min(input.size(), kAckResultMaxMessageLength));
+  for (const auto character : input) {
+    if (output.size() == kAckResultMaxMessageLength) break;
+    const auto byte = static_cast<unsigned char>(character);
+    output.push_back((byte >= 0x20 && byte <= 0x7E) || byte == '\t' || byte == '\n' || byte == '\r'
+                         ? character
+                         : '?');
+  }
+  return output;
+}
+
 std::string TimeoutMessage(const std::string& latest_message) {
   std::string message(kNoAckWithinDeadline);
   if (!latest_message.empty()) message += "; last transport error: " + latest_message;
+  if (message.size() > kAckResultMaxMessageLength) message.resize(kAckResultMaxMessageLength);
   return message;
 }
 
@@ -65,6 +79,7 @@ Result<AckResultV1> PollAcknowledgement(Transport& transport, std::string_view p
   if (!query_key) return R::Err(Status::InvalidArgument, std::string(kInvalidPrefix));
   std::error_code latest_cause;
   std::string latest_message;
+  bool transport_error_seen = latest_transport_error.has_value();
   if (latest_transport_error.has_value()) {
     latest_cause = latest_transport_error->cause;
     latest_message = latest_transport_error->message;
@@ -104,9 +119,10 @@ Result<AckResultV1> PollAcknowledgement(Transport& transport, std::string_view p
     }
     if (protocol_error) return R::Err(Status::Error, std::string(*protocol_error));
     if (observed) return R::Ok(std::move(*observed));
-    if (!get.IsOk()) {
+    if (!get.IsOk() && !transport_error_seen) {
       latest_cause = get.Error();
-      latest_message = std::string(get.Message());
+      latest_message = SanitizeAckDiagnostic(get.Message());
+      transport_error_seen = true;
     }
 
     const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline_at - Clock::now());
