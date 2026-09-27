@@ -530,6 +530,47 @@ TEST(BufferPublisherApiTest, FenceFailureDisconnectsPublisherAndTimeoutPreserves
   EXPECT_EQ(timeout.StatusCode(), Status::Timeout);
 }
 
+TEST(BufferPublisherApiTest, TerminalFailureTakesPrecedenceOverLocalValidation) {
+  auto transport = std::make_shared<MetadataTransport>();
+  transport->ack_status = Status::Error;
+  auto opened = BufferPublisher::Open(transport, ClientConfig{}, "sid", BufferClass::Durable);
+  ASSERT_TRUE(opened.IsOk());
+  auto publisher = std::move(opened).Value();
+  EXPECT_EQ(publisher.Push("", std::vector<std::byte>{std::byte{1}}).StatusCode(),
+            Status::InvalidKey);
+  ASSERT_TRUE(publisher.Push("value", std::vector<std::byte>{std::byte{1}}).IsOk());
+  ASSERT_EQ(publisher.Fence(FenceDurability::kApplied, std::chrono::milliseconds{100}).StatusCode(),
+            Status::Error);
+  const auto markers = transport->marker_count;
+  const auto last_key = transport->last_key;
+  EXPECT_EQ(publisher.Push("", std::vector<std::byte>{std::byte{2}}).StatusCode(),
+            Status::Disconnected);
+  EXPECT_EQ(publisher
+                .Fence(static_cast<FenceDurability>(2), std::chrono::milliseconds{100})
+                .StatusCode(),
+            Status::Disconnected);
+  EXPECT_EQ(transport->marker_count, markers);
+  EXPECT_EQ(transport->last_key, last_key);
+
+  auto ephemeral_transport = std::make_shared<MetadataTransport>();
+  ephemeral_transport->ack_status = Status::Error;
+  auto ephemeral_open =
+      BufferPublisher::Open(ephemeral_transport, ClientConfig{}, "sid", BufferClass::Ephemeral);
+  ASSERT_TRUE(ephemeral_open.IsOk());
+  auto ephemeral = std::move(ephemeral_open).Value();
+  EXPECT_EQ(
+      ephemeral.Fence(FenceDurability::kSynced, std::chrono::milliseconds{100}).StatusCode(),
+      Status::InvalidArgument);
+  ASSERT_TRUE(ephemeral.Push("value", std::vector<std::byte>{std::byte{1}}).IsOk());
+  ASSERT_EQ(ephemeral.Fence(FenceDurability::kApplied, std::chrono::milliseconds{100}).StatusCode(),
+            Status::Error);
+  const auto ephemeral_markers = ephemeral_transport->marker_count;
+  EXPECT_EQ(
+      ephemeral.Fence(FenceDurability::kSynced, std::chrono::milliseconds{100}).StatusCode(),
+      Status::Disconnected);
+  EXPECT_EQ(ephemeral_transport->marker_count, ephemeral_markers);
+}
+
 TEST(BufferPublisherApiTest, MoveTransfersUsabilityAndDisconnectsMovedFrom) {
   auto transport = std::make_shared<MetadataTransport>();
   auto first_open = BufferPublisher::Open(transport, ClientConfig{}, "sid", BufferClass::Durable);

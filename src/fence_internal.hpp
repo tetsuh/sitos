@@ -329,6 +329,8 @@ class FencePublisher {
   void SetLastSequenceForTesting(std::uint64_t sequence) noexcept;
   [[nodiscard]] std::uint64_t last_sequence() const noexcept;
   [[nodiscard]] bool is_exhausted() const noexcept;
+  /// False once Close() or a generation mismatch has terminally stopped admission.
+  [[nodiscard]] bool accepts_operations() const noexcept;
   [[nodiscard]] bool may_have_submitted() const noexcept;
   [[nodiscard]] bool WaiterPublished(const AckToken& token) const;
   [[nodiscard]] std::optional<std::uint64_t> PendingThrough(const AckToken& token) const;

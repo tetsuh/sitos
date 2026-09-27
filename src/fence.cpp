@@ -1193,6 +1193,11 @@ bool fence_internal::FencePublisher::is_exhausted() const noexcept {
   return exhausted_;
 }
 
+bool fence_internal::FencePublisher::accepts_operations() const noexcept {
+  std::scoped_lock lock(wait_lifecycle_mutex_);
+  return accepting_operations_;
+}
+
 bool fence_internal::FencePublisher::may_have_submitted() const noexcept {
   std::scoped_lock lock(lane_mutex_);
   return may_have_submitted_;

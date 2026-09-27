@@ -413,7 +413,10 @@ Result<BufferPublisher> BufferPublisher::Open(std::shared_ptr<Transport> transpo
 }
 
 Result<void> BufferPublisher::Push(std::string_view key, std::span<const std::byte> value) {
-  if (!impl_) return Result<void>::Err(Status::Disconnected);
+  // A terminally failed Publisher reports Disconnected before any local validation.
+  if (!impl_ || !impl_->publisher->accepts_operations()) {
+    return Result<void>::Err(Status::Disconnected);
+  }
   const auto full_key = BuildBufferKey(impl_->prefix, impl_->sid, impl_->buffer_class, key);
   if (!full_key.has_value()) return Result<void>::Err(Status::InvalidKey, "invalid buffer key");
   return impl_->publisher->SubmitData(*full_key, value, Encoding{"zenoh/bytes"});
@@ -421,7 +424,9 @@ Result<void> BufferPublisher::Push(std::string_view key, std::span<const std::by
 
 Result<FenceReceipt> BufferPublisher::Fence(FenceDurability durability,
                                             std::chrono::milliseconds timeout) {
-  if (!impl_) return Result<FenceReceipt>::Err(Status::Disconnected);
+  if (!impl_ || !impl_->publisher->accepts_operations()) {
+    return Result<FenceReceipt>::Err(Status::Disconnected);
+  }
   if (durability != FenceDurability::kApplied && durability != FenceDurability::kSynced) {
     return Result<FenceReceipt>::Err(Status::InvalidArgument, "invalid fence durability");
   }
