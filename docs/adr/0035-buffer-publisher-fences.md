@@ -26,8 +26,9 @@ Python exposes the same APPLIED/SYNCED values and receipt fields.
 
 ## Consequences
 
-* Good: same-SID recreation receives a fresh generation and old publishers fail closed under
-  ADR-0029 without rebinding.
+* Good: same-SID recreation receives a fresh generation, and old publishers' `Fence` operations
+  fail closed under ADR-0029 without rebinding. Delayed `Push` data remains outside that
+  generation-fencing guarantee.
 * Good: C++ and Python expose one explicit, parity-preserving receipt mapping over the existing
   marker and acknowledgement contracts.
 * Bad: metadata payloads gain one backward-compatible wire-v1 field and older clients cannot
