@@ -91,8 +91,8 @@ Subscriptions remain outside Issue #23. Issue #17 maps acknowledged remote statu
 
 ### 2.2 BufferPublisher
 
-> **Planned, not yet normative:** Issue/ADR #107/ADR-0035 owns this public mechanism. Implementers
-> must not treat this outline as a finalized contract.
+> **Normative implementation:** Accepted ADR-0035 owns this public mechanism; Issue #107
+> implements it.
 
 `BufferPublisher` mirrors the C++ explicit byte-publication API. Construction binds one active
 Session generation by querying `meta/session/<sid>` with the configured query timeout; a missing

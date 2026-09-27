@@ -392,9 +392,8 @@ ADR-0029 for exact validation, lifecycle, bounded-state, result, and topology ru
 
 ### 7.1 `meta/session/<sid>`
 
-> **Planned, not yet normative:** Issue/ADR #107/ADR-0035 owns the generation-bound
-> BufferPublisher metadata mechanism. Implementers must not treat this outline as a finalized
-> contract.
+> **Normative implementation:** Accepted ADR-0035 owns the generation-bound BufferPublisher
+> metadata mechanism; Issue #107 implements it.
 
 For checking session existence and debugging. StorageNode creates it on CreateSession.
 The value is JSON encoded as payload v1 STR:

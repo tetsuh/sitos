@@ -381,8 +381,8 @@ disengaged.
 
 ## 4. BufferPublisher — explicit buffer publication fences
 
-> **Planned, not yet normative:** Issue/ADR #107/ADR-0035 owns this public mechanism. Implementers
-> must not treat this outline as a finalized contract.
+> **Normative implementation:** Accepted ADR-0035 owns this public mechanism; Issue #107
+> implements it.
 
 ```cpp
 enum class FenceDurability { kApplied = 0, kSynced = 1 };
