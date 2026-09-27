@@ -50,7 +50,7 @@ class FencePublisherHarness {
   }
   void Close() { publisher_->Close(); }
   std::size_t ActiveWaits() const { return publisher_->ActiveWaitsForTesting(); }
-  bool AcceptingOperations() const { return publisher_->AcceptingOperationsForTesting(); }
+  bool AcceptingOperations() const { return publisher_->accepts_operations(); }
   void GateNextOperation() { publisher_->GateNextOperationForTesting(); }
   void WaitForGatedOperation() { publisher_->WaitForGatedOperationForTesting(); }
   void ReleaseGatedOperation() { publisher_->ReleaseGatedOperationForTesting(); }

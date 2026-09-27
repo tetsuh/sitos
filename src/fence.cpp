@@ -1220,11 +1220,6 @@ std::size_t fence_internal::FencePublisher::ActiveWaitsForTesting() const {
   return active_operations_;
 }
 
-bool fence_internal::FencePublisher::AcceptingOperationsForTesting() const {
-  std::scoped_lock lock(wait_lifecycle_mutex_);
-  return accepting_operations_;
-}
-
 void fence_internal::FencePublisher::GateNextOperationForTesting() {
   std::scoped_lock lock(operation_test_mutex_);
   operation_test_gate_enabled_ = true;

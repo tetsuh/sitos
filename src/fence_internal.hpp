@@ -335,7 +335,6 @@ class FencePublisher {
   [[nodiscard]] bool WaiterPublished(const AckToken& token) const;
   [[nodiscard]] std::optional<std::uint64_t> PendingThrough(const AckToken& token) const;
   [[nodiscard]] std::size_t ActiveWaitsForTesting() const;
-  [[nodiscard]] bool AcceptingOperationsForTesting() const;
   void GateNextOperationForTesting();
   void WaitForGatedOperationForTesting();
   void ReleaseGatedOperationForTesting();
