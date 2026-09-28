@@ -18,10 +18,52 @@
 #include "sitos/storage_node.hpp"
 #include "sitos/transport.hpp"
 
+namespace {
+
+// The optional fourth argument selects a deterministic receiver failure for the Python
+// error-mapping tests: "put-false" rejects every durable buffer write, and "sync-error" /
+// "sync-outcome-unknown" report power-loss durability but fail every Sync() with that Status.
+enum class FixtureFailure { kNone, kPutFalse, kSyncError, kSyncOutcomeUnknown };
+
+FixtureFailure ParseFixtureFailure(std::string_view mode) {
+  if (mode == "put-false") return FixtureFailure::kPutFalse;
+  if (mode == "sync-error") return FixtureFailure::kSyncError;
+  if (mode == "sync-outcome-unknown") return FixtureFailure::kSyncOutcomeUnknown;
+  return FixtureFailure::kNone;
+}
+
+class FailingBufferEngine final : public sitos::InMemoryEngine {
+ public:
+  explicit FailingBufferEngine(FixtureFailure failure) : failure_(failure) {}
+
+  bool Put(std::string_view key, sitos::Bytes value) override {
+    if (failure_ == FixtureFailure::kPutFalse) return false;
+    return InMemoryEngine::Put(key, value);
+  }
+
+  sitos::SyncCapability GetSyncCapability() const noexcept override {
+    return sitos::SyncCapability::kPowerLossDurable;
+  }
+
+  sitos::Result<void> Sync() override {
+    const auto status = failure_ == FixtureFailure::kSyncOutcomeUnknown
+                            ? sitos::Status::OutcomeUnknown
+                            : sitos::Status::Error;
+    return sitos::Result<void>::Err(status, "injected durable buffer sync failure");
+  }
+
+ private:
+  FixtureFailure failure_;
+};
+
+}  // namespace
+
 int main(int argc, char** argv) {
   const std::string prefix = argc > 1 ? argv[1] : "sitos/python-buffer-fixture";
   const std::string sid = argc > 2 ? argv[2] : "python";
   const std::string root = argc > 3 ? argv[3] : "";
+  const FixtureFailure failure =
+      ParseFixtureFailure(argc > 4 ? std::string_view{argv[4]} : std::string_view{});
   auto transport_result = sitos::OpenZenohTransport();
   if (!transport_result.IsOk()) {
     std::cerr << transport_result.Message() << '\n';
@@ -31,7 +73,12 @@ int main(int argc, char** argv) {
   sitos::StorageNode node(*transport);
   auto started = node.Start(
       std::make_shared<sitos::InMemoryEngine>(),
-      {.prefix = prefix, .durable_buffer_engine_factory = [root](std::string_view sid_value) {
+      {.prefix = prefix,
+       .durable_buffer_engine_factory = [root, failure](std::string_view sid_value) {
+         if (failure != FixtureFailure::kNone) {
+           return sitos::Result<std::unique_ptr<sitos::StorageEngine>>::Ok(
+               std::make_unique<FailingBufferEngine>(failure));
+         }
 #if SITOS_WITH_ROCKSDB
          if (!root.empty()) {
            auto opened = sitos::RocksDBEngine::Open(root + "/" + std::string(sid_value));

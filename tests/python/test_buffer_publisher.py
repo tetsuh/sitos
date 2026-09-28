@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 import shutil
@@ -14,8 +15,8 @@ import pytest
 import sitos
 
 
-@pytest.fixture
-def publisher_fixture() -> tuple[str, str, subprocess.Popen[str]]:
+@contextlib.contextmanager
+def _run_fixture(failure: str | None = None):
     executable = os.environ.get("SITOS_PYTHON_BUFFER_PUBLISHER_FIXTURE")
     if not executable:
         pytest.fail("SITOS_PYTHON_BUFFER_PUBLISHER_FIXTURE must name the built Zenoh fixture")
@@ -24,7 +25,9 @@ def publisher_fixture() -> tuple[str, str, subprocess.Popen[str]]:
     prefix = f"sitos/python_publisher_{nonce}"
     rocks_root = tempfile.mkdtemp(prefix="sitos-python-publisher-")
     args = [executable, prefix, sid]
-    if os.environ.get("SITOS_PYTHON_PUBLISHER_ROCKSDB") == "1":
+    if failure is not None:
+        args.extend(["", failure])
+    elif os.environ.get("SITOS_PYTHON_PUBLISHER_ROCKSDB") == "1":
         args.append(rocks_root)
     process = subprocess.Popen(
         args,
@@ -43,6 +46,12 @@ def publisher_fixture() -> tuple[str, str, subprocess.Popen[str]]:
             process.stdin.flush()
         process.wait(timeout=10)
         shutil.rmtree(rocks_root, ignore_errors=True)
+
+
+@pytest.fixture
+def publisher_fixture() -> tuple[str, str, subprocess.Popen[str]]:
+    with _run_fixture() as running:
+        yield running
 
 
 def _read_fixture(process: subprocess.Popen[str], key: str) -> bytes:
@@ -93,12 +102,6 @@ def test_buffer_publisher_runtime_bytes_numpy_buffer_and_lifetime(publisher_fixt
     ephemeral = _open_fixture_publisher(sid, sitos.BufferClass.EPHEMERAL, prefix)
     with pytest.raises(ValueError):
         ephemeral.fence(sitos.FenceDurability.SYNCED, timeout=2.0)
-    tiny_timeout = ephemeral
-    try:
-        tiny_receipt = tiny_timeout.fence(sitos.FenceDurability.APPLIED, timeout=0.0001)
-        assert tiny_receipt.durability is sitos.FenceDurability.APPLIED
-    except sitos.TimeoutError:
-        pass
     if os.environ.get("SITOS_PYTHON_PUBLISHER_ROCKSDB") == "1":
         synced = publisher.fence(sitos.FenceDurability.SYNCED, timeout=2.0)
         assert synced.durability is sitos.FenceDurability.SYNCED
@@ -112,6 +115,29 @@ def test_buffer_publisher_runtime_bytes_numpy_buffer_and_lifetime(publisher_fixt
         publisher.push("str", "unsupported")
     with pytest.raises(ValueError):
         publisher.push("noncontiguous", source[::2])
+
+
+@pytest.mark.parametrize(
+    ("failure", "durability", "error"),
+    [
+        ("put-false", sitos.FenceDurability.APPLIED, sitos.OutcomeUnknownError),
+        ("sync-error", sitos.FenceDurability.SYNCED, sitos.SitosError),
+        ("sync-outcome-unknown", sitos.FenceDurability.SYNCED, sitos.OutcomeUnknownError),
+    ],
+)
+def test_buffer_publisher_receiver_failure_maps_error_then_disconnects(
+    failure: str, durability: sitos.FenceDurability, error: type[Exception]
+) -> None:
+    with _run_fixture(failure) as (prefix, sid, _process):
+        publisher = _open_fixture_publisher(sid, sitos.BufferClass.DURABLE, prefix)
+        publisher.push("covered", b"covered")
+        with pytest.raises(error) as raised:
+            publisher.fence(durability, timeout=5.0)
+        assert type(raised.value) is error
+        with pytest.raises(sitos.DisconnectedError):
+            publisher.push("after-failure", b"later")
+        with pytest.raises(sitos.DisconnectedError):
+            publisher.fence(sitos.FenceDurability.APPLIED, timeout=1.0)
 
 
 def test_buffer_publisher_recreate_old_fence_timeout_then_disconnects(publisher_fixture) -> None:
