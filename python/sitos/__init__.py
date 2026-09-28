@@ -3,6 +3,7 @@
 from . import _sitos
 from .cache import ParamCache
 from .node import InMemoryEngine, SessionView, StorageNode
+from .publisher import BufferClass, BufferPublisher, FenceDurability, FenceReceipt
 from .store import (
     DisconnectedError,
     NotFoundError,
@@ -27,6 +28,10 @@ __all__ = [
     "InMemoryEngine",
     "StorageNode",
     "SessionView",
+    "BufferClass",
+    "BufferPublisher",
+    "FenceDurability",
+    "FenceReceipt",
     "SitosError",
     "NotFoundError",
     "TypeMismatchError",

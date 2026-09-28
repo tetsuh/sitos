@@ -23,9 +23,13 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", type=Path, required=True)
     args = parser.parse_args()
-    helper = args.source_root.resolve() / "cmake" / "StageZenohRuntime.cmake"
+    source_root = args.source_root.resolve()
+    helper = source_root / "cmake" / "StageZenohRuntime.cmake"
     if not helper.is_file():
         raise AssertionError(f"runtime staging helper is absent: {helper}")
+    cmake = (source_root / "CMakeLists.txt").read_text(encoding="utf-8")
+    if "sitos_copy_zenohc(_sitos)" not in cmake:
+        raise AssertionError("Python _sitos target does not stage the Zenoh runtime")
 
     with tempfile.TemporaryDirectory(prefix="sitos-zenoh-stage-") as raw_directory:
         root = Path(raw_directory)

@@ -12,6 +12,16 @@ FetchContent_MakeAvailable(googletest)
 
 include(GoogleTest)
 
+if(TARGET _sitos)
+  find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+  add_test(
+    NAME PythonBindingImportTest
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/python/import_extension.py"
+            "$<TARGET_FILE_DIR:_sitos>")
+  set_tests_properties(PythonBindingImportTest PROPERTIES
+    ENVIRONMENT "PYTHONPATH=$<TARGET_FILE_DIR:_sitos>")
+endif()
+
 set(SITOS_FIXTURE_DIR "${CMAKE_SOURCE_DIR}/tests/fixtures/payload_v1")
 
 # Issue #158 fixed-name Zenoh-OFF Fence tests. Keep these as ordinary TEST/TEST_F
@@ -86,6 +96,8 @@ add_sitos_public_header_compile_test(
   sitos_rocksdb_engine_header_compile_test consumer/rocksdb_engine_header_compile.cpp)
 add_sitos_public_header_compile_test(
   sitos_storage_node_header_compile_test consumer/storage_node_header_compile.cpp)
+add_sitos_public_header_compile_test(
+  sitos_buffer_publisher_header_compile_test consumer/buffer_publisher_header_compile.cpp)
 if(SITOS_WITH_ZENOH)
   sitos_copy_zenohc(sitos_param_store_header_compile_test)
   sitos_copy_zenohc(sitos_param_cache_header_compile_test)
@@ -181,6 +193,11 @@ add_executable(sitos_key_test unit/key_test.cpp)
 target_link_libraries(sitos_key_test PRIVATE GTest::gtest_main sitos::sitos)
 sitos_enable_warnings(sitos_key_test)
 gtest_add_tests(TARGET sitos_key_test SOURCES unit/key_test.cpp)
+
+add_executable(sitos_buffer_publisher_api_test unit/buffer_publisher_api_test.cpp)
+target_link_libraries(sitos_buffer_publisher_api_test PRIVATE GTest::gtest_main sitos::sitos)
+sitos_enable_warnings(sitos_buffer_publisher_api_test)
+gtest_add_tests(TARGET sitos_buffer_publisher_api_test SOURCES unit/buffer_publisher_api_test.cpp)
 
 # sitos_storage_engine_contract_test and sitos_in_memory_engine_test are
 # intentionally NOT migrated to gtest_add_tests: their TEST_P cases come from
@@ -463,6 +480,41 @@ if(SITOS_WITH_ZENOH)
     TARGET sitos_fence_zenoh_integration_test
     SOURCES integration/fence_test.cpp)
 
+  add_executable(sitos_buffer_publisher_zenoh_integration_test
+    integration/buffer_publisher_test.cpp)
+  target_link_libraries(sitos_buffer_publisher_zenoh_integration_test
+    PRIVATE GTest::gtest_main sitos::sitos)
+  target_include_directories(sitos_buffer_publisher_zenoh_integration_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+  sitos_enable_warnings(sitos_buffer_publisher_zenoh_integration_test)
+  sitos_copy_zenohc(sitos_buffer_publisher_zenoh_integration_test)
+  gtest_add_tests(
+    TARGET sitos_buffer_publisher_zenoh_integration_test
+    SOURCES integration/buffer_publisher_test.cpp)
+
+  add_executable(sitos_python_buffer_publisher_fixture
+    integration/python_buffer_publisher_fixture.cpp)
+  target_link_libraries(sitos_python_buffer_publisher_fixture PRIVATE sitos::sitos)
+  if(SITOS_WITH_ROCKSDB)
+    target_compile_definitions(sitos_python_buffer_publisher_fixture PRIVATE SITOS_WITH_ROCKSDB=1)
+  endif()
+  sitos_enable_warnings(sitos_python_buffer_publisher_fixture)
+  sitos_copy_zenohc(sitos_python_buffer_publisher_fixture)
+
+  if(SITOS_WITH_ROCKSDB)
+    add_executable(sitos_buffer_publisher_rocksdb_integration_test
+      integration/rocksdb_buffer_publisher_test.cpp)
+    target_link_libraries(sitos_buffer_publisher_rocksdb_integration_test
+      PRIVATE GTest::gtest_main sitos::sitos)
+    sitos_enable_warnings(sitos_buffer_publisher_rocksdb_integration_test)
+    sitos_copy_zenohc(sitos_buffer_publisher_rocksdb_integration_test)
+    gtest_add_tests(
+      TARGET sitos_buffer_publisher_rocksdb_integration_test
+      SOURCES integration/rocksdb_buffer_publisher_test.cpp)
+    set_tests_properties(
+      BufferPublisherRocksDbIntegrationTest.SyncedFenceSurvivesCloseAndReopen
+      PROPERTIES RUN_SERIAL TRUE TIMEOUT 120)
+  endif()
+
   add_test(
     NAME FenceRawZenohInteropTest.QualifiesPayloadTransparencyAndControlIsolation
     COMMAND "${Python3_EXECUTABLE}" -m pytest -q
@@ -471,6 +523,7 @@ if(SITOS_WITH_ZENOH)
   set_tests_properties(
     FenceZenohIntegrationTest.QualifiesTopologiesQosAndControlIsolation
     FenceZenohIntegrationTest.QualifiesPublicParamCacheLocalDelivery
+    BufferPublisherZenohIntegrationTest.AppliedFenceAndEphemeralValidation
     FenceRawZenohInteropTest.QualifiesPayloadTransparencyAndControlIsolation
     PROPERTIES RUN_SERIAL TRUE TIMEOUT 120)
   set_tests_properties(

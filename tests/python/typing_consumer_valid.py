@@ -32,3 +32,13 @@ def accepts_store_error(error: StoreSitosError) -> None:
 
 def _wait_for_local_delivery(cache: sitos.ParamCache) -> None:
     cache.wait_for_local_delivery(timeout_ms=1000)
+
+
+def _buffer_publisher_surface(publisher: sitos.BufferPublisher) -> None:
+    publisher.push("payload", b"bytes")
+    applied: sitos.FenceReceipt = publisher.fence(sitos.FenceDurability.APPLIED, timeout=1.0)
+    synced: sitos.FenceReceipt = publisher.fence(sitos.FenceDurability.SYNCED, timeout=1.0)
+    sequence: int = applied.through_publish_sequence
+    durability: sitos.FenceDurability = synced.durability
+    assert sequence >= 0
+    assert durability in (sitos.FenceDurability.APPLIED, sitos.FenceDurability.SYNCED)

@@ -223,6 +223,9 @@ class Transport {
   }
 
   /// Put a value at the given key expression.
+  ///
+  /// `payload` is valid only for the duration of this call. An implementation that retains or
+  /// uses it asynchronously must copy or otherwise transfer ownership before returning.
   virtual Result<void> Put(std::string_view key, std::span<const std::byte> payload,
                            Encoding encoding, PutOptions options) = 0;
 

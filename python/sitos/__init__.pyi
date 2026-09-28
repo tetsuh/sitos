@@ -11,6 +11,12 @@ from ._sitos import (
     encode_value as encode_value,
 )
 from .cache import ParamCache as ParamCache
+from .publisher import (
+    BufferClass as BufferClass,
+    BufferPublisher as BufferPublisher,
+    FenceDurability as FenceDurability,
+    FenceReceipt as FenceReceipt,
+)
 from .node import (
     InMemoryEngine as InMemoryEngine,
     SessionView as SessionView,
@@ -24,6 +30,10 @@ __all__ = [
     "encode_value",
     "ParamCache",
     "ParamStore",
+    "BufferClass",
+    "BufferPublisher",
+    "FenceDurability",
+    "FenceReceipt",
     "InMemoryEngine",
     "StorageNode",
     "SessionView",

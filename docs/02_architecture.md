@@ -300,6 +300,14 @@ before returning and retains no Session record or other resource after enumerati
 > #158 implements the shared primitive, #99 exposes it through ParamCache local-delivery waits, and
 > #107 consumes it later for synchronized buffer publication.
 
+> **Normative implementation:** Accepted ADR-0035 owns the BufferPublisher discovery and receipt
+> mechanism; Issue #107 implements it.
+
+* BufferPublisher discovery is bound to the active Session incarnation returned by the existing
+  `meta/session/<sid>` metadata query. The `generation_uuid` is immutable for one publisher;
+  same-SID recreation creates a new value; an old publisher's `Fence` operations fail closed,
+  while delayed `Push` data may still reach the replacement Session. ADR-0035 owns this public
+  discovery and receipt mapping without changing ADR-0029 ordering semantics.
 * Same-publisher Fence ordering is not inferred from a Zenoh session alone. ADR-0029 defines a
   sitos logical Publisher as a serialized UUIDv4-and-sequence lane whose covered data and marker
   use one Fence-capable Transport generation, reliable delivery, `Block` congestion control,

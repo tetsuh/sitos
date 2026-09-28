@@ -69,6 +69,24 @@ jobs:
         run: python3 -B tests/release/test_release_configuration.py -v
       - name: Install hash-locked wheel tools
         run: 'python -m pip install --only-binary=:all: --require-hashes -r .github/wheel-tools-requirements.txt'
+      - name: Build runner-visible manylinux BufferPublisher fixture
+        run: |
+          set -eu
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/project" \
+            -w /project \
+            "$CIBW_MANYLINUX_X86_64_IMAGE" \
+            bash -ceu '
+              bash /project/scripts/build_manylinux_zenohc.sh /opt/zenohc-stage
+              cp /project/.github/wheel-tools-requirements.txt /opt/zenohc-stage/
+              cmake -S /project -B /tmp/sitos-buffer-fixture -DCMAKE_BUILD_TYPE=Release -DSITOS_ZENOHC_ROOT=/opt/zenohc-stage -DSITOS_WITH_ZENOH=ON -DSITOS_BUILD_TESTS=ON -DSITOS_BUILD_PYTHON=OFF -DSITOS_BUILD_EXAMPLES=OFF -DSITOS_BUILD_BENCHMARKS=OFF
+              cmake --build /tmp/sitos-buffer-fixture --target sitos_python_buffer_publisher_fixture --parallel 2
+              mkdir -p /project/build/wheel-buffer-fixture/lib
+              cp /tmp/sitos-buffer-fixture/tests/sitos_python_buffer_publisher_fixture /project/build/wheel-buffer-fixture/
+              cp /opt/zenohc-stage/lib/libzenohc.so /project/build/wheel-buffer-fixture/lib/
+              patchelf --set-rpath '\''$ORIGIN/lib'\'' /project/build/wheel-buffer-fixture/sitos_python_buffer_publisher_fixture
+            '
+          test -x "$GITHUB_WORKSPACE/build/wheel-buffer-fixture/sitos_python_buffer_publisher_fixture"
       - name: Build and repair wheel
         run: python -m cibuildwheel --output-dir wheelhouse python
       - name: Validate contents, native dependencies, and clean installation
@@ -76,6 +94,7 @@ jobs:
           set -eu
           tests_dir="$PWD/tests/python"
           examples_driver="$PWD/tests/examples/test_python_examples.py"
+          test -x "$GITHUB_WORKSPACE/build/wheel-buffer-fixture/sitos_python_buffer_publisher_fixture"
           for wheel in wheelhouse/*.whl; do
             python scripts/check_wheel.py "$wheel" --platform linux
             docker run --rm -v "$PWD:/project" -w /project "$CIBW_MANYLINUX_X86_64_IMAGE" \
@@ -116,6 +135,10 @@ jobs:
               -m pytest "$tests_dir/test_import.py" "$tests_dir/test_param_value.py" \
               "$tests_dir/test_numpy_zero_copy.py" "$tests_dir/test_param_store.py" \
               "$tests_dir/test_param_cache.py" "$tests_dir/test_param_cache_live.py" -q)
+            (cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH SITOS_PYTHON_BUFFER_PUBLISHER_FIXTURE="$GITHUB_WORKSPACE/build/wheel-buffer-fixture/sitos_python_buffer_publisher_fixture" "$venv/bin/python" \
+              -m pytest "$tests_dir/test_buffer_publisher.py" -q)
+            (cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH "$venv/bin/python" \
+              -m pytest "$tests_dir/test_buffer_publisher.py" -k 'enum_surface or missing_session' -q)
             (cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH SITOS_PYTHON_NODE_LIVE=1 "$venv/bin/python" \
               -m pytest "$tests_dir/test_storage_node.py" "$tests_dir/test_storage_node_gil.py" -q)
             (cd /tmp && env -u LD_LIBRARY_PATH -u PYTHONPATH SITOS_PYTHON_NODE_LIVE=1 "$venv/bin/python" \
@@ -125,7 +148,7 @@ jobs:
               --python "$venv/bin/python" --tests-dir "$tests_dir"
             docker run --rm -v "$PWD:/project:ro" -w /tmp \
               rockylinux/rockylinux@sha256:e372170ca8630f0f03e9b70fdd0bf4a3ce3426b0de7cdba615f06337389de176 \
-              bash -ceu 'dnf -y install python3.12 python3.12-pip; awk "/^numpy==/{print; capture=1; next} capture && /^[[:space:]]+--hash=sha256:/{print; next} capture{exit}" /project/.github/wheel-tools-requirements.txt > /tmp/quick-requirements.txt; awk "NR == 1 { if (\$0 !~ /^numpy==/) exit 1; next } \$0 !~ /^[[:space:]]+--hash=sha256:/ { exit 1 } END { if (NR < 2) exit 1 }" /tmp/quick-requirements.txt; python3.12 -m venv /tmp/sitos-quick; /tmp/sitos-quick/bin/python -m pip install --only-binary=:all: --require-hashes -r /tmp/quick-requirements.txt; sha256sum /project/'"${wheel}"'; /tmp/sitos-quick/bin/python -m pip install --no-deps --only-binary=:all: /project/'"${wheel}"'; cd /tmp; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-quick/bin/python /project/tests/examples/test_python_examples.py quickstart; python3.12 -m venv /tmp/sitos-wheel; /tmp/sitos-wheel/bin/python -m pip install --only-binary=:all: --require-hashes -r /project/.github/wheel-tools-requirements.txt; /tmp/sitos-wheel/bin/python -m pip install --no-deps --only-binary=:all: /project/'"${wheel}"'; /tmp/sitos-wheel/bin/python -m pip install --only-binary=:all: --require-hashes -r /project/tests/interop/requirements.txt; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python /project/tests/examples/test_python_examples.py numpy-lut; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python /project/tests/examples/test_python_examples.py raw-zenoh; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python /project/tests/examples/test_python_examples.py failure-cleanup; /tmp/sitos-wheel/bin/python /project/tests/examples/test_python_examples.py wheel-boundary --wheel /project/'"${wheel}"'; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python -m pytest /project/tests/python/test_import.py /project/tests/python/test_param_value.py /project/tests/python/test_numpy_zero_copy.py /project/tests/python/test_param_store.py /project/tests/python/test_param_cache.py /project/tests/python/test_param_cache_live.py -q; env -u LD_LIBRARY_PATH -u PYTHONPATH SITOS_PYTHON_NODE_LIVE=1 /tmp/sitos-wheel/bin/python -m pytest /project/tests/python/test_storage_node.py /project/tests/python/test_storage_node_gil.py -q; env -u LD_LIBRARY_PATH -u PYTHONPATH SITOS_PYTHON_NODE_LIVE=1 /tmp/sitos-wheel/bin/python -m pytest /project/tests/python/test_storage_node_live.py -q'
+              bash -ceu 'dnf -y install python3.12 python3.12-pip; awk "/^numpy==/{print; capture=1; next} capture && /^[[:space:]]+--hash=sha256:/{print; next} capture{exit}" /project/.github/wheel-tools-requirements.txt > /tmp/quick-requirements.txt; awk "NR == 1 { if (\$0 !~ /^numpy==/) exit 1; next } \$0 !~ /^[[:space:]]+--hash=sha256:/ { exit 1 } END { if (NR < 2) exit 1 }" /tmp/quick-requirements.txt; python3.12 -m venv /tmp/sitos-quick; /tmp/sitos-quick/bin/python -m pip install --only-binary=:all: --require-hashes -r /tmp/quick-requirements.txt; sha256sum /project/'"${wheel}"'; /tmp/sitos-quick/bin/python -m pip install --no-deps --only-binary=:all: /project/'"${wheel}"'; cd /tmp; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-quick/bin/python /project/tests/examples/test_python_examples.py quickstart; python3.12 -m venv /tmp/sitos-wheel; /tmp/sitos-wheel/bin/python -m pip install --only-binary=:all: --require-hashes -r /project/.github/wheel-tools-requirements.txt; /tmp/sitos-wheel/bin/python -m pip install --no-deps --only-binary=:all: /project/'"${wheel}"'; /tmp/sitos-wheel/bin/python -m pip install --only-binary=:all: --require-hashes -r /project/tests/interop/requirements.txt; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python /project/tests/examples/test_python_examples.py numpy-lut; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python /project/tests/examples/test_python_examples.py raw-zenoh; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python /project/tests/examples/test_python_examples.py failure-cleanup; /tmp/sitos-wheel/bin/python /project/tests/examples/test_python_examples.py wheel-boundary --wheel /project/'"${wheel}"'; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python -m pytest /project/tests/python/test_import.py /project/tests/python/test_param_value.py /project/tests/python/test_numpy_zero_copy.py /project/tests/python/test_param_store.py /project/tests/python/test_param_cache.py /project/tests/python/test_param_cache_live.py -q; env -u LD_LIBRARY_PATH -u PYTHONPATH SITOS_PYTHON_BUFFER_PUBLISHER_FIXTURE=/project/build/wheel-buffer-fixture/sitos_python_buffer_publisher_fixture /tmp/sitos-wheel/bin/python -m pytest /project/tests/python/test_buffer_publisher.py -q; env -u LD_LIBRARY_PATH -u PYTHONPATH /tmp/sitos-wheel/bin/python -m pytest /project/tests/python/test_buffer_publisher.py -k "enum_surface or missing_session" -q; env -u LD_LIBRARY_PATH -u PYTHONPATH SITOS_PYTHON_NODE_LIVE=1 /tmp/sitos-wheel/bin/python -m pytest /project/tests/python/test_storage_node.py /project/tests/python/test_storage_node_gil.py -q; env -u LD_LIBRARY_PATH -u PYTHONPATH SITOS_PYTHON_NODE_LIVE=1 /tmp/sitos-wheel/bin/python -m pytest /project/tests/python/test_storage_node_live.py -q'
           done
       # actions/upload-artifact v6.0.0
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
@@ -193,6 +216,19 @@ jobs:
           $repoRoot = (Resolve-Path .).Path
           $tests = (Resolve-Path tests\python).Path
           $typingValidator = (Resolve-Path scripts\validate_mypy_consumers.py).Path
+          $fixtureBuild = Join-Path $env:RUNNER_TEMP "sitos-buffer-publisher-fixture"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $vcvars = "$vsPath\VC\Auxiliary\Build\vcvars64.bat"
+          $fixtureCommands = @(
+            "call `"$vcvars`""
+            "cmake -S `"$repoRoot`" -B `"$fixtureBuild`" -G Ninja -DCMAKE_BUILD_TYPE=Release -DSITOS_ZENOHC_ROOT=C:/sitos-zenohc-stage -DSITOS_WITH_ZENOH=ON -DSITOS_BUILD_TESTS=ON -DSITOS_BUILD_PYTHON=OFF -DSITOS_BUILD_EXAMPLES=OFF -DSITOS_BUILD_BENCHMARKS=OFF"
+            "cmake --build `"$fixtureBuild`" --target sitos_python_buffer_publisher_fixture --parallel 2"
+          ) -join " && "
+          cmd /c $fixtureCommands
+          if ($LASTEXITCODE -ne 0) { throw "BufferPublisher fixture build failed: $LASTEXITCODE" }
+          $publisherFixture = Join-Path $fixtureBuild "tests\sitos_python_buffer_publisher_fixture.exe"
+          if (!(Test-Path -LiteralPath $publisherFixture)) { throw "BufferPublisher fixture executable was not found: $publisherFixture" }
           Get-ChildItem wheelhouse\*.whl | ForEach-Object {
             Invoke-Native python scripts/check_wheel.py $_.FullName --platform windows
             Invoke-Native delvewheel show $_.FullName
@@ -248,6 +284,10 @@ jobs:
               Invoke-Native "$venv\Scripts\python.exe" -m pytest `
                 "$tests\test_storage_node.py" `
                 "$tests\test_storage_node_gil.py" -q
+              $env:SITOS_PYTHON_BUFFER_PUBLISHER_FIXTURE = $publisherFixture
+              Invoke-Native "$venv\Scripts\python.exe" -m pytest "$tests\test_buffer_publisher.py" -q
+              Remove-Item Env:SITOS_PYTHON_BUFFER_PUBLISHER_FIXTURE -ErrorAction SilentlyContinue
+              Invoke-Native "$venv\Scripts\python.exe" -m pytest "$tests\test_buffer_publisher.py" -k "enum_surface or missing_session" -q
               Invoke-Native "$venv\Scripts\python.exe" -m pytest "$tests\test_storage_node_live.py" -q
               Remove-Item Env:SITOS_PYTHON_NODE_LIVE -ErrorAction SilentlyContinue
               Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
