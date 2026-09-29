@@ -131,13 +131,21 @@ def test_buffer_publisher_receiver_failure_maps_error_then_disconnects(
     with _run_fixture(failure) as (prefix, sid, _process):
         publisher = _open_fixture_publisher(sid, sitos.BufferClass.DURABLE, prefix)
         publisher.push("covered", b"covered")
-        with pytest.raises(error) as raised:
+        # Bind the exception with try/except rather than `pytest.raises(...) as`: the stored
+        # ExceptionInfo would keep this frame, and the failed publisher's Zenoh session, alive
+        # in a reference cycle until the cyclic GC runs, slowing later discovery (#186).
+        try:
             publisher.fence(durability, timeout=5.0)
-        assert type(raised.value) is error
+        except sitos.SitosError as caught:
+            raised_type: type[Exception] | None = type(caught)
+        else:
+            raised_type = None
+        assert raised_type is error
         with pytest.raises(sitos.DisconnectedError):
             publisher.push("after-failure", b"later")
         with pytest.raises(sitos.DisconnectedError):
             publisher.fence(sitos.FenceDurability.APPLIED, timeout=1.0)
+        del publisher
 
 
 def test_buffer_publisher_recreate_old_fence_timeout_then_disconnects(publisher_fixture) -> None:
