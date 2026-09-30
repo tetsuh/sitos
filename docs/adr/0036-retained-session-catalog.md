@@ -53,9 +53,14 @@ lost volatile state and an unavailable catalog as typed results, with a monotoni
   `orphaned_at`, `deleting_at`, `deleted_at`, and `failure` (sanitized: operation, error category,
   platform error code; never paths, parameter values, payloads, or application metadata).
 - Ephemeral-only Sessions have no record (ephemeral exclusion).
-- Migration: v0.5 defines schema 1 only. A missing, unknown, or newer `schema_version`, or any
-  record that fails validation, is a validation failure (D8). A future schema change requires a
-  new ADR that defines its migration.
+- First use: when `catalog/` does not exist and `sessions/` is absent or empty, `Start` creates
+  the catalog and writes `schema` and `instance` in one synchronized batch before validation. When
+  `catalog/` does not exist but `sessions/` holds any entry, the catalog is missing, not new, and
+  `Start` latches (D8) instead of creating one. An existing catalog is opened without
+  `create_if_missing`, and startup never writes a missing `schema` key into it.
+- Migration: v0.5 defines schema 1 only. In an existing catalog, a missing, unknown, or newer
+  `schema_version`, or any record that fails validation, is a validation failure (D8). A future
+  schema change requires a new ADR that defines its migration.
 
 ### D4. Transitions, linearization, and disk-sync points
 
@@ -65,7 +70,7 @@ durable record authoritative, fails the operation, and latches the catalog unava
 
 | Operation | Order |
 |---|---|
-| `CreateSession` (durable route) | write `active` record → create store directory and open engine → activate. A crash after the write leaves a record without a store; reconciliation makes it `orphaned` with an empty store. |
+| `CreateSession` (durable route) | write `active` record → create store directory and open engine → activate. If directory creation or `RocksDBEngine::Open` fails in the running process, the call fails with that error and the node runs the `CloseSession` deletion order below on the new generation (`deleting` → remove any partial directory → `deleted`, or `delete_failed`); it neither erases the record nor latches unless a catalog write fails. A crash after the `active` write instead leaves a record without a store, which reconciliation makes `orphaned` with an empty store. |
 | `RetainSession` | `StorageEngine::Sync` on the durable store → write `retained` → release snapshot and overlay. A Sync failure fails the call with no state change. |
 | `CloseSession` (durable route) | write `deleting` → reject new admissions and quiesce (existing `BeginClose`, fence `CloseAndWait`, `WaitForAdmission`) → release every engine and snapshot owner → remove the generation directory → write `deleted`. A removal failure writes `delete_failed` with sanitized diagnostics. |
 
