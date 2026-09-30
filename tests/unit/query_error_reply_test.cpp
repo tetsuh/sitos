@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include "sitos/transport.hpp"
+
 #include <cstddef>
 #include <optional>
 #include <span>
@@ -68,6 +70,16 @@ TEST(QueryErrorReplyTest, RoundTripsEveryTypedStatus) {
     const std::string payload = EncodeQueryErrorReply(status);
     EXPECT_EQ(DecodeQueryErrorReply(Bytes(payload)), status);
   }
+}
+
+TEST(QueryErrorReplyTest, QueryWithoutNativeRequestCannotSendAnErrorReply) {
+  // Runs in Zenoh-ON and Zenoh-OFF builds: validation precedes the native send,
+  // and a query that has no native request reports a failure instead of replying.
+  sitos::TransportQuery query;
+  EXPECT_EQ(query.ReplyError(Status::NotFound).StatusCode(), Status::InvalidArgument);
+  const auto sent = query.ReplyError(Status::StateLost);
+  EXPECT_FALSE(sent.IsOk());
+  EXPECT_NE(sent.StatusCode(), Status::InvalidArgument);
 }
 
 }  // namespace

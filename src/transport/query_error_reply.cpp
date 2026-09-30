@@ -6,6 +6,8 @@
 #include <cassert>
 #include <string_view>
 
+#include "sitos/transport.hpp"
+
 namespace sitos::transport_internal {
 namespace {
 
@@ -40,3 +42,23 @@ std::optional<Status> DecodeQueryErrorReply(std::span<const std::byte> payload) 
 }
 
 }  // namespace sitos::transport_internal
+
+namespace sitos {
+
+// Shared by the Zenoh and stub transports; each backend defines only
+// ReplyErrorPayload(), the native send.
+Result<void> TransportQuery::ReplyError(Status status) {
+  if (!transport_internal::IsQueryErrorStatus(status)) {
+    return Result<void>::Err(Status::InvalidArgument,
+                             "only StateLost and CatalogUnavailable have typed error replies");
+  }
+  if (test_error_reply_handler_) return test_error_reply_handler_(status);
+  if (test_reply_handler_) {
+    return Result<void>::Err(Status::Error, "test query has no error reply handler");
+  }
+  const std::string payload = transport_internal::EncodeQueryErrorReply(status);
+  return ReplyErrorPayload(std::span<const std::byte>(
+      reinterpret_cast<const std::byte*>(payload.data()), payload.size()));
+}
+
+}  // namespace sitos

@@ -517,20 +517,6 @@ Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::by
   return Result<void>::Ok();
 }
 
-Result<void> TransportQuery::ReplyError(Status status) {
-  if (!transport_internal::IsQueryErrorStatus(status)) {
-    return Result<void>::Err(Status::InvalidArgument,
-                             "only StateLost and CatalogUnavailable have typed error replies");
-  }
-  if (test_error_reply_handler_) return test_error_reply_handler_(status);
-  if (test_reply_handler_) {
-    return Result<void>::Err(Status::Error, "test query has no error reply handler");
-  }
-  const std::string payload = transport_internal::EncodeQueryErrorReply(status);
-  return ReplyErrorPayload(std::span<const std::byte>(
-      reinterpret_cast<const std::byte*>(payload.data()), payload.size()));
-}
-
 Result<void> TransportQuery::ReplyErrorPayload(std::span<const std::byte> payload) {
   if (!impl_ || !impl_->callback_state) {
     return SemanticTransportError<void>(Status::Error, TransportErrc::kErrNoQuery);
@@ -544,7 +530,7 @@ Result<void> TransportQuery::ReplyErrorPayload(std::span<const std::byte> payloa
   if (!queryable) return SemanticTransportError<void>(Status::Error, TransportErrc::kErrNoQuery);
 
   // Same lifetime rule as Reply(): hold the lock through z_query_reply_err().
-  std::lock_guard<std::mutex> lock(queryable->mutex);
+  std::scoped_lock lock(queryable->mutex);
   if (!callback_state->active.load() || !queryable->alive || !callback_state->query) {
     return SemanticTransportError<void>(Status::Error, TransportErrc::kErrNoQuery);
   }
