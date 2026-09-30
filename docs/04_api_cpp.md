@@ -288,6 +288,15 @@ struct StorageNodeConfig {
     /// Diagnostic destination; nullptr explicitly disables logging.
     std::shared_ptr<LogSink> log_sink = DefaultLogSink();
     DurableBufferEngineFactory durable_buffer_engine_factory = {};
+    /// Opt-in catalog mode (ADR-0036); requires RocksDB and an empty factory.
+    std::optional<std::filesystem::path> durable_root = std::nullopt;
+};
+
+enum class SessionLifecycleState { kActive, kRetained, kOrphaned, kDeleting, kDeleteFailed, kDeleted };
+enum class StorageNodeReadinessReason { kReady, kStopped, kCatalogUnavailable };
+struct StorageNodeReadiness {
+    bool ready = false;
+    StorageNodeReadinessReason reason = StorageNodeReadinessReason::kStopped;
 };
 
 class StorageNode {
@@ -305,7 +314,9 @@ public:
     Result<void> CreateSession(std::string_view sid);  // [F05]
     Result<void> CreateSession(std::string_view sid, SessionOptions options);  // [F05]
     Result<void> CloseSession(std::string_view sid);   // [F10]
+    Result<SessionLifecycleState> RetainSession(std::string_view sid);  // ADR-0036
     std::vector<std::string> ActiveSessions() const;
+    StorageNodeReadiness Readiness() const noexcept;   // ADR-0036
 
     void Stop() noexcept;   // quiesces callbacks, then undeclares queryable/subscriber
 
@@ -354,6 +365,48 @@ Same-SID lifecycle phase collisions do not wait and return
 `std::errc::operation_in_progress`; admission quiescence is a separate required wait and may use
 the gate's normal synchronization implementation. This contract does not prescribe
 condition-variable internals. Physical directory removal is host-owned after return.
+
+#### Retained-session catalog (ADR-0036)
+
+Setting `durable_root` selects catalog mode. StorageNode then owns `<durable_root>/catalog`, one
+exclusive RocksDB catalog, and `<durable_root>/sessions/<sid>/<generation_uuid>/`, one RocksDB store
+for each durable-route Session incarnation. Catalog mode requires a RocksDB-enabled build. Combining
+it with a `durable_buffer_engine_factory`, or passing an empty path, fails `Start` with
+`InvalidArgument`. Without `durable_root`, the factory contract above is unchanged and has no
+restart semantics. Ephemeral-only Sessions are never catalogued.
+
+Every catalog transition is a synchronized write that happens before the change becomes visible:
+
+* `CreateSession` with the durable route records `active`, then creates and opens the store. If
+  opening fails, that generation goes through the deletion order and the call fails.
+* `RetainSession` synchronizes the durable store, records `retained`, then releases the snapshot and
+  overlay. Later `session`/`snap` reads return `StateLost`, and so do `SessionView` and parameter
+  writes. Retain does not stop the running node's buffer receivers or fence dispatch. Repeating it
+  returns `kRetained` without a write. An unknown sid returns `NotFound`. An ephemeral-only,
+  orphaned, or closing Session, or a node without `durable_root`, returns `InvalidArgument`.
+* `CloseSession` of a catalogued Session records `deleting`, quiesces admission as above, and
+  releases every engine owner. It then removes only that generation's directory and records
+  `deleted`. If removal fails, it records `delete_failed` with sanitized diagnostics (operation,
+  category, and platform code; never paths) and returns `Error`. A later `CloseSession` retries.
+  `CloseSession` also deletes a `retained`, `orphaned`, `deleting`, or `delete_failed` sid that the
+  node no longer serves.
+* A catalogued sid that is not `deleted` rejects `CreateSession` with `std::errc::file_exists`. A
+  `deleted` tombstone stays until the same sid is created again with a new generation.
+
+At `Start`, StorageNode opens and validates the catalog, then records a fresh instance id. It turns
+every previous-instance `active` record into `orphaned`, and reopens `retained` and `orphaned`
+stores for durable Get/List and `CloseSession` only; buffer writes to them are rejected. It resumes
+`deleting` records, leaves `delete_failed` for an explicit retry, and logs unknown entries under
+`sessions/` without serving or removing them. It never recreates snapshots, overlays, ParamCache
+state, or compute.
+
+If the catalog cannot be opened (including a held lock or a catalog missing beside existing
+stores), cannot be validated, or fails any write, the process latches it unavailable. `Start` still
+succeeds, `Readiness()` reports `{false, kCatalogUnavailable}` for the rest of the process lifetime,
+and `CreateSession` (every kind), `RetainSession`, `CloseSession`, and durable Get/List return
+`CatalogUnavailable`. Base routes keep working. The node never repairs or replaces the catalog;
+recovery is offline maintenance followed by a new `Start`. A stopped node reports
+`{false, kStopped}`; a started node otherwise reports `{true, kReady}`.
 
 The synchronous-reentrancy boundary applies to `DurableBufferEngineFactory` and `LogSink`: neither
 may synchronously call `Stop`, destruction, or another waiting lifecycle operation on the same

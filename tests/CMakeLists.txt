@@ -282,7 +282,47 @@ if(SITOS_WITH_ROCKSDB)
     RocksDBBufferLifecycleTest.CloseReleasesEngineBeforeReturn
     RocksDBBufferLifecycleTest.SameSidRecreationUsesFreshEngine
     PROPERTIES TIMEOUT 60)
+
+  # ADR-0036 retained-session catalog: in-process lifecycle and crash reconciliation.
+  add_executable(sitos_retained_session_catalog_test
+    integration/retained_session_catalog_test.cpp)
+  target_link_libraries(sitos_retained_session_catalog_test
+    PRIVATE GTest::gtest_main sitos::sitos)
+  target_include_directories(sitos_retained_session_catalog_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+  sitos_enable_warnings(sitos_retained_session_catalog_test)
+  gtest_add_tests(
+    TARGET sitos_retained_session_catalog_test
+    SOURCES integration/retained_session_catalog_test.cpp)
+
+  add_executable(sitos_retained_session_crash_helper
+    integration/retained_session_crash_helper.cpp)
+  target_link_libraries(sitos_retained_session_crash_helper PRIVATE sitos::sitos)
+  target_include_directories(sitos_retained_session_crash_helper PRIVATE ${PROJECT_SOURCE_DIR}/src)
+  sitos_enable_warnings(sitos_retained_session_crash_helper)
+
+  add_executable(sitos_retained_session_crash_test
+    integration/retained_session_crash_test.cpp)
+  target_link_libraries(sitos_retained_session_crash_test
+    PRIVATE GTest::gtest_main sitos::sitos)
+  target_include_directories(sitos_retained_session_crash_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+  target_compile_definitions(sitos_retained_session_crash_test PRIVATE
+    SITOS_RETAINED_SESSION_CRASH_HELPER="$<TARGET_FILE:sitos_retained_session_crash_helper>")
+  add_dependencies(sitos_retained_session_crash_test sitos_retained_session_crash_helper)
+  sitos_enable_warnings(sitos_retained_session_crash_test)
+  gtest_add_tests(
+    TARGET sitos_retained_session_crash_test
+    SOURCES integration/retained_session_crash_test.cpp)
 endif()
+
+# Catalog record codec always; catalog storage cases compile only with RocksDB.
+add_executable(sitos_session_catalog_test unit/session_catalog_test.cpp)
+target_link_libraries(sitos_session_catalog_test PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_session_catalog_test PRIVATE ${PROJECT_SOURCE_DIR})
+if(SITOS_WITH_ROCKSDB)
+  target_compile_definitions(sitos_session_catalog_test PRIVATE SITOS_WITH_ROCKSDB=1)
+endif()
+sitos_enable_warnings(sitos_session_catalog_test)
+gtest_add_tests(TARGET sitos_session_catalog_test SOURCES unit/session_catalog_test.cpp)
 
 add_executable(sitos_in_memory_engine_test
   unit/in_memory_engine_test.cpp)

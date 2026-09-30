@@ -123,6 +123,7 @@ add_library(sitos STATIC
   src/logging.cpp
   src/storage_node.cpp
   src/session_view.cpp
+  src/session_catalog.cpp
   src/transport/get_completion.cpp
   src/transport/query_error_reply.cpp
   src/transport/declaration_handle_lifecycle.cpp
