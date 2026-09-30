@@ -3,6 +3,8 @@
 
 #include "session_catalog.hpp"
 
+#include <algorithm>
+#include <array>
 #include <charconv>
 #include <cstdint>
 #include <format>
@@ -44,74 +46,92 @@ struct JsonMember {
 };
 
 bool IsPlainText(std::string_view text) noexcept {
-  for (const char c : text) {
+  return std::ranges::none_of(text, [](char c) {
     const auto u = static_cast<unsigned char>(c);
-    if (u < 0x20 || u >= 0x7f || c == '"' || c == '\\') return false;
-  }
-  return true;
+    return u < 0x20 || u >= 0x7f || c == '"' || c == '\\';
+  });
 }
 
-std::optional<std::vector<JsonMember>> ParseFlatObject(std::string_view text) {
-  std::size_t at = 0;
-  auto take = [&](char expected) {
-    if (at >= text.size() || text[at] != expected) return false;
-    ++at;
-    return true;
-  };
-  auto take_word = [&](std::string_view word) {
-    if (text.substr(at, word.size()) != word) return false;
-    at += word.size();
-    return true;
-  };
-  auto take_string = [&]() -> std::optional<std::string> {
-    if (!take('"')) return std::nullopt;
-    const auto end = text.find('"', at);
-    if (end == std::string_view::npos) return std::nullopt;
-    std::string value(text.substr(at, end - at));
-    if (!IsPlainText(value)) return std::nullopt;
-    at = end + 1;
-    return value;
-  };
+// Reads one flat canonical object. Each Take* call either consumes its token
+// and succeeds, or fails without a partial result.
+class FlatJsonReader {
+ public:
+  explicit FlatJsonReader(std::string_view text) : text_(text) {}
 
-  std::vector<JsonMember> members;
-  if (!take('{')) return std::nullopt;
-  if (take('}')) return at == text.size() ? std::optional(members) : std::nullopt;
-  for (;;) {
-    auto name = take_string();
-    if (!name || !take(':')) return std::nullopt;
-    JsonValue value;
-    if (at < text.size() && text[at] == '"') {
-      auto string_value = take_string();
-      if (!string_value) return std::nullopt;
-      value = std::move(*string_value);
-    } else if (take_word("null")) {
-      value = std::monostate{};
-    } else if (take_word("true")) {
-      value = true;
-    } else if (take_word("false")) {
-      value = false;
-    } else {
-      const auto begin = at;
-      if (at < text.size() && text[at] == '-') ++at;
-      while (at < text.size() && text[at] >= '0' && text[at] <= '9') ++at;
-      const auto digits = text.substr(begin, at - begin);
-      const auto unsigned_digits = digits.starts_with('-') ? digits.substr(1) : digits;
-      if (unsigned_digits.empty() ||
-          (unsigned_digits.size() > 1 && unsigned_digits.front() == '0')) {
-        return std::nullopt;
-      }
-      std::int64_t number = 0;
-      const auto [end, error] =
-          std::from_chars(digits.data(), digits.data() + digits.size(), number);
-      if (error != std::errc{} || end != digits.data() + digits.size()) return std::nullopt;
-      value = number;
+  std::optional<std::vector<JsonMember>> ReadObject() {
+    std::vector<JsonMember> members;
+    if (!Take('{')) return std::nullopt;
+    bool more = !Take('}');
+    while (more) {
+      auto name = TakeString();
+      if (!name || !Take(':')) return std::nullopt;
+      auto value = TakeValue();
+      if (!value) return std::nullopt;
+      members.emplace_back(std::move(*name), std::move(*value));
+      more = !Take('}');
+      if (more && !Take(',')) return std::nullopt;
     }
-    members.push_back({std::move(*name), std::move(value)});
-    if (take('}')) break;
-    if (!take(',')) return std::nullopt;
+    if (at_ != text_.size()) return std::nullopt;
+    return members;
   }
-  if (at != text.size()) return std::nullopt;
-  return members;
+
+ private:
+  bool Take(char expected) {
+    if (at_ >= text_.size() || text_[at_] != expected) return false;
+    ++at_;
+    return true;
+  }
+
+  bool TakeWord(std::string_view word) {
+    if (text_.substr(at_, word.size()) != word) return false;
+    at_ += word.size();
+    return true;
+  }
+
+  std::optional<std::string> TakeString() {
+    if (!Take('"')) return std::nullopt;
+    const auto end = text_.find('"', at_);
+    if (end == std::string_view::npos) return std::nullopt;
+    std::string value(text_.substr(at_, end - at_));
+    if (!IsPlainText(value)) return std::nullopt;
+    at_ = end + 1;
+    return value;
+  }
+
+  // A canonical integer: optional minus sign, no leading zero, fits int64.
+  std::optional<std::int64_t> TakeInteger() {
+    const auto begin = at_;
+    if (at_ < text_.size() && text_[at_] == '-') ++at_;
+    const auto first_digit = at_;
+    while (at_ < text_.size() && text_[at_] >= '0' && text_[at_] <= '9') ++at_;
+    const auto digit_count = at_ - first_digit;
+    if (digit_count == 0 || (digit_count > 1 && text_[first_digit] == '0')) return std::nullopt;
+    const auto digits = text_.substr(begin, at_ - begin);
+    std::int64_t number = 0;
+    const auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), number);
+    if (error != std::errc{} || end != digits.data() + digits.size()) return std::nullopt;
+    return number;
+  }
+
+  std::optional<JsonValue> TakeValue() {
+    if (at_ < text_.size() && text_[at_] == '"') {
+      auto text = TakeString();
+      if (!text) return std::nullopt;
+      return JsonValue{std::move(*text)};
+    }
+    if (TakeWord("null")) return JsonValue{std::monostate{}};
+    if (TakeWord("true")) return JsonValue{true};
+    if (TakeWord("false")) return JsonValue{false};
+    if (auto number = TakeInteger()) return JsonValue{*number};
+    return std::nullopt;
+  }
+
+  std::string_view text_;
+  std::size_t at_ = 0;
+};
+
+std::optional<std::vector<JsonMember>> ParseFlatObject(std::string_view text) {
+  return FlatJsonReader(text).ReadObject();
 }
 
 std::string Quote(std::string_view text) { return std::format("\"{}\"", text); }
@@ -126,21 +146,14 @@ bool IsCanonicalUuid(std::string_view text) {
 }
 
 bool IsTimestamp(std::string_view text) {
-  if (text.empty() || text.size() > 64) return false;
-  for (const char c : text) {
-    if (!((c >= '0' && c <= '9') || c == 'T' || c == 'Z' || c == ':' || c == '-' || c == '.')) {
-      return false;
-    }
-  }
-  return true;
+  return !text.empty() && text.size() <= 64 && std::ranges::all_of(text, [](char c) {
+    return (c >= '0' && c <= '9') || c == 'T' || c == 'Z' || c == ':' || c == '-' || c == '.';
+  });
 }
 
 bool IsDiagnosticWord(std::string_view text) {
-  if (text.empty() || text.size() > 32) return false;
-  for (const char c : text) {
-    if (!((c >= 'a' && c <= 'z') || c == '_')) return false;
-  }
-  return true;
+  return !text.empty() && text.size() <= 32 &&
+         std::ranges::all_of(text, [](char c) { return (c >= 'a' && c <= 'z') || c == '_'; });
 }
 
 std::optional<SessionLifecycleState> ParseLifecycle(std::string_view text) {
@@ -152,14 +165,15 @@ std::optional<SessionLifecycleState> ParseLifecycle(std::string_view text) {
   return std::nullopt;
 }
 
-constexpr std::string_view kRecordMembers[] = {"schema_version",    "sid",
-                                               "generation_uuid",   "state",
-                                               "owner_instance_id", "durable",
-                                               "ephemeral",         "created_at",
-                                               "retained_at",       "orphaned_at",
-                                               "deleting_at",       "deleted_at",
-                                               "failure_operation", "failure_category",
-                                               "failure_code"};
+constexpr std::array<std::string_view, 15> kRecordMembers = {
+    "schema_version",    "sid",
+    "generation_uuid",   "state",
+    "owner_instance_id", "durable",
+    "ephemeral",         "created_at",
+    "retained_at",       "orphaned_at",
+    "deleting_at",       "deleted_at",
+    "failure_operation", "failure_category",
+    "failure_code"};
 
 std::optional<std::string> TextOrNull(const JsonValue& value, bool& ok) {
   if (std::holds_alternative<std::monostate>(value)) return std::string();
@@ -239,17 +253,17 @@ std::optional<SessionCatalogRecord> DecodeSessionRecord(std::string_view sid,
   record.ephemeral = *ephemeral;
   record.created_at = *created;
   bool ok = true;
-  std::string* timestamps[] = {&record.retained_at, &record.orphaned_at, &record.deleting_at,
-                               &record.deleted_at};
+  const std::array<std::string*, 4> timestamps = {&record.retained_at, &record.orphaned_at,
+                                                  &record.deleting_at, &record.deleted_at};
   for (std::size_t i = 0; i < std::size(timestamps); ++i) {
     auto value = TextOrNull(m[8 + i].value, ok);
     if (!ok || !value || (!value->empty() && !IsTimestamp(*value))) return std::nullopt;
     *timestamps[i] = std::move(*value);
   }
-  const bool failure_absent = std::holds_alternative<std::monostate>(m[12].value) &&
-                              std::holds_alternative<std::monostate>(m[13].value) &&
-                              std::holds_alternative<std::monostate>(m[14].value);
-  if (!failure_absent) {
+  if (const bool failure_absent = std::holds_alternative<std::monostate>(m[12].value) &&
+                                  std::holds_alternative<std::monostate>(m[13].value) &&
+                                  std::holds_alternative<std::monostate>(m[14].value);
+      !failure_absent) {
     const auto* operation = std::get_if<std::string>(&m[12].value);
     const auto* category = std::get_if<std::string>(&m[13].value);
     const auto* code = std::get_if<std::int64_t>(&m[14].value);
@@ -328,12 +342,41 @@ Result<std::unique_ptr<rocksdb::DB>> OpenRaw(const std::filesystem::path& direct
   options.create_if_missing = create;
   options.error_if_exists = create;
   std::unique_ptr<rocksdb::DB> db;
-  const auto status = rocksdb::DB::Open(options, directory.string(), &db);
-  if (!status.ok()) {
+  if (const auto status = rocksdb::DB::Open(options, directory.string(), &db); !status.ok()) {
     return Result<std::unique_ptr<rocksdb::DB>>::Err(
         Status::CatalogUnavailable, std::format("catalog open failed: {}", status.ToString()));
   }
   return Result<std::unique_ptr<rocksdb::DB>>::Ok(std::move(db));
+}
+
+// Validates every catalog entry and loads the session records (ADR-0036 §D3).
+Result<void> LoadEntries(rocksdb::DB& db,
+                         std::map<std::string, SessionCatalogRecord, std::less<>>& records) {
+  const auto invalid = [](std::string message) {
+    return Result<void>::Err(Status::CatalogUnavailable, std::move(message));
+  };
+  bool schema_seen = false;
+  std::unique_ptr<rocksdb::Iterator> iterator(db.NewIterator(rocksdb::ReadOptions()));
+  for (iterator->SeekToFirst(); iterator->Valid(); iterator->Next()) {
+    const std::string_view key(iterator->key().data(), iterator->key().size());
+    const std::string_view value(iterator->value().data(), iterator->value().size());
+    if (key == kSchemaKey) {
+      if (value != kSchemaValue) return invalid("catalog schema is not supported");
+      schema_seen = true;
+    } else if (key == kInstanceKey) {
+      if (!ValidInstanceValue(value)) return invalid("catalog instance entry is invalid");
+    } else if (key.starts_with(kSessionKeyPrefix)) {
+      const auto sid = key.substr(kSessionKeyPrefix.size());
+      auto record = DecodeSessionRecord(sid, value);
+      if (!record) return invalid("catalog session record is invalid");
+      records.try_emplace(std::string(sid), std::move(*record));
+    } else {
+      return invalid("catalog contains an unknown entry");
+    }
+  }
+  if (!iterator->status().ok()) return invalid("catalog read failed");
+  if (!schema_seen) return invalid("catalog schema entry is missing");
+  return Result<void>::Ok();
 }
 
 bool IsEmptyOrAbsentDirectory(const std::filesystem::path& path) {
@@ -379,29 +422,9 @@ Result<std::unique_ptr<SessionCatalog>> SessionCatalog::Open(
   if (!opened.IsOk()) return Result<std::unique_ptr<SessionCatalog>>::ErrFrom(opened);
   impl->db = std::move(opened).Value();
 
-  bool schema_seen = false;
-  {
-    std::unique_ptr<rocksdb::Iterator> iterator(impl->db->NewIterator(rocksdb::ReadOptions()));
-    for (iterator->SeekToFirst(); iterator->Valid(); iterator->Next()) {
-      const std::string_view key(iterator->key().data(), iterator->key().size());
-      const std::string_view value(iterator->value().data(), iterator->value().size());
-      if (key == kSchemaKey) {
-        if (value != kSchemaValue) return Unavailable("catalog schema is not supported");
-        schema_seen = true;
-      } else if (key == kInstanceKey) {
-        if (!ValidInstanceValue(value)) return Unavailable("catalog instance entry is invalid");
-      } else if (key.starts_with(kSessionKeyPrefix)) {
-        const auto sid = key.substr(kSessionKeyPrefix.size());
-        auto record = DecodeSessionRecord(sid, value);
-        if (!record) return Unavailable("catalog session record is invalid");
-        impl->records.emplace(std::string(sid), std::move(*record));
-      } else {
-        return Unavailable("catalog contains an unknown entry");
-      }
-    }
-    if (!iterator->status().ok()) return Unavailable("catalog read failed");
+  if (auto loaded = LoadEntries(*impl->db, impl->records); !loaded.IsOk()) {
+    return Result<std::unique_ptr<SessionCatalog>>::ErrFrom(loaded);
   }
-  if (!schema_seen) return Unavailable("catalog schema entry is missing");
   if (!impl->db->Put(SyncedWrite(), kInstanceKey, InstanceValue(instance_id, started_at)).ok()) {
     return Unavailable("catalog instance write failed");
   }

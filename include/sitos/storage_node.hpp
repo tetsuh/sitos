@@ -467,7 +467,18 @@ class StorageNode {
                                             catalog_internal::SessionCatalogRecord record);
   // Start-time reconciliation (ADR-0036 §D9) on a validated catalog.
   static void ReconcileCatalog(const std::shared_ptr<State>& state);
+  static void ReportUnknownSessionEntries(
+      State& state, const std::vector<catalog_internal::SessionCatalogRecord>& records);
+  static void ServeReconciledSession(State& state,
+                                     const catalog_internal::SessionCatalogRecord& record);
   static void CatalogCheckpoint(State& state, std::string_view point);
+  // Records `active`, then creates and opens the generation store of a catalogued Session.
+  static Result<void> CreateCatalogStore(State& state, const std::string& key,
+                                         SessionOptions options, SessionRecord& record);
+  // Records `deleting` for a catalogued sid and returns the record to finish, or nullopt
+  // when the catalog does not own this sid.
+  static Result<std::optional<catalog_internal::SessionCatalogRecord>> BeginCatalogDeletion(
+      State& state, const std::string& key, const SessionRecord* record);
 
   mutable std::mutex lifecycle_mutex_;
   // Serializes declaration/undeclaration transactions. Callbacks never hold this lock.

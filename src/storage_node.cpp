@@ -484,8 +484,10 @@ Result<void> StorageNode::FinishCatalogDeletion(State& state, SessionCatalogReco
     record.failure = SessionCatalogFailure{"remove_directory", "filesystem", error.value()};
     EmitLog(state.log_sink, LogLevel::kError, kCatalogComponent, kCatalogDeletionFailed);
     std::scoped_lock lock(state.catalog_mutex);
-    auto written = WriteCatalogRecord(state, record, "close:delete_failed_written");
-    if (!written.IsOk()) return written;
+    if (auto written = WriteCatalogRecord(state, record, "close:delete_failed_written");
+        !written.IsOk()) {
+      return written;
+    }
     return Result<void>::Err(Status::Error, "durable store removal failed", error);
   }
   CatalogCheckpoint(state, "close:removed");
@@ -496,39 +498,73 @@ Result<void> StorageNode::FinishCatalogDeletion(State& state, SessionCatalogReco
   return WriteCatalogRecord(state, record, "close:deleted_written");
 }
 
-void StorageNode::ReconcileCatalog(const std::shared_ptr<State>& state) {
-  const auto records = state->catalog->Records();
-
-  // Unknown entries are reported and never served or removed (ADR-0036 §D9 step 3).
-  std::error_code error;
-  const auto sessions_directory = state->durable_root / "sessions";
+void StorageNode::ReportUnknownSessionEntries(State& state,
+                                              const std::vector<SessionCatalogRecord>& records) {
+  const auto known = [&records](std::string_view sid, std::string_view generation) {
+    return std::ranges::any_of(records, [&](const auto& record) {
+      return record.sid == sid && record.generation_uuid == generation &&
+             record.state != SessionLifecycleState::kDeleted;
+    });
+  };
+  const auto report = [&state] {
+    EmitLog(state.log_sink, LogLevel::kWarning, kCatalogComponent, kCatalogUnknownDirectory);
+  };
   // Directory iteration can throw while advancing; an unreadable entry is only a diagnostic.
   try {
-    if (std::filesystem::is_directory(sessions_directory, error)) {
-      for (const auto& sid_entry : std::filesystem::directory_iterator(sessions_directory, error)) {
-        const auto sid = sid_entry.path().filename().string();
-        std::error_code entry_error;
-        if (!sid_entry.is_directory(entry_error)) {
-          EmitLog(state->log_sink, LogLevel::kWarning, kCatalogComponent, kCatalogUnknownDirectory);
-          continue;
-        }
-        for (const auto& generation_entry :
-             std::filesystem::directory_iterator(sid_entry.path(), entry_error)) {
-          const auto generation = generation_entry.path().filename().string();
-          const bool known = std::any_of(records.begin(), records.end(), [&](const auto& record) {
-            return record.sid == sid && record.generation_uuid == generation &&
-                   record.state != SessionLifecycleState::kDeleted;
-          });
-          if (!known) {
-            EmitLog(state->log_sink, LogLevel::kWarning, kCatalogComponent,
-                    kCatalogUnknownDirectory);
-          }
-        }
+    std::error_code error;
+    const auto sessions_directory = state.durable_root / "sessions";
+    if (!std::filesystem::is_directory(sessions_directory, error)) return;
+    for (const auto& sid_entry : std::filesystem::directory_iterator(sessions_directory, error)) {
+      std::error_code entry_error;
+      if (!sid_entry.is_directory(entry_error)) {
+        report();
+        continue;
+      }
+      const auto sid = sid_entry.path().filename().string();
+      for (const auto& generation_entry :
+           std::filesystem::directory_iterator(sid_entry.path(), entry_error)) {
+        if (!known(sid, generation_entry.path().filename().string())) report();
       }
     }
   } catch (const std::filesystem::filesystem_error&) {
-    EmitLog(state->log_sink, LogLevel::kWarning, kCatalogComponent, kCatalogUnknownDirectory);
+    report();
   }
+}
+
+void StorageNode::ServeReconciledSession(State& state, const SessionCatalogRecord& record) {
+  const auto directory =
+      GenerationDirectory(state.durable_root, record.sid, record.generation_uuid);
+  std::error_code error;
+  std::filesystem::create_directories(directory, error);
+  auto opened = error ? Result<std::unique_ptr<RocksDBEngine>>::Err(Status::Error, "", error)
+                      : RocksDBEngine::Open(directory.string());
+  if (!opened.IsOk()) {
+    EmitLog(state.log_sink, LogLevel::kError, kCatalogComponent, kCatalogStoreOpenFailed);
+    return;
+  }
+  auto session = std::make_shared<SessionRecord>();
+  session->generation_uuid =
+      fence_internal::ParseFenceUuid(record.generation_uuid).value_or(FenceUuid{});
+  session->options = SessionOptions{.durable_buffers = true, .ephemeral_buffers = record.ephemeral};
+  session->metadata = SessionMeta{record.created_at, record.generation_uuid};
+  session->lifecycle = record.state;
+  session->catalogued = true;
+  session->reconciled = true;
+  session->durable_buffers = std::move(opened).Value();
+  session->fence_dispatch = std::make_shared<fence_internal::FenceSessionDispatch>();
+  if (state.fence_dispatcher) {
+    session->fence_dispatch->durable = state.fence_dispatcher->Register();
+    session->fence_dispatch->ephemeral = state.fence_dispatcher->Register();
+  }
+  session->Activate();
+  std::unique_lock lock(state.session_mutex);
+  state.sessions.insert_or_assign(record.sid, std::move(session));
+}
+
+void StorageNode::ReconcileCatalog(const std::shared_ptr<State>& state) {
+  const auto records = state->catalog->Records();
+  // Unknown entries are reported and never served or removed (ADR-0036 §D9 step 3).
+  ReportUnknownSessionEntries(*state, records);
 
   for (auto record : records) {
     if (state->catalog_unavailable.load()) return;
@@ -539,45 +575,12 @@ void StorageNode::ReconcileCatalog(const std::shared_ptr<State>& state) {
       std::scoped_lock lock(state->catalog_mutex);
       if (!WriteCatalogRecord(*state, record, "start:orphaned_written").IsOk()) return;
     }
-    switch (record.state) {
-      case SessionLifecycleState::kActive:
-      case SessionLifecycleState::kRetained:
-      case SessionLifecycleState::kOrphaned: {
-        const auto directory =
-            GenerationDirectory(state->durable_root, record.sid, record.generation_uuid);
-        std::filesystem::create_directories(directory, error);
-        auto opened = RocksDBEngine::Open(directory.string());
-        if (error || !opened.IsOk()) {
-          EmitLog(state->log_sink, LogLevel::kError, kCatalogComponent, kCatalogStoreOpenFailed);
-          break;
-        }
-        auto session = std::make_shared<SessionRecord>();
-        const auto generation = fence_internal::ParseFenceUuid(record.generation_uuid);
-        session->generation_uuid = generation.value_or(FenceUuid{});
-        session->options =
-            SessionOptions{.durable_buffers = true, .ephemeral_buffers = record.ephemeral};
-        session->metadata = SessionMeta{record.created_at, record.generation_uuid};
-        session->lifecycle = record.state;
-        session->catalogued = true;
-        session->reconciled = true;
-        session->durable_buffers = std::move(opened).Value();
-        session->fence_dispatch = std::make_shared<fence_internal::FenceSessionDispatch>();
-        if (state->fence_dispatcher) {
-          session->fence_dispatch->durable = state->fence_dispatcher->Register();
-          session->fence_dispatch->ephemeral = state->fence_dispatcher->Register();
-        }
-        session->Activate();
-        std::unique_lock lock(state->session_mutex);
-        state->sessions.insert_or_assign(record.sid, std::move(session));
-        break;
-      }
-      case SessionLifecycleState::kDeleting:
-        // A durable administrative request continues after restart (ADR-0036 §D7).
-        static_cast<void>(FinishCatalogDeletion(*state, record));
-        break;
-      case SessionLifecycleState::kDeleteFailed:
-      case SessionLifecycleState::kDeleted:
-        break;
+    if (record.state == SessionLifecycleState::kRetained ||
+        record.state == SessionLifecycleState::kOrphaned) {
+      ServeReconciledSession(*state, record);
+    } else if (record.state == SessionLifecycleState::kDeleting) {
+      // A durable administrative request continues after restart (ADR-0036 §D7).
+      static_cast<void>(FinishCatalogDeletion(*state, record));
     }
   }
 }
@@ -623,8 +626,8 @@ Result<SessionLifecycleState> StorageNode::RetainSession(std::string_view sid) {
     }
   }
   if (!record) {
-    const auto catalogued = state->catalog ? state->catalog->Find(sid) : std::nullopt;
-    if (!catalogued || catalogued->state == SessionLifecycleState::kDeleted) {
+    if (const auto catalogued = state->catalog ? state->catalog->Find(sid) : std::nullopt;
+        !catalogued || catalogued->state == SessionLifecycleState::kDeleted) {
       return R::Err(Status::NotFound, "session not found");
     }
     return R::Err(Status::InvalidArgument, "session cannot be retained in its current state");
@@ -648,6 +651,11 @@ Result<SessionLifecycleState> StorageNode::RetainSession(std::string_view sid) {
   }
   auto catalogued = state->catalog->Find(sid);
   if (!catalogued) return R::Err(Status::Error, "catalog record is missing");
+  // A concurrent CloseSession may already have recorded `deleting` and be waiting for
+  // this admission; retention must never overwrite that administrative request.
+  if (catalogued->state != SessionLifecycleState::kActive || !record->IsActive()) {
+    return R::Err(Status::InvalidArgument, "session is closing");
+  }
 
   // The durable prefix is synchronized before the catalog claims retention.
   if (auto synced = record->durable_buffers->Sync(); !synced.IsOk()) {
@@ -930,45 +938,9 @@ Result<void> StorageNode::CreateSession(const std::shared_ptr<State>& state, std
   record->metadata = SessionMeta{NowIso8601(), FormatFenceUuid(record->generation_uuid)};
 
   if (options.durable_buffers && state->catalog_mode) {
-    // ADR-0036 §D4: the synchronized `active` record precedes the store.
-    SessionCatalogRecord catalogued;
-    catalogued.sid = key;
-    catalogued.generation_uuid = record->metadata.generation_uuid;
-    catalogued.state = SessionLifecycleState::kActive;
-    catalogued.owner_instance_id = state->instance_id;
-    catalogued.durable = true;
-    catalogued.ephemeral = options.ephemeral_buffers;
-    catalogued.created_at = record->metadata.created_at;
-    {
-      std::scoped_lock lock(state->catalog_mutex);
-      if (auto written = WriteCatalogRecord(*state, catalogued, "create:active_written");
-          !written.IsOk()) {
-        return written;
-      }
+    if (auto created = CreateCatalogStore(*state, key, options, *record); !created.IsOk()) {
+      return created;
     }
-    const auto directory =
-        GenerationDirectory(state->durable_root, key, catalogued.generation_uuid);
-    std::error_code error;
-    std::filesystem::create_directories(directory, error);
-    auto opened = error ? Result<std::unique_ptr<RocksDBEngine>>::Err(
-                              Status::Error, "durable store directory cannot be created", error)
-                        : RocksDBEngine::Open(directory.string());
-    if (!opened.IsOk()) {
-      // A failed store open runs the deletion order on the new generation.
-      catalogued.state = SessionLifecycleState::kDeleting;
-      catalogued.deleting_at = NowIso8601();
-      {
-        std::scoped_lock lock(state->catalog_mutex);
-        if (auto written = WriteCatalogRecord(*state, catalogued, "create:deleting_written");
-            !written.IsOk()) {
-          return written;
-        }
-      }
-      static_cast<void>(FinishCatalogDeletion(*state, catalogued));
-      return Result<void>::ErrFrom(opened);
-    }
-    record->durable_buffers = std::move(opened).Value();
-    record->catalogued = true;
   } else if (options.durable_buffers) {
     if (!state->durable_buffer_engine_factory) {
       return Result<void>::Err(Status::InvalidArgument, "durable buffer engine factory is required",
@@ -1000,6 +972,71 @@ Result<void> StorageNode::CreateSession(const std::shared_ptr<State>& state, std
   return Result<void>::Ok();
 }
 
+Result<void> StorageNode::CreateCatalogStore(State& state, const std::string& key,
+                                             SessionOptions options, SessionRecord& record) {
+  // ADR-0036 §D4: the synchronized `active` record precedes the store.
+  SessionCatalogRecord catalogued;
+  catalogued.sid = key;
+  catalogued.generation_uuid = record.metadata.generation_uuid;
+  catalogued.state = SessionLifecycleState::kActive;
+  catalogued.owner_instance_id = state.instance_id;
+  catalogued.durable = true;
+  catalogued.ephemeral = options.ephemeral_buffers;
+  catalogued.created_at = record.metadata.created_at;
+  {
+    std::scoped_lock lock(state.catalog_mutex);
+    if (auto written = WriteCatalogRecord(state, catalogued, "create:active_written");
+        !written.IsOk()) {
+      return written;
+    }
+  }
+  const auto directory = GenerationDirectory(state.durable_root, key, catalogued.generation_uuid);
+  std::error_code error;
+  std::filesystem::create_directories(directory, error);
+  auto opened = error ? Result<std::unique_ptr<RocksDBEngine>>::Err(
+                            Status::Error, "durable store directory cannot be created", error)
+                      : RocksDBEngine::Open(directory.string());
+  if (opened.IsOk()) {
+    record.durable_buffers = std::move(opened).Value();
+    record.catalogued = true;
+    return Result<void>::Ok();
+  }
+  // A failed store open runs the deletion order on the new generation.
+  catalogued.state = SessionLifecycleState::kDeleting;
+  catalogued.deleting_at = NowIso8601();
+  {
+    std::scoped_lock lock(state.catalog_mutex);
+    if (auto written = WriteCatalogRecord(state, catalogued, "create:deleting_written");
+        !written.IsOk()) {
+      return written;
+    }
+  }
+  static_cast<void>(FinishCatalogDeletion(state, catalogued));
+  return Result<void>::ErrFrom(opened);
+}
+
+Result<std::optional<SessionCatalogRecord>> StorageNode::BeginCatalogDeletion(
+    State& state, const std::string& key, const SessionRecord* record) {
+  using R = Result<std::optional<SessionCatalogRecord>>;
+  if (!state.catalog || (record != nullptr && !record->catalogued)) return R::Ok(std::nullopt);
+  // ADR-0036 §D4: the synchronized `deleting` record is the linearization point. Read
+  // under the lock so a concurrent RetainSession's record is never overwritten.
+  std::scoped_lock lock(state.catalog_mutex);
+  auto catalogued = state.catalog->Find(key);
+  if (!catalogued || catalogued->state == SessionLifecycleState::kDeleted) {
+    return R::Ok(std::nullopt);
+  }
+  if (catalogued->state != SessionLifecycleState::kDeleting) {
+    catalogued->state = SessionLifecycleState::kDeleting;
+    catalogued->deleting_at = NowIso8601();
+    if (auto written = WriteCatalogRecord(state, *catalogued, "close:deleting_written");
+        !written.IsOk()) {
+      return R::ErrFrom(written);
+    }
+  }
+  return R::Ok(std::move(catalogued));
+}
+
 Result<void> StorageNode::CloseSession(std::string_view sid) {
   std::shared_ptr<State> state;
   {
@@ -1019,31 +1056,17 @@ Result<void> StorageNode::CloseSession(std::string_view sid) {
     std::shared_lock lock(state->session_mutex);
     if (auto it = state->sessions.find(key); it != state->sessions.end()) record = it->second;
   }
-  std::optional<SessionCatalogRecord> catalogued;
-  if (state->catalog) catalogued = state->catalog->Find(key);
-  const bool catalog_deletion = catalogued.has_value() &&
-                                catalogued->state != SessionLifecycleState::kDeleted &&
-                                (!record || record->catalogued);
-  if (!record && !catalog_deletion) return Result<void>::Err(NoSuchSession());
-
-  if (catalog_deletion) {
-    // ADR-0036 §D4: the synchronized `deleting` record is the linearization point.
-    std::scoped_lock lock(state->catalog_mutex);
-    // Re-read under the lock so a concurrent RetainSession's record is not overwritten.
-    catalogued = state->catalog->Find(key);
-    if (!catalogued || catalogued->state == SessionLifecycleState::kDeleted) {
-      return Result<void>::Err(NoSuchSession());
-    }
-    if (catalogued->state != SessionLifecycleState::kDeleting) {
-      catalogued->state = SessionLifecycleState::kDeleting;
-      catalogued->deleting_at = NowIso8601();
-      if (auto written = WriteCatalogRecord(*state, *catalogued, "close:deleting_written");
-          !written.IsOk()) {
-        return written;
-      }
-    }
+  // A Creating or Closing record must not gain a `deleting` record: the creator may still
+  // commit it, and a second closer only reports the collision.
+  if (record && !record->IsActive()) return Result<void>::Err(OperationInProgress());
+  auto deletion = BeginCatalogDeletion(*state, key, record.get());
+  if (!deletion.IsOk()) return Result<void>::ErrFrom(deletion);
+  std::optional<SessionCatalogRecord> catalogued = std::move(deletion).Value();
+  if (!record) {
+    if (!catalogued) return Result<void>::Err(NoSuchSession());
+    return FinishCatalogDeletion(*state, *catalogued);
   }
-  if (catalog_deletion && !record) return FinishCatalogDeletion(*state, *catalogued);
+  CatalogCheckpoint(*state, "close:before_begin_close");
   {
     std::unique_lock lock(state->session_mutex);
     auto it = state->sessions.find(key);
@@ -1080,7 +1103,7 @@ Result<void> StorageNode::CloseSession(std::string_view sid) {
   }
   // Every engine owner of the generation is released before its directory is removed
   // (ADR-0033, ADR-0036 §D7).
-  if (catalog_deletion) return FinishCatalogDeletion(*state, *catalogued);
+  if (catalogued) return FinishCatalogDeletion(*state, *catalogued);
   return Result<void>::Ok();
 }
 
@@ -1516,7 +1539,7 @@ AckResultV1 StorageNode::ApplyParameterSample(const std::shared_ptr<State>& stat
       return MakeAckResult(AckOperationKind::Batch, Status::NotFound, 0, kAckNoFailedIndex);
     }
     if (access.lifecycle != SessionLifecycleState::kActive || !access.overlay) {
-      diagnostics.push_back({LogLevel::kWarning, kSessionStateLost});
+      diagnostics.emplace_back(LogLevel::kWarning, kSessionStateLost);
       return MakeAckResult(AckOperationKind::Batch, Status::StateLost, 0, kAckNoFailedIndex);
     }
     return ApplyBatch(diagnostics, *access.overlay, sample.payload, progress);
@@ -1626,7 +1649,7 @@ AckResultV1 StorageNode::ApplyParameterSample(const std::shared_ptr<State>& stat
         return PutFailure(Status::NotFound);
       }
       if (access.lifecycle != SessionLifecycleState::kActive || !access.overlay) {
-        diagnostics.push_back({LogLevel::kWarning, kSessionStateLost});
+        diagnostics.emplace_back(LogLevel::kWarning, kSessionStateLost);
         return PutFailure(Status::StateLost);
       }
       return ApplyWrite(diagnostics, *access.overlay, parsed->relative_key, sample, progress);

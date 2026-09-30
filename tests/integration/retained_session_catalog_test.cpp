@@ -18,6 +18,10 @@
 #include <utility>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
+
 #include "retained_session_support.hpp"
 #include "session_catalog.hpp"
 #include "sitos/in_memory_engine.hpp"
@@ -310,18 +314,55 @@ TEST_F(RetainedSessionCatalogTest, RecreateRules) {
   EXPECT_TRUE(Query(transport_, "sitos/buffers/run/durable/**").replies.empty());
 }
 
+TEST_F(RetainedSessionCatalogTest, RetainDuringCloseDoesNotOverwriteDeleting) {
+  ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
+  std::optional<sitos::Result<SessionLifecycleState>> retained;
+  ASSERT_TRUE(StorageNodeTestAccess::SetCatalogCheckpoint(*node_, [&](std::string_view point) {
+    if (point == "close:before_begin_close") {
+      retained = node_->RetainSession("run");
+      EXPECT_EQ(Record("run")->state, SessionLifecycleState::kDeleting);
+    }
+  }));
+  ASSERT_TRUE(node_->CloseSession("run").IsOk());
+  ASSERT_TRUE(retained.has_value());
+  EXPECT_EQ(retained->StatusCode(), Status::InvalidArgument);
+  EXPECT_EQ(Record("run")->state, SessionLifecycleState::kDeleted);
+}
+
+TEST_F(RetainedSessionCatalogTest, CloseDuringCreateLeavesTheActiveRecord) {
+  std::optional<sitos::Result<void>> closed;
+  ASSERT_TRUE(StorageNodeTestAccess::SetCatalogCheckpoint(*node_, [&](std::string_view point) {
+    if (point == "create:active_written") closed = node_->CloseSession("run");
+  }));
+  ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
+  ASSERT_TRUE(closed.has_value());
+  EXPECT_EQ(closed->Error(), std::make_error_code(std::errc::operation_in_progress));
+  EXPECT_EQ(Record("run")->state, SessionLifecycleState::kActive);
+  EXPECT_EQ(MetaState(transport_, "run"), "active");
+}
+
 TEST_F(RetainedSessionCatalogTest, RemovalFailureRecordsDeleteFailedThenRetrySucceeds) {
   ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
   transport_.PutBuffer("run", "k", Bytes({1}));
   ASSERT_TRUE(node_->RetainSession("run").IsOk());
   const auto directory = GenerationDirectory("run");
 
-  // Block removal: an open file on Windows, a read-only parent on POSIX.
+  // Block removal: an open file on Windows, a read-only parent on POSIX. The guard
+  // restores write permission even when an assertion stops the test early.
   std::optional<std::ofstream> held;
+  struct WritableAgain {
+    std::filesystem::path path;
+    ~WritableAgain() {
+      std::error_code ignored;
+      std::filesystem::permissions(path, std::filesystem::perms::owner_write,
+                                   std::filesystem::perm_options::add, ignored);
+    }
+  } restore{directory.parent_path()};
 #if defined(_WIN32)
   held.emplace(directory / "held.bin");
   ASSERT_TRUE(held->is_open());
 #else
+  if (::geteuid() == 0) GTEST_SKIP() << "directory permission bits do not bind root";
   std::filesystem::permissions(directory.parent_path(), std::filesystem::perms::owner_write,
                                std::filesystem::perm_options::remove);
 #endif
