@@ -29,6 +29,9 @@ void RegisterClientExceptions(nb::module_& python_module) {
   static nb::exception<ReadOnlyError> readonly(python_module, "ReadOnlyError", base);
   static nb::exception<OutcomeUnknownError> outcome_unknown(python_module, "OutcomeUnknownError",
                                                             base);
+  static nb::exception<StateLostError> state_lost(python_module, "StateLostError", base);
+  static nb::exception<CatalogUnavailableError> catalog_unavailable(
+      python_module, "CatalogUnavailableError", base);
   python_module.attr("SitosError") = base;
   python_module.attr("NotFoundError") = not_found;
   python_module.attr("TypeMismatchError") = mismatch;
@@ -36,6 +39,8 @@ void RegisterClientExceptions(nb::module_& python_module) {
   python_module.attr("DisconnectedError") = disconnected;
   python_module.attr("ReadOnlyError") = readonly;
   python_module.attr("OutcomeUnknownError") = outcome_unknown;
+  python_module.attr("StateLostError") = state_lost;
+  python_module.attr("CatalogUnavailableError") = catalog_unavailable;
 }
 
 [[noreturn]] void ThrowStatus(Status status, std::string_view message) {
@@ -56,6 +61,10 @@ void RegisterClientExceptions(nb::module_& python_module) {
       throw ReadOnlyError(text);
     case PythonErrorKind::kOutcomeUnknown:
       throw OutcomeUnknownError(text);
+    case PythonErrorKind::kStateLost:
+      throw StateLostError(text);
+    case PythonErrorKind::kCatalogUnavailable:
+      throw CatalogUnavailableError(text);
     case PythonErrorKind::kSitosError:
       throw SitosError(text);
   }

@@ -74,7 +74,9 @@ enum class Status {
     InvalidKey = 6,
     InvalidArgument = 7,
     Error = 8,
-    OutcomeUnknown = 9   // observed by StorageNode, no stronger application claim (ADR-0028)
+    OutcomeUnknown = 9,  // observed by StorageNode, no stronger application claim (ADR-0028)
+    StateLost = 10,      // the Session's volatile parameter state was released or lost (ADR-0036)
+    CatalogUnavailable = 11  // the durable session catalog is unavailable (ADR-0036)
 };
 const std::error_category& StatusErrorCategory() noexcept;
 std::error_code MakeErrorCode(Status status);

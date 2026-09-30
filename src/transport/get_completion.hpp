@@ -15,6 +15,7 @@
 #include <unordered_set>
 #include <utility>
 
+#include "query_error_reply.hpp"
 #include "sitos/transport.hpp"
 
 namespace sitos::transport_internal {
@@ -31,7 +32,7 @@ struct QueryReply {
 class GetCompletion : public std::enable_shared_from_this<GetCompletion> {
  private:
   enum class DeliveryState { kActive, kStoppedBySink, kFailed };
-  enum class FailureKind { kNone, kReplyConversion, kCallbackException };
+  enum class FailureKind { kNone, kReplyConversion, kTypedErrorReply, kCallbackException };
 
  public:
   class CallbackLease {
@@ -74,7 +75,11 @@ class GetCompletion : public std::enable_shared_from_this<GetCompletion> {
     try {
       auto converted = std::forward<Converter>(converter)();
       if (!converted.IsOk()) {
-        RecordFailure(Status::Error, converted.Error(), FailureKind::kReplyConversion);
+        // Only an ADR-0036 typed error reply keeps its Status; every other
+        // conversion failure remains a generic Error.
+        const bool typed = IsQueryErrorStatus(converted.StatusCode());
+        RecordFailure(typed ? converted.StatusCode() : Status::Error, converted.Error(),
+                      typed ? FailureKind::kTypedErrorReply : FailureKind::kReplyConversion);
         return;
       }
 

@@ -148,6 +148,19 @@ TEST(AckStatusTest, OutcomeUnknownIsAppendedWithoutRenumbering) {
   EXPECT_EQ(code.message(), "outcome unknown");
 }
 
+TEST(AckStatusTest, StateLostAndCatalogUnavailableAreAppendedWithoutRenumbering) {
+  EXPECT_EQ(static_cast<int>(Status::OutcomeUnknown), 9);
+  EXPECT_EQ(static_cast<int>(Status::StateLost), 10);
+  EXPECT_EQ(static_cast<int>(Status::CatalogUnavailable), 11);
+  const auto state_lost = sitos::MakeErrorCode(Status::StateLost);
+  EXPECT_EQ(state_lost.value(), 10);
+  EXPECT_STREQ(state_lost.category().name(), "sitos.status");
+  EXPECT_EQ(state_lost.message(), "state lost");
+  const auto catalog_unavailable = sitos::MakeErrorCode(Status::CatalogUnavailable);
+  EXPECT_EQ(catalog_unavailable.value(), 11);
+  EXPECT_EQ(catalog_unavailable.message(), "catalog unavailable");
+}
+
 // ---------------------------------------------------------------------------
 // UUIDv4 tokens
 // ---------------------------------------------------------------------------
@@ -360,7 +373,7 @@ TEST(AckResultTest, RejectsUnknownEnumsAndWireForbiddenStatus) {
   r = PutUnknown();
   r.status = Status::Timeout;
   ExpectInvalid(r, "Timeout is client-only and rejected on the wire");
-  r.status = static_cast<Status>(10);
+  r.status = static_cast<Status>(12);
   ExpectInvalid(r, "future Status value");
   r.status = static_cast<Status>(255);
   ExpectInvalid(r, "Status 255");
@@ -368,7 +381,8 @@ TEST(AckResultTest, RejectsUnknownEnumsAndWireForbiddenStatus) {
   // Every allowlisted non-OK status is accepted for a put failure.
   for (Status status :
        {Status::NotFound, Status::TypeMismatch, Status::Disconnected, Status::ReadOnly,
-        Status::InvalidKey, Status::InvalidArgument, Status::Error, Status::OutcomeUnknown}) {
+        Status::InvalidKey, Status::InvalidArgument, Status::Error, Status::OutcomeUnknown,
+        Status::StateLost, Status::CatalogUnavailable}) {
     r = PutUnknown();
     r.status = status;
     ExpectValid(r, "allowlisted status");

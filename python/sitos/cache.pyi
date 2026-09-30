@@ -4,6 +4,7 @@ from typing import Any, TypeAlias, TypeVar, overload
 import numpy.typing as npt
 
 from ._sitos import (
+    CatalogUnavailableError as CatalogUnavailableError,
     DisconnectedError as DisconnectedError,
     NotFoundError as NotFoundError,
     OutcomeUnknownError as OutcomeUnknownError,
@@ -11,6 +12,7 @@ from ._sitos import (
     ParamValue as ParamValue,
     ReadOnlyError as ReadOnlyError,
     SitosError as SitosError,
+    StateLostError as StateLostError,
     TimeoutError as TimeoutError,
     TypeMismatchError as TypeMismatchError,
 )

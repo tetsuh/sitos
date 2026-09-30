@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -38,6 +39,12 @@ bool UsesFencePutProfile();
 
 /// Returns a production transport with no opened Zenoh session.
 std::unique_ptr<Transport> MakeDisconnectedTransport();
+
+/// Internal access for sending untyped Zenoh error replies from a queryable.
+class QueryTestAccess {
+ public:
+  static Result<void> ReplyRawError(TransportQuery& query, std::span<const std::byte> payload);
+};
 
 /// Internal access for Subscription ownership regression tests.
 class SubscriptionTestAccess {

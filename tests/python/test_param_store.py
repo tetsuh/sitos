@@ -101,6 +101,8 @@ def test_public_exception_hierarchy() -> None:
     assert issubclass(sitos.DisconnectedError, sitos.SitosError)
     assert issubclass(sitos.ReadOnlyError, sitos.SitosError)
     assert issubclass(sitos.OutcomeUnknownError, sitos.SitosError)
+    assert issubclass(sitos.StateLostError, sitos.SitosError)
+    assert issubclass(sitos.CatalogUnavailableError, sitos.SitosError)
 
 
 def test_batch_rejects_malformed_pairs_before_submission() -> None:
@@ -275,6 +277,14 @@ def test_live_value_domain_mapping_empty_batch_and_type_mismatch(live_store) -> 
     assert _eventually(store, "base", "array-batch") == b"\x03\x00\x04\x00"
     with pytest.raises(sitos.TypeMismatchError):
         store.get("base", "str", default=b"fallback", type=bytes)
+
+
+def test_live_typed_query_error_replies_raise_public_exceptions(live_store) -> None:
+    store, _, _ = live_store
+    with pytest.raises(sitos.StateLostError):
+        store.get("session/typed-state-lost", "value")
+    with pytest.raises(sitos.CatalogUnavailableError):
+        list(store.list("session/typed-catalog-unavailable", ""))
 
 
 def test_param_store_ack_options_are_keyword_only_and_strict() -> None:

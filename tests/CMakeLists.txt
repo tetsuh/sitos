@@ -141,6 +141,12 @@ gtest_add_tests(
   TARGET sitos_python_status_translation_test
   SOURCES unit/python_status_translation_test.cpp)
 
+add_executable(sitos_query_error_reply_test unit/query_error_reply_test.cpp)
+target_link_libraries(sitos_query_error_reply_test PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_query_error_reply_test PRIVATE ${PROJECT_SOURCE_DIR})
+sitos_enable_warnings(sitos_query_error_reply_test)
+gtest_add_tests(TARGET sitos_query_error_reply_test SOURCES unit/query_error_reply_test.cpp)
+
 add_executable(sitos_client_config_test unit/client_config_test.cpp)
 target_link_libraries(sitos_client_config_test PRIVATE GTest::gtest_main sitos::sitos)
 sitos_enable_warnings(sitos_client_config_test)

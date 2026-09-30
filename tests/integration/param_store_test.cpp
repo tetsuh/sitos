@@ -183,4 +183,34 @@ TEST(ParamStoreFactoryIntegrationTest, DefaultOpenUsesConfigAndFactory) {
   ASSERT_TRUE(result.IsOk()) << result.Message();
 }
 
+TEST_F(ParamStoreIntegrationTest, TypedQueryErrorRepliesSurfaceThroughGetAndList) {
+  // ADR-0036 §D6: a typed error reply reaches ParamStore callers unchanged.
+  const std::string state_lost_key = std::string(kPrefix) + "/session/typed-state-lost/value";
+  auto state_lost = transport_->DeclareQueryable(state_lost_key, [](sitos::TransportQuery& query) {
+    EXPECT_TRUE(query.ReplyError(sitos::Status::StateLost).IsOk());
+  });
+  ASSERT_TRUE(state_lost.IsOk()) << state_lost.Error().message();
+  const std::string catalog_selector =
+      std::string(kPrefix) + "/session/typed-catalog-unavailable/**";
+  auto catalog_unavailable =
+      transport_->DeclareQueryable(catalog_selector, [](sitos::TransportQuery& query) {
+        EXPECT_TRUE(query.ReplyError(sitos::Status::CatalogUnavailable).IsOk());
+      });
+  ASSERT_TRUE(catalog_unavailable.IsOk()) << catalog_unavailable.Error().message();
+
+  const auto get = store_->Get("session/typed-state-lost", "value");
+  ASSERT_FALSE(get.IsOk());
+  EXPECT_EQ(get.StatusCode(), sitos::Status::StateLost);
+
+  bool sink_called = false;
+  const auto list = store_->List("session/typed-catalog-unavailable", "",
+                                 [&sink_called](std::string_view, const sitos::ParamValue&) {
+                                   sink_called = true;
+                                   return true;
+                                 });
+  ASSERT_FALSE(list.IsOk());
+  EXPECT_EQ(list.StatusCode(), sitos::Status::CatalogUnavailable);
+  EXPECT_FALSE(sink_called);
+}
+
 }  // namespace

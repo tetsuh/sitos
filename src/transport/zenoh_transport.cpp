@@ -20,6 +20,7 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -28,6 +29,7 @@
 #include "config_failure.hpp"
 #include "declaration_handle_lifecycle.hpp"
 #include "get_completion.hpp"
+#include "query_error_reply.hpp"
 #include "sitos/ack.hpp"
 #include "sitos/transport.hpp"
 #include "zenoh_runtime_anchor.hpp"
@@ -280,11 +282,30 @@ Result<ZenohOwned<z_owned_bytes_t>> MakeBytes(std::span<const std::byte> payload
   return Result<ZenohOwned<z_owned_bytes_t>>::Ok(std::move(p));
 }
 
-Result<transport_internal::QueryReply> ConvertGetReply(z_loaned_reply_t* reply) {
-  if (!z_reply_is_ok(reply)) {
-    return Result<transport_internal::QueryReply>::Err(
-        Status::Error, "zenoh get reply reported an error", MakeErrorCode(Status::Error));
+// Maps a Zenoh error reply to its typed Status (ADR-0036 §D6); any other
+// error reply, including an unreadable or non-canonical payload, stays Error.
+Result<transport_internal::QueryReply> ConvertErrorReply(z_loaned_reply_t* reply) {
+  const z_loaned_reply_err_t* error = z_reply_err(reply);
+  const z_loaned_bytes_t* payload = error == nullptr ? nullptr : z_reply_err_payload(error);
+  if (payload != nullptr) {
+    ZenohOwned<z_owned_slice_t> slice;
+    if (z_bytes_to_slice(payload, slice.get()) == Z_OK) {
+      slice.mark_valid();
+      const auto typed = transport_internal::DecodeQueryErrorReply(
+          std::span<const std::byte>(reinterpret_cast<const std::byte*>(z_slice_data(slice.loan())),
+                                     z_slice_len(slice.loan())));
+      if (typed.has_value()) {
+        return Result<transport_internal::QueryReply>::Err(*typed, "storage node refused the query",
+                                                           MakeErrorCode(*typed));
+      }
+    }
   }
+  return Result<transport_internal::QueryReply>::Err(
+      Status::Error, "zenoh get reply reported an error", MakeErrorCode(Status::Error));
+}
+
+Result<transport_internal::QueryReply> ConvertGetReply(z_loaned_reply_t* reply) {
+  if (!z_reply_is_ok(reply)) return ConvertErrorReply(reply);
 
   const z_loaned_sample_t* sample = z_reply_ok(reply);
   if (sample == nullptr) {
@@ -412,6 +433,11 @@ bool UsesLatestGetConsolidation() {
   return options.consolidation.mode == Z_CONSOLIDATION_MODE_LATEST;
 }
 
+Result<void> QueryTestAccess::ReplyRawError(TransportQuery& query,
+                                            std::span<const std::byte> payload) {
+  return query.ReplyErrorPayload(payload);
+}
+
 bool UsesFencePutProfile() {
   z_put_options_t options;
   z_put_options_default(&options);
@@ -448,7 +474,9 @@ struct TransportQuery::Impl {
 };
 
 TransportQuery::TransportQuery() = default;
-TransportQuery::TransportQuery(ReplyHandler handler) : test_reply_handler_(std::move(handler)) {}
+TransportQuery::TransportQuery(ReplyHandler handler, ErrorReplyHandler error_handler)
+    : test_reply_handler_(std::move(handler)),
+      test_error_reply_handler_(std::move(error_handler)) {}
 TransportQuery::~TransportQuery() = default;
 
 Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::byte> payload,
@@ -484,6 +512,46 @@ Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::by
   opts.encoding = enc.Value().moved();
 
   z_result_t rc = z_query_reply(callback_state->query, ke.Value().loan(), p.Value().moved(), &opts);
+
+  if (rc != Z_OK) return Result<void>::Err(MakeZenohError(rc));
+  return Result<void>::Ok();
+}
+
+Result<void> TransportQuery::ReplyError(Status status) {
+  if (!transport_internal::IsQueryErrorStatus(status)) {
+    return Result<void>::Err(Status::InvalidArgument,
+                             "only StateLost and CatalogUnavailable have typed error replies");
+  }
+  if (test_error_reply_handler_) return test_error_reply_handler_(status);
+  if (test_reply_handler_) {
+    return Result<void>::Err(Status::Error, "test query has no error reply handler");
+  }
+  const std::string payload = transport_internal::EncodeQueryErrorReply(status);
+  return ReplyErrorPayload(std::span<const std::byte>(
+      reinterpret_cast<const std::byte*>(payload.data()), payload.size()));
+}
+
+Result<void> TransportQuery::ReplyErrorPayload(std::span<const std::byte> payload) {
+  if (!impl_ || !impl_->callback_state) {
+    return SemanticTransportError<void>(Status::Error, TransportErrc::kErrNoQuery);
+  }
+
+  auto p = MakeBytes(payload);
+  if (!p.IsOk()) return Result<void>::ErrFrom(p);
+
+  auto callback_state = impl_->callback_state;
+  auto queryable = callback_state->queryable;
+  if (!queryable) return SemanticTransportError<void>(Status::Error, TransportErrc::kErrNoQuery);
+
+  // Same lifetime rule as Reply(): hold the lock through z_query_reply_err().
+  std::lock_guard<std::mutex> lock(queryable->mutex);
+  if (!callback_state->active.load() || !queryable->alive || !callback_state->query) {
+    return SemanticTransportError<void>(Status::Error, TransportErrc::kErrNoQuery);
+  }
+
+  z_query_reply_err_options_t opts;
+  z_query_reply_err_options_default(&opts);
+  z_result_t rc = z_query_reply_err(callback_state->query, p.Value().moved(), &opts);
 
   if (rc != Z_OK) return Result<void>::Err(MakeZenohError(rc));
   return Result<void>::Ok();

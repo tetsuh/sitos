@@ -59,8 +59,8 @@ open decision (`—` when settled); implementers and consumers are listed separa
 | Same-publisher in-band Fence marker (`meta/fence/**`, `sitos.v1.fence`) | Normative | Implemented | [ADR-0029](adr/0029-define-same-publisher-fence-ordering.md) | — | #158; consumers #99, #107 |
 | `FenceLaneAttachmentV1` (25-byte Publisher UUIDv4 and sequence ordering metadata) | Normative | Implemented | [ADR-0029](adr/0029-define-same-publisher-fence-ordering.md) | — | #158; consumers #99, #107 |
 | `buffers/<sid>/{durable\|ephemeral}/<key>` value scope (plain opaque bytes) | Normative | Implemented | [ADR-0032](adr/0032-mixed-session-buffer-routes.md) | — | #56; fences via #107 |
-| Typed query error reply (`{"v":1,"status":<n>}` Zenoh error reply for `StateLost` and `CatalogUnavailable`) | Planned | Planned | [ADR-0036](adr/0036-retained-session-catalog.md) | ADR-0036 | #108 StorageNode routing; client `Transport::Get` |
-| `meta/session/<sid>.state` catalog lifecycle values (`retained`, `orphaned`, `deleting`, `delete_failed`) | Planned | Planned | [ADR-0036](adr/0036-retained-session-catalog.md) | ADR-0036 | #108 StorageNode metadata |
+| Typed query error reply (`{"v":1,"status":<n>}` Zenoh error reply for `StateLost` and `CatalogUnavailable`) | Normative | Implemented | [ADR-0036](adr/0036-retained-session-catalog.md); [03](03_wire_protocol.md) §4.5 | — | #190 `TransportQuery::ReplyError` and client `Transport::Get`; StorageNode routing by #108 |
+| `meta/session/<sid>.state` catalog lifecycle values (`retained`, `orphaned`, `deleting`, `delete_failed`) | Normative | Planned | [ADR-0036](adr/0036-retained-session-catalog.md) | — | #108 StorageNode metadata |
 
 ## 3. Stable identifiers
 
@@ -77,7 +77,7 @@ Values that must remain stable across releases because callers persist, compare,
 | `meta/ack/<uuid>` route id grammar (lenient parser, `IsValidAckUuid`) | Normative | Implemented | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md); [03](03_wire_protocol.md) §6 | — | the route accepts the existing safe grammar, but only canonical lowercase UUIDv4 text names a result |
 | Generated correlation-id format (canonical UUIDv4) | Normative | Implemented | [ADR-0028](adr/0028-unify-acknowledged-operation-results.md) | — | Internally generated; callers cannot provide tokens |
 | Fence result identifiers (`FenceDurability`, `FenceReceipt` fields) | Normative | Implemented | [ADR-0035](adr/0035-buffer-publisher-fences.md) | — | public mapping reuses ADR-0028/ADR-0029 |
-| Session state-lost read result (`Status::StateLost = 10`, Python `StateLostError`) | Planned | Planned | [ADR-0036](adr/0036-retained-session-catalog.md) | ADR-0036 | Append-only after `OutcomeUnknown = 9`; #108 |
-| Typed catalog-unavailable result (`Status::CatalogUnavailable = 11`, Python `CatalogUnavailableError`) | Planned | Planned | [ADR-0036](adr/0036-retained-session-catalog.md) | ADR-0036 | Append-only; returned by every catalog-dependent operation while the readiness latch is set; #108 |
+| Session state-lost read result (`Status::StateLost = 10`, Python `StateLostError`) | Normative | Implemented | [ADR-0036](adr/0036-retained-session-catalog.md) | — | Append-only after `OutcomeUnknown = 9`; value, wire form, and mapping by #190; StorageNode routing by #108 |
+| Typed catalog-unavailable result (`Status::CatalogUnavailable = 11`, Python `CatalogUnavailableError`) | Normative | Implemented | [ADR-0036](adr/0036-retained-session-catalog.md) | — | Append-only; returned by every catalog-dependent operation while the readiness latch is set; value, wire form, and mapping by #190; latch by #108 |
 
 (END OF DOCUMENT)
