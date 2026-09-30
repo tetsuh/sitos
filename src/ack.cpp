@@ -76,6 +76,8 @@ bool IsWireStatus(Status status) {
     case Status::InvalidArgument:
     case Status::Error:
     case Status::OutcomeUnknown:
+    case Status::StateLost:
+    case Status::CatalogUnavailable:
       return true;
     case Status::Timeout:  // client-only; never valid on the wire
       return false;

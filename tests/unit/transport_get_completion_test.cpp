@@ -261,6 +261,32 @@ TEST(TransportGetCompletionTest, PreservesFirstConversionFailure) {
   EXPECT_EQ(result.Message(), "failed to process zenoh get reply");
 }
 
+TEST(TransportGetCompletionTest, TypedErrorReplyKeepsItsStatus) {
+  for (const Status status : {Status::StateLost, Status::CatalogUnavailable}) {
+    std::vector<std::string> delivered;
+    auto completion = std::make_shared<GetCompletion>(
+        [&delivered](std::string_view key, std::span<const std::byte>, const Encoding&) {
+          delivered.emplace_back(key);
+          return true;
+        });
+    {
+      auto lease = completion->AcquireCallbackLease();
+      completion->ProcessReply([&] {
+        return Result<QueryReply>::Err(status, "storage node refused the query",
+                                       sitos::MakeErrorCode(status));
+      });
+    }
+    completion->MarkDropped();
+
+    const auto result = completion->WaitForResult();
+    ASSERT_FALSE(result.IsOk());
+    EXPECT_EQ(result.StatusCode(), status);
+    EXPECT_EQ(result.Error(), sitos::MakeErrorCode(status));
+    EXPECT_EQ(result.Message(), "storage node refused the query");
+    EXPECT_TRUE(delivered.empty());
+  }
+}
+
 TEST(TransportGetCompletionTest, RepeatedStateTeardownIsSafe) {
   std::vector<std::byte> payload = {std::byte{0x01}};
   for (int index = 0; index < 100; ++index) {

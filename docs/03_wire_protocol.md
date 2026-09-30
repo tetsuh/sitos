@@ -196,6 +196,24 @@ zenoh wildcards operate on chunks (`*` = one chunk, `**` = zero or more chunks).
 * Buffer capability checks and write-once validation are admission rules, not network ACLs.
 * get for a nonexistent `<sid>`: 0 replies
 
+### 4.5 Typed query error replies
+
+ADR-0036 §D6 defines one refusal form for queries. The storage node answers with a Zenoh error
+reply (not a sample) whose payload is exactly one of these canonical byte strings:
+
+| Payload | Status |
+|---|---|
+| `{"v":1,"status":10}` | `StateLost` |
+| `{"v":1,"status":11}` | `CatalogUnavailable` |
+
+The Encoding of the error reply is not inspected. Byte equality is the whole v1 grammar, so
+whitespace, other key orders, extra fields, other versions, and other Status values are not typed.
+A client `Get` that receives a typed error reply ends with that Status; every other error reply,
+including an unreadable or non-canonical payload, stays `Error`. As with any `Get` error, replies
+delivered before the refusal may already have reached the caller's sink. The routes that emit these
+replies (retained, orphaned, and catalog-unavailable Sessions) are ADR-0036 behavior implemented by
+Issue #108. Until then, `get` for a nonexistent `<sid>` keeps its 0-reply result.
+
 ## 5. Batch format (`sitos.v1.batch`)
 
 Buffer routes never use this format; `:batch` is reserved for base and session parameter scopes.
@@ -327,8 +345,8 @@ offset  size  field
 
 The encoded length must equal `32 + message_length`. The closed Status allowlist is `Ok = 0`,
 `NotFound = 1`, `TypeMismatch = 2`, `Disconnected = 4`, `ReadOnly = 5`, `InvalidKey = 6`,
-`InvalidArgument = 7`, `Error = 8`, and `OutcomeUnknown = 9`; `Timeout = 3` is client-only and
-rejected on the wire. Unknown versions, operation kinds, durability values, or Status values;
+`InvalidArgument = 7`, `Error = 8`, `OutcomeUnknown = 9`, `StateLost = 10`, and
+`CatalogUnavailable = 11` (ADR-0036); `Timeout = 3` is client-only and rejected on the wire. Unknown versions, operation kinds, durability values, or Status values;
 invalid sentinels; invalid UTF-8; and truncated, trailing, or overlong data are protocol errors.
 Per-operation invariants follow the ADR-0028 table: Put and Batch always use `applied`; Put success
 has `applied_count = 1` and no `failed_index`, Put failure has `applied_count = 0` and

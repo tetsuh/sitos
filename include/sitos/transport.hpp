@@ -29,6 +29,7 @@ namespace sitos {
 namespace transport_test_access {
 class SubscriptionTestAccess;
 class DeclarationHandleTestAccess;
+class QueryTestAccess;
 }  // namespace transport_test_access
 namespace fence_internal {
 class FenceDispatchCoordinator;
@@ -136,13 +137,19 @@ struct TransportQuery {
 
   using ReplyHandler =
       std::function<Result<void>(std::string_view, std::span<const std::byte>, Encoding)>;
+  using ErrorReplyHandler = std::function<Result<void>(Status)>;
 
   TransportQuery();
   ~TransportQuery();
 
   /// Creates a query with an in-process reply handler for deterministic tests.
   static TransportQuery ForTesting(ReplyHandler handler) {
-    return TransportQuery(std::move(handler));
+    return TransportQuery(std::move(handler), {});
+  }
+
+  /// Creates a deterministic test query that also routes typed error replies.
+  static TransportQuery ForTesting(ReplyHandler handler, ErrorReplyHandler error_handler) {
+    return TransportQuery(std::move(handler), std::move(error_handler));
   }
 
   TransportQuery(TransportQuery&&) = delete;
@@ -152,13 +159,22 @@ struct TransportQuery {
 
   Result<void> Reply(std::string_view key, std::span<const std::byte> payload, Encoding encoding);
 
+  /// Refuses the query with a typed error reply (ADR-0036 §D6). Only
+  /// Status::StateLost and Status::CatalogUnavailable are typed; any other
+  /// value returns InvalidArgument and sends nothing. A client Get that
+  /// receives the reply returns that Status.
+  Result<void> ReplyError(Status status);
+
  private:
-  explicit TransportQuery(ReplyHandler handler);
+  TransportQuery(ReplyHandler handler, ErrorReplyHandler error_handler);
+  Result<void> ReplyErrorPayload(std::span<const std::byte> payload);
 
   friend class ZenohTransport;
+  friend class transport_test_access::QueryTestAccess;
   struct Impl;
   std::unique_ptr<Impl> impl_;
   ReplyHandler test_reply_handler_;
+  ErrorReplyHandler test_error_reply_handler_;
 };
 
 /// An active subscription handle. The subscription is cancelled when this

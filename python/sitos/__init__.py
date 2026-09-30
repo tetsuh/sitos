@@ -5,12 +5,14 @@ from .cache import ParamCache
 from .node import InMemoryEngine, SessionView, StorageNode
 from .publisher import BufferClass, BufferPublisher, FenceDurability, FenceReceipt
 from .store import (
+    CatalogUnavailableError,
     DisconnectedError,
     NotFoundError,
     OutcomeUnknownError,
     ParamStore,
     ReadOnlyError,
     SitosError,
+    StateLostError,
     TimeoutError,
     TypeMismatchError,
 )
@@ -39,4 +41,6 @@ __all__ = [
     "DisconnectedError",
     "ReadOnlyError",
     "OutcomeUnknownError",
+    "StateLostError",
+    "CatalogUnavailableError",
 ]

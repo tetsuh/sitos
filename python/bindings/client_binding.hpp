@@ -47,6 +47,14 @@ class OutcomeUnknownError : public SitosError {
  public:
   using SitosError::SitosError;
 };
+class StateLostError : public SitosError {
+ public:
+  using SitosError::SitosError;
+};
+class CatalogUnavailableError : public SitosError {
+ public:
+  using SitosError::SitosError;
+};
 
 void RegisterClientExceptions(nanobind::module_& python_module);
 [[noreturn]] void ThrowStatus(Status status, std::string_view message);

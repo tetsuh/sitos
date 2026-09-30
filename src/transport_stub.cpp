@@ -23,13 +23,18 @@ struct Queryable::Impl {};
 namespace sitos {
 
 TransportQuery::TransportQuery() = default;
-TransportQuery::TransportQuery(ReplyHandler handler)
-    : test_reply_handler_(std::move(handler)) {}
+TransportQuery::TransportQuery(ReplyHandler handler, ErrorReplyHandler error_handler)
+    : test_reply_handler_(std::move(handler)),
+      test_error_reply_handler_(std::move(error_handler)) {}
 TransportQuery::~TransportQuery() = default;
 
 Result<void> TransportQuery::Reply(std::string_view key, std::span<const std::byte> payload,
                                    Encoding encoding) {
   if (test_reply_handler_) return test_reply_handler_(key, payload, encoding);
+  return Result<void>::Err(std::make_error_code(std::errc::operation_not_supported));
+}
+
+Result<void> TransportQuery::ReplyErrorPayload(std::span<const std::byte>) {
   return Result<void>::Err(std::make_error_code(std::errc::operation_not_supported));
 }
 

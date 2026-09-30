@@ -35,6 +35,10 @@ class StatusCategory final : public std::error_category {
         return "error";
       case Status::OutcomeUnknown:
         return "outcome unknown";
+      case Status::StateLost:
+        return "state lost";
+      case Status::CatalogUnavailable:
+        return "catalog unavailable";
     }
     return "error";
   }

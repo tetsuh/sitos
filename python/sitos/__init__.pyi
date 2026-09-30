@@ -1,9 +1,11 @@
 from ._sitos import (
+    CatalogUnavailableError as CatalogUnavailableError,
     DisconnectedError as DisconnectedError,
     NotFoundError as NotFoundError,
     OutcomeUnknownError as OutcomeUnknownError,
     ReadOnlyError as ReadOnlyError,
     SitosError as SitosError,
+    StateLostError as StateLostError,
     TimeoutError as TimeoutError,
     TypeMismatchError as TypeMismatchError,
     __version__ as __version__,
@@ -44,4 +46,6 @@ __all__ = [
     "DisconnectedError",
     "ReadOnlyError",
     "OutcomeUnknownError",
+    "StateLostError",
+    "CatalogUnavailableError",
 ]

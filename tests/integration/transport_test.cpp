@@ -7,9 +7,6 @@
 
 #include <gtest/gtest.h>
 
-#include "sitos/ack.hpp"
-#include "src/transport/zenoh_transport_test_access.hpp"
-
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -17,12 +14,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 #include <variant>
 #include <vector>
+
+#include "sitos/ack.hpp"
+#include "src/transport/zenoh_transport_test_access.hpp"
 
 namespace {
 
@@ -934,3 +936,98 @@ TEST_F(TransportTest, EmptyQueryableCallbackIsSafe) {
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// Typed query error replies (ADR-0036 §D6)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+sitos::Result<void> GetWithoutReplies(sitos::Transport& transport, const std::string& selector,
+                                      int& sink_calls) {
+  return transport.Get(
+      selector,
+      [&sink_calls](std::string_view, std::span<const std::byte>, const sitos::Encoding&) {
+        ++sink_calls;
+        return true;
+      },
+      std::chrono::milliseconds(2000));
+}
+
+}  // namespace
+
+TEST_F(TransportTest, TypedErrorReplyReturnsItsStatusFromGet) {
+  for (const sitos::Status status : {sitos::Status::StateLost, sitos::Status::CatalogUnavailable}) {
+    const std::string key =
+        "sitos/test/query/typed-error/" + std::to_string(static_cast<int>(status));
+    auto queryable = transport_->DeclareQueryable(
+        key, [&](sitos::TransportQuery& query) { EXPECT_TRUE(query.ReplyError(status).IsOk()); });
+    ASSERT_TRUE(queryable.IsOk()) << queryable.Error().message();
+
+    int sink_calls = 0;
+    const auto result = GetWithoutReplies(*transport_, key, sink_calls);
+    ASSERT_FALSE(result.IsOk());
+    EXPECT_EQ(result.StatusCode(), status);
+    EXPECT_EQ(result.Error(), sitos::MakeErrorCode(status));
+    EXPECT_EQ(sink_calls, 0);
+  }
+}
+
+TEST_F(TransportTest, ReplyErrorRejectsUnsupportedStatusWithoutReplying) {
+  const std::string key = "sitos/test/query/typed-error/unsupported";
+  std::vector<sitos::Status> rejected_statuses;
+  auto queryable = transport_->DeclareQueryable(key, [&](sitos::TransportQuery& query) {
+    for (const sitos::Status status :
+         {sitos::Status::Ok, sitos::Status::NotFound, sitos::Status::Timeout, sitos::Status::Error,
+          sitos::Status::OutcomeUnknown, static_cast<sitos::Status>(12)}) {
+      const auto reply = query.ReplyError(status);
+      if (!reply.IsOk() && reply.StatusCode() == sitos::Status::InvalidArgument) {
+        rejected_statuses.push_back(status);
+      }
+    }
+  });
+  ASSERT_TRUE(queryable.IsOk()) << queryable.Error().message();
+
+  int sink_calls = 0;
+  const auto result = GetWithoutReplies(*transport_, key, sink_calls);
+  EXPECT_TRUE(result.IsOk()) << result.Error().message();
+  EXPECT_EQ(sink_calls, 0);
+  EXPECT_EQ(rejected_statuses.size(), 6u);
+}
+
+TEST_F(TransportTest, UntypedErrorReplyStaysError) {
+  const std::string key = "sitos/test/query/typed-error/untyped";
+  const std::string payload = R"({"v":1,"status":9})";
+  auto queryable = transport_->DeclareQueryable(key, [&](sitos::TransportQuery& query) {
+    EXPECT_TRUE(sitos::transport_test_access::QueryTestAccess::ReplyRawError(
+                    query, std::span<const std::byte>(
+                               reinterpret_cast<const std::byte*>(payload.data()), payload.size()))
+                    .IsOk());
+  });
+  ASSERT_TRUE(queryable.IsOk()) << queryable.Error().message();
+
+  int sink_calls = 0;
+  const auto result = GetWithoutReplies(*transport_, key, sink_calls);
+  ASSERT_FALSE(result.IsOk());
+  EXPECT_EQ(result.StatusCode(), sitos::Status::Error);
+  EXPECT_EQ(sink_calls, 0);
+}
+
+TEST(TransportApiTest, ForTestingQueryRoutesTypedErrorReplies) {
+  std::vector<sitos::Status> seen;
+  auto query =
+      sitos::TransportQuery::ForTesting([](std::string_view, std::span<const std::byte>,
+                                           sitos::Encoding) { return sitos::Result<void>::Ok(); },
+                                        [&seen](sitos::Status status) {
+                                          seen.push_back(status);
+                                          return sitos::Result<void>::Ok();
+                                        });
+  EXPECT_TRUE(query.ReplyError(sitos::Status::StateLost).IsOk());
+  EXPECT_EQ(query.ReplyError(sitos::Status::NotFound).StatusCode(), sitos::Status::InvalidArgument);
+  EXPECT_EQ(seen, std::vector<sitos::Status>{sitos::Status::StateLost});
+
+  auto reply_only =
+      sitos::TransportQuery::ForTesting([](std::string_view, std::span<const std::byte>,
+                                           sitos::Encoding) { return sitos::Result<void>::Ok(); });
+  EXPECT_EQ(reply_only.ReplyError(sitos::Status::StateLost).StatusCode(), sitos::Status::Error);
+}

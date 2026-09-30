@@ -124,6 +124,7 @@ add_library(sitos STATIC
   src/storage_node.cpp
   src/session_view.cpp
   src/transport/get_completion.cpp
+  src/transport/query_error_reply.cpp
   src/transport/declaration_handle_lifecycle.cpp
 )
 add_library(sitos::sitos ALIAS sitos)

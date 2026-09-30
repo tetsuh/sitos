@@ -63,9 +63,12 @@ Result<void> GetCompletion::WaitForResult() {
   std::unique_lock<std::mutex> lock(state_mutex_);
   state_condition_.wait(lock, [this] { return dropped_ && in_flight_ == 0; });
   if (delivery_state_ == DeliveryState::kFailed) {
-    const char* message = failure_kind_ == FailureKind::kReplyConversion
-                              ? "failed to process zenoh get reply"
-                              : "get reply callback failed";
+    const char* message = "get reply callback failed";
+    if (failure_kind_ == FailureKind::kReplyConversion) {
+      message = "failed to process zenoh get reply";
+    } else if (failure_kind_ == FailureKind::kTypedErrorReply) {
+      message = "storage node refused the query";
+    }
     return Result<void>::Err(failure_status_, message, failure_cause_);
   }
   return Result<void>::Ok();

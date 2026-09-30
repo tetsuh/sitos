@@ -22,6 +22,11 @@ enum class Status {
   /// StorageNode observed and attempted the operation but the current engine
   /// contract permits no stronger application claim (ADR-0028).
   OutcomeUnknown = 9,
+  /// The Session's volatile parameter state was released or lost (ADR-0036).
+  StateLost = 10,
+  /// The durable session catalog is unavailable; catalog-dependent operations
+  /// are refused until offline maintenance and restart (ADR-0036).
+  CatalogUnavailable = 11,
 };
 
 /// Returns the process-wide error category used by MakeErrorCode.

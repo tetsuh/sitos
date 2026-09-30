@@ -50,6 +50,19 @@ int main(int argc, char** argv) {
     node.Stop();
     return 4;
   }
+  // ADR-0036 §D6: fixed session keys that answer with typed query error replies.
+  auto state_lost = transport->DeclareQueryable(
+      prefix + "/session/typed-state-lost/value", [](sitos::TransportQuery& query) {
+        static_cast<void>(query.ReplyError(sitos::Status::StateLost));
+      });
+  auto catalog_unavailable = transport->DeclareQueryable(
+      prefix + "/session/typed-catalog-unavailable/**", [](sitos::TransportQuery& query) {
+        static_cast<void>(query.ReplyError(sitos::Status::CatalogUnavailable));
+      });
+  if (!state_lost.IsOk() || !catalog_unavailable.IsOk()) {
+    node.Stop();
+    return 6;
+  }
   auto batch_result = transport->DeclareSubscriber(
       prefix + "/base/:batch", [&](const sitos::TransportSample& sample) {
         if (sample.kind != sitos::TransportSample::Kind::Put) return;
