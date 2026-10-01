@@ -147,10 +147,31 @@ bool IsCanonicalUuid(std::string_view text) {
   return parsed.has_value() && fence_internal::FormatFenceUuid(*parsed) == text;
 }
 
+// Reads `width` decimal digits at `at` as a number within [low, high].
+bool DigitsInRange(std::string_view text, std::size_t at, std::size_t width, int low, int high) {
+  if (at + width > text.size()) return false;
+  int value = 0;
+  for (std::size_t i = at; i < at + width; ++i) {
+    if (text[i] < '0' || text[i] > '9') return false;
+    value = value * 10 + (text[i] - '0');
+  }
+  return value >= low && value <= high;
+}
+
+// ISO-8601 UTC: YYYY-MM-DDTHH:MM:SS, an optional '.' and 1-9 fraction digits, then 'Z'.
 bool IsTimestamp(std::string_view text) {
-  return !text.empty() && text.size() <= 64 && std::ranges::all_of(text, [](char c) {
-    return (c >= '0' && c <= '9') || c == 'T' || c == 'Z' || c == ':' || c == '-' || c == '.';
-  });
+  constexpr std::size_t kSeconds = 19;  // length of "YYYY-MM-DDTHH:MM:SS"
+  if (text.size() < kSeconds + 1 || text.back() != 'Z') return false;
+  const bool fields =
+      DigitsInRange(text, 0, 4, 0, 9999) && text[4] == '-' && DigitsInRange(text, 5, 2, 1, 12) &&
+      text[7] == '-' && DigitsInRange(text, 8, 2, 1, 31) && text[10] == 'T' &&
+      DigitsInRange(text, 11, 2, 0, 23) && text[13] == ':' && DigitsInRange(text, 14, 2, 0, 59) &&
+      text[16] == ':' && DigitsInRange(text, 17, 2, 0, 60);
+  if (!fields) return false;
+  const auto fraction = text.substr(kSeconds, text.size() - kSeconds - 1);
+  if (fraction.empty()) return true;
+  return fraction.size() >= 2 && fraction.size() <= 10 && fraction.front() == '.' &&
+         std::ranges::all_of(fraction.substr(1), [](char c) { return c >= '0' && c <= '9'; });
 }
 
 bool IsDiagnosticWord(std::string_view text) {

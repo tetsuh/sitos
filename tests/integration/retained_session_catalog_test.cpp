@@ -650,6 +650,26 @@ TEST_F(DegradedCatalogTest, RepairThenRestartBecomesReady) {
             SessionLifecycleState::kRetained);
 }
 
+TEST_F(DegradedCatalogTest, MalformedTimestampMakesTheCatalogUnavailable) {
+  {
+    sitos::StorageNode first{transport_};
+    ASSERT_TRUE(first.Start(base_, CatalogConfig(root_.Path())).IsOk());
+    ASSERT_TRUE(first.CreateSession("kept", {.durable_buffers = true}).IsOk());
+    ASSERT_TRUE(first.RetainSession("kept").IsOk());
+  }
+  auto record = SessionCatalogRecord{};
+  record.sid = "kept";
+  record.generation_uuid = "3f2b8c1e-0d4a-4b6f-9c2e-7a1d5e8f0b93";
+  record.state = SessionLifecycleState::kRetained;
+  record.owner_instance_id = "9a0c1d2e-3f40-4b5c-8d6e-7f8091a2b3c4";
+  record.created_at = "T";
+  std::string text = sitos::catalog_internal::EncodeSessionRecord(record);
+  ASSERT_TRUE(SessionCatalogTestAccess::PutRawOffline(root_.Path(), "session/kept", text).IsOk());
+  ASSERT_TRUE(node_.Start(base_, CatalogConfig(root_.Path())).IsOk());
+  EXPECT_FALSE(node_.Readiness().ready);
+  EXPECT_EQ(node_.Readiness().reason, StorageNodeReadinessReason::kCatalogUnavailable);
+}
+
 TEST_F(DegradedCatalogTest, MissingCatalogBesideSessionsIsNotReady) {
   std::filesystem::create_directories(root_.Path() / "sessions" / "left");
   ASSERT_TRUE(node_.Start(base_, CatalogConfig(root_.Path())).IsOk());

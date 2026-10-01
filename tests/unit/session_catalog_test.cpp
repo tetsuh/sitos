@@ -134,6 +134,32 @@ TEST(SessionCatalogRecordTest, RejectsNonCanonicalOrInconsistentRecords) {
   }
 }
 
+TEST(SessionCatalogRecordTest, AcceptsOnlyIso8601UtcTimestamps) {
+  for (const std::string_view accepted :
+       {"2026-10-01T00:00:00Z", "2026-10-01T23:59:60Z", "2026-10-01T00:00:00.5Z",
+        "2026-10-01T00:00:00.123456789Z"}) {
+    auto record = ActiveRecord();
+    record.created_at = std::string(accepted);
+    record.retained_at = std::string(accepted);
+    EXPECT_TRUE(DecodeSessionRecord("session", EncodeSessionRecord(record)).has_value())
+        << accepted;
+  }
+  for (const std::string_view rejected :
+       {"T", "Z", "2026-10-01", "2026-10-01T00:00:00", "2026-13-01T00:00:00Z",
+        "2026-10-00T00:00:00Z", "2026-10-01T24:00:00Z", "2026-10-01T00:60:00Z",
+        "2026-10-01T00:00:61Z", "2026-10-01 00:00:00Z", "2026-10-01T00:00:00.Z",
+        "2026-10-01T00:00:00.1234567890Z", "2026-10-01T00:00:00+09:00", "26-10-01T00:00:00Z"}) {
+    auto created = ActiveRecord();
+    created.created_at = std::string(rejected);
+    EXPECT_FALSE(DecodeSessionRecord("session", EncodeSessionRecord(created)).has_value())
+        << "created_at " << rejected;
+    auto retained = ActiveRecord();
+    retained.retained_at = std::string(rejected);
+    EXPECT_FALSE(DecodeSessionRecord("session", EncodeSessionRecord(retained)).has_value())
+        << "retained_at " << rejected;
+  }
+}
+
 TEST(SessionCatalogRecordTest, RejectsRecordsWithoutTheDurableRoute) {
   auto record = ActiveRecord();
   record.durable = false;
