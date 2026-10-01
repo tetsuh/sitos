@@ -22,8 +22,11 @@
 #include <unistd.h>
 #endif
 
+#include "fence_internal.hpp"
+#include "fence_test_access.hpp"
 #include "retained_session_support.hpp"
 #include "session_catalog.hpp"
+#include "sitos/ack.hpp"
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/rocksdb_engine.hpp"
 #include "sitos/storage_node.hpp"
@@ -230,6 +233,29 @@ TEST_F(RetainedSessionCatalogTest, ReconciledStoresServeReadsOnly) {
   Restart();
   transport_.PutBuffer("run", "after-restart", Bytes({4}));
   EXPECT_TRUE(Query(transport_, "sitos/buffers/run/durable/after-restart").replies.empty());
+}
+
+TEST_F(RetainedSessionCatalogTest, ReconciledDualCapabilitySessionRestoresNoEphemeralOrFence) {
+  ASSERT_TRUE(
+      node_->CreateSession("run", {.durable_buffers = true, .ephemeral_buffers = true}).IsOk());
+  transport_.PutEphemeral("run", "live", Bytes({1}));
+  ASSERT_EQ(sitos::fence_test_access::FenceTestAccess::BufferApplicationCount(*node_), 1u);
+  ASSERT_TRUE(node_->RetainSession("run").IsOk());
+  const auto generation = sitos::fence_internal::ParseFenceUuid(Record("run")->generation_uuid);
+  ASSERT_TRUE(generation.has_value());
+
+  Restart();
+  transport_.PutEphemeral("run", "live", Bytes({2}));
+  EXPECT_EQ(sitos::fence_test_access::FenceTestAccess::BufferApplicationCount(*node_), 0u);
+
+  const auto token = sitos::GenerateAckToken();
+  transport_.Deliver(sitos::fence_test_access::FenceTestAccess::MakeBufferMarker(
+      "sitos", "run", *generation, sitos::BufferClass::Durable,
+      sitos::fence_internal::GenerateFenceUuid(), sitos::AckDurability::Synced, 1, token));
+  const auto result = sitos::fence_test_access::FenceTestAccess::FindAckResult(*node_, token);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->status, Status::InvalidArgument);
+  EXPECT_EQ(Query(transport_, "sitos/buffers/run/durable/**").result.StatusCode(), Status::Ok);
 }
 
 TEST_F(RetainedSessionCatalogTest, RetainPreconditions) {

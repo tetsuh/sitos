@@ -587,17 +587,14 @@ void StorageNode::DurableLifecycle::ServeReconciledSession(State& state,
   auto session = std::make_shared<SessionRecord>();
   session->generation_uuid =
       fence_internal::ParseFenceUuid(record.generation_uuid).value_or(FenceUuid{});
-  session->options = SessionOptions{.durable_buffers = true, .ephemeral_buffers = record.ephemeral};
+  // ADR-0036 §D5: a reopened store serves durable Get/List and CloseSession only, so no
+  // ephemeral capability and no buffer fence dispatch are restored.
+  session->options = SessionOptions{.durable_buffers = true, .ephemeral_buffers = false};
   session->metadata = SessionMeta{record.created_at, record.generation_uuid};
   session->lifecycle = record.state;
   session->catalogued = true;
   session->reconciled = true;
   session->durable_buffers = std::move(opened).Value();
-  session->fence_dispatch = std::make_shared<fence_internal::FenceSessionDispatch>();
-  if (state.fence_dispatcher) {
-    session->fence_dispatch->durable = state.fence_dispatcher->Register();
-    session->fence_dispatch->ephemeral = state.fence_dispatcher->Register();
-  }
   session->Activate();
   std::unique_lock lock(state.session_mutex);
   state.sessions.insert_or_assign(record.sid, std::move(session));
@@ -834,7 +831,7 @@ void StorageNode::Stop() noexcept {
       auto node = state->sessions.extract(state->sessions.begin());
       record = std::move(node.mapped());
     }
-    if (state->fence_dispatcher) {
+    if (state->fence_dispatcher && record->fence_dispatch) {
       state->fence_dispatcher->CloseAndWait(record->fence_dispatch->durable);
       state->fence_dispatcher->CloseAndWait(record->fence_dispatch->ephemeral);
     }
@@ -1131,7 +1128,7 @@ Result<void> StorageNode::CloseSession(std::string_view sid) {
     if (!record->BeginClose()) return Result<void>::Err(OperationInProgress());
   }
 
-  if (state->fence_dispatcher) {
+  if (state->fence_dispatcher && record->fence_dispatch) {
     state->fence_dispatcher->CloseAndWait(record->fence_dispatch->durable);
     state->fence_dispatcher->CloseAndWait(record->fence_dispatch->ephemeral);
   }
@@ -1507,7 +1504,8 @@ void StorageNode::ApplyBufferFenceMarker(const std::shared_ptr<State>& state,
     // proves that a mutable optimistic result cannot escape through the
     // completion guard.
     if (throw_after_claim) throw std::runtime_error("injected Fence post-claim failure");
-    if (!route.buffer_class.has_value()) {
+    if (!route.buffer_class.has_value() || record->reconciled) {
+      // ADR-0036 §D5: a store reopened at Start accepts no buffer fences.
       result.status = Status::InvalidArgument;
     } else {
       const bool buffer_enabled = *route.buffer_class == BufferClass::Durable
@@ -2139,6 +2137,7 @@ bool FenceTestAccess::CloseSessionFenceDispatch(StorageNode& node, std::string_v
     if (it == state->sessions.end()) return false;
     record = it->second;
   }
+  if (!record->fence_dispatch) return false;
   state->fence_dispatcher->CloseAndWait(record->fence_dispatch->durable);
   state->fence_dispatcher->CloseAndWait(record->fence_dispatch->ephemeral);
   return true;

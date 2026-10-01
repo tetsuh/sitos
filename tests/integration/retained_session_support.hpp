@@ -95,6 +95,14 @@ class CatalogTransport final : public sitos::Transport {
         }));
   }
 
+  void PutEphemeral(const std::string& sid, const std::string& key, std::vector<std::byte> bytes) {
+    Deliver(sitos::TransportSample{"sitos/buffers/" + sid + "/ephemeral/" + key,
+                                   bytes,
+                                   {"zenoh/bytes"},
+                                   {},
+                                   sitos::TransportSample::Kind::Put});
+  }
+
   void PutBuffer(const std::string& sid, const std::string& key, std::vector<std::byte> bytes) {
     Deliver(sitos::TransportSample{"sitos/buffers/" + sid + "/durable/" + key,
                                    bytes,
@@ -112,7 +120,6 @@ class CatalogTransport final : public sitos::Transport {
                                    sitos::TransportSample::Kind::Put});
   }
 
- private:
   void Deliver(const sitos::TransportSample& sample) {
     std::function<void(const sitos::TransportSample&)> subscriber;
     {
@@ -122,6 +129,7 @@ class CatalogTransport final : public sitos::Transport {
     if (subscriber) subscriber(sample);
   }
 
+ private:
   std::mutex mutex_;
   std::function<void(const sitos::TransportSample&)> subscriber_;
   std::function<void(sitos::TransportQuery&)> queryable_;
