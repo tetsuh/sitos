@@ -473,7 +473,8 @@ struct StorageNode::DurableLifecycle {
   static Result<std::optional<SessionCatalogRecord>> BeginCatalogDeletion(
       State& state, const std::string& key, const SessionRecord* record);
   // ADR-0032 factory mode: creates the host-supplied durable engine.
-  static Result<void> CreateFactoryStore(State& state, std::string_view sid, SessionRecord& record);
+  static Result<void> CreateFactoryStore(const State& state, std::string_view sid,
+                                         SessionRecord& record);
 };
 
 void StorageNode::DurableLifecycle::CatalogCheckpoint(State& state, std::string_view point) {
@@ -989,7 +990,8 @@ Result<void> StorageNode::CreateSession(const std::shared_ptr<State>& state, std
   return Result<void>::Ok();
 }
 
-Result<void> StorageNode::DurableLifecycle::CreateFactoryStore(State& state, std::string_view sid,
+Result<void> StorageNode::DurableLifecycle::CreateFactoryStore(const State& state,
+                                                               std::string_view sid,
                                                                SessionRecord& record) {
   if (!state.durable_buffer_engine_factory) {
     return Result<void>::Err(Status::InvalidArgument, "durable buffer engine factory is required",
