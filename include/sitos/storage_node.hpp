@@ -295,6 +295,10 @@ class StorageNode {
     std::shared_ptr<catalog_internal::SessionCatalog> catalog;
     std::mutex catalog_mutex;
     std::atomic<bool> catalog_unavailable{false};
+    // ADR-0036 §D8 shared catalog gate: durable-store reads and writes of catalogued
+    // Sessions hold it shared across their latch check and storage access, and the latch
+    // is published only under the exclusive side, so no such access outlives the latch.
+    std::shared_mutex catalog_gate;
     std::function<void(std::string_view)> catalog_checkpoint;
     std::shared_ptr<fence_internal::FenceDispatchCoordinator> fence_dispatcher;
     std::shared_ptr<fence_internal::FenceReceiverRegistry> fence_receiver_registry;

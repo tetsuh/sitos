@@ -465,6 +465,8 @@ struct StorageNode::DurableLifecycle {
                                           const std::vector<SessionCatalogRecord>& records);
   static void ServeReconciledSession(State& state, const SessionCatalogRecord& record);
   static void CatalogCheckpoint(State& state, std::string_view point);
+  // Publishes the monotonic catalog-unavailable latch after admitted durable access drains.
+  static void LatchCatalogUnavailable(State& state);
   // Records `active`, then creates and opens the generation store of a catalogued Session.
   static Result<void> CreateCatalogStore(State& state, const std::string& key,
                                          SessionOptions options, SessionRecord& record);
@@ -486,6 +488,13 @@ void StorageNode::DurableLifecycle::CatalogCheckpoint(State& state, std::string_
   if (checkpoint) checkpoint(point);
 }
 
+void StorageNode::DurableLifecycle::LatchCatalogUnavailable(State& state) {
+  std::unique_lock gate(state.catalog_gate);
+  if (!state.catalog_unavailable.exchange(true)) {
+    EmitLog(state.log_sink, LogLevel::kError, kCatalogComponent, kCatalogUnavailable);
+  }
+}
+
 Result<void> StorageNode::DurableLifecycle::WriteCatalogRecord(State& state,
                                                                const SessionCatalogRecord& record,
                                                                std::string_view checkpoint) {
@@ -494,9 +503,7 @@ Result<void> StorageNode::DurableLifecycle::WriteCatalogRecord(State& state,
   if (!written.IsOk()) {
     // ADR-0036 §D8: a failed synchronized write proves nothing about later writes,
     // so the whole process stays unavailable until offline repair and restart.
-    if (!state.catalog_unavailable.exchange(true)) {
-      EmitLog(state.log_sink, LogLevel::kError, kCatalogComponent, kCatalogUnavailable);
-    }
+    DurableLifecycle::LatchCatalogUnavailable(state);
     return Result<void>::Err(Status::CatalogUnavailable, "durable session catalog is unavailable");
   }
   DurableLifecycle::CatalogCheckpoint(state, checkpoint);
@@ -772,8 +779,7 @@ Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Transport
       return Result<void>::ErrFrom(opened);  // no RocksDB support in this build
     } else {
       // ADR-0036 §D8: stay live, never repair, and latch readiness false.
-      state->catalog_unavailable.store(true);
-      EmitLog(state->log_sink, LogLevel::kError, kCatalogComponent, kCatalogUnavailable);
+      DurableLifecycle::LatchCatalogUnavailable(*state);
     }
   }
   const std::string declaration_key = state->prefix + "/**";
@@ -1640,6 +1646,10 @@ AckResultV1 StorageNode::ApplyParameterSample(const std::shared_ptr<State>& stat
 
     std::optional<Status> fence_failure;
     bool applied = false;
+    // ADR-0036 §D8: a catalogued durable write holds the catalog gate across its latch
+    // check and store access.
+    std::shared_lock<std::shared_mutex> catalog_write;
+    if (access.record->catalogued) catalog_write = std::shared_lock(state->catalog_gate);
     if (sample.kind == TransportSample::Kind::Delete) {
       diagnostics.emplace_back(LogLevel::kWarning, kBufferUnsupported);
       fence_failure = Status::InvalidArgument;
@@ -1848,10 +1858,6 @@ void StorageNode::ReplyBufferQuery(const std::shared_ptr<State>& state, Transpor
   const auto& [class_name, selector_text] = *class_split;
   if (class_name != "durable") return;
   if (selector_text.empty()) return;
-  if (state->catalog_mode && state->catalog_unavailable.load()) {
-    static_cast<void>(query.ReplyError(Status::CatalogUnavailable));
-    return;
-  }
   std::string relative;
   bool list = false;
   if (selector_text == "**") {
@@ -1873,6 +1879,16 @@ void StorageNode::ReplyBufferQuery(const std::shared_ptr<State>& state, Transpor
   std::vector<OwnedEntry> entries;
   bool ok = false;
   bool collection_failed = false;
+  // ADR-0036 §D8: the latch check and the store access share one catalog-gate hold.
+  std::shared_lock<std::shared_mutex> catalog_read;
+  if (state->catalog_mode) {
+    catalog_read = std::shared_lock(state->catalog_gate);
+    if (state->catalog_unavailable.load()) {
+      catalog_read.unlock();
+      static_cast<void>(query.ReplyError(Status::CatalogUnavailable));
+      return;
+    }
+  }
   {
     std::optional<SessionRecord::AdmissionLease> admission;
     std::shared_ptr<SessionRecord> record;
@@ -1884,6 +1900,7 @@ void StorageNode::ReplyBufferQuery(const std::shared_ptr<State>& state, Transpor
       admission = record->TryAcquire();
     }
     if (!admission || !record->options.durable_buffers || !record->durable_buffers) return;
+    if (state->catalog_mode) DurableLifecycle::CatalogCheckpoint(*state, "buffer:admitted");
     try {
       auto sink = [&entries](std::string_view key, Bytes value) {
         entries.emplace_back(std::string(key), std::vector<std::byte>(value.begin(), value.end()));
@@ -1895,6 +1912,7 @@ void StorageNode::ReplyBufferQuery(const std::shared_ptr<State>& state, Transpor
       collection_failed = true;
     }
   }
+  if (catalog_read.owns_lock()) catalog_read.unlock();
   if (collection_failed || (!ok && list)) {
     EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, kBufferQueryFailed);
     return;

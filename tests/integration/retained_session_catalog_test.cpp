@@ -6,6 +6,8 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -434,6 +436,34 @@ TEST_F(RetainedSessionCatalogTest, DurableWritesStopAfterTheCatalogLatch) {
   ASSERT_TRUE(node_->Readiness().ready);
   EXPECT_EQ(Query(transport_, "sitos/buffers/run/durable/before").replies.size(), 1u);
   EXPECT_TRUE(Query(transport_, "sitos/buffers/run/durable/after").replies.empty());
+}
+
+TEST_F(RetainedSessionCatalogTest, CatalogLatchWaitsForAnAdmittedDurableRead) {
+  ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
+  transport_.PutBuffer("run", "k", Bytes({1}));
+  std::atomic<bool> latched{false};
+  bool latch_waited = false;
+  std::thread latcher;
+  ASSERT_TRUE(StorageNodeTestAccess::SetCatalogCheckpoint(*node_, [&](std::string_view point) {
+    if (point != "buffer:admitted" || latcher.joinable()) return;
+    // A concurrent catalog failure must wait for this admitted read to finish.
+    latcher = std::thread([&] {
+      StorageNodeTestAccess::LatchCatalogUnavailable(*node_);
+      latched.store(true);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    latch_waited = !latched.load();
+  }));
+  const auto admitted = Query(transport_, "sitos/buffers/run/durable/k");
+  ASSERT_TRUE(latcher.joinable());
+  latcher.join();
+  ASSERT_TRUE(admitted.result.IsOk());
+  EXPECT_EQ(admitted.replies.size(), 1u);
+  EXPECT_TRUE(latch_waited);
+  EXPECT_TRUE(latched.load());
+  EXPECT_EQ(Query(transport_, "sitos/buffers/run/durable/k").result.StatusCode(),
+            Status::CatalogUnavailable);
+  EXPECT_FALSE(node_->Readiness().ready);
 }
 
 TEST_F(RetainedSessionCatalogTest, RemovalFailureRecordsDeleteFailedThenRetrySucceeds) {

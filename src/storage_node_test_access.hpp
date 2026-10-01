@@ -64,6 +64,7 @@ class StorageNodeTestAccess {
       state = node.state_;
     }
     if (!state) return false;
+    std::unique_lock gate(state->catalog_gate);
     state->catalog_unavailable.store(true);
     return true;
   }
