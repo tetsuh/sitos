@@ -1879,40 +1879,44 @@ void StorageNode::ReplyBufferQuery(const std::shared_ptr<State>& state, Transpor
   std::vector<OwnedEntry> entries;
   bool ok = false;
   bool collection_failed = false;
-  // ADR-0036 §D8: the latch check and the store access share one catalog-gate hold.
-  std::shared_lock<std::shared_mutex> catalog_read;
-  if (state->catalog_mode) {
-    catalog_read = std::shared_lock(state->catalog_gate);
-    if (state->catalog_unavailable.load()) {
-      catalog_read.unlock();
-      static_cast<void>(query.ReplyError(Status::CatalogUnavailable));
-      return;
-    }
-  }
+  bool catalog_unavailable = false;
   {
-    std::optional<SessionRecord::AdmissionLease> admission;
-    std::shared_ptr<SessionRecord> record;
-    {
-      std::shared_lock lock(state->session_mutex);
-      auto it = state->sessions.find(sid);
-      if (it == state->sessions.end()) return;
-      record = it->second;
-      admission = record->TryAcquire();
+    // ADR-0036 §D8: the latch check and the store access share one catalog-gate hold,
+    // released at the end of this scope before any reply is sent.
+    std::shared_lock<std::shared_mutex> catalog_read;
+    if (state->catalog_mode) {
+      catalog_read = std::shared_lock(state->catalog_gate);
+      catalog_unavailable = state->catalog_unavailable.load();
     }
-    if (!admission || !record->options.durable_buffers || !record->durable_buffers) return;
-    if (state->catalog_mode) DurableLifecycle::CatalogCheckpoint(*state, "buffer:admitted");
-    try {
-      auto sink = [&entries](std::string_view key, Bytes value) {
-        entries.emplace_back(std::string(key), std::vector<std::byte>(value.begin(), value.end()));
-        return true;
-      };
-      ok = list ? record->durable_buffers->List(relative, sink)
-                : record->durable_buffers->Get(relative, sink);
-    } catch (...) {
-      collection_failed = true;
+    if (!catalog_unavailable) {
+      std::optional<SessionRecord::AdmissionLease> admission;
+      std::shared_ptr<SessionRecord> record;
+      {
+        std::shared_lock lock(state->session_mutex);
+        auto it = state->sessions.find(sid);
+        if (it == state->sessions.end()) return;
+        record = it->second;
+        admission = record->TryAcquire();
+      }
+      if (!admission || !record->options.durable_buffers || !record->durable_buffers) return;
+      if (state->catalog_mode) DurableLifecycle::CatalogCheckpoint(*state, "buffer:admitted");
+      try {
+        auto sink = [&entries](std::string_view key, Bytes value) {
+          entries.emplace_back(std::string(key),
+                               std::vector<std::byte>(value.begin(), value.end()));
+          return true;
+        };
+        ok = list ? record->durable_buffers->List(relative, sink)
+                  : record->durable_buffers->Get(relative, sink);
+      } catch (...) {
+        collection_failed = true;
+      }
     }
   }
-  if (catalog_read.owns_lock()) catalog_read.unlock();
+  if (catalog_unavailable) {
+    static_cast<void>(query.ReplyError(Status::CatalogUnavailable));
+    return;
+  }
   if (collection_failed || (!ok && list)) {
     EmitLog(state->log_sink, LogLevel::kError, kNodeComponent, kBufferQueryFailed);
     return;
