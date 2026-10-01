@@ -29,6 +29,7 @@
 #include "sitos/ack.hpp"
 #include "sitos/in_memory_engine.hpp"
 #include "sitos/rocksdb_engine.hpp"
+#include "sitos/session_view.hpp"
 #include "sitos/storage_node.hpp"
 #include "storage_node_test_access.hpp"
 
@@ -218,6 +219,33 @@ TEST_F(RetainedSessionCatalogTest, ParameterReadsAfterRetainAndRestartAreStateLo
   // An unknown Session keeps its zero-reply NotFound meaning.
   EXPECT_TRUE(Query(transport_, "sitos/session/unknown/gain").result.IsOk());
   EXPECT_TRUE(Query(transport_, "sitos/session/unknown/gain").replies.empty());
+}
+
+TEST_F(RetainedSessionCatalogTest, SessionViewReportsStateLostAfterRetain) {
+  ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
+  transport_.PutParameter("session/run", "gain", 7);
+  auto existing = sitos::SessionView::Open(*node_, "run");
+  ASSERT_TRUE(existing.IsOk()) << existing.Message();
+  ASSERT_TRUE(existing.Value().Get("gain").IsOk());
+
+  ASSERT_TRUE(node_->RetainSession("run").IsOk());
+  // A view opened before retention and a view opened after it both report StateLost.
+  const auto read = existing.Value().Get("gain");
+  ASSERT_FALSE(read.IsOk());
+  EXPECT_EQ(read.StatusCode(), Status::StateLost);
+  const auto listed =
+      existing.Value().List("", [](std::string_view, const sitos::ParamValue&) { return true; });
+  ASSERT_FALSE(listed.IsOk());
+  EXPECT_EQ(listed.StatusCode(), Status::StateLost);
+  const auto reopened = sitos::SessionView::Open(*node_, "run");
+  ASSERT_FALSE(reopened.IsOk());
+  EXPECT_EQ(reopened.StatusCode(), Status::StateLost);
+
+  Restart();
+  const auto after_restart = sitos::SessionView::Open(*node_, "run");
+  ASSERT_FALSE(after_restart.IsOk());
+  EXPECT_EQ(after_restart.StatusCode(), Status::StateLost);
+  EXPECT_EQ(sitos::SessionView::Open(*node_, "unknown").StatusCode(), Status::NotFound);
 }
 
 TEST_F(RetainedSessionCatalogTest, RetainDoesNotStopTheRunningDurableReceiver) {
