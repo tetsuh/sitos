@@ -397,7 +397,10 @@ At `Start`, StorageNode opens and validates the catalog, then records a fresh in
 every previous-instance `active` record into `orphaned`, and reopens `retained` and `orphaned`
 stores for durable Get/List and `CloseSession` only; buffer writes to them are rejected. It resumes
 `deleting` records, leaves `delete_failed` for an explicit retry, and logs unknown entries under
-`sessions/` without serving or removing them. It never recreates snapshots, overlays, ParamCache
+`sessions/` without serving or removing them. A `retained` or previously `orphaned` store that is missing or cannot be
+opened is missing storage: the catalog latches unavailable instead of recreating it. Only a
+Session orphaned at this `Start`, because the process stopped between its `active` record and its
+store, is served as an empty store. It never recreates snapshots, overlays, ParamCache
 state, or compute.
 
 If the catalog cannot be opened (including a held lock or a catalog missing beside existing
