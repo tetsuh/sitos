@@ -586,8 +586,9 @@ void StorageNode::DurableLifecycle::ServeReconciledSession(State& state,
   const auto directory =
       GenerationDirectory(state.durable_root, record.sid, record.generation_uuid);
   std::error_code error;
-  const bool present = std::filesystem::is_directory(directory, error) &&
-                       !std::filesystem::is_empty(directory, error) && !error;
+  // Every RocksDB database holds a CURRENT file, and RocksDBEngine::Open would create a
+  // database where none exists, so presence is decided before opening.
+  const bool present = std::filesystem::is_regular_file(directory / "CURRENT", error) && !error;
   // ADR-0036 §D4/§D8: only a Session orphaned at this Start by a crash between its
   // `active` record and its store may lack a store; it is served as empty. Any other
   // missing or unopenable store is missing storage and fails the catalog closed.

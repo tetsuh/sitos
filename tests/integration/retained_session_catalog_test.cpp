@@ -676,11 +676,13 @@ TEST_P(MalformedTimestampTest, MakesTheCatalogUnavailable) {
 INSTANTIATE_TEST_SUITE_P(Catalog, MalformedTimestampTest,
                          ::testing::Values("T", "2026-02-29T00:00:00Z", "2026-04-31T00:00:00Z"));
 
+enum class StoreDamage { kRemoved, kReplacedByFile, kOnlyUnrelatedFile };
+
 class MissingRetainedStoreTest : public DegradedCatalogTest,
-                                 public ::testing::WithParamInterface<bool> {};
+                                 public ::testing::WithParamInterface<StoreDamage> {};
 
 TEST_P(MissingRetainedStoreTest, FailsTheCatalogClosedInsteadOfRecreatingIt) {
-  const bool replace_with_file = GetParam();
+  const StoreDamage damage = GetParam();
   std::filesystem::path directory;
   {
     sitos::StorageNode first{transport_};
@@ -692,19 +694,23 @@ TEST_P(MissingRetainedStoreTest, FailsTheCatalogClosedInsteadOfRecreatingIt) {
                 StorageNodeTestAccess::CatalogRecord(first, "kept")->generation_uuid;
   }
   std::filesystem::remove_all(directory);
-  if (replace_with_file) {
-    std::ofstream(directory) << "not a store";
+  if (damage == StoreDamage::kReplacedByFile) std::ofstream(directory) << "not a store";
+  if (damage == StoreDamage::kOnlyUnrelatedFile) {
+    std::filesystem::create_directories(directory);
+    std::ofstream(directory / "notes.txt") << "not a store";
   }
 
   ASSERT_TRUE(node_.Start(base_, CatalogConfig(root_.Path())).IsOk());
   EXPECT_FALSE(node_.Readiness().ready);
   EXPECT_EQ(node_.Readiness().reason, StorageNodeReadinessReason::kCatalogUnavailable);
-  EXPECT_EQ(std::filesystem::is_directory(directory), false);
+  EXPECT_FALSE(std::filesystem::exists(directory / "CURRENT"));
   EXPECT_EQ(Query(transport_, "sitos/buffers/kept/durable/k").result.StatusCode(),
             Status::CatalogUnavailable);
 }
 
-INSTANTIATE_TEST_SUITE_P(Catalog, MissingRetainedStoreTest, ::testing::Bool());
+INSTANTIATE_TEST_SUITE_P(Catalog, MissingRetainedStoreTest,
+                         ::testing::Values(StoreDamage::kRemoved, StoreDamage::kReplacedByFile,
+                                           StoreDamage::kOnlyUnrelatedFile));
 
 TEST_F(DegradedCatalogTest, MissingCatalogBesideSessionsIsNotReady) {
   std::filesystem::create_directories(root_.Path() / "sessions" / "left");
