@@ -195,6 +195,11 @@ TEST_F(RetainedSessionCatalogTest, PreviousInstanceActiveBecomesOrphaned) {
   ASSERT_TRUE(get.result.IsOk());
   ASSERT_EQ(get.replies.size(), 1u);
   EXPECT_EQ(get.replies[0].second, Bytes({9}));
+  const auto list = Query(transport_, "sitos/buffers/run/durable/**");
+  ASSERT_TRUE(list.result.IsOk());
+  ASSERT_EQ(list.replies.size(), 1u);
+  EXPECT_EQ(list.replies[0].first, "sitos/buffers/run/durable/partial");
+  EXPECT_EQ(list.replies[0].second, Bytes({9}));
 }
 
 TEST_F(RetainedSessionCatalogTest, ParameterReadsAfterRetainAndRestartAreStateLost) {
