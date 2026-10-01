@@ -104,8 +104,10 @@ class FlatJsonReader {
     if (at_ < text_.size() && text_[at_] == '-') ++at_;
     const auto first_digit = at_;
     while (at_ < text_.size() && text_[at_] >= '0' && text_[at_] <= '9') ++at_;
-    const auto digit_count = at_ - first_digit;
-    if (digit_count == 0 || (digit_count > 1 && text_[first_digit] == '0')) return std::nullopt;
+    if (const auto digit_count = at_ - first_digit;
+        digit_count == 0 || (digit_count > 1 && text_[first_digit] == '0')) {
+      return std::nullopt;
+    }
     const auto digits = text_.substr(begin, at_ - begin);
     std::int64_t number = 0;
     const auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), number);
@@ -122,7 +124,7 @@ class FlatJsonReader {
     if (TakeWord("null")) return JsonValue{std::monostate{}};
     if (TakeWord("true")) return JsonValue{true};
     if (TakeWord("false")) return JsonValue{false};
-    if (auto number = TakeInteger()) return JsonValue{*number};
+    if (auto number = TakeInteger(); number.has_value()) return JsonValue{*number};
     return std::nullopt;
   }
 

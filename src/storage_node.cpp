@@ -450,7 +450,33 @@ std::error_code RemoveGeneration(const std::filesystem::path& directory) {
 
 }  // namespace
 
-void StorageNode::CatalogCheckpoint(State& state, std::string_view point) {
+struct StorageNode::DurableLifecycle {
+  // Every catalog write is synchronized; a failed write latches catalog_unavailable and
+  // returns CatalogUnavailable.
+  static Result<void> WriteCatalogRecord(State& state, const SessionCatalogRecord& record,
+                                         std::string_view checkpoint);
+  // Removes the record's generation directory and records `deleted`, or `delete_failed`
+  // with sanitized diagnostics. The caller has written `deleting` and released every
+  // engine and snapshot owner of that generation.
+  static Result<void> FinishCatalogDeletion(State& state, SessionCatalogRecord record);
+  // Start-time reconciliation (ADR-0036 §D9) on a validated catalog.
+  static void ReconcileCatalog(const std::shared_ptr<State>& state);
+  static void ReportUnknownSessionEntries(State& state,
+                                          const std::vector<SessionCatalogRecord>& records);
+  static void ServeReconciledSession(State& state, const SessionCatalogRecord& record);
+  static void CatalogCheckpoint(State& state, std::string_view point);
+  // Records `active`, then creates and opens the generation store of a catalogued Session.
+  static Result<void> CreateCatalogStore(State& state, const std::string& key,
+                                         SessionOptions options, SessionRecord& record);
+  // Records `deleting` for a catalogued sid and returns the record to finish, or nullopt
+  // when the catalog does not own this sid.
+  static Result<std::optional<SessionCatalogRecord>> BeginCatalogDeletion(
+      State& state, const std::string& key, const SessionRecord* record);
+  // ADR-0032 factory mode: creates the host-supplied durable engine.
+  static Result<void> CreateFactoryStore(State& state, std::string_view sid, SessionRecord& record);
+};
+
+void StorageNode::DurableLifecycle::CatalogCheckpoint(State& state, std::string_view point) {
   std::function<void(std::string_view)> checkpoint;
   {
     std::scoped_lock lock(state.test_observer_mutex);
@@ -459,8 +485,9 @@ void StorageNode::CatalogCheckpoint(State& state, std::string_view point) {
   if (checkpoint) checkpoint(point);
 }
 
-Result<void> StorageNode::WriteCatalogRecord(State& state, const SessionCatalogRecord& record,
-                                             std::string_view checkpoint) {
+Result<void> StorageNode::DurableLifecycle::WriteCatalogRecord(State& state,
+                                                               const SessionCatalogRecord& record,
+                                                               std::string_view checkpoint) {
   Result<void> written = Result<void>::Err(Status::CatalogUnavailable, "catalog is unavailable");
   if (state.catalog && !state.catalog_unavailable.load()) written = state.catalog->Put(record);
   if (!written.IsOk()) {
@@ -471,12 +498,13 @@ Result<void> StorageNode::WriteCatalogRecord(State& state, const SessionCatalogR
     }
     return Result<void>::Err(Status::CatalogUnavailable, "durable session catalog is unavailable");
   }
-  CatalogCheckpoint(state, checkpoint);
+  DurableLifecycle::CatalogCheckpoint(state, checkpoint);
   return Result<void>::Ok();
 }
 
-Result<void> StorageNode::FinishCatalogDeletion(State& state, SessionCatalogRecord record) {
-  CatalogCheckpoint(state, "close:before_remove");
+Result<void> StorageNode::DurableLifecycle::FinishCatalogDeletion(State& state,
+                                                                  SessionCatalogRecord record) {
+  DurableLifecycle::CatalogCheckpoint(state, "close:before_remove");
   const auto directory =
       GenerationDirectory(state.durable_root, record.sid, record.generation_uuid);
   if (const auto error = RemoveGeneration(directory); error) {
@@ -484,22 +512,23 @@ Result<void> StorageNode::FinishCatalogDeletion(State& state, SessionCatalogReco
     record.failure = SessionCatalogFailure{"remove_directory", "filesystem", error.value()};
     EmitLog(state.log_sink, LogLevel::kError, kCatalogComponent, kCatalogDeletionFailed);
     std::scoped_lock lock(state.catalog_mutex);
-    if (auto written = WriteCatalogRecord(state, record, "close:delete_failed_written");
+    if (auto written =
+            DurableLifecycle::WriteCatalogRecord(state, record, "close:delete_failed_written");
         !written.IsOk()) {
       return written;
     }
     return Result<void>::Err(Status::Error, "durable store removal failed", error);
   }
-  CatalogCheckpoint(state, "close:removed");
+  DurableLifecycle::CatalogCheckpoint(state, "close:removed");
   record.state = SessionLifecycleState::kDeleted;
   record.deleted_at = NowIso8601();
   record.failure.reset();
   std::scoped_lock lock(state.catalog_mutex);
-  return WriteCatalogRecord(state, record, "close:deleted_written");
+  return DurableLifecycle::WriteCatalogRecord(state, record, "close:deleted_written");
 }
 
-void StorageNode::ReportUnknownSessionEntries(State& state,
-                                              const std::vector<SessionCatalogRecord>& records) {
+void StorageNode::DurableLifecycle::ReportUnknownSessionEntries(
+    State& state, const std::vector<SessionCatalogRecord>& records) {
   const auto known = [&records](std::string_view sid, std::string_view generation) {
     return std::ranges::any_of(records, [&](const auto& record) {
       return record.sid == sid && record.generation_uuid == generation &&
@@ -531,7 +560,8 @@ void StorageNode::ReportUnknownSessionEntries(State& state,
   }
 }
 
-void StorageNode::ServeReconciledSession(State& state, const SessionCatalogRecord& record) {
+void StorageNode::DurableLifecycle::ServeReconciledSession(State& state,
+                                                           const SessionCatalogRecord& record) {
   const auto directory =
       GenerationDirectory(state.durable_root, record.sid, record.generation_uuid);
   std::error_code error;
@@ -561,10 +591,10 @@ void StorageNode::ServeReconciledSession(State& state, const SessionCatalogRecor
   state.sessions.insert_or_assign(record.sid, std::move(session));
 }
 
-void StorageNode::ReconcileCatalog(const std::shared_ptr<State>& state) {
+void StorageNode::DurableLifecycle::ReconcileCatalog(const std::shared_ptr<State>& state) {
   const auto records = state->catalog->Records();
   // Unknown entries are reported and never served or removed (ADR-0036 §D9 step 3).
-  ReportUnknownSessionEntries(*state, records);
+  DurableLifecycle::ReportUnknownSessionEntries(*state, records);
 
   for (auto record : records) {
     if (state->catalog_unavailable.load()) return;
@@ -573,14 +603,15 @@ void StorageNode::ReconcileCatalog(const std::shared_ptr<State>& state) {
       record.state = SessionLifecycleState::kOrphaned;
       record.orphaned_at = NowIso8601();
       std::scoped_lock lock(state->catalog_mutex);
-      if (!WriteCatalogRecord(*state, record, "start:orphaned_written").IsOk()) return;
+      if (!DurableLifecycle::WriteCatalogRecord(*state, record, "start:orphaned_written").IsOk())
+        return;
     }
     if (record.state == SessionLifecycleState::kRetained ||
         record.state == SessionLifecycleState::kOrphaned) {
-      ServeReconciledSession(*state, record);
+      DurableLifecycle::ServeReconciledSession(*state, record);
     } else if (record.state == SessionLifecycleState::kDeleting) {
       // A durable administrative request continues after restart (ADR-0036 §D7).
-      static_cast<void>(FinishCatalogDeletion(*state, record));
+      static_cast<void>(DurableLifecycle::FinishCatalogDeletion(*state, record));
     }
   }
 }
@@ -663,7 +694,8 @@ Result<SessionLifecycleState> StorageNode::RetainSession(std::string_view sid) {
   }
   catalogued->state = SessionLifecycleState::kRetained;
   catalogued->retained_at = NowIso8601();
-  if (auto written = WriteCatalogRecord(*state, *catalogued, "retain:retained_written");
+  if (auto written =
+          DurableLifecycle::WriteCatalogRecord(*state, *catalogued, "retain:retained_written");
       !written.IsOk()) {
     return R::ErrFrom(written);
   }
@@ -724,7 +756,7 @@ Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Transport
     auto opened = SessionCatalog::Open(state->durable_root, state->instance_id, NowIso8601());
     if (opened.IsOk()) {
       state->catalog = std::shared_ptr<SessionCatalog>(std::move(opened).Value());
-      ReconcileCatalog(state);
+      DurableLifecycle::ReconcileCatalog(state);
     } else if (opened.StatusCode() == Status::InvalidArgument) {
       return Result<void>::ErrFrom(opened);  // no RocksDB support in this build
     } else {
@@ -937,26 +969,11 @@ Result<void> StorageNode::CreateSession(const std::shared_ptr<State>& state, std
   record->overlay = std::make_shared<InMemoryEngine>();
   record->metadata = SessionMeta{NowIso8601(), FormatFenceUuid(record->generation_uuid)};
 
-  if (options.durable_buffers && state->catalog_mode) {
-    if (auto created = CreateCatalogStore(*state, key, options, *record); !created.IsOk()) {
-      return created;
-    }
-  } else if (options.durable_buffers) {
-    if (!state->durable_buffer_engine_factory) {
-      return Result<void>::Err(Status::InvalidArgument, "durable buffer engine factory is required",
-                               std::make_error_code(std::errc::invalid_argument));
-    }
-    try {
-      auto factory_result = state->durable_buffer_engine_factory(sid);
-      if (!factory_result.IsOk()) return Result<void>::ErrFrom(factory_result);
-      auto durable_engine = std::move(factory_result).Value();
-      if (!durable_engine) {
-        return Result<void>::Err(Status::Error, "durable buffer engine factory returned null");
-      }
-      record->durable_buffers = std::move(durable_engine);
-    } catch (...) {
-      return Result<void>::Err(Status::Error, "durable buffer engine factory threw an exception");
-    }
+  if (options.durable_buffers) {
+    auto created = state->catalog_mode
+                       ? DurableLifecycle::CreateCatalogStore(*state, key, options, *record)
+                       : DurableLifecycle::CreateFactoryStore(*state, sid, *record);
+    if (!created.IsOk()) return created;
   }
 
   bool committed = false;
@@ -972,8 +989,29 @@ Result<void> StorageNode::CreateSession(const std::shared_ptr<State>& state, std
   return Result<void>::Ok();
 }
 
-Result<void> StorageNode::CreateCatalogStore(State& state, const std::string& key,
-                                             SessionOptions options, SessionRecord& record) {
+Result<void> StorageNode::DurableLifecycle::CreateFactoryStore(State& state, std::string_view sid,
+                                                               SessionRecord& record) {
+  if (!state.durable_buffer_engine_factory) {
+    return Result<void>::Err(Status::InvalidArgument, "durable buffer engine factory is required",
+                             std::make_error_code(std::errc::invalid_argument));
+  }
+  try {
+    auto factory_result = state.durable_buffer_engine_factory(sid);
+    if (!factory_result.IsOk()) return Result<void>::ErrFrom(factory_result);
+    auto durable_engine = std::move(factory_result).Value();
+    if (!durable_engine) {
+      return Result<void>::Err(Status::Error, "durable buffer engine factory returned null");
+    }
+    record.durable_buffers = std::move(durable_engine);
+  } catch (...) {
+    return Result<void>::Err(Status::Error, "durable buffer engine factory threw an exception");
+  }
+  return Result<void>::Ok();
+}
+
+Result<void> StorageNode::DurableLifecycle::CreateCatalogStore(State& state, const std::string& key,
+                                                               SessionOptions options,
+                                                               SessionRecord& record) {
   // ADR-0036 §D4: the synchronized `active` record precedes the store.
   SessionCatalogRecord catalogued;
   catalogued.sid = key;
@@ -985,7 +1023,8 @@ Result<void> StorageNode::CreateCatalogStore(State& state, const std::string& ke
   catalogued.created_at = record.metadata.created_at;
   {
     std::scoped_lock lock(state.catalog_mutex);
-    if (auto written = WriteCatalogRecord(state, catalogued, "create:active_written");
+    if (auto written =
+            DurableLifecycle::WriteCatalogRecord(state, catalogued, "create:active_written");
         !written.IsOk()) {
       return written;
     }
@@ -1006,16 +1045,17 @@ Result<void> StorageNode::CreateCatalogStore(State& state, const std::string& ke
   catalogued.deleting_at = NowIso8601();
   {
     std::scoped_lock lock(state.catalog_mutex);
-    if (auto written = WriteCatalogRecord(state, catalogued, "create:deleting_written");
+    if (auto written =
+            DurableLifecycle::WriteCatalogRecord(state, catalogued, "create:deleting_written");
         !written.IsOk()) {
       return written;
     }
   }
-  static_cast<void>(FinishCatalogDeletion(state, catalogued));
+  static_cast<void>(DurableLifecycle::FinishCatalogDeletion(state, catalogued));
   return Result<void>::ErrFrom(opened);
 }
 
-Result<std::optional<SessionCatalogRecord>> StorageNode::BeginCatalogDeletion(
+Result<std::optional<SessionCatalogRecord>> StorageNode::DurableLifecycle::BeginCatalogDeletion(
     State& state, const std::string& key, const SessionRecord* record) {
   using R = Result<std::optional<SessionCatalogRecord>>;
   if (!state.catalog || (record != nullptr && !record->catalogued)) return R::Ok(std::nullopt);
@@ -1029,7 +1069,8 @@ Result<std::optional<SessionCatalogRecord>> StorageNode::BeginCatalogDeletion(
   if (catalogued->state != SessionLifecycleState::kDeleting) {
     catalogued->state = SessionLifecycleState::kDeleting;
     catalogued->deleting_at = NowIso8601();
-    if (auto written = WriteCatalogRecord(state, *catalogued, "close:deleting_written");
+    if (auto written =
+            DurableLifecycle::WriteCatalogRecord(state, *catalogued, "close:deleting_written");
         !written.IsOk()) {
       return R::ErrFrom(written);
     }
@@ -1059,18 +1100,17 @@ Result<void> StorageNode::CloseSession(std::string_view sid) {
   // A Creating or Closing record must not gain a `deleting` record: the creator may still
   // commit it, and a second closer only reports the collision.
   if (record && !record->IsActive()) return Result<void>::Err(OperationInProgress());
-  auto deletion = BeginCatalogDeletion(*state, key, record.get());
+  auto deletion = DurableLifecycle::BeginCatalogDeletion(*state, key, record.get());
   if (!deletion.IsOk()) return Result<void>::ErrFrom(deletion);
   std::optional<SessionCatalogRecord> catalogued = std::move(deletion).Value();
   if (!record) {
     if (!catalogued) return Result<void>::Err(NoSuchSession());
-    return FinishCatalogDeletion(*state, *catalogued);
+    return DurableLifecycle::FinishCatalogDeletion(*state, *catalogued);
   }
-  CatalogCheckpoint(*state, "close:before_begin_close");
+  DurableLifecycle::CatalogCheckpoint(*state, "close:before_begin_close");
   {
     std::unique_lock lock(state->session_mutex);
-    auto it = state->sessions.find(key);
-    if (it == state->sessions.end() || it->second != record) {
+    if (auto it = state->sessions.find(key); it == state->sessions.end() || it->second != record) {
       return Result<void>::Err(NoSuchSession());
     }
     if (!record->BeginClose()) return Result<void>::Err(OperationInProgress());
@@ -1103,7 +1143,7 @@ Result<void> StorageNode::CloseSession(std::string_view sid) {
   }
   // Every engine owner of the generation is released before its directory is removed
   // (ADR-0033, ADR-0036 §D7).
-  if (catalogued) return FinishCatalogDeletion(*state, *catalogued);
+  if (catalogued) return DurableLifecycle::FinishCatalogDeletion(*state, *catalogued);
   return Result<void>::Ok();
 }
 

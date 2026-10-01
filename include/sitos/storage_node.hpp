@@ -455,30 +455,8 @@ class StorageNode {
   // Answers a get on meta/session/<sid> with the session metadata JSON.
   static void ReplyMetaQuery(const std::shared_ptr<State>& state, TransportQuery& query);
   static void ReplyBufferQuery(const std::shared_ptr<State>& state, TransportQuery& query);
-  // ADR-0036 catalog transitions. Every write is synchronized; a failed write latches
-  // catalog_unavailable and returns CatalogUnavailable.
-  static Result<void> WriteCatalogRecord(State& state,
-                                         const catalog_internal::SessionCatalogRecord& record,
-                                         std::string_view checkpoint);
-  // Removes the record's generation directory and records `deleted`, or
-  // `delete_failed` with sanitized diagnostics. The caller has written `deleting`
-  // and released every engine and snapshot owner of that generation.
-  static Result<void> FinishCatalogDeletion(State& state,
-                                            catalog_internal::SessionCatalogRecord record);
-  // Start-time reconciliation (ADR-0036 §D9) on a validated catalog.
-  static void ReconcileCatalog(const std::shared_ptr<State>& state);
-  static void ReportUnknownSessionEntries(
-      State& state, const std::vector<catalog_internal::SessionCatalogRecord>& records);
-  static void ServeReconciledSession(State& state,
-                                     const catalog_internal::SessionCatalogRecord& record);
-  static void CatalogCheckpoint(State& state, std::string_view point);
-  // Records `active`, then creates and opens the generation store of a catalogued Session.
-  static Result<void> CreateCatalogStore(State& state, const std::string& key,
-                                         SessionOptions options, SessionRecord& record);
-  // Records `deleting` for a catalogued sid and returns the record to finish, or nullopt
-  // when the catalog does not own this sid.
-  static Result<std::optional<catalog_internal::SessionCatalogRecord>> BeginCatalogDeletion(
-      State& state, const std::string& key, const SessionRecord* record);
+  // ADR-0036 catalog transitions and durable store creation, defined with StorageNode.
+  struct DurableLifecycle;
 
   mutable std::mutex lifecycle_mutex_;
   // Serializes declaration/undeclaration transactions. Callbacks never hold this lock.
