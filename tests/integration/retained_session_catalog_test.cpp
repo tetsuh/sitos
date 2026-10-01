@@ -468,6 +468,8 @@ TEST_F(RetainedSessionCatalogTest, RemovalFailureRecordsDeleteFailedThenRetrySuc
   EXPECT_EQ(record->state, SessionLifecycleState::kDeleteFailed);
   ASSERT_TRUE(record->failure.has_value());
   EXPECT_EQ(record->failure->operation, "remove_directory");
+  EXPECT_EQ(record->failure->category, "filesystem");
+  EXPECT_NE(record->failure->code, 0);
   EXPECT_EQ(MetaState(transport_, "run"), "delete_failed");
   EXPECT_FALSE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
 
@@ -484,6 +486,7 @@ TEST_F(RetainedSessionCatalogTest, RemovalFailureRecordsDeleteFailedThenRetrySuc
   ASSERT_TRUE(node_->CloseSession("run").IsOk());
   EXPECT_FALSE(std::filesystem::exists(directory));
   EXPECT_EQ(Record("run")->state, SessionLifecycleState::kDeleted);
+  EXPECT_FALSE(Record("run")->failure.has_value());
 }
 
 TEST_F(RetainedSessionCatalogTest, FailedStoreOpenRollsBackThroughDeletion) {
