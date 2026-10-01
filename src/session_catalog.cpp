@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <format>
 #include <map>
@@ -168,6 +169,16 @@ bool IsTimestamp(std::string_view text) {
       DigitsInRange(text, 11, 2, 0, 23) && text[13] == ':' && DigitsInRange(text, 14, 2, 0, 59) &&
       text[16] == ':' && DigitsInRange(text, 17, 2, 0, 60);
   if (!fields) return false;
+  // The day must exist in that month of that year, leap days included.
+  const auto number = [&text](std::size_t at, std::size_t width) {
+    int value = 0;
+    for (std::size_t i = at; i < at + width; ++i) value = value * 10 + (text[i] - '0');
+    return value;
+  };
+  const std::chrono::year_month_day date{std::chrono::year{number(0, 4)},
+                                         std::chrono::month{static_cast<unsigned>(number(5, 2))},
+                                         std::chrono::day{static_cast<unsigned>(number(8, 2))}};
+  if (!date.ok()) return false;
   const auto fraction = text.substr(kSeconds, text.size() - kSeconds - 1);
   if (fraction.empty()) return true;
   return fraction.size() >= 2 && fraction.size() <= 10 && fraction.front() == '.' &&
