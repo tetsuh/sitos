@@ -185,6 +185,8 @@ TEST_F(RetainedSessionCatalogTest, RetainedSurvivesRepeatedRestarts) {
 TEST_F(RetainedSessionCatalogTest, PreviousInstanceActiveBecomesOrphaned) {
   ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
   transport_.PutBuffer("run", "partial", Bytes({9}));
+  transport_.PutParameter("session/run", "gain", 7);
+  ASSERT_EQ(Query(transport_, "sitos/session/run/gain").replies.size(), 1u);
   ASSERT_EQ(Record("run")->state, SessionLifecycleState::kActive);
 
   Restart();
@@ -202,6 +204,15 @@ TEST_F(RetainedSessionCatalogTest, PreviousInstanceActiveBecomesOrphaned) {
   ASSERT_EQ(list.replies.size(), 1u);
   EXPECT_EQ(list.replies[0].first, "sitos/buffers/run/durable/partial");
   EXPECT_EQ(list.replies[0].second, Bytes({9}));
+  // The orphaned Session's parameter state is lost, not empty.
+  for (const std::string& selector :
+       {std::string("sitos/session/run/gain"), std::string("sitos/snap/run/gain"),
+        std::string("sitos/session/run/**")}) {
+    const auto read = Query(transport_, selector);
+    ASSERT_FALSE(read.result.IsOk()) << selector;
+    EXPECT_EQ(read.result.StatusCode(), Status::StateLost) << selector;
+    EXPECT_TRUE(read.replies.empty()) << selector;
+  }
 }
 
 TEST_F(RetainedSessionCatalogTest, ParameterReadsAfterRetainAndRestartAreStateLost) {
@@ -511,6 +522,38 @@ TEST_F(RetainedSessionCatalogTest, CloseNeverSelectsAReplacementGeneration) {
   Restart();
   EXPECT_EQ(Record("run")->state, SessionLifecycleState::kOrphaned);
   EXPECT_TRUE(std::filesystem::exists(GenerationDirectory("run") / "CURRENT"));
+}
+
+TEST_F(RetainedSessionCatalogTest, RetainedRecordAndStateReleaseBecomeVisibleTogether) {
+  ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
+  transport_.PutParameter("session/run", "gain", 7);
+  std::optional<Status> read_at_commit;
+  std::optional<std::string> meta_at_commit;
+  ASSERT_TRUE(StorageNodeTestAccess::SetCatalogCheckpoint(*node_, [&](std::string_view point) {
+    if (point != "retain:retained_written") return;
+    read_at_commit = Query(transport_, "sitos/session/run/gain").result.StatusCode();
+    meta_at_commit = MetaState(transport_, "run");
+  }));
+  ASSERT_TRUE(node_->RetainSession("run").IsOk());
+  ASSERT_TRUE(read_at_commit.has_value());
+  EXPECT_EQ(*read_at_commit, Status::StateLost);
+  EXPECT_EQ(meta_at_commit, "retained");
+}
+
+TEST_F(RetainedSessionCatalogTest, DeletingRecordAndAdmissionEndBecomeVisibleTogether) {
+  ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
+  transport_.PutBuffer("run", "k", Bytes({1}));
+  std::optional<std::size_t> replies_at_commit;
+  std::optional<std::string> meta_at_commit;
+  ASSERT_TRUE(StorageNodeTestAccess::SetCatalogCheckpoint(*node_, [&](std::string_view point) {
+    if (point != "close:deleting_written") return;
+    replies_at_commit = Query(transport_, "sitos/buffers/run/durable/k").replies.size();
+    meta_at_commit = MetaState(transport_, "run");
+  }));
+  ASSERT_TRUE(node_->CloseSession("run").IsOk());
+  ASSERT_TRUE(replies_at_commit.has_value());
+  EXPECT_EQ(*replies_at_commit, 0u);
+  EXPECT_EQ(meta_at_commit, "deleting");
 }
 
 TEST_F(RetainedSessionCatalogTest, RemovalFailureRecordsDeleteFailedThenRetrySucceeds) {

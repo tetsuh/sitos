@@ -466,6 +466,10 @@ struct StorageNode::DurableLifecycle {
   static void ServeReconciledSession(State& state, const SessionCatalogRecord& record,
                                      bool store_may_be_absent);
   static void CatalogCheckpoint(State& state, std::string_view point);
+  // One synchronized catalog write with no latch and no checkpoint. Callers that must
+  // publish the write together with a live transition hold session_mutex across it and
+  // latch only after releasing that lock (the latch waits on admitted durable access).
+  static bool TryPutCatalogRecord(State& state, const SessionCatalogRecord& record);
   // Publishes the monotonic catalog-unavailable latch after admitted durable access drains.
   static void LatchCatalogUnavailable(State& state);
   // Records `active`, then creates and opens the generation store of a catalogued Session.
@@ -497,12 +501,15 @@ void StorageNode::DurableLifecycle::LatchCatalogUnavailable(State& state) {
   }
 }
 
+bool StorageNode::DurableLifecycle::TryPutCatalogRecord(State& state,
+                                                        const SessionCatalogRecord& record) {
+  return state.catalog && !state.catalog_unavailable.load() && state.catalog->Put(record).IsOk();
+}
+
 Result<void> StorageNode::DurableLifecycle::WriteCatalogRecord(State& state,
                                                                const SessionCatalogRecord& record,
                                                                std::string_view checkpoint) {
-  Result<void> written = Result<void>::Err(Status::CatalogUnavailable, "catalog is unavailable");
-  if (state.catalog && !state.catalog_unavailable.load()) written = state.catalog->Put(record);
-  if (!written.IsOk()) {
+  if (!DurableLifecycle::TryPutCatalogRecord(state, record)) {
     // ADR-0036 §D8: a failed synchronized write proves nothing about later writes,
     // so the whole process stays unavailable until offline repair and restart.
     DurableLifecycle::LatchCatalogUnavailable(state);
@@ -729,20 +736,27 @@ Result<SessionLifecycleState> StorageNode::RetainSession(std::string_view sid) {
   }
   catalogued->state = SessionLifecycleState::kRetained;
   catalogued->retained_at = NowIso8601();
-  if (auto written =
-          DurableLifecycle::WriteCatalogRecord(*state, *catalogued, "retain:retained_written");
-      !written.IsOk()) {
-    return R::ErrFrom(written);
-  }
 
+  // ADR-0036 §D4: the synchronized `retained` write and the release of volatile state
+  // become visible together; no reader can observe the committed record while the
+  // overlay is still served.
   std::shared_ptr<const StorageReader> released_snapshot;
   std::shared_ptr<StorageEngine> released_overlay;
+  bool committed = false;
   {
     std::unique_lock lock(state->session_mutex);
-    record->lifecycle = SessionLifecycleState::kRetained;
-    released_snapshot = std::move(record->snapshot);
-    released_overlay = std::move(record->overlay);
+    committed = DurableLifecycle::TryPutCatalogRecord(*state, *catalogued);
+    if (committed) {
+      record->lifecycle = SessionLifecycleState::kRetained;
+      released_snapshot = std::move(record->snapshot);
+      released_overlay = std::move(record->overlay);
+    }
   }
+  if (!committed) {
+    DurableLifecycle::LatchCatalogUnavailable(*state);
+    return R::Err(Status::CatalogUnavailable, "durable session catalog is unavailable");
+  }
+  DurableLifecycle::CatalogCheckpoint(*state, "retain:retained_written");
   return R::Ok(SessionLifecycleState::kRetained);
 }
 
@@ -1096,37 +1110,45 @@ Result<std::optional<SessionCatalogRecord>> StorageNode::DurableLifecycle::Begin
   using R = Result<std::optional<SessionCatalogRecord>>;
   if (!state.catalog || (record && !record->catalogued)) return R::Ok(std::nullopt);
   // ADR-0036 §D4: the synchronized `deleting` record is the linearization point. The
-  // selection is re-validated under catalog_mutex, which every catalog transition takes:
-  // the sid must still map to the observed record (or still to none) in the observed
-  // generation, so a concurrent close-and-recreate is never selected.
+  // selection is re-validated under catalog_mutex, which every catalog transition takes,
+  // and under the exclusive session_mutex: the sid must still map to the observed record
+  // (or still to none) in the observed generation, so a concurrent close-and-recreate is
+  // never selected. For a live record, `deleting` and the end of admission become visible
+  // together.
   std::scoped_lock lock(state.catalog_mutex);
+  std::optional<SessionCatalogRecord> catalogued;
+  bool committed = false;
   {
-    std::shared_lock sessions(state.session_mutex);
+    std::unique_lock sessions(state.session_mutex);
     const auto it = state.sessions.find(key);
     const auto live = it == state.sessions.end() ? nullptr : it->second;
     if (live != record || (record && !record->IsActive())) {
       return R::Err(Status::Error, "session changed during close", OperationInProgress());
     }
-  }
-  auto catalogued = state.catalog->Find(key);
-  if (!catalogued || catalogued->state == SessionLifecycleState::kDeleted) {
-    return R::Ok(std::nullopt);
-  }
-  // A live record must own the catalogued generation; with no live record, only a
-  // generation no process serves (never `active`) can be deleted.
-  if ((record && catalogued->generation_uuid != generation) ||
-      (!record && catalogued->state == SessionLifecycleState::kActive)) {
-    return R::Err(Status::Error, "session changed during close", OperationInProgress());
-  }
-  if (catalogued->state != SessionLifecycleState::kDeleting) {
-    catalogued->state = SessionLifecycleState::kDeleting;
-    catalogued->deleting_at = NowIso8601();
-    if (auto written =
-            DurableLifecycle::WriteCatalogRecord(state, *catalogued, "close:deleting_written");
-        !written.IsOk()) {
-      return R::ErrFrom(written);
+    catalogued = state.catalog->Find(key);
+    if (!catalogued || catalogued->state == SessionLifecycleState::kDeleted) {
+      return R::Ok(std::nullopt);
     }
+    // A live record must own the catalogued generation; with no live record, only a
+    // generation no process serves (never `active`) can be deleted.
+    if ((record && catalogued->generation_uuid != generation) ||
+        (!record && catalogued->state == SessionLifecycleState::kActive)) {
+      return R::Err(Status::Error, "session changed during close", OperationInProgress());
+    }
+    if (catalogued->state == SessionLifecycleState::kDeleting) {
+      committed = true;
+    } else {
+      catalogued->state = SessionLifecycleState::kDeleting;
+      catalogued->deleting_at = NowIso8601();
+      committed = DurableLifecycle::TryPutCatalogRecord(state, *catalogued);
+    }
+    if (committed && record) record->BeginClose();
   }
+  if (!committed) {
+    DurableLifecycle::LatchCatalogUnavailable(state);
+    return R::Err(Status::CatalogUnavailable, "durable session catalog is unavailable");
+  }
+  DurableLifecycle::CatalogCheckpoint(state, "close:deleting_written");
   return R::Ok(std::move(catalogued));
 }
 
@@ -1165,7 +1187,9 @@ Result<void> StorageNode::CloseSession(std::string_view sid) {
     return DurableLifecycle::FinishCatalogDeletion(*state, *catalogued);
   }
   DurableLifecycle::CatalogCheckpoint(*state, "close:before_begin_close");
-  {
+  if (!catalogued) {
+    // Without a catalog record, admission ends here; with one, it ended together with
+    // the `deleting` write in BeginCatalogDeletion.
     std::unique_lock lock(state->session_mutex);
     if (auto it = state->sessions.find(key); it == state->sessions.end() || it->second != record) {
       return Result<void>::Err(NoSuchSession());
