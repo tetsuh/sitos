@@ -466,6 +466,53 @@ TEST_F(RetainedSessionCatalogTest, CatalogLatchWaitsForAnAdmittedDurableRead) {
   EXPECT_FALSE(node_->Readiness().ready);
 }
 
+TEST_F(RetainedSessionCatalogTest, CloseNeverSelectsASessionCreatedAfterItLooked) {
+  // The sid is free (deleted) when the closer looks; a creator then takes it.
+  ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
+  ASSERT_TRUE(node_->CloseSession("run").IsOk());
+  bool nested = false;
+  std::optional<sitos::Result<void>> created;
+  ASSERT_TRUE(StorageNodeTestAccess::SetCatalogCheckpoint(*node_, [&](std::string_view point) {
+    if (point != "close:before_catalog_deletion" || nested) return;
+    nested = true;
+    created = node_->CreateSession("run", {.durable_buffers = true});
+  }));
+  const auto closed = node_->CloseSession("run");
+  ASSERT_TRUE(created.has_value() && created->IsOk());
+  EXPECT_FALSE(closed.IsOk());
+  const auto record = Record("run");
+  ASSERT_TRUE(record.has_value());
+  EXPECT_EQ(record->state, SessionLifecycleState::kActive);
+  EXPECT_TRUE(std::filesystem::exists(GenerationDirectory("run") / "CURRENT"));
+  transport_.PutBuffer("run", "k", Bytes({3}));
+  EXPECT_EQ(Query(transport_, "sitos/buffers/run/durable/k").replies.size(), 1u);
+  Restart();
+  EXPECT_EQ(Record("run")->state, SessionLifecycleState::kOrphaned);
+}
+
+TEST_F(RetainedSessionCatalogTest, CloseNeverSelectsAReplacementGeneration) {
+  ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
+  bool nested = false;
+  std::optional<sitos::Result<void>> other_close;
+  std::optional<sitos::Result<void>> recreated;
+  ASSERT_TRUE(StorageNodeTestAccess::SetCatalogCheckpoint(*node_, [&](std::string_view point) {
+    if (point != "close:before_catalog_deletion" || nested) return;
+    nested = true;
+    // The closer observed generation G1; G1 is closed and recreated as G2 meanwhile.
+    other_close = node_->CloseSession("run");
+    recreated = node_->CreateSession("run", {.durable_buffers = true});
+  }));
+  const auto closed = node_->CloseSession("run");
+  ASSERT_TRUE(other_close.has_value() && other_close->IsOk());
+  ASSERT_TRUE(recreated.has_value() && recreated->IsOk());
+  EXPECT_FALSE(closed.IsOk());
+  EXPECT_EQ(Record("run")->state, SessionLifecycleState::kActive);
+  EXPECT_TRUE(std::filesystem::exists(GenerationDirectory("run") / "CURRENT"));
+  Restart();
+  EXPECT_EQ(Record("run")->state, SessionLifecycleState::kOrphaned);
+  EXPECT_TRUE(std::filesystem::exists(GenerationDirectory("run") / "CURRENT"));
+}
+
 TEST_F(RetainedSessionCatalogTest, RemovalFailureRecordsDeleteFailedThenRetrySucceeds) {
   ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
   transport_.PutBuffer("run", "k", Bytes({1}));

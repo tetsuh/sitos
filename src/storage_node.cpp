@@ -474,7 +474,8 @@ struct StorageNode::DurableLifecycle {
   // Records `deleting` for a catalogued sid and returns the record to finish, or nullopt
   // when the catalog does not own this sid.
   static Result<std::optional<SessionCatalogRecord>> BeginCatalogDeletion(
-      State& state, const std::string& key, const SessionRecord* record);
+      State& state, const std::string& key, const std::shared_ptr<SessionRecord>& record,
+      std::string_view generation);
   // ADR-0032 factory mode: creates the host-supplied durable engine.
   static Result<void> CreateFactoryStore(const State& state, std::string_view sid,
                                          SessionRecord& record);
@@ -1090,15 +1091,32 @@ Result<void> StorageNode::DurableLifecycle::CreateCatalogStore(State& state, con
 }
 
 Result<std::optional<SessionCatalogRecord>> StorageNode::DurableLifecycle::BeginCatalogDeletion(
-    State& state, const std::string& key, const SessionRecord* record) {
+    State& state, const std::string& key, const std::shared_ptr<SessionRecord>& record,
+    std::string_view generation) {
   using R = Result<std::optional<SessionCatalogRecord>>;
-  if (!state.catalog || (record != nullptr && !record->catalogued)) return R::Ok(std::nullopt);
-  // ADR-0036 §D4: the synchronized `deleting` record is the linearization point. Read
-  // under the lock so a concurrent RetainSession's record is never overwritten.
+  if (!state.catalog || (record && !record->catalogued)) return R::Ok(std::nullopt);
+  // ADR-0036 §D4: the synchronized `deleting` record is the linearization point. The
+  // selection is re-validated under catalog_mutex, which every catalog transition takes:
+  // the sid must still map to the observed record (or still to none) in the observed
+  // generation, so a concurrent close-and-recreate is never selected.
   std::scoped_lock lock(state.catalog_mutex);
+  {
+    std::shared_lock sessions(state.session_mutex);
+    const auto it = state.sessions.find(key);
+    const auto live = it == state.sessions.end() ? nullptr : it->second;
+    if (live != record || (record && !record->IsActive())) {
+      return R::Err(Status::Error, "session changed during close", OperationInProgress());
+    }
+  }
   auto catalogued = state.catalog->Find(key);
   if (!catalogued || catalogued->state == SessionLifecycleState::kDeleted) {
     return R::Ok(std::nullopt);
+  }
+  // A live record must own the catalogued generation; with no live record, only a
+  // generation no process serves (never `active`) can be deleted.
+  if ((record && catalogued->generation_uuid != generation) ||
+      (!record && catalogued->state == SessionLifecycleState::kActive)) {
+    return R::Err(Status::Error, "session changed during close", OperationInProgress());
   }
   if (catalogued->state != SessionLifecycleState::kDeleting) {
     catalogued->state = SessionLifecycleState::kDeleting;
@@ -1127,14 +1145,19 @@ Result<void> StorageNode::CloseSession(std::string_view sid) {
 
   const std::string key(sid);
   std::shared_ptr<SessionRecord> record;
+  std::string generation;
   {
     std::shared_lock lock(state->session_mutex);
-    if (auto it = state->sessions.find(key); it != state->sessions.end()) record = it->second;
+    if (auto it = state->sessions.find(key); it != state->sessions.end()) {
+      record = it->second;
+      generation = record->metadata.generation_uuid;
+    }
   }
   // A Creating or Closing record must not gain a `deleting` record: the creator may still
   // commit it, and a second closer only reports the collision.
   if (record && !record->IsActive()) return Result<void>::Err(OperationInProgress());
-  auto deletion = DurableLifecycle::BeginCatalogDeletion(*state, key, record.get());
+  DurableLifecycle::CatalogCheckpoint(*state, "close:before_catalog_deletion");
+  auto deletion = DurableLifecycle::BeginCatalogDeletion(*state, key, record, generation);
   if (!deletion.IsOk()) return Result<void>::ErrFrom(deletion);
   std::optional<SessionCatalogRecord> catalogued = std::move(deletion).Value();
   if (!record) {
