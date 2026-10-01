@@ -11,12 +11,17 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <vector>
+
+#include "sitos/in_memory_engine.hpp"
+#include "sitos/storage_node.hpp"
+#include "tests/integration/retained_session_support.hpp"
 
 namespace {
 
@@ -167,6 +172,26 @@ TEST(SessionCatalogRecordTest, RejectsRecordsWithoutTheDurableRoute) {
   record.durable = false;
   EXPECT_FALSE(DecodeSessionRecord("session", EncodeSessionRecord(record)).has_value());
 }
+
+#if !defined(SITOS_WITH_ROCKSDB)
+
+// ADR-0036 §D1: catalog mode requires RocksDB, so a RocksDB-OFF build refuses it.
+TEST(SessionCatalogTest, RocksDbOffBuildRejectsDurableRoot) {
+  ScopedRoot root("rocksdb-off");
+  retained_session_test::CatalogTransport transport;
+  sitos::StorageNode node{transport};
+  sitos::StorageNodeConfig config;
+  config.prefix = "sitos";
+  config.durable_root = root.Path();
+  const auto started = node.Start(std::make_shared<sitos::InMemoryEngine>(), std::move(config));
+  ASSERT_FALSE(started.IsOk());
+  EXPECT_EQ(started.StatusCode(), Status::InvalidArgument);
+  EXPECT_FALSE(node.IsStarted());
+  EXPECT_FALSE(node.Readiness().ready);
+  EXPECT_FALSE(std::filesystem::exists(root.Path() / "catalog"));
+}
+
+#endif  // !SITOS_WITH_ROCKSDB
 
 #if defined(SITOS_WITH_ROCKSDB)
 

@@ -317,7 +317,8 @@ endif()
 # Catalog record codec always; catalog storage cases compile only with RocksDB.
 add_executable(sitos_session_catalog_test unit/session_catalog_test.cpp)
 target_link_libraries(sitos_session_catalog_test PRIVATE GTest::gtest_main sitos::sitos)
-target_include_directories(sitos_session_catalog_test PRIVATE ${PROJECT_SOURCE_DIR})
+target_include_directories(sitos_session_catalog_test PRIVATE ${PROJECT_SOURCE_DIR}
+  ${PROJECT_SOURCE_DIR}/src)
 if(SITOS_WITH_ROCKSDB)
   target_compile_definitions(sitos_session_catalog_test PRIVATE SITOS_WITH_ROCKSDB=1)
 endif()
