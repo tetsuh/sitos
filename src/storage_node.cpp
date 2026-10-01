@@ -508,11 +508,24 @@ Result<void> StorageNode::DurableLifecycle::FinishCatalogDeletion(State& state,
   DurableLifecycle::CatalogCheckpoint(state, "close:before_remove");
   const auto directory =
       GenerationDirectory(state.durable_root, record.sid, record.generation_uuid);
-  if (const auto error = RemoveGeneration(directory); error) {
+  const auto error = RemoveGeneration(directory);
+  if (error) {
+    EmitLog(state.log_sink, LogLevel::kError, kCatalogComponent, kCatalogDeletionFailed);
+  } else {
+    DurableLifecycle::CatalogCheckpoint(state, "close:removed");
+  }
+  std::scoped_lock lock(state.catalog_mutex);
+  // Another closer may already have finished this generation, and the sid may even hold
+  // a new generation by now. Only the same generation's pending deletion is completed.
+  if (const auto current = state.catalog ? state.catalog->Find(record.sid) : std::nullopt;
+      !current || current->generation_uuid != record.generation_uuid ||
+      (current->state != SessionLifecycleState::kDeleting &&
+       current->state != SessionLifecycleState::kDeleteFailed)) {
+    return Result<void>::Ok();
+  }
+  if (error) {
     record.state = SessionLifecycleState::kDeleteFailed;
     record.failure = SessionCatalogFailure{"remove_directory", "filesystem", error.value()};
-    EmitLog(state.log_sink, LogLevel::kError, kCatalogComponent, kCatalogDeletionFailed);
-    std::scoped_lock lock(state.catalog_mutex);
     if (auto written =
             DurableLifecycle::WriteCatalogRecord(state, record, "close:delete_failed_written");
         !written.IsOk()) {
@@ -520,11 +533,9 @@ Result<void> StorageNode::DurableLifecycle::FinishCatalogDeletion(State& state,
     }
     return Result<void>::Err(Status::Error, "durable store removal failed", error);
   }
-  DurableLifecycle::CatalogCheckpoint(state, "close:removed");
   record.state = SessionLifecycleState::kDeleted;
   record.deleted_at = NowIso8601();
   record.failure.reset();
-  std::scoped_lock lock(state.catalog_mutex);
   return DurableLifecycle::WriteCatalogRecord(state, record, "close:deleted_written");
 }
 
@@ -664,11 +675,13 @@ Result<SessionLifecycleState> StorageNode::RetainSession(std::string_view sid) {
     }
     return R::Err(Status::InvalidArgument, "session cannot be retained in its current state");
   }
-  if (!record->catalogued) {
-    return R::Err(Status::InvalidArgument, "only a durable-route session can be retained");
-  }
+  // Session fields are read only under a successful admission, which orders them after
+  // the creator's initialization.
   if (!admission.has_value()) {
     return R::Err(Status::InvalidArgument, "session is closing");
+  }
+  if (!record->catalogued) {
+    return R::Err(Status::InvalidArgument, "only a durable-route session can be retained");
   }
 
   std::scoped_lock catalog_lock(state->catalog_mutex);
@@ -1177,8 +1190,10 @@ StorageNode::SessionAccess StorageNode::AcquireSession(const std::shared_ptr<Sta
   if (auto it = state->sessions.find(sid); it != state->sessions.end()) {
     access.record = it->second;
     access.admission = access.record->TryAcquire();
-    access.overlay = access.record->overlay;
-    access.lifecycle = access.record->lifecycle;
+    if (access.admission.has_value()) {
+      access.overlay = access.record->overlay;
+      access.lifecycle = access.record->lifecycle;
+    }
   }
   return access;
 }
@@ -1644,6 +1659,10 @@ AckResultV1 StorageNode::ApplyParameterSample(const std::shared_ptr<State>& stat
     } else if (!access.record->options.durable_buffers || !access.record->durable_buffers) {
       diagnostics.emplace_back(LogLevel::kWarning, kBufferCapabilityDisabled);
       fence_failure = Status::InvalidArgument;
+    } else if (access.record->catalogued && state->catalog_unavailable.load()) {
+      // ADR-0036 §D8: catalog-dependent mutations stop once the latch is set.
+      diagnostics.emplace_back(LogLevel::kWarning, kCatalogUnavailable);
+      fence_failure = Status::CatalogUnavailable;
     } else if (access.record->reconciled) {
       // ADR-0036 §D5: a store reopened at Start serves Get/List and deletion only.
       diagnostics.emplace_back(LogLevel::kWarning, kReconciledStoreReadOnly);

@@ -341,6 +341,42 @@ TEST_F(RetainedSessionCatalogTest, CloseDuringCreateLeavesTheActiveRecord) {
   EXPECT_EQ(MetaState(transport_, "run"), "active");
 }
 
+TEST_F(RetainedSessionCatalogTest, StaleDeletionCompletionKeepsTheNewGeneration) {
+  ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
+  const auto first_generation = Record("run")->generation_uuid;
+  bool nested = false;
+  std::optional<sitos::Result<void>> second_close;
+  std::optional<sitos::Result<void>> recreated;
+  ASSERT_TRUE(StorageNodeTestAccess::SetCatalogCheckpoint(*node_, [&](std::string_view point) {
+    if (point != "close:before_remove" || nested) return;
+    nested = true;
+    // The first closer has erased the live record and pauses before removal: a second
+    // closer finishes the deletion, and the sid is created again.
+    second_close = node_->CloseSession("run");
+    recreated = node_->CreateSession("run", {.durable_buffers = true});
+  }));
+  ASSERT_TRUE(node_->CloseSession("run").IsOk());
+  ASSERT_TRUE(second_close.has_value() && second_close->IsOk());
+  ASSERT_TRUE(recreated.has_value() && recreated->IsOk());
+  const auto record = Record("run");
+  ASSERT_TRUE(record.has_value());
+  EXPECT_EQ(record->state, SessionLifecycleState::kActive);
+  EXPECT_NE(record->generation_uuid, first_generation);
+  EXPECT_TRUE(std::filesystem::is_directory(GenerationDirectory("run")));
+}
+
+TEST_F(RetainedSessionCatalogTest, DurableWritesStopAfterTheCatalogLatch) {
+  ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
+  ASSERT_TRUE(node_->RetainSession("run").IsOk());
+  transport_.PutBuffer("run", "before", Bytes({1}));
+  ASSERT_TRUE(StorageNodeTestAccess::LatchCatalogUnavailable(*node_));
+  transport_.PutBuffer("run", "after", Bytes({2}));
+  Restart();
+  ASSERT_TRUE(node_->Readiness().ready);
+  EXPECT_EQ(Query(transport_, "sitos/buffers/run/durable/before").replies.size(), 1u);
+  EXPECT_TRUE(Query(transport_, "sitos/buffers/run/durable/after").replies.empty());
+}
+
 TEST_F(RetainedSessionCatalogTest, RemovalFailureRecordsDeleteFailedThenRetrySucceeds) {
   ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
   transport_.PutBuffer("run", "k", Bytes({1}));

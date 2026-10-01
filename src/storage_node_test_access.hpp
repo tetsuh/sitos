@@ -56,6 +56,18 @@ class StorageNodeTestAccess {
     return state->catalog->Find(sid);
   }
 
+  // Sets the ADR-0036 catalog-unavailable latch, as a failed runtime catalog write does.
+  static bool LatchCatalogUnavailable(StorageNode& node) {
+    std::shared_ptr<StorageNode::State> state;
+    {
+      std::scoped_lock lock(node.lifecycle_mutex_);
+      state = node.state_;
+    }
+    if (!state) return false;
+    state->catalog_unavailable.store(true);
+    return true;
+  }
+
   // Called after each synchronized catalog write and around generation removal.
   static bool SetCatalogCheckpoint(StorageNode& node,
                                    std::function<void(std::string_view)> checkpoint) {
