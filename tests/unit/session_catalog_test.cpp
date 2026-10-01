@@ -231,6 +231,26 @@ TEST(SessionCatalogRecordTest, AcceptsOnlyIso8601UtcTimestamps) {
   }
 }
 
+TEST(SessionCatalogRecordTest, RejectsSecondSpellingsOfNullAndZero) {
+  const std::string retained = EncodeSessionRecord(RecordIn(SessionLifecycleState::kRetained));
+  auto empty_timestamp = retained;
+  const auto at = empty_timestamp.find(R"("orphaned_at":null)");
+  ASSERT_NE(at, std::string::npos);
+  empty_timestamp.replace(at, std::string_view(R"("orphaned_at":null)").size(),
+                          R"("orphaned_at":"")");
+  EXPECT_FALSE(DecodeSessionRecord("session", empty_timestamp).has_value());
+
+  auto failed = RecordIn(SessionLifecycleState::kDeleteFailed);
+  failed.failure->code = 0;
+  auto negative_zero = EncodeSessionRecord(failed);
+  const auto code = negative_zero.find(R"("failure_code":0)");
+  ASSERT_NE(code, std::string::npos);
+  negative_zero.replace(code, std::string_view(R"("failure_code":0)").size(),
+                        R"("failure_code":-0)");
+  EXPECT_TRUE(DecodeSessionRecord("session", EncodeSessionRecord(failed)).has_value());
+  EXPECT_FALSE(DecodeSessionRecord("session", negative_zero).has_value());
+}
+
 TEST(SessionCatalogRecordTest, RejectsRecordsWithoutTheDurableRoute) {
   auto record = ActiveRecord();
   record.durable = false;

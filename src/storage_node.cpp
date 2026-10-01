@@ -529,7 +529,17 @@ Result<void> StorageNode::DurableLifecycle::FinishCatalogDeletion(State& state,
   DurableLifecycle::CatalogCheckpoint(state, "close:before_remove");
   const auto directory =
       GenerationDirectory(state.durable_root, record.sid, record.generation_uuid);
-  const auto error = RemoveGeneration(directory);
+  std::error_code error;
+  {
+    // ADR-0036 §D8: removal runs under the catalog gate after a fresh latch check; a
+    // latched deletion keeps its `deleting` record and resumes at the next Start.
+    std::shared_lock gate(state.catalog_gate);
+    if (state.catalog_unavailable.load()) {
+      return Result<void>::Err(Status::CatalogUnavailable,
+                               "durable session catalog is unavailable");
+    }
+    error = RemoveGeneration(directory);
+  }
   if (error) {
     EmitLog(state.log_sink, LogLevel::kError, kCatalogComponent, kCatalogDeletionFailed);
   } else {
@@ -749,20 +759,26 @@ Result<SessionLifecycleState> StorageNode::RetainSession(std::string_view sid) {
     return R::Err(Status::InvalidArgument, "session is closing");
   }
 
-  // The durable prefix is synchronized before the catalog claims retention.
-  if (auto synced = record->durable_buffers->Sync(); !synced.IsOk()) {
-    return R::ErrFrom(synced);
-  }
   catalogued->state = SessionLifecycleState::kRetained;
   catalogued->retained_at = NowIso8601();
 
-  // ADR-0036 §D4: the synchronized `retained` write and the release of volatile state
-  // become visible together; no reader can observe the committed record while the
-  // overlay is still served.
+  DurableLifecycle::CatalogCheckpoint(*state, "retain:admitted");
   std::shared_ptr<const StorageReader> released_snapshot;
   std::shared_ptr<StorageEngine> released_overlay;
   bool committed = false;
   {
+    // ADR-0036 §D8: the store Sync runs under the catalog gate after a fresh latch check.
+    std::shared_lock gate(state->catalog_gate);
+    if (state->catalog_unavailable.load()) {
+      return R::Err(Status::CatalogUnavailable, "durable session catalog is unavailable");
+    }
+    // The durable prefix is synchronized before the catalog claims retention.
+    if (auto synced = record->durable_buffers->Sync(); !synced.IsOk()) {
+      return R::ErrFrom(synced);
+    }
+    // ADR-0036 §D4: the synchronized `retained` write and the release of volatile state
+    // become visible together; no reader can observe the committed record while the
+    // overlay is still served.
     std::unique_lock lock(state->session_mutex);
     committed = DurableLifecycle::TryPutCatalogRecord(*state, *catalogued);
     if (committed) {
@@ -1098,11 +1114,19 @@ Result<void> StorageNode::DurableLifecycle::CreateCatalogStore(State& state, con
     }
   }
   const auto directory = GenerationDirectory(state.durable_root, key, catalogued.generation_uuid);
-  std::error_code error;
-  std::filesystem::create_directories(directory, error);
-  auto opened = error ? Result<std::unique_ptr<RocksDBEngine>>::Err(
-                            Status::Error, "durable store directory cannot be created", error)
-                      : RocksDBEngine::Open(directory.string());
+  auto opened = Result<std::unique_ptr<RocksDBEngine>>::Err(
+      Status::CatalogUnavailable, "durable session catalog is unavailable");
+  {
+    // ADR-0036 §D8: the store is created only under the catalog gate after a fresh latch
+    // check. A latched creation leaves the `active` record, reconciled at the next Start.
+    std::shared_lock gate(state.catalog_gate);
+    if (state.catalog_unavailable.load()) return Result<void>::ErrFrom(opened);
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    opened = error ? Result<std::unique_ptr<RocksDBEngine>>::Err(
+                         Status::Error, "durable store directory cannot be created", error)
+                   : RocksDBEngine::Open(directory.string());
+  }
   if (opened.IsOk()) {
     record.durable_buffers = std::move(opened).Value();
     record.catalogued = true;
@@ -1587,8 +1611,17 @@ void StorageNode::ApplyBufferFenceMarker(const std::shared_ptr<State>& state,
     throw_after_claim = std::exchange(state->fence_test_throw_after_claim_once, false);
   }
 
+  // ADR-0036 §D8: a catalogued Session's Fence evaluation and Sync share one catalog-gate
+  // hold with its latch check, like every other durable-store access.
+  std::shared_lock<std::shared_mutex> catalog_read;
+  if (record && admission.has_value() && record->catalogued) {
+    catalog_read = std::shared_lock(state->catalog_gate);
+  }
   if (!state->IsAccepting()) {
     result.status = Status::Error;
+  } else if (record && admission.has_value() && marker_valid && record->catalogued &&
+             state->catalog_unavailable.load()) {
+    result.status = Status::CatalogUnavailable;
   } else if (record && admission.has_value() && marker_valid) {
     result.status = Status::Ok;
     // Inject at the latest pre-evaluation point so the exception-safety test

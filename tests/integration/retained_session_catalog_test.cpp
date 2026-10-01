@@ -556,6 +556,59 @@ TEST_F(RetainedSessionCatalogTest, DeletingRecordAndAdmissionEndBecomeVisibleTog
   EXPECT_EQ(meta_at_commit, "deleting");
 }
 
+TEST_F(RetainedSessionCatalogTest, DurableFenceAfterTheLatchIsCatalogUnavailable) {
+  ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
+  const auto generation = sitos::fence_internal::ParseFenceUuid(Record("run")->generation_uuid);
+  ASSERT_TRUE(generation.has_value());
+  ASSERT_TRUE(StorageNodeTestAccess::LatchCatalogUnavailable(*node_));
+  const auto token = sitos::GenerateAckToken();
+  transport_.Deliver(sitos::fence_test_access::FenceTestAccess::MakeBufferMarker(
+      "sitos", "run", *generation, sitos::BufferClass::Durable,
+      sitos::fence_internal::GenerateFenceUuid(), sitos::AckDurability::Synced, 0, token));
+  const auto result = sitos::fence_test_access::FenceTestAccess::FindAckResult(*node_, token);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->status, Status::CatalogUnavailable);
+}
+
+TEST_F(RetainedSessionCatalogTest, LatchBeforeRetainSyncLeavesTheSessionActive) {
+  ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
+  ASSERT_TRUE(StorageNodeTestAccess::SetCatalogCheckpoint(*node_, [&](std::string_view point) {
+    if (point == "retain:admitted") StorageNodeTestAccess::LatchCatalogUnavailable(*node_);
+  }));
+  EXPECT_EQ(node_->RetainSession("run").StatusCode(), Status::CatalogUnavailable);
+  EXPECT_EQ(Record("run")->state, SessionLifecycleState::kActive);
+}
+
+TEST_F(RetainedSessionCatalogTest, LatchBeforeRemovalKeepsTheDeletingRecordAndStore) {
+  ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
+  const auto directory = GenerationDirectory("run");
+  ASSERT_TRUE(StorageNodeTestAccess::SetCatalogCheckpoint(*node_, [&](std::string_view point) {
+    if (point == "close:before_remove") StorageNodeTestAccess::LatchCatalogUnavailable(*node_);
+  }));
+  EXPECT_EQ(node_->CloseSession("run").StatusCode(), Status::CatalogUnavailable);
+  EXPECT_TRUE(std::filesystem::exists(directory / "CURRENT"));
+  EXPECT_EQ(Record("run")->state, SessionLifecycleState::kDeleting);
+  // The deletion intent survives and resumes at the next Start.
+  Restart();
+  EXPECT_TRUE(node_->Readiness().ready);
+  EXPECT_EQ(Record("run")->state, SessionLifecycleState::kDeleted);
+  EXPECT_FALSE(std::filesystem::exists(directory));
+}
+
+TEST_F(RetainedSessionCatalogTest, LatchBeforeStoreCreationCreatesNoStore) {
+  // The checkpoint runs under catalog_mutex, so it only latches; the record is read after.
+  ASSERT_TRUE(StorageNodeTestAccess::SetCatalogCheckpoint(*node_, [&](std::string_view point) {
+    if (point == "create:active_written") StorageNodeTestAccess::LatchCatalogUnavailable(*node_);
+  }));
+  EXPECT_EQ(node_->CreateSession("run", {.durable_buffers = true}).StatusCode(),
+            Status::CatalogUnavailable);
+  const auto record = Record("run");
+  ASSERT_TRUE(record.has_value());
+  EXPECT_EQ(record->state, SessionLifecycleState::kActive);
+  const auto generation = record->generation_uuid;
+  EXPECT_FALSE(std::filesystem::exists(root_.Path() / "sessions" / "run" / generation / "CURRENT"));
+}
+
 TEST_F(RetainedSessionCatalogTest, RemovalFailureRecordsDeleteFailedThenRetrySucceeds) {
   ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
   transport_.PutBuffer("run", "k", Bytes({1}));
@@ -824,6 +877,16 @@ TEST_P(MissingRetainedStoreTest, FailsTheCatalogClosedInsteadOfRecreatingIt) {
 INSTANTIATE_TEST_SUITE_P(Catalog, MissingRetainedStoreTest,
                          ::testing::Values(StoreDamage::kRemoved, StoreDamage::kReplacedByFile,
                                            StoreDamage::kOnlyUnrelatedFile));
+
+TEST_F(DegradedCatalogTest, ExistingCatalogWithoutInstanceIsUnavailable) {
+  {
+    sitos::StorageNode first{transport_};
+    ASSERT_TRUE(first.Start(base_, CatalogConfig(root_.Path())).IsOk());
+  }
+  ASSERT_TRUE(SessionCatalogTestAccess::DeleteRawOffline(root_.Path(), "instance").IsOk());
+  ASSERT_TRUE(node_.Start(base_, CatalogConfig(root_.Path())).IsOk());
+  EXPECT_FALSE(node_.Readiness().ready);
+}
 
 TEST_F(DegradedCatalogTest, MissingCatalogBesideSessionsIsNotReady) {
   std::filesystem::create_directories(root_.Path() / "sessions" / "left");

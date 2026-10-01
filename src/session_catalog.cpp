@@ -105,8 +105,10 @@ class FlatJsonReader {
     if (at_ < text_.size() && text_[at_] == '-') ++at_;
     const auto first_digit = at_;
     while (at_ < text_.size() && text_[at_] >= '0' && text_[at_] <= '9') ++at_;
+    // No leading zero, and no "-0": every integer has exactly one canonical spelling.
     if (const auto digit_count = at_ - first_digit;
-        digit_count == 0 || (digit_count > 1 && text_[first_digit] == '0')) {
+        digit_count == 0 || (digit_count > 1 && text_[first_digit] == '0') ||
+        (first_digit != begin && digit_count == 1 && text_[first_digit] == '0')) {
       return std::nullopt;
     }
     const auto digits = text_.substr(begin, at_ - begin);
@@ -209,9 +211,13 @@ constexpr std::array<std::string_view, 15> kRecordMembers = {
     "failure_operation", "failure_category",
     "failure_code"};
 
+// Null is absence; a present value must be non-empty, so "" is never a second spelling
+// of null.
 std::optional<std::string> TextOrNull(const JsonValue& value, bool& ok) {
   if (std::holds_alternative<std::monostate>(value)) return std::string();
-  if (const auto* text = std::get_if<std::string>(&value)) return *text;
+  if (const auto* text = std::get_if<std::string>(&value); text != nullptr && !text->empty()) {
+    return *text;
+  }
   ok = false;
   return std::nullopt;
 }
@@ -416,6 +422,7 @@ Result<void> LoadEntries(rocksdb::DB& db,
     return Result<void>::Err(Status::CatalogUnavailable, std::move(message));
   };
   bool schema_seen = false;
+  bool instance_seen = false;
   std::unique_ptr<rocksdb::Iterator> iterator(db.NewIterator(rocksdb::ReadOptions()));
   for (iterator->SeekToFirst(); iterator->Valid(); iterator->Next()) {
     const std::string_view key(iterator->key().data(), iterator->key().size());
@@ -425,6 +432,7 @@ Result<void> LoadEntries(rocksdb::DB& db,
       schema_seen = true;
     } else if (key == kInstanceKey) {
       if (!ValidInstanceValue(value)) return invalid("catalog instance entry is invalid");
+      instance_seen = true;
     } else if (key.starts_with(kSessionKeyPrefix)) {
       const auto sid = key.substr(kSessionKeyPrefix.size());
       auto record = DecodeSessionRecord(sid, value);
@@ -436,6 +444,7 @@ Result<void> LoadEntries(rocksdb::DB& db,
   }
   if (!iterator->status().ok()) return invalid("catalog read failed");
   if (!schema_seen) return invalid("catalog schema entry is missing");
+  if (!instance_seen) return invalid("catalog instance entry is missing");
   return Result<void>::Ok();
 }
 
