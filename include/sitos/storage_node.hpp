@@ -128,8 +128,10 @@ class StorageNode {
   Result<void> CreateSession(std::string_view sid);
 
   /// Opens a session with explicit durable and ephemeral buffer capabilities. The same
-  /// stopped/captured-closed-gate InvalidArgument contract applies. Durable creation requires the
-  /// configured factory and reports factory/setup failures.
+  /// stopped/captured-closed-gate InvalidArgument contract applies. In factory mode, durable
+  /// creation requires the configured factory and reports factory/setup failures; in catalog
+  /// mode (durable_root), StorageNode records the Session and creates its generation store
+  /// (ADR-0036).
   Result<void> CreateSession(std::string_view sid, SessionOptions options);
 
   /// Closes a session: releases its snapshot, overlay, and durable engine, then removes its

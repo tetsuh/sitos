@@ -1724,6 +1724,34 @@ TEST(StorageNodeSessionLifecycleTest, CreatingAndClosingCollisionsAreDeterminist
   ASSERT_TRUE(node.CreateSession("s1").IsOk());
 }
 
+TEST(StorageNodeSessionLifecycleTest, ConcurrentCreateAndCloseOfOneSidAreRaceFree) {
+  // Run under TSan: CloseSession must not read a record's fields while a creator is still
+  // initializing them or another closer is releasing them.
+  FakeTransport transport;
+  StorageNode node(transport);
+  ASSERT_TRUE(node.Start(std::make_shared<InMemoryEngine>(), transport,
+                         {.prefix = "sitos", .log_sink = nullptr})
+                  .IsOk());
+  std::atomic<bool> stop{false};
+  std::vector<std::thread> workers;
+  for (int worker = 0; worker < 4; ++worker) {
+    workers.emplace_back([&node, &stop, worker] {
+      for (int i = 0; i < 200 && !stop.load(); ++i) {
+        if ((i + worker) % 2 == 0) {
+          static_cast<void>(node.CreateSession("s1"));
+        } else {
+          static_cast<void>(node.CloseSession("s1"));
+        }
+      }
+    });
+  }
+  for (auto& thread : workers) thread.join();
+  stop.store(true);
+  static_cast<void>(node.CloseSession("s1"));
+  EXPECT_TRUE(node.ActiveSessions().empty());
+  node.Stop();
+}
+
 TEST(StorageNodeSessionLifecycleTest, CreateRollbackAllowsSameSidRetry) {
   for (const auto failure : {SnapshotFailureEngine::Failure::Null,
                              SnapshotFailureEngine::Failure::Throw,

@@ -463,8 +463,13 @@ struct StorageNode::DurableLifecycle {
   static void ReconcileCatalog(const std::shared_ptr<State>& state);
   static void ReportUnknownSessionEntries(State& state,
                                           const std::vector<SessionCatalogRecord>& records);
-  static void ServeReconciledSession(State& state, const SessionCatalogRecord& record,
-                                     bool store_may_be_absent);
+  // Opens a reconciled generation store; an established store (create == false) must
+  // already exist. A failure latches the catalog and returns null.
+  static std::unique_ptr<RocksDBEngine> OpenReconciledStore(State& state,
+                                                            const SessionCatalogRecord& record,
+                                                            bool create);
+  static void InstallReconciledSession(State& state, const SessionCatalogRecord& record,
+                                       std::unique_ptr<RocksDBEngine> store);
   static void CatalogCheckpoint(State& state, std::string_view point);
   // One synchronized catalog write with no latch and no checkpoint. Callers that must
   // publish the write together with a live transition hold session_mutex across it and
@@ -588,22 +593,19 @@ void StorageNode::DurableLifecycle::ReportUnknownSessionEntries(
   }
 }
 
-void StorageNode::DurableLifecycle::ServeReconciledSession(State& state,
-                                                           const SessionCatalogRecord& record,
-                                                           bool store_may_be_absent) {
+std::unique_ptr<RocksDBEngine> StorageNode::DurableLifecycle::OpenReconciledStore(
+    State& state, const SessionCatalogRecord& record, bool create) {
   const auto directory =
       GenerationDirectory(state.durable_root, record.sid, record.generation_uuid);
   std::error_code error;
   // Every RocksDB database holds a CURRENT file, and RocksDBEngine::Open would create a
-  // database where none exists, so presence is decided before opening.
-  const bool present = std::filesystem::is_regular_file(directory / "CURRENT", error) && !error;
-  // ADR-0036 §D4/§D8: only a Session orphaned at this Start by a crash between its
-  // `active` record and its store may lack a store; it is served as empty. Any other
-  // missing or unopenable store is missing storage and fails the catalog closed.
-  if (!present && !store_may_be_absent) {
+  // database where none exists, so an established store's presence is decided before
+  // opening. ADR-0036 §D4/§D8: a missing or unopenable established store is missing
+  // storage and fails the catalog closed.
+  if (!create && !(std::filesystem::is_regular_file(directory / "CURRENT", error) && !error)) {
     EmitLog(state.log_sink, LogLevel::kError, kCatalogComponent, kCatalogStoreOpenFailed);
     DurableLifecycle::LatchCatalogUnavailable(state);
-    return;
+    return nullptr;
   }
   error.clear();
   std::filesystem::create_directories(directory, error);
@@ -612,8 +614,14 @@ void StorageNode::DurableLifecycle::ServeReconciledSession(State& state,
   if (!opened.IsOk()) {
     EmitLog(state.log_sink, LogLevel::kError, kCatalogComponent, kCatalogStoreOpenFailed);
     DurableLifecycle::LatchCatalogUnavailable(state);
-    return;
+    return nullptr;
   }
+  return std::move(opened).Value();
+}
+
+void StorageNode::DurableLifecycle::InstallReconciledSession(State& state,
+                                                             const SessionCatalogRecord& record,
+                                                             std::unique_ptr<RocksDBEngine> store) {
   auto session = std::make_shared<SessionRecord>();
   session->generation_uuid =
       fence_internal::ParseFenceUuid(record.generation_uuid).value_or(FenceUuid{});
@@ -624,7 +632,7 @@ void StorageNode::DurableLifecycle::ServeReconciledSession(State& state,
   session->lifecycle = record.state;
   session->catalogued = true;
   session->reconciled = true;
-  session->durable_buffers = std::move(opened).Value();
+  session->durable_buffers = std::move(store);
   session->Activate();
   std::unique_lock lock(state.session_mutex);
   state.sessions.insert_or_assign(record.sid, std::move(session));
@@ -637,18 +645,29 @@ void StorageNode::DurableLifecycle::ReconcileCatalog(const std::shared_ptr<State
 
   for (auto record : records) {
     if (state->catalog_unavailable.load()) return;
-    const bool orphaned_now = record.state == SessionLifecycleState::kActive;
-    if (orphaned_now) {
-      // Ownership is exclusive, so an active record belongs to a previous instance.
+    if (record.state == SessionLifecycleState::kActive) {
+      // Ownership is exclusive, so an active record belongs to a previous instance. Its
+      // store may not exist if that process stopped between the record and the store, so
+      // the store is created first and `orphaned` is committed only afterwards: a crash
+      // in between leaves the record active and this step repeats on the next Start.
+      auto store = DurableLifecycle::OpenReconciledStore(*state, record, /*create=*/true);
+      if (!store) return;
+      DurableLifecycle::CatalogCheckpoint(*state, "start:store_ready");
       record.state = SessionLifecycleState::kOrphaned;
       record.orphaned_at = NowIso8601();
-      std::scoped_lock lock(state->catalog_mutex);
-      if (!DurableLifecycle::WriteCatalogRecord(*state, record, "start:orphaned_written").IsOk())
-        return;
-    }
-    if (record.state == SessionLifecycleState::kRetained ||
-        record.state == SessionLifecycleState::kOrphaned) {
-      DurableLifecycle::ServeReconciledSession(*state, record, orphaned_now);
+      {
+        std::scoped_lock lock(state->catalog_mutex);
+        if (!DurableLifecycle::WriteCatalogRecord(*state, record, "start:orphaned_written")
+                 .IsOk()) {
+          return;
+        }
+      }
+      DurableLifecycle::InstallReconciledSession(*state, record, std::move(store));
+    } else if (record.state == SessionLifecycleState::kRetained ||
+               record.state == SessionLifecycleState::kOrphaned) {
+      auto store = DurableLifecycle::OpenReconciledStore(*state, record, /*create=*/false);
+      if (!store) return;
+      DurableLifecycle::InstallReconciledSession(*state, record, std::move(store));
     } else if (record.state == SessionLifecycleState::kDeleting) {
       // A durable administrative request continues after restart (ADR-0036 §D7).
       static_cast<void>(DurableLifecycle::FinishCatalogDeletion(*state, record));
@@ -1172,12 +1191,15 @@ Result<void> StorageNode::CloseSession(std::string_view sid) {
     std::shared_lock lock(state->session_mutex);
     if (auto it = state->sessions.find(key); it != state->sessions.end()) {
       record = it->second;
+      // A Creating or Closing record must not gain a `deleting` record: the creator may
+      // still commit it, and a second closer only reports the collision. Session fields
+      // are read only under an admission, which orders them after the creator's writes and
+      // before any closer's cleanup.
+      const auto admission = record->TryAcquire();
+      if (!admission.has_value()) return Result<void>::Err(OperationInProgress());
       generation = record->metadata.generation_uuid;
     }
   }
-  // A Creating or Closing record must not gain a `deleting` record: the creator may still
-  // commit it, and a second closer only reports the collision.
-  if (record && !record->IsActive()) return Result<void>::Err(OperationInProgress());
   DurableLifecycle::CatalogCheckpoint(*state, "close:before_catalog_deletion");
   auto deletion = DurableLifecycle::BeginCatalogDeletion(*state, key, record, generation);
   if (!deletion.IsOk()) return Result<void>::ErrFrom(deletion);

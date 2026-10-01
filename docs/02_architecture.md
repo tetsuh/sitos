@@ -179,8 +179,10 @@ Conventions:
    - buffer DELETEs and control routes → reject as unsupported in v0.4
 3. Session lifecycle (a conceptual responsibility implemented inside StorageNode):
    - `StorageNode::CreateSession(sid, options)`: reserve a `Creating` Session record, create the
-     snapshot, overlay, metadata, capabilities, and one durable engine through the host factory
-     only when enabled; roll back every resource on failure, then transition to `Active`
+     snapshot, overlay, metadata, capabilities, and, only when enabled, one durable engine:
+     through the host factory in factory mode [ADR-0032], or, in catalog mode, by recording the
+     Session and opening its generation store under `durable_root` [ADR-0036]; roll back every
+     resource on failure, then transition to `Active`
    - `StorageNode::CloseSession(sid)`: transition the record to `Closing`, close its admission
      gate, wait for admitted callbacks or operations, destroy its durable engine, and release all
      other resources before returning [F10, ADR-0032]
