@@ -91,23 +91,87 @@ TEST(SessionCatalogRecordTest, EncodesCanonicalVersionedJson) {
             R"("failure_category":null,"failure_code":null})");
 }
 
+// A record in each lifecycle state with exactly the metadata that state requires.
+SessionCatalogRecord RecordIn(SessionLifecycleState state) {
+  auto record = ActiveRecord();
+  record.state = state;
+  record.ephemeral = true;
+  const auto failure =
+      sitos::catalog_internal::SessionCatalogFailure{"remove_directory", "filesystem", 13};
+  switch (state) {
+    case SessionLifecycleState::kActive:
+      break;
+    case SessionLifecycleState::kRetained:
+      record.retained_at = "2026-10-01T00:00:01.000Z";
+      break;
+    case SessionLifecycleState::kOrphaned:
+      record.orphaned_at = "2026-10-01T00:00:02.000Z";
+      break;
+    case SessionLifecycleState::kDeleting:
+      record.retained_at = "2026-10-01T00:00:01.000Z";
+      record.deleting_at = "2026-10-01T00:00:03.000Z";
+      record.failure = failure;  // a retry keeps the previous diagnostics until it succeeds
+      break;
+    case SessionLifecycleState::kDeleteFailed:
+      record.deleting_at = "2026-10-01T00:00:03.000Z";
+      record.failure = failure;
+      break;
+    case SessionLifecycleState::kDeleted:
+      record.orphaned_at = "2026-10-01T00:00:02.000Z";
+      record.deleting_at = "2026-10-01T00:00:03.000Z";
+      record.deleted_at = "2026-10-01T00:00:04.000Z";
+      break;
+  }
+  return record;
+}
+
+constexpr SessionLifecycleState kAllStates[] = {
+    SessionLifecycleState::kActive,       SessionLifecycleState::kRetained,
+    SessionLifecycleState::kOrphaned,     SessionLifecycleState::kDeleting,
+    SessionLifecycleState::kDeleteFailed, SessionLifecycleState::kDeleted};
+
 TEST(SessionCatalogRecordTest, RoundTripsEveryLifecycleStateAndFailure) {
-  for (const auto state : {SessionLifecycleState::kActive, SessionLifecycleState::kRetained,
-                           SessionLifecycleState::kOrphaned, SessionLifecycleState::kDeleting,
-                           SessionLifecycleState::kDeleteFailed, SessionLifecycleState::kDeleted}) {
-    auto record = ActiveRecord();
-    record.state = state;
-    record.ephemeral = true;
-    record.retained_at = "2026-10-01T00:00:01.000Z";
-    record.orphaned_at = "2026-10-01T00:00:02.000Z";
-    record.deleting_at = "2026-10-01T00:00:03.000Z";
-    record.deleted_at = "2026-10-01T00:00:04.000Z";
-    record.failure =
-        sitos::catalog_internal::SessionCatalogFailure{"remove_directory", "filesystem", 13};
+  for (const auto state : kAllStates) {
+    const auto record = RecordIn(state);
     const auto decoded = DecodeSessionRecord("session", EncodeSessionRecord(record));
     ASSERT_TRUE(decoded.has_value()) << static_cast<int>(state);
     EXPECT_EQ(*decoded, record);
   }
+}
+
+TEST(SessionCatalogRecordTest, RejectsMissingOrForeignLifecycleMetadata) {
+  const auto rejects = [](SessionCatalogRecord record, const char* why) {
+    EXPECT_FALSE(DecodeSessionRecord("session", EncodeSessionRecord(record)).has_value()) << why;
+  };
+  auto record = RecordIn(SessionLifecycleState::kRetained);
+  record.retained_at.clear();
+  rejects(record, "retained without retained_at");
+  record = RecordIn(SessionLifecycleState::kOrphaned);
+  record.orphaned_at.clear();
+  rejects(record, "orphaned without orphaned_at");
+  record = RecordIn(SessionLifecycleState::kDeleting);
+  record.deleting_at.clear();
+  rejects(record, "deleting without deleting_at");
+  record = RecordIn(SessionLifecycleState::kDeleteFailed);
+  record.failure.reset();
+  rejects(record, "delete_failed without diagnostics");
+  record = RecordIn(SessionLifecycleState::kDeleteFailed);
+  record.deleting_at.clear();
+  rejects(record, "delete_failed without deleting_at");
+  record = RecordIn(SessionLifecycleState::kDeleted);
+  record.deleted_at.clear();
+  rejects(record, "deleted without deleted_at");
+  record = RecordIn(SessionLifecycleState::kDeleted);
+  record.failure =
+      sitos::catalog_internal::SessionCatalogFailure{"remove_directory", "filesystem", 13};
+  rejects(record, "deleted with diagnostics");
+  record = RecordIn(SessionLifecycleState::kActive);
+  record.retained_at = "2026-10-01T00:00:01.000Z";
+  rejects(record, "active with a transition timestamp");
+  record = RecordIn(SessionLifecycleState::kRetained);
+  record.failure =
+      sitos::catalog_internal::SessionCatalogFailure{"remove_directory", "filesystem", 13};
+  rejects(record, "retained with diagnostics");
 }
 
 TEST(SessionCatalogRecordTest, RejectsNonCanonicalOrInconsistentRecords) {
@@ -143,7 +207,7 @@ TEST(SessionCatalogRecordTest, AcceptsOnlyIso8601UtcTimestamps) {
   for (const std::string_view accepted :
        {"2026-10-01T00:00:00Z", "2026-10-01T23:59:60Z", "2026-10-01T00:00:00.5Z",
         "2026-10-01T00:00:00.123456789Z", "2028-02-29T00:00:00Z", "2000-02-29T00:00:00Z"}) {
-    auto record = ActiveRecord();
+    auto record = RecordIn(SessionLifecycleState::kRetained);
     record.created_at = std::string(accepted);
     record.retained_at = std::string(accepted);
     EXPECT_TRUE(DecodeSessionRecord("session", EncodeSessionRecord(record)).has_value())
@@ -160,7 +224,7 @@ TEST(SessionCatalogRecordTest, AcceptsOnlyIso8601UtcTimestamps) {
     created.created_at = std::string(rejected);
     EXPECT_FALSE(DecodeSessionRecord("session", EncodeSessionRecord(created)).has_value())
         << "created_at " << rejected;
-    auto retained = ActiveRecord();
+    auto retained = RecordIn(SessionLifecycleState::kRetained);
     retained.retained_at = std::string(rejected);
     EXPECT_FALSE(DecodeSessionRecord("session", EncodeSessionRecord(retained)).has_value())
         << "retained_at " << rejected;

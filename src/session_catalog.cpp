@@ -216,6 +216,31 @@ std::optional<std::string> TextOrNull(const JsonValue& value, bool& ok) {
   return std::nullopt;
 }
 
+// ADR-0036 §D3/§D4: each lifecycle state carries the timestamps of the transitions that
+// reached it, and only a pending or failed deletion may carry failure diagnostics.
+bool HasLifecycleMetadata(const SessionCatalogRecord& record) {
+  const bool retained = !record.retained_at.empty();
+  const bool orphaned = !record.orphaned_at.empty();
+  const bool deleting = !record.deleting_at.empty();
+  const bool deleted = !record.deleted_at.empty();
+  const bool failure = record.failure.has_value();
+  switch (record.state) {
+    case SessionLifecycleState::kActive:
+      return !retained && !orphaned && !deleting && !deleted && !failure;
+    case SessionLifecycleState::kRetained:
+      return retained && !deleting && !deleted && !failure;
+    case SessionLifecycleState::kOrphaned:
+      return orphaned && !deleting && !deleted && !failure;
+    case SessionLifecycleState::kDeleting:
+      return deleting && !deleted;
+    case SessionLifecycleState::kDeleteFailed:
+      return deleting && !deleted && failure;
+    case SessionLifecycleState::kDeleted:
+      return deleting && deleted && !failure;
+  }
+  return false;
+}
+
 }  // namespace
 
 std::string_view LifecycleName(SessionLifecycleState state) noexcept {
@@ -308,6 +333,7 @@ std::optional<SessionCatalogRecord> DecodeSessionRecord(std::string_view sid,
     }
     record.failure = SessionCatalogFailure{*operation, *category, static_cast<int>(*code)};
   }
+  if (!HasLifecycleMetadata(record)) return std::nullopt;
   return record;
 }
 

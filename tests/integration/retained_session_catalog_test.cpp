@@ -763,6 +763,29 @@ TEST_P(MalformedTimestampTest, MakesTheCatalogUnavailable) {
   EXPECT_EQ(node_.Readiness().reason, StorageNodeReadinessReason::kCatalogUnavailable);
 }
 
+TEST_F(DegradedCatalogTest, RecordMissingLifecycleMetadataMakesTheCatalogUnavailable) {
+  {
+    sitos::StorageNode first{transport_};
+    ASSERT_TRUE(first.Start(base_, CatalogConfig(root_.Path())).IsOk());
+    ASSERT_TRUE(first.CreateSession("kept", {.durable_buffers = true}).IsOk());
+    ASSERT_TRUE(first.RetainSession("kept").IsOk());
+  }
+  SessionCatalogRecord record;
+  record.sid = "kept";
+  record.generation_uuid = "3f2b8c1e-0d4a-4b6f-9c2e-7a1d5e8f0b93";
+  record.state = SessionLifecycleState::kDeleteFailed;
+  record.owner_instance_id = "9a0c1d2e-3f40-4b5c-8d6e-7f8091a2b3c4";
+  record.created_at = "2026-10-01T00:00:00Z";
+  record.deleting_at = "2026-10-01T00:00:01Z";  // no failure diagnostics
+  ASSERT_TRUE(
+      SessionCatalogTestAccess::PutRawOffline(root_.Path(), "session/kept",
+                                              sitos::catalog_internal::EncodeSessionRecord(record))
+          .IsOk());
+  ASSERT_TRUE(node_.Start(base_, CatalogConfig(root_.Path())).IsOk());
+  EXPECT_FALSE(node_.Readiness().ready);
+  EXPECT_EQ(node_.Readiness().reason, StorageNodeReadinessReason::kCatalogUnavailable);
+}
+
 INSTANTIATE_TEST_SUITE_P(Catalog, MalformedTimestampTest,
                          ::testing::Values("T", "2026-02-29T00:00:00Z", "2026-04-31T00:00:00Z"));
 
