@@ -676,6 +676,36 @@ TEST_P(MalformedTimestampTest, MakesTheCatalogUnavailable) {
 INSTANTIATE_TEST_SUITE_P(Catalog, MalformedTimestampTest,
                          ::testing::Values("T", "2026-02-29T00:00:00Z", "2026-04-31T00:00:00Z"));
 
+class MissingRetainedStoreTest : public DegradedCatalogTest,
+                                 public ::testing::WithParamInterface<bool> {};
+
+TEST_P(MissingRetainedStoreTest, FailsTheCatalogClosedInsteadOfRecreatingIt) {
+  const bool replace_with_file = GetParam();
+  std::filesystem::path directory;
+  {
+    sitos::StorageNode first{transport_};
+    ASSERT_TRUE(first.Start(base_, CatalogConfig(root_.Path())).IsOk());
+    ASSERT_TRUE(first.CreateSession("kept", {.durable_buffers = true}).IsOk());
+    transport_.PutBuffer("kept", "k", Bytes({1}));
+    ASSERT_TRUE(first.RetainSession("kept").IsOk());
+    directory = root_.Path() / "sessions" / "kept" /
+                StorageNodeTestAccess::CatalogRecord(first, "kept")->generation_uuid;
+  }
+  std::filesystem::remove_all(directory);
+  if (replace_with_file) {
+    std::ofstream(directory) << "not a store";
+  }
+
+  ASSERT_TRUE(node_.Start(base_, CatalogConfig(root_.Path())).IsOk());
+  EXPECT_FALSE(node_.Readiness().ready);
+  EXPECT_EQ(node_.Readiness().reason, StorageNodeReadinessReason::kCatalogUnavailable);
+  EXPECT_EQ(std::filesystem::is_directory(directory), false);
+  EXPECT_EQ(Query(transport_, "sitos/buffers/kept/durable/k").result.StatusCode(),
+            Status::CatalogUnavailable);
+}
+
+INSTANTIATE_TEST_SUITE_P(Catalog, MissingRetainedStoreTest, ::testing::Bool());
+
 TEST_F(DegradedCatalogTest, MissingCatalogBesideSessionsIsNotReady) {
   std::filesystem::create_directories(root_.Path() / "sessions" / "left");
   ASSERT_TRUE(node_.Start(base_, CatalogConfig(root_.Path())).IsOk());

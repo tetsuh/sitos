@@ -463,7 +463,8 @@ struct StorageNode::DurableLifecycle {
   static void ReconcileCatalog(const std::shared_ptr<State>& state);
   static void ReportUnknownSessionEntries(State& state,
                                           const std::vector<SessionCatalogRecord>& records);
-  static void ServeReconciledSession(State& state, const SessionCatalogRecord& record);
+  static void ServeReconciledSession(State& state, const SessionCatalogRecord& record,
+                                     bool store_may_be_absent);
   static void CatalogCheckpoint(State& state, std::string_view point);
   // Publishes the monotonic catalog-unavailable latch after admitted durable access drains.
   static void LatchCatalogUnavailable(State& state);
@@ -580,15 +581,28 @@ void StorageNode::DurableLifecycle::ReportUnknownSessionEntries(
 }
 
 void StorageNode::DurableLifecycle::ServeReconciledSession(State& state,
-                                                           const SessionCatalogRecord& record) {
+                                                           const SessionCatalogRecord& record,
+                                                           bool store_may_be_absent) {
   const auto directory =
       GenerationDirectory(state.durable_root, record.sid, record.generation_uuid);
   std::error_code error;
+  const bool present = std::filesystem::is_directory(directory, error) &&
+                       !std::filesystem::is_empty(directory, error) && !error;
+  // ADR-0036 §D4/§D8: only a Session orphaned at this Start by a crash between its
+  // `active` record and its store may lack a store; it is served as empty. Any other
+  // missing or unopenable store is missing storage and fails the catalog closed.
+  if (!present && !store_may_be_absent) {
+    EmitLog(state.log_sink, LogLevel::kError, kCatalogComponent, kCatalogStoreOpenFailed);
+    DurableLifecycle::LatchCatalogUnavailable(state);
+    return;
+  }
+  error.clear();
   std::filesystem::create_directories(directory, error);
   auto opened = error ? Result<std::unique_ptr<RocksDBEngine>>::Err(Status::Error, "", error)
                       : RocksDBEngine::Open(directory.string());
   if (!opened.IsOk()) {
     EmitLog(state.log_sink, LogLevel::kError, kCatalogComponent, kCatalogStoreOpenFailed);
+    DurableLifecycle::LatchCatalogUnavailable(state);
     return;
   }
   auto session = std::make_shared<SessionRecord>();
@@ -614,7 +628,8 @@ void StorageNode::DurableLifecycle::ReconcileCatalog(const std::shared_ptr<State
 
   for (auto record : records) {
     if (state->catalog_unavailable.load()) return;
-    if (record.state == SessionLifecycleState::kActive) {
+    const bool orphaned_now = record.state == SessionLifecycleState::kActive;
+    if (orphaned_now) {
       // Ownership is exclusive, so an active record belongs to a previous instance.
       record.state = SessionLifecycleState::kOrphaned;
       record.orphaned_at = NowIso8601();
@@ -624,7 +639,7 @@ void StorageNode::DurableLifecycle::ReconcileCatalog(const std::shared_ptr<State
     }
     if (record.state == SessionLifecycleState::kRetained ||
         record.state == SessionLifecycleState::kOrphaned) {
-      DurableLifecycle::ServeReconciledSession(*state, record);
+      DurableLifecycle::ServeReconciledSession(*state, record, orphaned_now);
     } else if (record.state == SessionLifecycleState::kDeleting) {
       // A durable administrative request continues after restart (ADR-0036 §D7).
       static_cast<void>(DurableLifecycle::FinishCatalogDeletion(*state, record));
