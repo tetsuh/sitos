@@ -468,6 +468,7 @@ _SHUTDOWN_SCRIPT = textwrap.dedent(
                 raise
             time.sleep(0.05)
     entered = threading.Event()
+    main_done = threading.Event()
 
     def keep_reading():
         stop = time.monotonic() + 0.5
@@ -489,11 +490,17 @@ _SHUTDOWN_SCRIPT = textwrap.dedent(
             store.close()
             time.sleep(0.5)
         elif mode == "subscribe-during-shutdown":
-            time.sleep(0.5)
-            try:
-                store.subscribe("base", "late/", lambda late: None)
-            except RuntimeError:
-                print("RESUBSCRIBE_REJECTED", flush=True)
+            # Retry until interpreter shutdown starts rejecting subscriptions; the atexit
+            # handler waits for this callback, so the rejection is reached deterministically.
+            main_done.wait(20)
+            stop = time.monotonic() + 20
+            while time.monotonic() < stop:
+                try:
+                    store.subscribe("base", "late/", lambda late: None).close()
+                except RuntimeError:
+                    print("RESUBSCRIBE_REJECTED", flush=True)
+                    break
+                time.sleep(0.01)
         if mode != "idle":
             # Printed only if interpreter exit waited for this in-flight callback.
             print("CALLBACK_DONE", flush=True)
@@ -512,6 +519,7 @@ _SHUTDOWN_SCRIPT = textwrap.dedent(
         raise SystemExit("callback never ran")
     put_all("again")
     print("EXITING", flush=True)
+    main_done.set()
     """
 )
 
