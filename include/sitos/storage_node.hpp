@@ -10,6 +10,7 @@
 #include <cassert>
 #include <condition_variable>
 #include <cstddef>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -57,10 +58,32 @@ struct StorageNodeConfig {
   /// Diagnostic destination; nullptr explicitly disables logging.
   std::shared_ptr<LogSink> log_sink = DefaultLogSink();
   DurableBufferEngineFactory durable_buffer_engine_factory = {};
+  /// Opt-in catalog mode (ADR-0036). StorageNode then owns <durable_root>/catalog and the
+  /// generation-scoped RocksDB stores under <durable_root>/sessions, and reconciles them at
+  /// Start. Requires a RocksDB-enabled build and an empty durable_buffer_engine_factory.
+  std::optional<std::filesystem::path> durable_root = std::nullopt;
+};
+
+/// Why a StorageNode is or is not ready (ADR-0036 §D8).
+enum class StorageNodeReadinessReason {
+  kReady,
+  kStopped,
+  /// The durable session catalog could not be opened, validated, or written. The latch is
+  /// monotonic: only offline maintenance and a new Start can clear it.
+  kCatalogUnavailable,
+};
+
+struct StorageNodeReadiness {
+  bool ready = false;
+  StorageNodeReadinessReason reason = StorageNodeReadinessReason::kStopped;
 };
 
 class SessionView;
 class AckRegistry;
+namespace catalog_internal {
+class SessionCatalog;
+struct SessionCatalogRecord;
+}  // namespace catalog_internal
 namespace fence_internal {
 class FenceDispatchCoordinator;
 class FenceReceiverRegistry;
@@ -105,8 +128,10 @@ class StorageNode {
   Result<void> CreateSession(std::string_view sid);
 
   /// Opens a session with explicit durable and ephemeral buffer capabilities. The same
-  /// stopped/captured-closed-gate InvalidArgument contract applies. Durable creation requires the
-  /// configured factory and reports factory/setup failures.
+  /// stopped/captured-closed-gate InvalidArgument contract applies. In factory mode, durable
+  /// creation requires the configured factory and reports factory/setup failures; in catalog
+  /// mode (durable_root), StorageNode records the Session and creates its generation store
+  /// (ADR-0036).
   Result<void> CreateSession(std::string_view sid, SessionOptions options);
 
   /// Closes a session: releases its snapshot, overlay, and durable engine, then removes its
@@ -115,9 +140,20 @@ class StorageNode {
   /// unknown sid. [F10]
   Result<void> CloseSession(std::string_view sid);
 
+  /// Durably transitions an active durable-route Session to retained (ADR-0036 §D5): the
+  /// durable store is synchronized, the catalog records `retained`, and the snapshot and
+  /// overlay are released, so later parameter reads report StateLost. Repeating the call
+  /// returns kRetained without writing. It is neither a write barrier nor a publisher drain.
+  /// Requires catalog mode (InvalidArgument otherwise); unknown Sessions are NotFound, and
+  /// ephemeral-only, orphaned, or closing Sessions are InvalidArgument.
+  Result<SessionLifecycleState> RetainSession(std::string_view sid);
+
   /// Returns the ids of all active sessions in unspecified order. Empty when the
   /// node is stopped.
   std::vector<std::string> ActiveSessions() const;
+
+  /// Ready once started, unless catalog mode has latched the catalog unavailable.
+  StorageNodeReadiness Readiness() const noexcept;
 
   /// Undeclares the queryable and subscriber. Safe to call repeatedly and concurrently.
   /// Callbacks already in flight are completed before this returns. Calling lifecycle methods
@@ -210,6 +246,13 @@ class StorageNode {
 
     Phase phase = Phase::Creating;
     bool accepting = false;
+    // ADR-0036 durable lifecycle. Written under the unique session_mutex together with the
+    // release of snapshot and overlay; read under the shared session_mutex.
+    SessionLifecycleState lifecycle = SessionLifecycleState::kActive;
+    // True when the catalog owns this Session's durable store.
+    bool catalogued = false;
+    // True for a store reopened at Start: it serves Get/List and CloseSession only.
+    bool reconciled = false;
     std::size_t admitted = 0;
     std::mutex admission_mutex;
     std::condition_variable admission_cv;
@@ -245,6 +288,20 @@ class StorageNode {
     // ADR-0028 node-wide token registry and completion ring; owned by this live State.
     // Created by Start, cleared by Stop; never shared across State generations.
     std::shared_ptr<AckRegistry> ack_registry;
+    // ADR-0036 catalog mode. `catalog` is null when not in catalog mode or when the
+    // catalog was unavailable at Start. `catalog_mutex` serializes catalog
+    // read-modify-write transitions; it is never held while waiting for quiescence.
+    bool catalog_mode = false;
+    std::filesystem::path durable_root;
+    std::string instance_id;
+    std::shared_ptr<catalog_internal::SessionCatalog> catalog;
+    std::mutex catalog_mutex;
+    std::atomic<bool> catalog_unavailable{false};
+    // ADR-0036 §D8 shared catalog gate: durable-store reads and writes of catalogued
+    // Sessions hold it shared across their latch check and storage access, and the latch
+    // is published only under the exclusive side, so no such access outlives the latch.
+    std::shared_mutex catalog_gate;
+    std::function<void(std::string_view)> catalog_checkpoint;
     std::shared_ptr<fence_internal::FenceDispatchCoordinator> fence_dispatcher;
     std::shared_ptr<fence_internal::FenceReceiverRegistry> fence_receiver_registry;
     mutable std::mutex fence_test_mutex;
@@ -361,6 +418,10 @@ class StorageNode {
   struct SessionAccess {
     std::optional<SessionRecord::AdmissionLease> admission;
     std::shared_ptr<SessionRecord> record;
+    // Captured with the admission under the shared session_mutex, so a concurrent
+    // RetainSession can release the record's overlay without invalidating this one.
+    std::shared_ptr<StorageEngine> overlay;
+    SessionLifecycleState lifecycle = SessionLifecycleState::kActive;
   };
 
   static SessionAccess AcquireSession(const std::shared_ptr<State>& state, std::string_view sid);
@@ -400,6 +461,8 @@ class StorageNode {
   // Answers a get on meta/session/<sid> with the session metadata JSON.
   static void ReplyMetaQuery(const std::shared_ptr<State>& state, TransportQuery& query);
   static void ReplyBufferQuery(const std::shared_ptr<State>& state, TransportQuery& query);
+  // ADR-0036 catalog transitions and durable store creation, defined with StorageNode.
+  struct DurableLifecycle;
 
   mutable std::mutex lifecycle_mutex_;
   // Serializes declaration/undeclaration transactions. Callbacks never hold this lock.

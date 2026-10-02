@@ -183,9 +183,10 @@ zenoh wildcards operate on chunks (`*` = one chunk, `**` = zero or more chunks).
   Same-byte duplicates may be deduplicated during the transition. Ephemeral is live-only with no
   initial Get or replay guarantee.
 * Buffer DELETE is unsupported in v0.4; Session lifecycle cleanup removes buffer state.
-  CloseSession destroys engine ownership before returning, but physical directory removal is
-  host-owned. A new v0.4 Session gets a fresh or logically empty store. Issue #108 owns restart
-  catalogs and deletion retry.
+  CloseSession destroys engine ownership before returning; without a catalog, physical directory
+  removal is host-owned. A new v0.4 Session gets a fresh or logically empty store. In ADR-0036
+  catalog mode, StorageNode also removes the Session's generation directory, records the deletion,
+  and retries a failed removal on the next CloseSession.
 
 ### 4.4 read-only and admission rules
 
@@ -211,8 +212,10 @@ whitespace, other key orders, extra fields, other versions, and other Status val
 A client `Get` that receives a typed error reply ends with that Status; every other error reply,
 including an unreadable or non-canonical payload, stays `Error`. As with any `Get` error, replies
 delivered before the refusal may already have reached the caller's sink. The routes that emit these
-replies (retained, orphaned, and catalog-unavailable Sessions) are ADR-0036 behavior implemented by
-Issue #108. Until then, `get` for a nonexistent `<sid>` keeps its 0-reply result.
+replies are ADR-0036 behavior: `session/<sid>/**` and `snap/<sid>/**` reads of a `retained` or
+`orphaned` Session return `StateLost`, and `buffers/<sid>/durable/**` reads while the node's catalog
+is unavailable return `CatalogUnavailable`. A `get` for a nonexistent `<sid>` keeps its 0-reply
+result.
 
 ## 5. Batch format (`sitos.v1.batch`)
 
@@ -414,7 +417,9 @@ ADR-0029 for exact validation, lifecycle, bounded-state, result, and topology ru
 > metadata mechanism; Issue #107 implements it.
 
 For checking session existence and debugging. StorageNode creates it on CreateSession.
-The value is JSON encoded as payload v1 STR:
+The value is JSON encoded as payload v1 STR. `state` is `active` for a running Session. In ADR-0036
+catalog mode it is `retained`, `orphaned`, `deleting`, or `delete_failed` for a Session in those
+catalog states, with the catalogued `created_at` and `generation_uuid`:
 
 ```json
 {"state": "active", "created_at": "2026-07-07T01:23:45Z", "generation_uuid": "6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab"}
@@ -424,7 +429,7 @@ The value is JSON encoded as payload v1 STR:
 changes on same-SID recreation and is required for Issue #107 BufferPublisher discovery; malformed
 or missing values are a type mismatch to that client. See ADR-0035.
 
-Deleted by CloseSession.
+Deleted by CloseSession. A completed deletion (`deleted`) and an unknown sid return 0 replies.
 
 ## 8. Versioning [C04]
 

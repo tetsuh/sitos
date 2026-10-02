@@ -40,7 +40,7 @@ Requirement IDs ([01_requirements.md](01_requirements.md)) are referenced as [F.
 | `StorageNode` | Zenoh queryable/subscriber ↔ engine; owns Session lifecycles | zenoh, StorageEngine |
 | `ParamStore` | Client API: typed Put/Get/List/Delete/Subscribe. Wraps a zenoh session | zenoh |
 | `ParamCache` | Subscriber-side read cache. Initial fetch + delta subscription + zero-copy Get | zenoh |
-| Session lifecycle | Conceptual responsibility inside the StorageNode-owning process; use `StorageNode::CreateSession`, `CloseSession`, and `ActiveSessions` | StorageNode |
+| Session lifecycle | Conceptual responsibility inside the StorageNode-owning process; use `StorageNode::CreateSession`, `RetainSession`, `CloseSession`, `ActiveSessions`, and `Readiness` | StorageNode |
 | `SessionView` | Host-process read-only view that resolves session overlay → snapshot | StorageNode |
 
 **Design principle**: `engine/` does not know about zenoh. `ParamStore`/`ParamCache` do not
@@ -84,8 +84,11 @@ see [03_wire_protocol.md](03_wire_protocol.md).
   They use no sitos payload schema or type tag, and support no `:batch`, `:fence`, snapshot, or
   other control namespace in v0.4 [ADR-0032]
 * Durable values live until `CloseSession`. CloseSession destroys engine ownership before
-  returning; physical directory removal is host-owned afterward. A new v0.4 Session receives a
-  fresh or logically empty store. Restart catalogs and deletion retry belong to #108 [ADR-0032]
+  returning; without a catalog, physical directory removal is host-owned afterward. A new v0.4
+  Session receives a fresh or logically empty store [ADR-0032]. With `durable_root`, StorageNode
+  keeps a durable session catalog, retains Sessions across restarts, reconciles previous-instance
+  Sessions as orphaned, removes generation directories itself, and retries failed deletions
+  [ADR-0036]
 
 ## 3. StorageEngine Abstraction
 
@@ -176,8 +179,10 @@ Conventions:
    - buffer DELETEs and control routes → reject as unsupported in v0.4
 3. Session lifecycle (a conceptual responsibility implemented inside StorageNode):
    - `StorageNode::CreateSession(sid, options)`: reserve a `Creating` Session record, create the
-     snapshot, overlay, metadata, capabilities, and one durable engine through the host factory
-     only when enabled; roll back every resource on failure, then transition to `Active`
+     snapshot, overlay, metadata, capabilities, and, only when enabled, one durable engine:
+     through the host factory in factory mode [ADR-0032], or, in catalog mode, by recording the
+     Session and opening its generation store under `durable_root` [ADR-0036]; roll back every
+     resource on failure, then transition to `Active`
    - `StorageNode::CloseSession(sid)`: transition the record to `Closing`, close its admission
      gate, wait for admitted callbacks or operations, destroy its durable engine, and release all
      other resources before returning [F10, ADR-0032]
@@ -353,9 +358,10 @@ before returning and retains no Session record or other resource after enumerati
 * Reserve the SID in a non-queryable `Creating` record before external factory creation so failed
   creation leaves no active or queryable Session. A `Closing` record remains reserved until
   callbacks quiesce and all Session resources are released; only then can same-SID creation begin.
-  Physical deletion is host-owned after CloseSession returns; #108 owns restart and
-  retained-session catalog semantics. Orderly engine close/reopen checks validate resource release
-  only and do not establish #108 restart or retention semantics.
+  Without a catalog, physical deletion is host-owned after CloseSession returns. In ADR-0036
+  catalog mode, CloseSession records `deleting` before quiescence and removes the generation
+  directory only after every engine owner is released; restart reconciliation and retention are
+  defined by ADR-0036.
 
 ### 4.4 Transport Integration Pseudocode
 

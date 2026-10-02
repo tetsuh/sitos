@@ -108,6 +108,10 @@ Result<SessionView> SessionView::Open(const StorageNode& node, std::string_view 
   {
     std::shared_lock lock(state->session_mutex);
     auto it = state->sessions.find(sid);
+    if (it != state->sessions.end() && it->second->IsActive() &&
+        it->second->lifecycle != SessionLifecycleState::kActive) {
+      return Result<SessionView>::Err(Status::StateLost, "session parameter state was released");
+    }
     if (it == state->sessions.end() || !it->second->IsActive() ||
         !it->second->overlay) {
       return Result<SessionView>::Err(Status::NotFound, "session not found");
@@ -145,6 +149,9 @@ Result<SessionView::Readers> SessionView::AcquireReaders() const {
       return Result<Readers>::ErrFrom(NotFound());
     }
     const auto& record = it->second;
+    if (record->lifecycle != SessionLifecycleState::kActive) {
+      return Result<Readers>::Err(Status::StateLost, "session parameter state was released");
+    }
     readers.admission = record->TryAcquire();
     if (!readers.admission.has_value() || !record->snapshot || !record->overlay ||
         !SameOwner(impl_->overlay_owner, record->overlay)) {

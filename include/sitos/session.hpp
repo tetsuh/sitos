@@ -23,6 +23,17 @@ struct SessionOptions {
   bool ephemeral_buffers = false;
 };
 
+/// Durable lifecycle of a Session with the durable buffer route, as recorded by
+/// the StorageNode session catalog (ADR-0036). Ephemeral-only Sessions have none.
+enum class SessionLifecycleState {
+  kActive,
+  kRetained,
+  kOrphaned,
+  kDeleting,
+  kDeleteFailed,
+  kDeleted,
+};
+
 /// Metadata recorded for an active session and surfaced as the payload-v1 STR
 /// JSON returned for a get on meta/session/<sid> (docs/03 §7.1).
 struct SessionMeta {

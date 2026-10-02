@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "ack_registry.hpp"
+#include "session_catalog.hpp"
 #include "sitos/storage_engine.hpp"
 #include "sitos/storage_node.hpp"
 
@@ -40,6 +41,47 @@ class StorageNodeTestAccess {
       return state->in_flight > 0;
     }
   };
+
+  // ADR-0036: the current catalog record for sid, or nullopt (also when stopped or degraded).
+  static std::optional<catalog_internal::SessionCatalogRecord> CatalogRecord(StorageNode& node,
+                                                                             std::string_view sid) {
+    std::shared_ptr<StorageNode::State> state;
+    {
+      std::scoped_lock lock(node.lifecycle_mutex_);
+      state = node.state_;
+    }
+    if (!state) return std::nullopt;
+    std::scoped_lock lock(state->catalog_mutex);
+    if (!state->catalog) return std::nullopt;
+    return state->catalog->Find(sid);
+  }
+
+  // Sets the ADR-0036 catalog-unavailable latch, as a failed runtime catalog write does.
+  static bool LatchCatalogUnavailable(StorageNode& node) {
+    std::shared_ptr<StorageNode::State> state;
+    {
+      std::scoped_lock lock(node.lifecycle_mutex_);
+      state = node.state_;
+    }
+    if (!state) return false;
+    std::unique_lock gate(state->catalog_gate);
+    state->catalog_unavailable.store(true);
+    return true;
+  }
+
+  // Called after each synchronized catalog write and around generation removal.
+  static bool SetCatalogCheckpoint(StorageNode& node,
+                                   std::function<void(std::string_view)> checkpoint) {
+    std::shared_ptr<StorageNode::State> state;
+    {
+      std::scoped_lock lock(node.lifecycle_mutex_);
+      state = node.state_;
+    }
+    if (!state) return false;
+    std::scoped_lock lock(state->test_observer_mutex);
+    state->catalog_checkpoint = std::move(checkpoint);
+    return true;
+  }
 
   static std::optional<GateObserver> CaptureGateObserver(StorageNode& node) {
     std::scoped_lock lock(node.lifecycle_mutex_);
