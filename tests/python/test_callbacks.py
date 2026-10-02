@@ -48,14 +48,59 @@ def _client_config(port: int) -> str:
     )
 
 
+# docs/05 §2.4: independently opened sessions must run in separate processes with the pinned
+# zenoh-c runtime, so the StorageNode runs in its own process and each test process opens at
+# most one ParamStore at a time.
+_NODE_SCRIPT = textwrap.dedent(
+    """
+    import sys
+
+    import sitos
+
+    prefix, node_config = sys.argv[1:3]
+    with sitos.StorageNode(sitos.InMemoryEngine(), prefix=prefix, zenoh_config_json=node_config):
+        print("READY", flush=True)
+        sys.stdin.readline()
+    """
+)
+
+
+def _readline(stream: object, timeout: float) -> str:
+    lines: list[str] = []
+    reader = threading.Thread(target=lambda: lines.append(stream.readline()), daemon=True)  # type: ignore[attr-defined]
+    reader.start()
+    reader.join(timeout)
+    if not lines:
+        raise AssertionError(f"node process produced no line within {timeout:g} seconds")
+    return lines[0].strip()
+
+
 @pytest.fixture(scope="module")
 def node() -> Iterator[tuple[str, int]]:
     prefix = f"sitos/callbacks_{os.getpid()}_{uuid.uuid4().hex}"
     port = _free_port()
-    with sitos.StorageNode(
-        sitos.InMemoryEngine(), prefix=prefix, zenoh_config_json=_node_config(port)
-    ):
+    process = subprocess.Popen(
+        [sys.executable, "-c", _NODE_SCRIPT, prefix, _node_config(port)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        env=os.environ.copy(),
+    )
+    try:
+        assert _readline(process.stdout, _DEADLINE) == "READY"
         yield prefix, port
+    finally:
+        if process.stdin is not None:
+            try:
+                process.stdin.write("STOP\n")
+                process.stdin.close()
+            except OSError:
+                pass
+        try:
+            process.wait(timeout=_DEADLINE)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=_DEADLINE)
 
 
 @pytest.fixture
@@ -287,6 +332,7 @@ def test_store_close_closes_its_subscriptions(node: tuple[str, int]) -> None:
     subscription.close()
 
     control: list[str] = []
+    # Opened only after the first store is closed: one session per process at a time.
     with sitos.ParamStore(prefix=prefix, zenoh_config_json=_client_config(port)) as other:
         with other.subscribe("base", key_prefix, lambda change: control.append(change.key)):
             other.put("base", f"{key_prefix}late", 1)
@@ -397,8 +443,7 @@ _SHUTDOWN_SCRIPT = textwrap.dedent(
 
     import sitos
 
-    node_config, client_config, prefix, mode = sys.argv[1:5]
-    node = sitos.StorageNode(sitos.InMemoryEngine(), prefix=prefix, zenoh_config_json=node_config)
+    client_config, prefix, keys, mode = sys.argv[1:5]
     store = sitos.ParamStore(prefix=prefix, zenoh_config_json=client_config, query_timeout_ms=2000)
     deadline = time.monotonic() + 20
     while True:
@@ -408,45 +453,46 @@ _SHUTDOWN_SCRIPT = textwrap.dedent(
         except sitos.SitosError:
             if time.monotonic() >= deadline:
                 raise
+            time.sleep(0.05)
     entered = threading.Event()
 
-    other = sitos.ParamStore(prefix=prefix, zenoh_config_json=client_config, query_timeout_ms=2000)
-
-    def keep_reading(reader):
+    def keep_reading():
         stop = time.monotonic() + 0.5
         while time.monotonic() < stop:
-            reader.get("base", "ready")
+            store.get("base", "ready")
 
     def callback(change):
-        if change.key.startswith("shutdown/0/"):
-            entered.set()
-        else:
+        if not change.key.startswith(f"{keys}0/"):
             return
+        entered.set()
         if mode == "in-flight-get":
-            keep_reading(store)
+            keep_reading()
         elif mode == "in-flight-sleep":
             time.sleep(0.5)
         elif mode == "self-close-then-get":
             subscriptions[0].close()
-            keep_reading(store)
-        elif mode == "store-close-then-get":
+            keep_reading()
+        elif mode == "store-close-then-sleep":
             store.close()
-            keep_reading(other)
+            time.sleep(0.5)
         elif mode == "subscribe-during-shutdown":
             time.sleep(0.5)
             try:
                 store.subscribe("base", "late/", lambda late: None)
             except RuntimeError:
                 print("RESUBSCRIBE_REJECTED", flush=True)
+        if mode != "idle":
+            # Printed only if interpreter exit waited for this in-flight callback.
+            print("CALLBACK_DONE", flush=True)
 
-    subscriptions = [store.subscribe("base", f"shutdown/{index}/", callback) for index in range(3)]
+    subscriptions = [store.subscribe("base", f"{keys}{index}/", callback) for index in range(3)]
 
     def put_all(suffix):
         try:
             for index in range(3):
-                store.put("base", f"shutdown/{index}/{suffix}", index, ack=False)
+                store.put("base", f"{keys}{index}/{suffix}", index, ack=False)
         except ValueError:
-            pass  # store-close-then-get may already have closed the store
+            pass  # store-close-then-sleep may already have closed the store
 
     put_all("key")
     if not entered.wait(20):
@@ -464,21 +510,22 @@ _SHUTDOWN_SCRIPT = textwrap.dedent(
         "in-flight-sleep",
         "in-flight-get",
         "self-close-then-get",
-        "store-close-then-get",
+        "store-close-then-sleep",
         "subscribe-during-shutdown",
     ],
 )
-def test_interpreter_shutdown_with_active_subscriptions(mode: str) -> None:
-    port = _free_port()
-    prefix = f"sitos/shutdown_{os.getpid()}_{uuid.uuid4().hex}"
+def test_interpreter_shutdown_with_active_subscriptions(
+    node: tuple[str, int], mode: str
+) -> None:
+    prefix, port = node
     completed = subprocess.run(
         [
             sys.executable,
             "-c",
             _SHUTDOWN_SCRIPT,
-            _node_config(port),
             _client_config(port),
             prefix,
+            _unique(f"shutdown/{mode}"),
             mode,
         ],
         capture_output=True,
@@ -487,9 +534,12 @@ def test_interpreter_shutdown_with_active_subscriptions(mode: str) -> None:
         env=os.environ.copy(),
     )
     assert completed.returncode == 0, completed.stderr
-    expected = ["EXITING"]
+    expected = {"EXITING"}
+    if mode != "idle":
+        expected.add("CALLBACK_DONE")
     if mode == "subscribe-during-shutdown":
-        expected.append("RESUBSCRIBE_REJECTED")
-    assert completed.stdout.split() == expected
+        expected.add("RESUBSCRIBE_REJECTED")
+    lines = completed.stdout.split()
+    assert sorted(lines) == sorted(expected), completed.stdout
     assert "Fatal Python error" not in completed.stderr
     assert "leaked" not in completed.stderr
