@@ -9,6 +9,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import textwrap
 import threading
 import time
@@ -70,37 +71,49 @@ def _readline(stream: object, timeout: float) -> str:
     reader = threading.Thread(target=lambda: lines.append(stream.readline()), daemon=True)  # type: ignore[attr-defined]
     reader.start()
     reader.join(timeout)
-    if not lines:
-        raise AssertionError(f"node process produced no line within {timeout:g} seconds")
-    return lines[0].strip()
+    return lines[0].strip() if lines else ""
+
+
+def _stop_node(process: subprocess.Popen[str]) -> None:
+    if process.stdin is not None:
+        try:
+            process.stdin.write("STOP\n")
+            process.stdin.close()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=_DEADLINE)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=_DEADLINE)
 
 
 @pytest.fixture(scope="module")
 def node() -> Iterator[tuple[str, int]]:
     prefix = f"sitos/callbacks_{os.getpid()}_{uuid.uuid4().hex}"
-    port = _free_port()
-    process = subprocess.Popen(
-        [sys.executable, "-c", _NODE_SCRIPT, prefix, _node_config(port)],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        text=True,
-        env=os.environ.copy(),
-    )
-    try:
-        assert _readline(process.stdout, _DEADLINE) == "READY"
-        yield prefix, port
-    finally:
-        if process.stdin is not None:
-            try:
-                process.stdin.write("STOP\n")
-                process.stdin.close()
-            except OSError:
-                pass
-        try:
-            process.wait(timeout=_DEADLINE)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=_DEADLINE)
+    failures: list[str] = []
+    # A probed free port can be taken before the node binds it; retry like FixtureProcess.
+    for _ in range(3):
+        port = _free_port()
+        with tempfile.TemporaryFile("w+") as stderr:
+            process = subprocess.Popen(
+                [sys.executable, "-c", _NODE_SCRIPT, prefix, _node_config(port)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=stderr,
+                text=True,
+                env=os.environ.copy(),
+            )
+            if _readline(process.stdout, _DEADLINE) == "READY":
+                try:
+                    yield prefix, port
+                finally:
+                    _stop_node(process)
+                return
+            _stop_node(process)
+            stderr.seek(0)
+            failures.append(f"rc={process.returncode} stderr={stderr.read()[-2000:]!r}")
+    raise AssertionError(f"StorageNode process never became ready: {failures}")
 
 
 @pytest.fixture
