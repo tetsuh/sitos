@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import importlib.metadata
 import os
 import socket
@@ -13,8 +12,6 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from pathlib import Path
-from types import ModuleType
 from unittest.mock import Mock, call
 
 import pytest
@@ -35,19 +32,6 @@ def _decode_dp(payload: bytes) -> float:
     assert len(payload) == 9
     assert payload[0] == DP_TAG
     return struct.unpack("<d", payload[1:])[0]
-
-
-def _assert_no_sitos_import(module: ModuleType) -> None:
-    path = Path(module.__file__ or "")
-    assert path.is_file(), f"cannot inspect imported module {module.__name__}"
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    imported_roots: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported_roots.update(alias.name.partition(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            imported_roots.add(node.module.partition(".")[0])
-    assert "sitos" not in imported_roots
 
 
 def _read_exact_reply(session: zenoh.Session, key: str) -> list[support.WireSample]:
@@ -103,8 +87,8 @@ def test_raw_zenoh_client_can_put_and_get() -> None:
         "SITOS_EXPECTED_ZENOH_PYTHON_VERSION", "1.9.0"
     )
     assert importlib.metadata.version("eclipse-zenoh") == expected_version
-    _assert_no_sitos_import(sys.modules[__name__])
-    _assert_no_sitos_import(support)
+    support.assert_no_sitos_import(sys.modules[__name__])
+    support.assert_no_sitos_import(support)
 
     with support.FixtureProcess() as fixture:
         with fixture.open_raw_session() as session:
@@ -153,8 +137,8 @@ def test_raw_zenoh_client_can_put_and_get() -> None:
 
 
 def test_raw_zenoh_fence_payload_and_control_isolation() -> None:
-    _assert_no_sitos_import(sys.modules[__name__])
-    _assert_no_sitos_import(support)
+    support.assert_no_sitos_import(sys.modules[__name__])
+    support.assert_no_sitos_import(support)
 
     with support.FixtureProcess() as fixture:
         with fixture.open_raw_session() as session:

@@ -175,6 +175,9 @@ Validation targets:
 * wire fixtures (`PayloadV1GoldenFixtures`, `BatchV1GoldenFixture`)
 * `RawZenohClientCanPutAndGet`
 * `RawZenohClientCanSendBatch`
+* `RawZenohClientDecodesCppBatch`
+* `RawZenohBatchAckRoundTrip`
+* `RawZenohBatchAliasesAreRejected`
 * `RawZenohClientCanUseMixedSessionBuffers`
 * `RawZenohDurableLateJoinPreservesDistinctKeys`
 * `RawZenohBufferInteropFixtureBoundaries`
