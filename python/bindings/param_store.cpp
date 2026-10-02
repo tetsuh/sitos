@@ -5,6 +5,7 @@
 
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/unique_ptr.h>
 
 #include <algorithm>
 #include <chrono>
@@ -20,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "callback_dispatcher.hpp"
 #include "client_binding.hpp"
 #include "gil_boundary.hpp"
 #include "param_value_conversion.hpp"
@@ -239,6 +241,19 @@ class PyParamStore {
     return Take(std::move(result));
   }
 
+  // DEC-26-001: the Python facade starts the dispatcher thread; native delivery only feeds the
+  // returned channel and never calls Python.
+  std::unique_ptr<PySubscriptionChannel> Subscribe(const std::string& scope,
+                                                   const std::string& prefix) {
+    auto channel = std::make_shared<CallbackChannel>();
+    auto result =
+        InvokeNative(Acquire(), [&scope, &prefix, &channel](sitos::ParamStore& store) {
+          return store.Subscribe(scope, prefix, MakeChannelCallback(channel));
+        });
+    auto subscription = Take(std::move(result));
+    return std::make_unique<PySubscriptionChannel>(std::move(channel), std::move(subscription));
+  }
+
   nb::object List(const std::string& scope, const std::string& prefix) {
     std::vector<std::pair<std::string, sitos::ParamValue>> values;
     auto native_result =
@@ -327,5 +342,6 @@ void BindParamStore(nb::module_& python_module) {
           "scope"_a, "key"_a, "default"_a.none() = missing, nb::kw_only(),
           "type"_a.none() = nb::none())
       .def("contains", &PyParamStore::Contains, "scope"_a, "key"_a)
-      .def("list", &PyParamStore::List, "scope"_a, "prefix"_a);
+      .def("list", &PyParamStore::List, "scope"_a, "prefix"_a)
+      .def("_subscribe", &PyParamStore::Subscribe, "scope"_a, "prefix"_a);
 }

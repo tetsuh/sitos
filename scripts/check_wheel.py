@@ -71,6 +71,7 @@ def validate_public_typing_members(names: list[str]) -> None:
         "sitos/_sitos.pyi",
         "sitos/cache.pyi",
         "sitos/store.pyi",
+        "sitos/subscription.pyi",
         "sitos/node.pyi",
         "sitos/py.typed",
     }

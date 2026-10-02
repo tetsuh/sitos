@@ -125,6 +125,7 @@ jobs:
             tests/python/test_storage_node.py tests/python/test_storage_node_gil.py \
             tests/python/test_buffer_publisher.py -q
           python3 -m pytest tests/python/test_storage_node_live.py -q
+          python3 -m pytest tests/python/test_callbacks.py -q
           SITOS_EXAMPLE_KEEP_PYTHONPATH=1 python3 tests/examples/test_python_examples.py quickstart
           SITOS_EXAMPLE_KEEP_PYTHONPATH=1 python3 tests/examples/test_python_examples.py numpy-lut
           python3 -m pip install --break-system-packages --only-binary=:all: --require-hashes \
@@ -279,6 +280,8 @@ jobs:
               tests/python/test_param_cache_live.py `
               tests/python/test_buffer_publisher.py -q
             if ($LASTEXITCODE -ne 0) { throw "Python client tests failed: $LASTEXITCODE" }
+            python -m pytest tests/python/test_callbacks.py -q
+            if ($LASTEXITCODE -ne 0) { throw "Python callback tests failed: $LASTEXITCODE" }
           } finally {
             Remove-Item Env:SITOS_PYTHON_FIXTURE -ErrorAction SilentlyContinue
             Remove-Item Env:SITOS_PYTHON_CACHE_FIXTURE -ErrorAction SilentlyContinue

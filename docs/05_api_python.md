@@ -89,8 +89,49 @@ only for NotFound. Type conversion failures raise `sitos.TypeMismatchError`; tim
 disconnection, and read-only failures raise their corresponding subclasses. `Status::Error` raises
 `sitos.SitosError`, while invalid keys and arguments raise built-in `ValueError`. `close` is
 idempotent, rejects later calls, and allows already-admitted native operations to finish safely.
-Subscriptions remain outside Issue #23. Issue #17 maps acknowledged remote statuses, including
+Issue #17 maps acknowledged remote statuses, including
 `OutcomeUnknownError`, and releases the GIL around the complete synchronous write and ACK polling.
+
+#### 2.1.1 Subscriptions (Issue #26)
+
+```python
+def on_change(change: sitos.ParamChange) -> None:
+    print(change.kind, change.key, change.value)   # "put"/"delete", relative key, None on delete
+
+with sitos.ParamStore(prefix="sitos") as store:
+    with store.subscribe("base", "recon/", on_change) as subscription:
+        ...                                         # subscription.close() is idempotent
+```
+
+`subscribe(scope, prefix, callback)` wraps the C++ `ParamStore::Subscribe` contract
+([04_api_cpp.md](04_api_cpp.md) §2.1, ADR-0030): `base` and `session/<sid>` scopes, raw-prefix
+matching, delta-only delivery, canonical batches expanded in encoded order with duplicates
+preserved, and unknown encodings delivered as `bytes`. A non-callable callback raises
+`TypeError`; an invalid scope or prefix raises `ValueError`, as does subscribing on a closed store.
+The callback receives one read-only `sitos.ParamChange` whose `kind` is the string `"put"` or
+`"delete"` (DEC-26-001).
+
+Each subscription owns one daemon dispatcher thread (DEC-26-002). Native delivery only appends to
+an unbounded FIFO, so zenoh threads never block on Python and never take the GIL; the dispatcher
+drains the queue holding the GIL and calls the callback serially. Nothing is dropped, and there is
+no backpressure: a callback slower than the update rate grows the queue without bound (DEC-26-003).
+Because callbacks run on the dispatcher thread rather than a native thread, they may call `get`,
+`list`, acknowledged `put`/`put_batch`, and other ParamStore operations; a blocking call only
+delays this subscription's later notifications. An exception raised by a callback is logged with
+its traceback through `logging.getLogger("sitos")` and dispatch continues (DEC-26-005); a
+`BaseException` such as `SystemExit` ends the dispatcher and closes the subscription.
+
+`Subscription.close()` stops native delivery, discards changes that have not started, waits for an
+in-flight callback with the GIL released, and returns only when no further callback can start
+(DEC-26-004). Called from the subscription's own callback, it returns without waiting. Closing
+another subscription from a callback waits for that subscription's in-flight callback, so two
+callbacks must not close each other's subscriptions. A subscription stays active until it or its
+store is closed; `ParamStore.close()` closes every subscription of that store first, and a
+concurrent second `close()` waits for the first one to finish unless it is called from one of
+that store's callbacks. At interpreter exit an `atexit` handler closes every live subscription and
+joins every dispatcher thread, including one whose callback is still running after closing its own
+subscription; `subscribe` then raises `RuntimeError` (DEC-26-007). Subscriptions do not survive
+`fork`, and subinterpreters are not supported.
 
 ### 2.2 BufferPublisher
 
@@ -162,8 +203,9 @@ exception types, so a receiver-side `OutcomeUnknown` raises `OutcomeUnknownError
 cancelled by `detach`/`close` or Transport-generation replacement raises `DisconnectedError`, and an
 unobserved completion raises `TimeoutError`. A new call after `detach` raises `ValueError`; `close`
 cancels an admitted wait before draining binding operations, so a blocked wait is released promptly
-instead of consuming its timeout. Stale/reconnect state and Python callbacks remain deferred to
-Issues #20 and #26. Issue #27 provides
+instead of consuming its timeout. Stale/reconnect state remains deferred to Issue #20. ParamCache
+has no callback surface; a ParamCache notification API would need its own Issue (DEC-26-006).
+Issue #27 provides
 `ParamCache.get_array(key, *, dtype=...)` as a one-dimensional,
 read-only zero-copy view over immutable cached BYTES. It accepts fixed-width numeric and boolean
 NumPy dtypes, preserves explicit byte order without conversion, and does not infer or serialize
@@ -235,7 +277,9 @@ role, and verifies the canonical `zenoh/bytes;sitos.v1` payload-v1 representatio
 
 * zenoh threads in the C++ core do not acquire the GIL
 * Notifications to Python callbacks are one-way: “C++-side queue → dedicated Python dispatch
-  thread (acquires the GIL)”. zenoh threads never block waiting for the GIL
+  thread (acquires the GIL)”. zenoh threads never block waiting for the GIL. Each ParamStore
+  subscription owns one unbounded queue and one daemon dispatcher thread (§2.1.1); native
+  callbacks capture only the queue, never a Python object
 * ParamCache `get`, `contains`, and `items` are local C++ reads and keep the GIL. `items`
   materializes into C++-owned storage before constructing Python tuples
 * Client Open, Attach, Detach, terminal Close/destruction, Put, and PutBatch release the GIL while

@@ -42,3 +42,14 @@ def _buffer_publisher_surface(publisher: sitos.BufferPublisher) -> None:
     durability: sitos.FenceDurability = synced.durability
     assert sequence >= 0
     assert durability in (sitos.FenceDurability.APPLIED, sitos.FenceDurability.SYNCED)
+
+
+def _subscription_surface(store: sitos.ParamStore) -> None:
+    def on_change(change: sitos.ParamChange) -> None:
+        kind: str = change.kind
+        key: str = change.key
+        value: ParamValue | None = change.value
+        assert kind in ("put", "delete") and key and value is not None
+
+    with store.subscribe("base", "recon/", on_change) as subscription:
+        subscription.close()
