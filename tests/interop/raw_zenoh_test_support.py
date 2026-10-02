@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import queue
@@ -12,7 +13,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from types import TracebackType
+from types import ModuleType, TracebackType
 from typing import TextIO
 
 import zenoh
@@ -46,6 +47,19 @@ def assert_wire_sample(
     assert sample.key == expected_key
     assert sample.payload == expected_payload
     assert sample.encoding == expected_encoding
+
+
+def assert_no_sitos_import(module: ModuleType) -> None:
+    path = Path(module.__file__ or "")
+    assert path.is_file(), f"cannot inspect imported module {module.__name__}"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imported_roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_roots.update(alias.name.partition(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            imported_roots.add(node.module.partition(".")[0])
+    assert "sitos" not in imported_roots
 
 
 class FixtureProcess:
@@ -152,6 +166,25 @@ class FixtureProcess:
         return line
 
     def command(self, command: str, expected: str, timeout: float = 5.0) -> None:
+        actual = self._request(command, timeout)
+        if actual != expected:
+            raise AssertionError(
+                f"command {command!r} expected {expected!r}, received {actual!r}; "
+                f"{self._diagnostics()}"
+            )
+
+    def request(self, command: str, reply: str, timeout: float = 5.0) -> list[str]:
+        """Send command and return the fields after the expected reply word."""
+        actual = self._request(command, timeout)
+        fields = actual.split(" ")
+        if fields[0] != reply:
+            raise AssertionError(
+                f"command {command!r} expected a {reply!r} reply, received {actual!r}; "
+                f"{self._diagnostics()}"
+            )
+        return fields[1:]
+
+    def _request(self, command: str, timeout: float) -> str:
         if self._process.poll() is not None or self._process.stdin is None:
             raise AssertionError(f"fixture is not running; {self._diagnostics()}")
         try:
@@ -161,15 +194,29 @@ class FixtureProcess:
             raise AssertionError(
                 f"fixture command pipe failed; {self._diagnostics()}"
             ) from error
-        actual = self._readline(timeout)
-        if actual != expected:
-            raise AssertionError(
-                f"command {command!r} expected {expected!r}, received {actual!r}; "
-                f"{self._diagnostics()}"
-            )
+        return self._readline(timeout)
 
     def put_dp(self, key: str, value: float) -> None:
         self.command(f"PUT_DP {key} {value:.17g}", f"PUT_OK {key}")
+
+    def subscribe_batch(self) -> None:
+        self.command("SUBSCRIBE_BATCH", "BATCH_SUBSCRIBED")
+
+    def put_batch(
+        self, entries: list[tuple[str, int, bytes]]
+    ) -> list[tuple[str, int, bytes]]:
+        """Send a C++ ParamStore PutBatch and return the C++ subscriber observation."""
+        encoded = " ".join(f"{key}={tag}:{body.hex()}" for key, tag, body in entries)
+        observed: list[tuple[str, int, bytes]] = []
+        for field in self.request(f"PUT_BATCH {encoded}", "BATCH_OBSERVED"):
+            key, _, value = field.partition("=")
+            tag, _, body = value.partition(":")
+            observed.append((key, int(tag), bytes.fromhex(body)))
+        return observed
+
+    def ack_entries(self) -> int:
+        (count,) = self.request("ACK_ENTRIES", "ACK_ENTRIES")
+        return int(count)
 
     def create_session(self) -> None:
         self.command(

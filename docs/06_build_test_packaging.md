@@ -271,6 +271,9 @@ major behaviors.
 | `SpanHandleSurvivesOverwrite` | N01/P02 | old SpanHandle/ndarray remains valid after an update |
 | `RawZenohClientCanPutAndGet` | C03 | Single-value interoperability using only zenoh-python |
 | `RawZenohClientCanSendBatch` | C03/F09 | Batch interoperability using only zenoh-python |
+| `RawZenohClientDecodesCppBatch` | C03/F09 | Raw zenoh-python decodes a C++ ParamStore batch exactly as a C++ subscriber observes it |
+| `RawZenohBatchAckRoundTrip` | C03/F04 | Raw zenoh-python acknowledgement round trip, ack-less writes, and malformed attachments |
+| `RawZenohBatchAliasesAreRejected` | C03/F09 / ADR-0018 | `$batch`, `@batch`, and `~batch` are not batch aliases |
 | `ParamStoreAckTest.ValidatesOptionsBeforeSubmission` | P01/N07 | Validate write options before Transport activity |
 | `ParamStoreAckTest.SubmitsOnceAndMapsResult` | F04/P01 | One-submit ACK polling and remote result mapping |
 | `ParamStoreAckTest.PreservesSubmissionOnlyWrites` | C04 | Preserve explicit acknowledgement-free writes |

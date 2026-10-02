@@ -454,6 +454,7 @@ if(SITOS_WITH_ZENOH)
   add_executable(sitos_raw_zenoh_fixture
     interop/raw_zenoh_fixture.cpp)
   target_link_libraries(sitos_raw_zenoh_fixture PRIVATE sitos::sitos)
+  target_include_directories(sitos_raw_zenoh_fixture PRIVATE ${PROJECT_SOURCE_DIR}/src)
   sitos_enable_warnings(sitos_raw_zenoh_fixture)
   sitos_copy_zenohc(sitos_raw_zenoh_fixture)
 
@@ -500,10 +501,31 @@ if(SITOS_WITH_ZENOH)
     COMMAND "${Python3_EXECUTABLE}" -m pytest -q
             "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_buffer.py"
             -k test_raw_zenoh_buffer_interop_fixture_boundaries)
+  add_test(
+    NAME RawZenohClientCanSendBatch
+    COMMAND "${Python3_EXECUTABLE}" -m pytest -q
+            "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_batch_ack.py"
+            -k test_raw_zenoh_client_can_send_batch)
+  add_test(
+    NAME RawZenohClientDecodesCppBatch
+    COMMAND "${Python3_EXECUTABLE}" -m pytest -q
+            "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_batch_ack.py"
+            -k test_raw_zenoh_client_decodes_cpp_batch)
+  add_test(
+    NAME RawZenohBatchAckRoundTrip
+    COMMAND "${Python3_EXECUTABLE}" -m pytest -q
+            "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_batch_ack.py"
+            -k "test_raw_zenoh_batch_and_put_ack_round_trip or test_raw_zenoh_ackless_batch_creates_no_ack_entry or test_raw_zenoh_malformed_ack_attachment_is_rejected")
+  add_test(
+    NAME RawZenohBatchAliasesAreRejected
+    COMMAND "${Python3_EXECUTABLE}" -m pytest -q
+            "${CMAKE_CURRENT_SOURCE_DIR}/interop/test_raw_zenoh_batch_ack.py"
+            -k test_raw_zenoh_batch_aliases_are_not_accepted)
   set_tests_properties(
     RawZenohClientCanPutAndGet RawZenohInteropFixtureBoundaries
     RawZenohClientCanUseMixedSessionBuffers RawZenohDurableLateJoinPreservesDistinctKeys
-    RawZenohBufferInteropFixtureBoundaries
+    RawZenohBufferInteropFixtureBoundaries RawZenohClientCanSendBatch
+    RawZenohClientDecodesCppBatch RawZenohBatchAckRoundTrip RawZenohBatchAliasesAreRejected
     PROPERTIES
       ENVIRONMENT "SITOS_RAW_ZENOH_FIXTURE=$<TARGET_FILE:sitos_raw_zenoh_fixture>"
       RUN_SERIAL TRUE
