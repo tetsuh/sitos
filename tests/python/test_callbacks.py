@@ -476,7 +476,9 @@ _SHUTDOWN_SCRIPT = textwrap.dedent(
             store.get("base", "ready")
 
     def callback(change):
-        if not change.key.startswith(f"{keys}0/"):
+        # Act once: a later change that was already dequeued may legitimately run as an
+        # in-flight callback while exit closes the subscription.
+        if not change.key.startswith(f"{keys}0/") or entered.is_set():
             return
         entered.set()
         if mode == "in-flight-get":
@@ -497,8 +499,11 @@ _SHUTDOWN_SCRIPT = textwrap.dedent(
             while time.monotonic() < stop:
                 try:
                     store.subscribe("base", "late/", lambda late: None).close()
-                except RuntimeError:
-                    print("RESUBSCRIBE_REJECTED", flush=True)
+                except RuntimeError as error:
+                    if type(error) is RuntimeError and "interpreter shutdown" in str(error):
+                        print("RESUBSCRIBE_REJECTED", flush=True)
+                    else:
+                        print(f"UNEXPECTED {type(error).__name__}: {error}", flush=True)
                     break
                 time.sleep(0.01)
         if mode != "idle":
@@ -561,6 +566,6 @@ def test_interpreter_shutdown_with_active_subscriptions(
     if mode == "subscribe-during-shutdown":
         expected.add("RESUBSCRIBE_REJECTED")
     lines = completed.stdout.split()
-    assert sorted(lines) == sorted(expected), completed.stdout
+    assert sorted(lines) == sorted(expected), (completed.stdout, completed.stderr)
     assert "Fatal Python error" not in completed.stderr
     assert "leaked" not in completed.stderr
