@@ -115,46 +115,48 @@ def test_subscribe_on_closed_store_is_rejected(node: tuple[str, int]) -> None:
         store.subscribe("base", "x/", lambda change: None)
 
 
-def test_python_callback_does_not_deadlock_with_get(store: sitos.ParamStore) -> None:
-    """PythonCallbackDoesNotDeadlockWithGet: callbacks read while the main side reads too."""
-    for round_index in range(5):
-        prefix = _unique(f"deadlock/{round_index}")
-        expected = {f"{prefix}{index}": float(index) for index in range(20)}
-        observed: dict[str, object] = {}
-        lock = threading.Lock()
+class TestPythonCallbackDoesNotDeadlockWithGet:
+    """Fixed docs/06 §5.1 name: callbacks read while the main side reads too (AC1)."""
 
-        def callback(change: sitos.ParamChange) -> None:
-            value = store.get("base", change.key)
-            with lock:
-                observed[change.key] = value
+    def test_repeated_rounds(self, store: sitos.ParamStore) -> None:
+        for round_index in range(5):
+            prefix = _unique(f"deadlock/{round_index}")
+            expected = {f"{prefix}{index}": float(index) for index in range(20)}
+            observed: dict[str, object] = {}
+            lock = threading.Lock()
 
-        stop_reader = threading.Event()
-        reader_errors: list[BaseException] = []
+            def callback(change: sitos.ParamChange) -> None:
+                value = store.get("base", change.key)
+                with lock:
+                    observed[change.key] = value
 
-        def reader() -> None:
-            try:
-                while not stop_reader.is_set():
-                    store.get("base", "ready")
-            except BaseException as error:  # pragma: no cover - surfaced below
-                reader_errors.append(error)
+            stop_reader = threading.Event()
+            reader_errors: list[BaseException] = []
 
-        reader_thread = threading.Thread(target=reader, daemon=True)
-        with store.subscribe("base", prefix, callback):
-            reader_thread.start()
-            try:
-                for key, value in expected.items():
-                    store.put("base", key, value)
-                    assert store.get("base", key) == value
-                _wait_until(
-                    lambda: len(observed) == len(expected),
-                    f"round {round_index}: callbacks stalled at {len(observed)}",
-                )
-            finally:
-                stop_reader.set()
-                reader_thread.join(_DEADLINE)
-        assert not reader_thread.is_alive()
-        assert reader_errors == []
-        assert observed == expected
+            def reader() -> None:
+                try:
+                    while not stop_reader.is_set():
+                        store.get("base", "ready")
+                except BaseException as error:  # pragma: no cover - surfaced below
+                    reader_errors.append(error)
+
+            reader_thread = threading.Thread(target=reader, daemon=True)
+            with store.subscribe("base", prefix, callback):
+                reader_thread.start()
+                try:
+                    for key, value in expected.items():
+                        store.put("base", key, value)
+                        assert store.get("base", key) == value
+                    _wait_until(
+                        lambda: len(observed) == len(expected),
+                        f"round {round_index}: callbacks stalled at {len(observed)}",
+                    )
+                finally:
+                    stop_reader.set()
+                    reader_thread.join(_DEADLINE)
+            assert not reader_thread.is_alive()
+            assert reader_errors == []
+            assert observed == expected
 
 
 def test_raising_callback_does_not_stop_notifications(

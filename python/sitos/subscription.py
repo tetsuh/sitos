@@ -17,7 +17,7 @@ _LIVE_LOCK = threading.Lock()
 # Active subscriptions stay reachable through their dispatcher thread, so a weak set
 # tracks exactly the subscriptions that still need closing at interpreter exit.
 _LIVE: weakref.WeakSet[Subscription] = weakref.WeakSet()
-_SHUTTING_DOWN = False
+_SHUTTING_DOWN = threading.Event()
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +52,7 @@ class Subscription:
         # The subscription stays in _LIVE until its dispatcher thread has exited, so the
         # atexit handler joins every dispatcher before interpreter finalization (DEC-26-007).
         with _LIVE_LOCK:
-            shutting_down = _SHUTTING_DOWN
+            shutting_down = _SHUTTING_DOWN.is_set()
             if not shutting_down:
                 _LIVE.add(self)
         if shutting_down:
@@ -114,10 +114,9 @@ class Subscription:
 
 def _close_live_subscriptions() -> None:
     """DEC-26-007: close and join every dispatcher before interpreter finalization."""
-    global _SHUTTING_DOWN
     while True:
         with _LIVE_LOCK:
-            _SHUTTING_DOWN = True
+            _SHUTTING_DOWN.set()
             live = list(_LIVE)
         if not live:
             return
