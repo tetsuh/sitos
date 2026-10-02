@@ -119,7 +119,8 @@ Because callbacks run on the dispatcher thread rather than a native thread, they
 `list`, acknowledged `put`/`put_batch`, and other ParamStore operations; a blocking call only
 delays this subscription's later notifications. An exception raised by a callback is logged with
 its traceback through `logging.getLogger("sitos")` and dispatch continues (DEC-26-005); a
-`BaseException` such as `SystemExit` ends the dispatcher and closes the subscription.
+`BaseException` such as `SystemExit` is logged the same way, then ends the dispatcher and closes
+the subscription.
 
 `Subscription.close()` stops native delivery, discards changes that have not started, waits for an
 in-flight callback with the GIL released, and returns only when no further callback can start
@@ -130,8 +131,8 @@ store is closed; `ParamStore.close()` closes every subscription of that store fi
 concurrent second `close()` waits for the first one to finish unless it is called from one of
 that store's callbacks. At interpreter exit an `atexit` handler closes every live subscription and
 joins every dispatcher thread, including one whose callback is still running after closing its own
-subscription; `subscribe` then raises `RuntimeError` (DEC-26-007). Subscriptions do not survive
-`fork`, and subinterpreters are not supported.
+subscription; `subscribe` then raises `RuntimeError` (DEC-26-007). Fork and subinterpreters are
+not supported while subscriptions are live.
 
 ### 2.2 BufferPublisher
 

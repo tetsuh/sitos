@@ -1,4 +1,4 @@
-"""Python subscription callback dispatch (Issue #26, docs/05 §2.1 and §3, requirement P04)."""
+"""Python subscription callback dispatch (Issue #26, docs/05 §2.1.1 and §3, requirement P04)."""
 
 from __future__ import annotations
 
@@ -295,7 +295,9 @@ def test_store_close_closes_its_subscriptions(node: tuple[str, int]) -> None:
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
-def test_base_exception_in_callback_stops_delivery(store: sitos.ParamStore) -> None:
+def test_base_exception_in_callback_stops_delivery(
+    store: sitos.ParamStore, caplog: pytest.LogCaptureFixture
+) -> None:
     prefix = _unique("system_exit")
     received: list[str] = []
 
@@ -303,9 +305,14 @@ def test_base_exception_in_callback_stops_delivery(store: sitos.ParamStore) -> N
         received.append(change.key)
         raise SystemExit("leave the dispatcher")
 
-    subscription = store.subscribe("base", prefix, callback)
-    store.put("base", f"{prefix}first", 1)
-    _wait_until(lambda: not subscription._thread.is_alive(), "dispatcher kept running")
+    with caplog.at_level(logging.ERROR, logger="sitos"):
+        subscription = store.subscribe("base", prefix, callback)
+        store.put("base", f"{prefix}first", 1)
+        _wait_until(lambda: not subscription._thread.is_alive(), "dispatcher kept running")
+    records = [record for record in caplog.records if record.name == "sitos"]
+    assert len(records) == 1
+    assert records[0].exc_info is not None
+    assert isinstance(records[0].exc_info[1], SystemExit)
     # The dispatcher closed native delivery on exit, so later changes are not queued unread.
     assert subscription._closed
     store.put("base", f"{prefix}later", 2)

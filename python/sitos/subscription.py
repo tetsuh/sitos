@@ -1,4 +1,4 @@
-"""ParamStore subscription callback dispatch (Issue #26, docs/05 §2.1 and §3)."""
+"""ParamStore subscription callback dispatch (Issue #26, docs/05 §2.1.1 and §3)."""
 
 from __future__ import annotations
 
@@ -105,6 +105,10 @@ class Subscription:
                 except Exception:
                     # DEC-26-005: report and keep dispatching later changes.
                     _LOGGER.exception("sitos subscription callback raised; dispatch continues")
+                except BaseException:
+                    # SystemExit and similar end this thread; report before closing.
+                    _LOGGER.exception("sitos subscription callback raised; subscription closed")
+                    raise
         finally:
             # A BaseException ends this thread; stop native delivery so nothing queues unread.
             self._stop_delivery()

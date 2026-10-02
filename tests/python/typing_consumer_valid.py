@@ -1,3 +1,5 @@
+from typing import Literal
+
 import numpy as np
 import sitos
 from sitos.cache import ParamValue, SitosError as CacheSitosError
@@ -46,7 +48,7 @@ def _buffer_publisher_surface(publisher: sitos.BufferPublisher) -> None:
 
 def _subscription_surface(store: sitos.ParamStore) -> None:
     def on_change(change: sitos.ParamChange) -> None:
-        kind: str = change.kind
+        kind: Literal["put", "delete"] = change.kind
         key: str = change.key
         value: ParamValue | None = change.value
         assert kind in ("put", "delete") and key and value is not None
