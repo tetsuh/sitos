@@ -339,7 +339,7 @@ def test_take_snapshot_must_return_a_storage_reader(caplog: pytest.LogCaptureFix
     assert [record.name for record in caplog.records] == ["sitos"]
 
 
-def test_engine_reference_is_released_without_the_gil() -> None:
+def test_dropping_the_native_owner_releases_the_engine() -> None:
     engine = DictEngine()
     reference = weakref.ref(engine)
     probe = _probe_or_skip(engine)
@@ -437,16 +437,39 @@ _NODE_SCRIPT = textwrap.dedent(
                 self._data.pop(key, None)
 
 
-    node = sitos.StorageNode(DictEngine(), prefix=prefix, zenoh_config_json=node_config)
+    class DictReader(sitos.StorageReader):
+        def __init__(self, data):
+            self._data = data
+
+        def get(self, key):
+            return self._data.get(key)
+
+        def list(self, prefix):
+            return [(k, v) for k, v in self._data.items() if k.startswith(prefix)]
+
+
+    class SnapshotEngine(DictEngine):
+        def take_snapshot(self):
+            with self._lock:
+                return DictReader(dict(self._data))
+
+
+    engine = SnapshotEngine() if mode == "snapshot" else DictEngine()
+    node = sitos.StorageNode(engine, prefix=prefix, zenoh_config_json=node_config)
     stop_stress = threading.Event()
+    stress_rounds = []
 
     def stress():
         # Python-thread node operations interleaved with zenoh-thread engine calls.
-        while not stop_stress.is_set():
-            node.active_sessions()
-            node.create_session("stress")
-            node.session_view("stress").items("")
-            node.close_session("stress")
+        try:
+            while not stop_stress.is_set():
+                node.active_sessions()
+                node.create_session("stress")
+                node.session_view("stress").items("")
+                node.close_session("stress")
+                stress_rounds.append(1)
+        except BaseException as error:
+            print(f"STRESS_FAILED {type(error).__name__}: {error}", flush=True)
 
     stress_thread = threading.Thread(target=stress, daemon=True)
     if mode == "stress":
@@ -461,10 +484,13 @@ _NODE_SCRIPT = textwrap.dedent(
             # Exit without stopping the node; the atexit handler must stop it.
             print("EXITING", flush=True)
             break
+        elif command == "ITEMS":
+            print("ITEMS " + repr(list(node.session_view(argument).items(""))), flush=True)
         elif command == "STOP":
             stop_stress.set()
             if mode == "stress":
                 stress_thread.join(20)
+                print(f"STRESS_ROUNDS {len(stress_rounds)}", flush=True)
             node.stop()
             print("STOPPED", flush=True)
             break
@@ -521,9 +547,9 @@ class NodeProcess:
         return result
 
 
-@pytest.fixture
-def node_store() -> Iterator[tuple[NodeProcess, sitos.ParamStore]]:
-    node = NodeProcess("plain")
+@pytest.fixture(params=["plain", "snapshot"])
+def node_store(request: pytest.FixtureRequest) -> Iterator[tuple[NodeProcess, sitos.ParamStore]]:
+    node = NodeProcess(request.param)
     try:
         with sitos.ParamStore(
             prefix=node.prefix,
@@ -580,8 +606,9 @@ def test_python_engine_failures_reach_clients_as_engine_failures(node_store) -> 
     assert store.get("base", "ok/after") == 2
 
 
-def test_snapshot_isolation_through_the_fallback(node_store) -> None:
-    """AC2: a session snapshot of an engine without take_snapshot ignores later base writes."""
+def test_snapshot_isolation_end_to_end(node_store) -> None:
+    """AC2: session snapshots ignore later base writes, through the N03 fallback ("plain") and
+    through a Python take_snapshot reader ("snapshot"), over zenoh and through SessionView."""
     node, store = node_store
     store.put("base", "iso/value", 1)
     store.put("base", "iso/deleted", 2)
@@ -596,6 +623,8 @@ def test_snapshot_isolation_through_the_fallback(node_store) -> None:
     assert store.get(snap, "iso/deleted") == 2
     assert store.get(snap, "iso/added", default=None) is None
     assert store.get("base", "iso/value") == 99
+    node.command(f"ITEMS {sid}")
+    assert node.readline() == "ITEMS " + repr([("iso/deleted", 2), ("iso/value", 1), ("ready", 1)])
 
 
 def test_python_thread_node_calls_do_not_deadlock_with_engine_calls() -> None:
@@ -610,7 +639,83 @@ def test_python_thread_node_calls_do_not_deadlock_with_engine_calls() -> None:
     node.command("STOP")
     rc, out, err = node.finish()
     assert rc == 0, err
-    assert out.split() == ["STOPPED"], (out, err)
+    lines = out.splitlines()
+    assert lines[-1] == "STOPPED", (out, err)
+    assert len(lines) == 2 and lines[0].startswith("STRESS_ROUNDS "), (out, err)
+    assert int(lines[0].split()[1]) > 0, (out, err)
+
+
+_CONSTRUCTION_EXIT_SCRIPT = textwrap.dedent(
+    """
+    import sys
+    import threading
+    import time
+
+    import sitos
+    from sitos import _sitos
+
+    node_config = sys.argv[1]
+
+
+    class Engine(sitos.StorageEngine):
+        def get(self, key):
+            return None
+
+        def list(self, prefix):
+            return []
+
+        def put(self, key, value):
+            return None
+
+        def delete(self, key):
+            return None
+
+
+    nodes = []
+
+
+    def construct():
+        try:
+            # Keep the node referenced: its destructor must not run on this daemon thread.
+            nodes.append(
+                sitos.StorageNode(
+                    Engine(), prefix="sitos/construction", zenoh_config_json=node_config
+                )
+            )
+            print("CONSTRUCTED", flush=True)
+        except BaseException as error:
+            print(f"CONSTRUCT_FAILED {type(error).__name__}", flush=True)
+
+
+    # Hold construction at its native boundary, then exit while it is in progress; a daemon
+    # timer lets it continue only after the exit handlers have started.
+    _sitos._gil_test_arm("constructor")
+    threading.Thread(target=construct, daemon=True).start()
+    if not _sitos._gil_test_wait("constructor", 20000):
+        raise SystemExit("construction never reached the boundary")
+    timer = threading.Timer(0.3, _sitos._gil_test_release, args=("constructor",))
+    timer.daemon = True
+    timer.start()
+    print("EXITING", flush=True)
+    """
+)
+
+
+def test_interpreter_exit_waits_for_a_node_under_construction() -> None:
+    if getattr(sitos._sitos, "_gil_test_arm", None) is None:
+        pytest.skip("SITOS_PYTHON_TEST_SUPPORT is unavailable")
+    completed = subprocess.run(
+        [sys.executable, "-c", _CONSTRUCTION_EXIT_SCRIPT, _config("peer", _free_port())],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=os.environ.copy(),
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert sorted(completed.stdout.split()) == ["CONSTRUCTED", "EXITING"], (
+        completed.stdout,
+        completed.stderr,
+    )
 
 
 def test_interpreter_exit_stops_a_node_with_an_in_flight_python_engine_call() -> None:

@@ -226,8 +226,15 @@ class PythonStorageEngine final : public StorageEngine {
             LogPythonError("take_snapshot", error);
             throw EngineFailure("Python storage engine take_snapshot raised");
           }
-          nb::object reader_type = nb::module_::import_("sitos.engine").attr("StorageReader");
-          if (!nb::isinstance(reader, reader_type)) {
+          bool is_reader = false;
+          try {
+            is_reader = nb::isinstance(
+                reader, nb::module_::import_("sitos.engine").attr("StorageReader"));
+          } catch (nb::python_error& error) {
+            LogPythonError("take_snapshot", error);
+            throw EngineFailure("Python storage engine take_snapshot could not be checked");
+          }
+          if (!is_reader) {
             LogEngineMessage("take_snapshot", "returned an object that is not a StorageReader");
             throw EngineFailure("Python storage engine take_snapshot returned an invalid reader");
           }

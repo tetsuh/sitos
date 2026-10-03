@@ -114,7 +114,13 @@ class PyStorageNode {
 
     const bool python_engine = !nb::isinstance<PyInMemoryEngine>(engine);
     state_->engine = MakeNodeEngine(engine);
-    if (python_engine) RegisterPythonEngineNode(state_);
+    // A construction lease makes the exit handler wait for Start, or for the failure
+    // cleanup below, before stopping this node (DEC-28-007).
+    std::optional<OperationLease> construction;
+    if (python_engine) {
+      construction.emplace(Acquire());
+      RegisterPythonEngineNode(state_);
+    }
     std::optional<std::string_view> config_json;
     if (config.zenoh_config_json.has_value()) config_json = *config.zenoh_config_json;
 
@@ -325,7 +331,8 @@ void PyStorageNode::StopState(const std::shared_ptr<State>& state) noexcept {
     if (state->in_flight != 0) NoteGilStopQuiescence();
     state->condition.wait(lock, [&state] { return state->in_flight == 0; });
   }
-  state->native->Stop();
+  // A node whose construction failed was never started.
+  if (state->native) state->native->Stop();
   state->native.reset();
   state->transport.reset();
   state->engine.reset();

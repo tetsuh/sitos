@@ -31,7 +31,18 @@ class _DictEngine(sitos.StorageEngine):
         self._data.pop(key, None)
 
     def take_snapshot(self) -> sitos.StorageReader:
-        return self
+        return _DictReader(dict(self._data))
+
+
+class _DictReader(sitos.StorageReader):
+    def __init__(self, data: dict[str, bytes]) -> None:
+        self._data = data
+
+    def get(self, key: str) -> bytes | None:
+        return self._data.get(key)
+
+    def list(self, prefix: str) -> list[tuple[str, bytes]]:
+        return [(key, value) for key, value in self._data.items() if key.startswith(prefix)]
 
 
 def _python_engine_node() -> None:

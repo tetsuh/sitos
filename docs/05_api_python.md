@@ -234,8 +234,9 @@ report `OutcomeUnknown`, and a failed read produces no query reply (DEC-28-002).
 
 An engine may implement `take_snapshot()` returning a `sitos.StorageReader` (`get` and `list`);
 otherwise sitos copies every entry through `list` when a session is created, which isolates the
-snapshot from later writes (N03, DEC-28-004). Python engines report no synchronization capability,
-so synced Fences reject them (DEC-28-005).
+snapshot from later writes (N03, DEC-28-004). A `take_snapshot` attribute, when present, must be
+callable. Python engines report `SyncCapability::kUnsupported` and offer no synchronization barrier
+(DEC-28-005).
 
 StorageNode calls the engine from zenoh threads. Each call acquires the GIL, and calls can arrive
 concurrently, so the engine must protect its own state (DEC-28-006). StorageNode binding methods
@@ -244,8 +245,10 @@ engine for production throughput.
 
 At interpreter exit, an `atexit` handler stops every StorageNode that uses a Python engine, which
 waits for in-flight engine calls before finalization. Starting such a node during interpreter
-shutdown raises `RuntimeError` (DEC-28-007). The node's reference to the engine is released with
-the GIL held.
+shutdown raises `RuntimeError` (DEC-28-007). The exit handler also waits for a node that another
+thread is still constructing. The node's reference to the engine is released with the GIL held.
+As with any native extension, a daemon thread that is still running sitos operations when the
+interpreter finalizes can abort the process; finish or join such threads before exit.
 
 ### 2.5 SessionView (Issue #25)
 
