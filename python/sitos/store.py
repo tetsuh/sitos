@@ -18,7 +18,7 @@ from ._sitos import (
     TimeoutError,
     TypeMismatchError,
 )
-from .subscription import ParamChange, Subscription
+from .subscription import ParamChange, Subscription, _stop_all
 
 
 class ParamStore(_sitos.ParamStore):
@@ -78,8 +78,7 @@ class ParamStore(_sitos.ParamStore):
         try:
             # Stop all delivery before any join, so an interrupted join cannot leave a
             # subscription delivering behind a store that reports itself closed.
-            for subscription in subscriptions:
-                subscription._stop_delivery()
+            _stop_all(subscriptions)
             for subscription in subscriptions:
                 subscription.close()
         finally:

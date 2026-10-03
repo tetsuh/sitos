@@ -596,6 +596,35 @@ def test_interrupted_exit_handler_stops_every_subscription_first(
             subscription.close()
 
 
+def test_store_close_stops_every_subscription_despite_an_interrupt_while_stopping(
+    node: tuple[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix, port = node
+    store = sitos.ParamStore(prefix=prefix, zenoh_config_json=_client_config(port))
+    subscriptions = [
+        store.subscribe("base", _unique(f"stop_interrupt/{index}"), lambda change: None)
+        for index in range(3)
+    ]
+    original_stop = sitos.subscription.Subscription._stop_delivery
+    interrupted: list[bool] = []
+
+    def interrupting_stop(subscription: sitos.Subscription) -> None:
+        original_stop(subscription)
+        if not interrupted:
+            interrupted.append(True)
+            raise KeyboardInterrupt  # stands in for Ctrl-C right after the first stop
+
+    monkeypatch.setattr(sitos.subscription.Subscription, "_stop_delivery", interrupting_stop)
+    with pytest.raises(KeyboardInterrupt):
+        store.close()
+    monkeypatch.setattr(sitos.subscription.Subscription, "_stop_delivery", original_stop)
+    assert all(subscription._closed for subscription in subscriptions)
+    with pytest.raises(ValueError, match="ParamStore is closed"):
+        store.get("base", "ready")
+    for subscription in subscriptions:
+        subscription.close()
+
+
 def test_slow_subscription_does_not_delay_another(store: sitos.ParamStore) -> None:
     slow_prefix = _unique("slow")
     fast_prefix = _unique("fast")

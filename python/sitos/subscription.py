@@ -6,7 +6,7 @@ import atexit
 import logging
 import threading
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -21,6 +21,24 @@ _LIVE: weakref.WeakSet[Subscription] = weakref.WeakSet()
 # terminated, so exit never overlaps a dispatcher's own teardown (DEC-26-007).
 _DISPATCHERS: set[threading.Thread] = set()
 _SHUTTING_DOWN = threading.Event()
+
+
+def _stop_all(subscriptions: Iterable[Subscription]) -> None:
+    """Stop delivery for every subscription even if an interrupt arrives meanwhile.
+
+    Stopping never blocks on a callback, so a KeyboardInterrupt is held until every
+    subscription has stopped and is then re-raised; the later joins stay interruptible.
+    """
+    interrupted: KeyboardInterrupt | None = None
+    for subscription in subscriptions:
+        while True:
+            try:
+                subscription._stop_delivery()
+                break
+            except KeyboardInterrupt as error:
+                interrupted = interrupted or error
+    if interrupted is not None:
+        raise interrupted
 
 
 def _log_exception(message: str) -> None:
@@ -104,10 +122,10 @@ class Subscription:
 
     def _stop_delivery(self) -> None:
         with self._lock:
-            first = not self._closed
             self._closed = True
-        if first:
-            self._channel.close()
+        # The native close is idempotent; calling it every time keeps a retry after an
+        # interrupt between the flag and the close from leaving delivery running.
+        self._channel.close()
 
     def _dispatch(self) -> None:
         try:
@@ -147,8 +165,7 @@ def _close_live_subscriptions() -> None:
         if not live and not dispatchers:
             return
         # Stop all delivery before any join: an interrupted exit then starts no new callback.
-        for subscription in live:
-            subscription._stop_delivery()
+        _stop_all(live)
         for subscription in live:
             subscription.close()
         for thread in dispatchers:
