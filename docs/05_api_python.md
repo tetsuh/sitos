@@ -268,9 +268,11 @@ A `sitos.StorageEngine` subclass implements the C++ `StorageEngine` contract
 * Keys are relative strings and values are opaque payload bytes.
 * `put` and `delete` report failure only by returning `False` or raising.
 * `get` returns exactly `bytes` or `None`.
-* `list` returns unique `(str, bytes)` tuples for keys under the prefix, in any order. sitos
-  materializes the whole result, rejects an entry that is not such a tuple, and delivers the
-  entries in ascending key order before any native consumer runs (DEC-28-003).
+* `list` returns `(str, bytes)` tuples, in any order, for unique keys under the prefix. The
+  engine is responsible for uniqueness and the prefix; sitos does not check them (KISS, see the
+  DEC-28-003 refinement on #28). sitos materializes the whole result, rejects an entry that is not
+  a `(str, bytes)` tuple, and delivers the entries in ascending key order before any native
+  consumer runs (DEC-28-003).
 
 An exception raised by an engine method is logged with its traceback on
 `logging.getLogger("sitos")` and treated as an engine failure: writes fail, acknowledged writes
