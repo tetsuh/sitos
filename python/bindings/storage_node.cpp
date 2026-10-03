@@ -22,6 +22,7 @@
 #include "client_binding.hpp"
 #include "gil_boundary.hpp"
 #include "param_value_conversion.hpp"
+#include "storage_engine_trampoline.hpp"
 #include "sitos/client_config.hpp"
 #include "sitos/key.hpp"
 #include "sitos/transport.hpp"
@@ -47,7 +48,10 @@ class PySessionView {
   nb::object Get(const nb::handle& key_input, const nb::object& default_value,
                  const nb::object& missing, const nb::object& type) const {
     const auto key = nb::cast<std::string>(key_input);
-    auto result = view_.Get(key);
+    auto result = [&] {
+      nb::gil_scoped_release release;
+      return view_.Get(key);
+    }();
     if (!result.IsOk()) {
       if (result.StatusCode() == Status::NotFound && default_value.ptr() != missing.ptr()) {
         return default_value;
@@ -60,16 +64,23 @@ class PySessionView {
 
   bool Contains(const nb::handle& key_input) const {
     const auto key = nb::cast<std::string>(key_input);
-    return Take(view_.Contains(key));
+    auto result = [&] {
+      nb::gil_scoped_release release;
+      return view_.Contains(key);
+    }();
+    return Take(std::move(result));
   }
 
   nb::object Items(const nb::handle& prefix_input) const {
     const auto prefix = nb::cast<std::string>(prefix_input);
     std::vector<std::pair<std::string, ParamValue>> values;
-    auto result = view_.List(prefix, [&values](std::string_view key, const ParamValue& value) {
-      values.emplace_back(key, value);
-      return true;
-    });
+    auto result = [&] {
+      nb::gil_scoped_release release;
+      return view_.List(prefix, [&values](std::string_view key, const ParamValue& value) {
+        values.emplace_back(key, value);
+        return true;
+      });
+    }();
     Take(result);
     nb::list rows;
     for (auto& [key, value] : values) {
@@ -82,20 +93,28 @@ class PySessionView {
   SessionView view_;
 };
 
+std::shared_ptr<StorageEngine> MakeNodeEngine(const nb::handle& engine) {
+  if (nb::isinstance<PyInMemoryEngine>(engine)) return nb::cast<PyInMemoryEngine&>(engine).engine;
+  if (IsPythonStorageEngine(engine)) return MakePythonStorageEngine(engine);
+  throw nb::type_error("engine must be a sitos.InMemoryEngine or a sitos.StorageEngine subclass");
+}
+
 class PyStorageNode {
  private:
   struct State;
   static void StopState(const std::shared_ptr<State>& state) noexcept;
 
  public:
-  PyStorageNode(PyInMemoryEngine& engine, const std::string& prefix, const nb::object& json) {
+  PyStorageNode(const nb::object& engine, const std::string& prefix, const nb::object& json) {
     ClientConfig config;
     config.prefix = prefix;
     if (!json.is_none()) config.zenoh_config_json = nb::cast<std::string>(json);
     auto config_result = ValidateClientConfig(config);
     Take(config_result);
 
-    state_->engine = engine.engine;
+    const bool python_engine = !nb::isinstance<PyInMemoryEngine>(engine);
+    state_->engine = MakeNodeEngine(engine);
+    if (python_engine) RegisterPythonEngineNode(state_);
     std::optional<std::string_view> config_json;
     if (config.zenoh_config_json.has_value()) config_json = *config.zenoh_config_json;
 
@@ -146,16 +165,23 @@ class PyStorageNode {
     Take(result);
   }
 
+  // Native node calls release the GIL: a zenoh thread may hold node locks while it waits
+  // for the GIL to call a Python engine (DEC-28-006).
   void CloseSession(const nb::handle& sid_input) {
     auto lease = Acquire();
     const auto sid = nb::cast<std::string>(sid_input);
     if (!IsValidSessionId(sid)) throw nb::value_error("invalid session id");
-    Take(lease.Native().CloseSession(sid));
+    auto result = [&] {
+      nb::gil_scoped_release release;
+      return lease.Native().CloseSession(sid);
+    }();
+    Take(result);
   }
 
   std::vector<std::string> ActiveSessions() const {
     auto lease = TryAcquire();
     if (!lease.has_value()) return {};
+    nb::gil_scoped_release release;
     auto sessions = lease->Native().ActiveSessions();
     std::ranges::sort(sessions);
     return sessions;
@@ -164,8 +190,26 @@ class PyStorageNode {
   PySessionView SessionViewFor(const nb::handle& sid_input) const {
     auto lease = AcquireDisconnected();
     const auto sid = nb::cast<std::string>(sid_input);
-    auto result = sitos::SessionView::Open(lease.Native(), sid);
+    auto result = [&] {
+      nb::gil_scoped_release release;
+      return sitos::SessionView::Open(lease.Native(), sid);
+    }();
     return PySessionView(Take(std::move(result)));
+  }
+
+  // DEC-28-007: stops every node that owns a Python engine before interpreter finalization,
+  // so no zenoh thread enters Python afterwards; later nodes with Python engines are rejected.
+  static void StopPythonEngineNodes() {
+    std::vector<std::weak_ptr<State>> live;
+    {
+      std::lock_guard lock(PythonEngineNodes().mutex);
+      PythonEngineNodes().shutting_down = true;
+      live.swap(PythonEngineNodes().live);
+    }
+    nb::gil_scoped_release release;
+    for (const auto& weak : live) {
+      if (auto state = weak.lock()) StopState(state);
+    }
   }
 
   void Stop() noexcept {
@@ -181,7 +225,7 @@ class PyStorageNode {
     std::condition_variable condition;
     Phase phase = Phase::Open;
     std::size_t in_flight = 0;
-    std::shared_ptr<InMemoryEngine> engine;
+    std::shared_ptr<StorageEngine> engine;
     std::unique_ptr<Transport> transport;
     std::optional<StorageNode> native;
   };
@@ -245,6 +289,27 @@ class PyStorageNode {
     return OperationLease(std::move(state));
   }
 
+  struct LiveNodes {
+    std::mutex mutex;
+    bool shutting_down = false;
+    std::vector<std::weak_ptr<State>> live;
+  };
+
+  static LiveNodes& PythonEngineNodes() {
+    static LiveNodes nodes;
+    return nodes;
+  }
+
+  static void RegisterPythonEngineNode(const std::shared_ptr<State>& state) {
+    std::lock_guard lock(PythonEngineNodes().mutex);
+    if (PythonEngineNodes().shutting_down) {
+      throw std::runtime_error(
+          "cannot start a StorageNode with a Python engine during interpreter shutdown");
+    }
+    std::erase_if(PythonEngineNodes().live, [](const auto& weak) { return weak.expired(); });
+    PythonEngineNodes().live.push_back(state);
+  }
+
   std::shared_ptr<State> state_ = std::make_shared<State>();
 };
 
@@ -260,7 +325,7 @@ void PyStorageNode::StopState(const std::shared_ptr<State>& state) noexcept {
     if (state->in_flight != 0) NoteGilStopQuiescence();
     state->condition.wait(lock, [&state] { return state->in_flight == 0; });
   }
-  state->native->Stop();
+  if (state->native) state->native->Stop();
   state->native.reset();
   state->transport.reset();
   state->engine.reset();
@@ -287,8 +352,10 @@ void BindStorageNode(nb::module_& python_module) {
           "type"_a.none() = nb::none())
       .def("contains", &PySessionView::Contains, "key"_a)
       .def("items", &PySessionView::Items, "prefix"_a = "");
+  nb::module_::import_("atexit").attr("register")(
+      nb::cpp_function([] { PyStorageNode::StopPythonEngineNodes(); }));
   nb::class_<PyStorageNode>(python_module, "StorageNode")
-      .def(nb::init<PyInMemoryEngine&, const std::string&, const nb::object&>(), "engine"_a,
+      .def(nb::init<const nb::object&, const std::string&, const nb::object&>(), "engine"_a,
            nb::kw_only(), "prefix"_a = "sitos", "zenoh_config_json"_a = nb::none())
       .def("__enter__", &PyStorageNode::Enter, nb::rv_policy::reference_internal)
       .def("__exit__", &PyStorageNode::Exit, "exc_type"_a.none(), "exc_value"_a.none(),

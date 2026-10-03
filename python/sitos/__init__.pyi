@@ -22,6 +22,8 @@ from .publisher import (
 from .node import (
     InMemoryEngine as InMemoryEngine,
     SessionView as SessionView,
+    StorageEngine as StorageEngine,
+    StorageReader as StorageReader,
     StorageNode as StorageNode,
 )
 from .store import ParamStore as ParamStore
@@ -41,6 +43,8 @@ __all__ = [
     "FenceReceipt",
     "InMemoryEngine",
     "StorageNode",
+    "StorageEngine",
+    "StorageReader",
     "SessionView",
     "SitosError",
     "NotFoundError",

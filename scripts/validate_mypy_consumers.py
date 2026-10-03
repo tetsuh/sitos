@@ -29,6 +29,7 @@ EXPECTED_INVALID_DIAGNOSTICS = Counter(
         (21, "arg-type"): 1,
         (22, "attr-defined"): 1,
         (23, "misc"): 1,
+        (24, "arg-type"): 1,
     }
 )
 

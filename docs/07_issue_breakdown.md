@@ -596,7 +596,7 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 
 ### #28 Python custom engine
 * Milestone: v1.0
-* References: [05] §2.3, [01] X01
+* References: [05] §2.4.1, [01] X01
 * Implementation targets: `python/bindings/storage_engine_trampoline.cpp`,
   `tests/python/test_custom_engine.py`
 * Scope: Support Python inheritance of `sitos.StorageEngine` (trampoline)

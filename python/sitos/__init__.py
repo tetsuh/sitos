@@ -2,7 +2,7 @@
 
 from . import _sitos
 from .cache import ParamCache
-from .node import InMemoryEngine, SessionView, StorageNode
+from .node import InMemoryEngine, SessionView, StorageEngine, StorageNode, StorageReader
 from .publisher import BufferClass, BufferPublisher, FenceDurability, FenceReceipt
 from .store import (
     CatalogUnavailableError,
@@ -33,6 +33,8 @@ __all__ = [
     "Subscription",
     "InMemoryEngine",
     "StorageNode",
+    "StorageEngine",
+    "StorageReader",
     "SessionView",
     "BufferClass",
     "BufferPublisher",

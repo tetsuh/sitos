@@ -172,6 +172,7 @@ if(SITOS_BUILD_PYTHON)
     python/bindings/param_cache.cpp
     python/bindings/param_store.cpp
     python/bindings/param_value_conversion.cpp
+    python/bindings/storage_engine_trampoline.cpp
     python/bindings/storage_node.cpp)
   target_link_libraries(_sitos PRIVATE sitos::sitos)
   target_include_directories(_sitos PRIVATE src "${SITOS_NUMPY_INCLUDE_DIR}")
@@ -199,6 +200,7 @@ if(SITOS_BUILD_PYTHON)
     python/sitos/cache.py
     python/sitos/publisher.py
     python/sitos/store.py
+    python/sitos/engine.py
     python/sitos/subscription.py
     python/sitos/node.py
     python/sitos/__init__.pyi
@@ -206,6 +208,7 @@ if(SITOS_BUILD_PYTHON)
     python/sitos/cache.pyi
     python/sitos/publisher.pyi
     python/sitos/store.pyi
+    python/sitos/engine.pyi
     python/sitos/subscription.pyi
     python/sitos/node.pyi
     python/sitos/py.typed

@@ -228,11 +228,75 @@ with sitos.StorageNode(engine, prefix="sitos", zenoh_config_json=None) as node:
 `StorageNode` starts during construction and `stop()` is terminal, idempotent, and quiescent.
 The binding opens and owns its Zenoh transport; raw Transport/session injection is not public.
 `InMemoryEngine` exposes no direct CRUD methods. RocksDB implementation belongs to Issue #8;
-publication/distribution readiness belongs to Issue #35. Custom Python engines are deferred to
-Issue #28.
+publication/distribution readiness belongs to Issue #35. Custom Python engines are §2.4.1. Any
+other `engine` argument raises `TypeError`.
 
 Independent StorageNode, ParamStore, and ParamCache sessions must run in separate processes while
 using the pinned zenoh-c 1.9.0 runtime. Same-process independently opened sessions are unsupported.
+
+#### 2.4.1 Custom Python engines (Issue #28)
+
+```python
+class DictEngine(sitos.StorageEngine):
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._data = {}
+
+    def get(self, key):                   # -> bytes | None
+        with self._lock:
+            return self._data.get(key)
+
+    def list(self, prefix):               # -> Iterable[tuple[str, bytes]], any order
+        with self._lock:
+            return [(k, v) for k, v in self._data.items() if k.startswith(prefix)]
+
+    def put(self, key, value):            # return False (or raise) to report failure
+        with self._lock:
+            self._data[key] = value
+
+    def delete(self, key):                # deleting an absent key succeeds
+        with self._lock:
+            self._data.pop(key, None)
+
+with sitos.StorageNode(DictEngine(), prefix="sitos") as node:
+    ...
+```
+
+A `sitos.StorageEngine` subclass implements the C++ `StorageEngine` contract
+([04_api_cpp.md](04_api_cpp.md) §3) in Python (DEC-28-001):
+
+* Keys are relative strings and values are opaque payload bytes.
+* `put` and `delete` report failure only by returning `False` or raising.
+* `get` returns exactly `bytes` or `None`.
+* `list` returns `(str, bytes)` tuples, in any order, for unique keys under the prefix. The
+  engine is responsible for uniqueness and the prefix; sitos does not check them (KISS, see the
+  DEC-28-003 refinement on #28). sitos materializes the whole result, rejects an entry that is not
+  a `(str, bytes)` tuple, and delivers the entries in ascending key order before any native
+  consumer runs (DEC-28-003).
+
+An exception raised by an engine method is logged with its traceback on
+`logging.getLogger("sitos")` and treated as an engine failure: writes fail, acknowledged writes
+report `OutcomeUnknown`, and a failed read produces no query reply (DEC-28-002).
+
+An engine may implement `take_snapshot()` returning a `sitos.StorageReader` (`get` and `list`);
+otherwise sitos copies every entry through `list` when a session is created, which isolates the
+snapshot from later writes (N03, DEC-28-004). A `take_snapshot` attribute, when present, must be
+callable. Python engines report `SyncCapability::kUnsupported` and offer no synchronization barrier
+(DEC-28-005).
+
+StorageNode calls the engine from zenoh threads. Each call acquires the GIL, and calls can arrive
+concurrently, so the engine must protect its own state (DEC-28-006). StorageNode binding methods
+release the GIL around native node work. Python engines suit prototypes and tests; prefer a C++
+engine for production throughput.
+
+At interpreter exit, an `atexit` handler stops every StorageNode that uses a Python engine before
+finalization begins. Stopping waits for every in-flight engine call, including one that is still
+waiting for the GIL, which the handler releases while it waits; this stop is what keeps engine calls
+out of a finalizing interpreter. The adapter's own finalization check is only a best-effort
+backstop. Starting such a node during interpreter shutdown raises `RuntimeError` (DEC-28-007). The
+node's reference to the engine is released with the GIL held. Error handling is kept minimal
+(DEC-26-011): abnormal cases such as constructing a node on a daemon thread during interpreter exit
+are not supported.
 
 ### 2.5 SessionView (Issue #25)
 
@@ -277,7 +341,8 @@ role, and verifies the canonical `zenoh/bytes;sitos.v1` payload-v1 representatio
 
 ## 3. GIL and Thread Design [P04]
 
-* zenoh threads in the C++ core do not acquire the GIL
+* zenoh threads in the C++ core do not acquire the GIL, except to call a Python storage engine
+  (see the last bullet)
 * Notifications to Python callbacks are one-way: “C++-side queue → dedicated Python dispatch
   thread (acquires the GIL)”. zenoh threads never block waiting for the GIL. Each ParamStore
   subscription owns one unbounded queue and one daemon dispatcher thread (§2.1.1); native
@@ -288,8 +353,10 @@ role, and verifies the canonical `zenoh/bytes;sitos.v1` payload-v1 representatio
   native work may block. Python input conversion and result construction occur with the GIL held
 * `ParamCache.get_array` retains the GIL while validating dtype and constructing the NumPy view;
   its ndarray owner releases only a C++ shared owner and never calls Python from a native callback
-* In a StorageNode that uses a Python engine (§2.4), zenoh threads call into Python,
-  so GIL acquisition occurs. State explicitly that C++ engines are recommended for production use
+* In a StorageNode that uses a Python engine (§2.4.1), zenoh threads acquire the GIL for each
+  engine call and copy the result before releasing it and running native consumers. StorageNode
+  binding methods release the GIL around native node work, and C++ engines are recommended for
+  production use
 
 ## 4. Type Stubs and Documentation
 
