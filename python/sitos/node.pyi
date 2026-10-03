@@ -2,6 +2,7 @@ from collections.abc import Iterator
 from typing import Literal, TypeVar, overload
 
 from ._sitos import ParamValue as _ParamValue
+from .engine import StorageEngine as StorageEngine, StorageReader as StorageReader
 
 _DefaultT = TypeVar("_DefaultT")
 
@@ -39,7 +40,7 @@ class SessionView:
 class StorageNode:
     def __init__(
         self,
-        engine: InMemoryEngine,
+        engine: InMemoryEngine | StorageEngine,
         *,
         prefix: str = ...,
         zenoh_config_json: str | None = ...,

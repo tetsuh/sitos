@@ -24,6 +24,9 @@ void BindParamStore(nanobind::module_& python_module);
 void BindParamCache(nanobind::module_& python_module);
 void BindBufferPublisher(nanobind::module_& python_module);
 void BindStorageNode(nanobind::module_& python_module);
+namespace sitos::python::detail {
+void BindStorageEngineTrampoline(nanobind::module_& python_module);
+}
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -61,6 +64,7 @@ NB_MODULE(_sitos, python_module) {
   BindParamCache(python_module);
   BindBufferPublisher(python_module);
   BindStorageNode(python_module);
+  sitos::python::detail::BindStorageEngineTrampoline(python_module);
 #if SITOS_PYTHON_TEST_SUPPORT
   python_module.def("_gil_test_arm",
                     [](const std::string& boundary) {
