@@ -110,7 +110,7 @@ std::optional<std::vector<std::byte>> CallGet(const nb::handle& reader, std::str
       throw EngineFailure("Python storage engine get raised");
     }
     if (result.is_none()) return std::nullopt;
-    if (!PyBytes_CheckExact(result.ptr())) {
+    if (!PyBytes_Check(result.ptr())) {
       LogEngineMessage("get", "returned a value that is not bytes or None");
       throw EngineFailure("Python storage engine get returned an invalid value");
     }
@@ -127,11 +127,11 @@ Entries ListWithGil(const nb::handle& reader, std::string_view prefix) {
     for (nb::handle item : result) {
       PyObject* key = nullptr;
       PyObject* value = nullptr;
-      if (PyTuple_CheckExact(item.ptr()) && PyTuple_GET_SIZE(item.ptr()) == 2) {
+      if (PyTuple_Check(item.ptr()) && PyTuple_GET_SIZE(item.ptr()) == 2) {
         key = PyTuple_GET_ITEM(item.ptr(), 0);
         value = PyTuple_GET_ITEM(item.ptr(), 1);
       }
-      if (key == nullptr || !PyUnicode_Check(key) || !PyBytes_CheckExact(value)) {
+      if (key == nullptr || !PyUnicode_Check(key) || !PyBytes_Check(value)) {
         LogEngineMessage("list", "returned an entry that is not a (str, bytes) pair");
         throw EngineFailure("Python storage engine list returned an invalid entry");
       }

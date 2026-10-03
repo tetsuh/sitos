@@ -16,6 +16,7 @@ import time
 import uuid
 import weakref
 from collections.abc import Callable, Iterable, Iterator
+from typing import NamedTuple
 
 import pytest
 
@@ -248,6 +249,10 @@ class FailingEngine(DictEngine):
             raise KeyError("engine list failure for the test")
         if self.mode == "bad-shape":
             return [("a", b"1", b"extra")]
+        if self.mode == "non-str-key":
+            return [(1, b"1")]  # type: ignore[list-item]
+        if self.mode == "non-bytes-value":
+            return [("a", "text")]  # type: ignore[list-item]
         return super().list(prefix)
 
     def put(self, key: str, value: bytes) -> bool | None:
@@ -278,7 +283,7 @@ def test_get_failures_surface_as_engine_failures(
     assert [record.name for record in caplog.records] == ["sitos"]
 
 
-@pytest.mark.parametrize("mode", ["raise", "bad-shape"])
+@pytest.mark.parametrize("mode", ["raise", "bad-shape", "non-str-key", "non-bytes-value"])
 def test_list_failures_surface_as_engine_failures(
     mode: str, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -312,6 +317,26 @@ def test_python_exception_is_logged_with_traceback(caplog: pytest.LogCaptureFixt
     (record,) = caplog.records
     assert record.exc_info is not None
     assert isinstance(record.exc_info[1], KeyError)
+
+
+class Row(NamedTuple):
+    key: str
+    value: bytes
+
+
+class RowEngine(DictEngine):
+    """Returns typed rows: tuple subclasses are valid (str, bytes) pairs."""
+
+    def list(self, prefix: str) -> Iterable[tuple[str, bytes]]:
+        return [Row(key, value) for key, value in super().list(prefix)]
+
+
+def test_list_accepts_tuple_subclass_rows() -> None:
+    probe = _probe_or_skip(RowEngine())
+    assert probe.put("b", b"2")
+    assert probe.put("a", b"1")
+    assert probe.list("") == (True, [("a", b"1"), ("b", b"2")])
+    assert probe.snapshot().list("") == (True, [("a", b"1"), ("b", b"2")])
 
 
 def test_fallback_snapshot_no_longer_calls_python() -> None:
