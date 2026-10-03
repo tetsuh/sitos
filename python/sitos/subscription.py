@@ -5,7 +5,6 @@ from __future__ import annotations
 import atexit
 import logging
 import threading
-import time
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -53,26 +52,25 @@ class Subscription:
         )
 
     def _start(self) -> None:
+        # The thread starts under _LIVE_LOCK, so every tracked dispatcher has fully started:
+        # pruning and the exit handler never observe a registered but unstarted thread.
         with _LIVE_LOCK:
             shutting_down = _SHUTTING_DOWN.is_set()
             if not shutting_down:
-                _LIVE.add(self)
-                # Terminated threads no longer need joining.
+                # Joining is unnecessary once a started thread has terminated.
                 _DISPATCHERS.difference_update(
                     [thread for thread in _DISPATCHERS if not thread.is_alive()]
                 )
+                try:
+                    self._thread.start()
+                except BaseException:
+                    self._stop_delivery()
+                    raise
+                _LIVE.add(self)
                 _DISPATCHERS.add(self._thread)
         if shutting_down:
             self._stop_delivery()
             raise RuntimeError("cannot subscribe during interpreter shutdown")
-        try:
-            self._thread.start()
-        except BaseException:
-            self._stop_delivery()
-            with _LIVE_LOCK:
-                _LIVE.discard(self)
-                _DISPATCHERS.discard(self._thread)
-            raise
 
     def close(self) -> None:
         """Stop delivery; no callback starts after this returns (DEC-26-004).
@@ -81,7 +79,7 @@ class Subscription:
         called from this subscription's own callback, which returns without waiting.
         """
         self._stop_delivery()
-        if threading.current_thread() is not self._thread and self._thread.ident is not None:
+        if threading.current_thread() is not self._thread and self._thread.is_alive():
             self._thread.join()
             with _LIVE_LOCK:
                 _DISPATCHERS.discard(self._thread)
@@ -137,16 +135,11 @@ def _close_live_subscriptions() -> None:
             return
         for subscription in live:
             subscription.close()
-        joined = []
         for thread in dispatchers:
-            if thread.ident is not None:  # a concurrent subscribe may not have started it yet
-                thread.join()
-                joined.append(thread)
+            thread.join()
         with _LIVE_LOCK:
             _LIVE.difference_update(live)
-            _DISPATCHERS.difference_update(joined)
-        if len(joined) < len(dispatchers):
-            time.sleep(0.01)
+            _DISPATCHERS.difference_update(dispatchers)
 
 
 atexit.register(_close_live_subscriptions)

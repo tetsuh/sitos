@@ -433,6 +433,25 @@ def test_store_close_from_two_callbacks_does_not_deadlock(node: tuple[str, int])
     store.close()
 
 
+def test_tracked_dispatchers_are_started_and_finished_ones_are_pruned(
+    store: sitos.ParamStore,
+) -> None:
+    # Every dispatcher the exit handler may join has started; a terminated one is pruned
+    # on the next subscribe instead of accumulating (DEC-26-007).
+    finished = threading.Thread(target=lambda: None)
+    finished.start()
+    finished.join()
+    tracked = sitos.subscription._DISPATCHERS
+    tracked.add(finished)
+    try:
+        with store.subscribe("base", _unique("prune"), lambda change: None) as subscription:
+            assert finished not in tracked
+            assert subscription._thread in tracked
+            assert all(thread.ident is not None for thread in tracked)
+    finally:
+        tracked.discard(finished)
+
+
 def test_slow_subscription_does_not_delay_another(store: sitos.ParamStore) -> None:
     slow_prefix = _unique("slow")
     fast_prefix = _unique("fast")
