@@ -221,7 +221,8 @@ native callbacks, queued work, user callbacks, and diagnostics; no callback or L
 after it returns. Callbacks are serialized per subscription but have no thread affinity. They may submit
 nonblocking Put/PutBatch/Delete; ParamStore acknowledged writes must use `WriteOptions{.ack = false}`
 because blocking reads and writes are forbidden in callbacks. They must not close/destroy the
-subscription from inside its callback. Python callback dispatch is Issue #26.
+subscription from inside its callback. Python callback dispatch is specified in
+[05_api_python.md](05_api_python.md) §2.1.1 and §3.
 
 ## 3. StorageEngine / StorageNode — Storage Node Side
 

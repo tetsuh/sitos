@@ -25,6 +25,7 @@ from .node import (
     StorageNode as StorageNode,
 )
 from .store import ParamStore as ParamStore
+from .subscription import ParamChange as ParamChange, Subscription as Subscription
 
 __all__ = [
     "__version__",
@@ -32,6 +33,8 @@ __all__ = [
     "encode_value",
     "ParamCache",
     "ParamStore",
+    "ParamChange",
+    "Subscription",
     "BufferClass",
     "BufferPublisher",
     "FenceDurability",
