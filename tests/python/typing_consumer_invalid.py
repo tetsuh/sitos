@@ -21,3 +21,4 @@ store.put_batch("base", [], True)  # E: acknowledgement options are keyword-only
 store.subscribe("base", "key/", 1)  # E: subscription callback must be callable
 store.subscribe("base", "key/", lambda change: change.missing)  # E: ParamChange has no such field
 def _assign(change: sitos.ParamChange) -> None: change.value = 1  # E: ParamChange is read-only
+sitos.StorageNode(object())  # E: engine must be an InMemoryEngine or a StorageEngine
