@@ -43,6 +43,11 @@ void CallbackChannel::Close() noexcept {
   changed_.notify_all();
 }
 
+std::size_t CallbackChannel::Pending() {
+  std::scoped_lock lock(mutex_);
+  return pending_.size();
+}
+
 ParamCallback MakeChannelCallback(std::shared_ptr<CallbackChannel> channel) {
   return [channel = std::move(channel)](const ParamChange& change) { channel->Push(change); };
 }
@@ -73,6 +78,8 @@ void PySubscriptionChannel::Close() {
   CloseReleased();
 }
 
+std::size_t PySubscriptionChannel::Pending() { return channel_->Pending(); }
+
 void PySubscriptionChannel::CloseReleased() noexcept {
   // Native Close waits only for callbacks that push into the channel, never for Python.
   std::scoped_lock lock(close_mutex_);
@@ -83,7 +90,8 @@ void PySubscriptionChannel::CloseReleased() noexcept {
 void BindCallbackDispatcher(nb::module_& python_module) {
   nb::class_<PySubscriptionChannel>(python_module, "_SubscriptionChannel")
       .def("next", &PySubscriptionChannel::Next)
-      .def("close", &PySubscriptionChannel::Close);
+      .def("close", &PySubscriptionChannel::Close)
+      .def("_pending", &PySubscriptionChannel::Pending);
 }
 
 }  // namespace sitos::python::detail

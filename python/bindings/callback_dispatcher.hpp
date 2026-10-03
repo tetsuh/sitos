@@ -9,6 +9,7 @@
 #include <nanobind/nanobind.h>
 
 #include <condition_variable>
+#include <cstddef>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -27,6 +28,8 @@ class CallbackChannel {
   std::optional<ParamChange> Pop();
   /// Discards pending changes and wakes the dispatcher; later pushes are dropped.
   void Close() noexcept;
+  /// Number of queued changes the dispatcher has not taken yet.
+  std::size_t Pending();
 
  private:
   std::mutex mutex_;
@@ -48,6 +51,8 @@ class PySubscriptionChannel {
   nanobind::object Next();
   /// Stops native delivery, waits for native callbacks, and discards pending changes.
   void Close();
+  /// Queued changes not yet taken by the dispatcher (diagnostics and tests).
+  std::size_t Pending();
 
  private:
   void CloseReleased() noexcept;

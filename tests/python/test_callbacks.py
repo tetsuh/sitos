@@ -289,15 +289,15 @@ def test_close_waits_for_in_flight_callback_and_discards_pending(
         release.wait(_DEADLINE)
 
     subscription = store.subscribe("base", prefix, callback)
-    sentinel: list[str] = []
     store.put("base", f"{prefix}first", 1)
     assert started.wait(_DEADLINE)
-    with store.subscribe("base", prefix, lambda change: sentinel.append(change.key)):
-        for index in range(3):
-            store.put("base", f"{prefix}pending{index}", index)
-        # A second subscription on the same session saw the pending changes, so they
-        # reached the blocked subscription's queue before close() discards them.
-        _wait_until(lambda: len(sentinel) == 3, f"sentinel saw {sentinel}")
+    for index in range(3):
+        store.put("base", f"{prefix}pending{index}", index)
+    # The three changes are queued in this subscription's own channel before close().
+    _wait_until(
+        lambda: subscription._channel._pending() == 3,
+        f"queued {subscription._channel._pending()}",
+    )
 
     closer = threading.Thread(target=subscription.close)
     closer.start()
@@ -307,6 +307,7 @@ def test_close_waits_for_in_flight_callback_and_discards_pending(
     closer.join(_DEADLINE)
     assert not closer.is_alive()
 
+    assert subscription._channel._pending() == 0
     store.put("base", f"{prefix}after", 1)
     time.sleep(0.3)
     assert received == [f"{prefix}first"]
@@ -330,6 +331,7 @@ def test_close_from_inside_its_own_callback_returns(store: sitos.ParamStore) -> 
     store.put("base", f"{prefix}b", 2)
     time.sleep(0.3)
     assert received == [f"{prefix}a"]
+    assert holder[0]._channel._pending() == 0  # the closed channel drops later changes
     holder[0].close()
 
 
@@ -377,6 +379,7 @@ def test_base_exception_in_callback_stops_delivery(
     store.put("base", f"{prefix}later", 2)
     time.sleep(0.3)
     assert received == [f"{prefix}first"]
+    assert subscription._channel._pending() == 0  # nothing queues unread
     subscription.close()
 
 
