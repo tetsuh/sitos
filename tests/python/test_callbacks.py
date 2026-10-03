@@ -452,6 +452,69 @@ def test_tracked_dispatchers_are_started_and_finished_ones_are_pruned(
         tracked.discard(finished)
 
 
+def test_unconvertible_change_is_logged_and_skipped(caplog: pytest.LogCaptureFixture) -> None:
+    """A STR value that is not valid UTF-8 skips only that change, in base, session, and
+    batch deliveries; later changes keep flowing (DEC-26-005)."""
+    executable = os.environ.get("SITOS_PYTHON_FIXTURE")
+    if not executable or not os.path.isfile(executable):
+        pytest.skip("SITOS_PYTHON_FIXTURE is not set")
+    prefix = f"sitos/callbacks_malformed_{os.getpid()}_{uuid.uuid4().hex}"
+    port = _free_port()
+    process = subprocess.Popen(
+        [executable, prefix, str(port)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+
+    def command(line: str) -> None:
+        assert process.stdin is not None
+        process.stdin.write(line + "\n")
+        process.stdin.flush()
+        assert _readline(process.stdout, _DEADLINE) == "PUBLISHED"
+
+    try:
+        assert _readline(process.stdout, _DEADLINE) == f"READY {prefix} {port}"
+        received: list[tuple[str, object]] = []
+        with sitos.ParamStore(prefix=prefix, zenoh_config_json=_client_config(port)) as store:
+            with caplog.at_level(logging.ERROR, logger="sitos"):
+                with store.subscribe(
+                    "base", "malformed/", lambda change: received.append((change.key, change.value))
+                ), store.subscribe(
+                    "session/s1",
+                    "malformed/",
+                    lambda change: received.append(("s1:" + change.key, change.value)),
+                ):
+                    # Wait until the fixture's publications reach this subscriber.
+                    deadline = time.monotonic() + _DEADLINE
+                    while ("malformed/ready", "x") not in received:
+                        assert time.monotonic() < deadline, "subscription never received"
+                        command("STR base/malformed/ready x")
+                        time.sleep(0.05)
+                    command("MALFORMED_STR base/malformed/bad")
+                    command("MALFORMED_STR base/:batch")
+                    command("MALFORMED_STR session/s1/malformed/bad")
+                    command("STR session/s1/malformed/after fine")
+                    command("STR base/malformed/after fine")
+                    _wait_until(
+                        lambda: ("malformed/after", "fine") in received
+                        and ("s1:malformed/after", "fine") in received,
+                        f"received {received}",
+                    )
+        delivered = [entry for entry in received if entry != ("malformed/ready", "x")]
+        assert delivered.count(("malformed/a", "ok-a")) == 1
+        assert delivered.count(("malformed/c", "ok-c")) == 1
+        assert all("bad" not in key for key, _ in delivered)
+        failures = [record for record in caplog.records if record.name == "sitos"]
+        assert len(failures) == 3
+        assert all(isinstance(record.exc_info[1], UnicodeDecodeError) for record in failures)
+    finally:
+        if process.poll() is None and process.stdin is not None:
+            process.stdin.write("STOP\n")
+            process.stdin.flush()
+        process.wait(timeout=_DEADLINE)
+
+
 def test_slow_subscription_does_not_delay_another(store: sitos.ParamStore) -> None:
     slow_prefix = _unique("slow")
     fast_prefix = _unique("fast")

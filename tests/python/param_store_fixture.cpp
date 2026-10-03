@@ -15,6 +15,7 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <vector>
 
 int main(int argc, char** argv) {
   const std::string prefix = argc > 1 ? argv[1] : "sitos/python_fixture";
@@ -86,7 +87,34 @@ int main(int argc, char** argv) {
   auto batch_subscription = std::move(batch_result).Value();
   std::cout << "READY " << prefix << " " << port << std::endl;
   std::string command;
+  // Publishes "STR <path> <text>" or a malformed UTF-8 STR ("MALFORMED_STR <path>"); a path
+  // ending in ":batch" carries the malformed value between two valid batch entries.
+  const auto publish = [&](const std::string& path, const std::string& text) {
+    const std::string key = prefix + "/" + path;
+    if (path.ends_with(":batch")) {
+      const std::vector<sitos::BatchEntry> entries{
+          {"malformed/a", sitos::ParamValue(std::string("ok-a"))},
+          {"malformed/bad", sitos::ParamValue(text)},
+          {"malformed/c", sitos::ParamValue(std::string("ok-c"))}};
+      return transport->Put(key, sitos::EncodeBatch(entries),
+                            sitos::Encoding{std::string(sitos::Encoding::kSitosV1Batch)}, {});
+    }
+    return transport->Put(key, sitos::ParamValue(text).Encode(),
+                          sitos::Encoding{std::string(sitos::Encoding::kSitosV1)}, {});
+  };
   while (std::getline(std::cin, command)) {
+    if (command.starts_with("STR ") || command.starts_with("MALFORMED_STR ")) {
+      const bool malformed = command.starts_with("MALFORMED_STR ");
+      const std::string rest = command.substr(command.find(' ') + 1);
+      const auto space = rest.find(' ');
+      const std::string path = malformed ? rest : rest.substr(0, space);
+      const std::size_t text_start = space == std::string::npos ? rest.size() : space + 1;
+      const std::string text = malformed ? std::string("\xff\xfe") : rest.substr(text_start);
+      const bool ok = publish(path, text).IsOk();
+      std::lock_guard lock(mutex);
+      std::cout << (ok ? "PUBLISHED" : "PUBLISH_FAILED") << std::endl;
+      continue;
+    }
     if (command == "REPLY") {
       {
         std::lock_guard lock(mutex);

@@ -120,7 +120,8 @@ Because callbacks run on the dispatcher thread rather than a native thread, they
 delays this subscription's later notifications. An exception raised by a callback is logged with
 its traceback through `logging.getLogger("sitos")` and dispatch continues (DEC-26-005); a
 `BaseException` such as `SystemExit` is logged the same way, then ends the dispatcher and closes
-the subscription.
+the subscription. A change that cannot be converted to Python, such as a STR value that is not
+valid UTF-8, is logged on the same logger and skipped; later changes are still delivered.
 
 `Subscription.close()` stops native delivery, discards changes that have not started, waits for an
 in-flight callback with the GIL released, and returns only when no further callback can start

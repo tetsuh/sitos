@@ -104,8 +104,10 @@ class Subscription:
                 try:
                     item = self._channel.next()
                 except Exception:
-                    _LOGGER.exception("sitos subscription dispatch failed; subscription closed")
-                    return
+                    # The change was dequeued but could not be converted (for example a STR
+                    # value that is not valid UTF-8): report it and keep later changes flowing.
+                    _LOGGER.exception("sitos subscription change could not be converted; skipped")
+                    continue
                 if item is None or self._closed:
                     return
                 try:
