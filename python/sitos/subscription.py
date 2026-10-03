@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import logging
 import threading
+import time
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,8 +16,11 @@ __all__ = ["ParamChange", "Subscription"]
 _LOGGER = logging.getLogger("sitos")
 _LIVE_LOCK = threading.Lock()
 # Active subscriptions stay reachable through their dispatcher thread, so a weak set
-# tracks exactly the subscriptions that still need closing at interpreter exit.
+# tracks exactly the subscriptions whose delivery must stop at interpreter exit.
 _LIVE: weakref.WeakSet[Subscription] = weakref.WeakSet()
+# Every started dispatcher thread, held until another thread has joined it or it has fully
+# terminated, so exit never overlaps a dispatcher's own teardown (DEC-26-007).
+_DISPATCHERS: set[threading.Thread] = set()
 _SHUTTING_DOWN = threading.Event()
 
 
@@ -49,12 +53,15 @@ class Subscription:
         )
 
     def _start(self) -> None:
-        # The subscription stays in _LIVE until its dispatcher thread has exited, so the
-        # atexit handler joins every dispatcher before interpreter finalization (DEC-26-007).
         with _LIVE_LOCK:
             shutting_down = _SHUTTING_DOWN.is_set()
             if not shutting_down:
                 _LIVE.add(self)
+                # Terminated threads no longer need joining.
+                _DISPATCHERS.difference_update(
+                    [thread for thread in _DISPATCHERS if not thread.is_alive()]
+                )
+                _DISPATCHERS.add(self._thread)
         if shutting_down:
             self._stop_delivery()
             raise RuntimeError("cannot subscribe during interpreter shutdown")
@@ -64,6 +71,7 @@ class Subscription:
             self._stop_delivery()
             with _LIVE_LOCK:
                 _LIVE.discard(self)
+                _DISPATCHERS.discard(self._thread)
             raise
 
     def close(self) -> None:
@@ -75,6 +83,8 @@ class Subscription:
         self._stop_delivery()
         if threading.current_thread() is not self._thread and self._thread.ident is not None:
             self._thread.join()
+            with _LIVE_LOCK:
+                _DISPATCHERS.discard(self._thread)
 
     def __enter__(self) -> Subscription:
         return self
@@ -111,21 +121,32 @@ class Subscription:
                     raise
         finally:
             # A BaseException ends this thread; stop native delivery so nothing queues unread.
+            # The thread stays in _DISPATCHERS: only a join proves its teardown finished.
             self._stop_delivery()
-            with _LIVE_LOCK:
-                _LIVE.discard(self)
 
 
 def _close_live_subscriptions() -> None:
-    """DEC-26-007: close and join every dispatcher before interpreter finalization."""
+    """DEC-26-007: close every subscription and join every dispatcher before finalization."""
+    current = threading.current_thread()
     while True:
         with _LIVE_LOCK:
             _SHUTTING_DOWN.set()
             live = list(_LIVE)
-        if not live:
+            dispatchers = [thread for thread in _DISPATCHERS if thread is not current]
+        if not live and not dispatchers:
             return
         for subscription in live:
             subscription.close()
+        joined = []
+        for thread in dispatchers:
+            if thread.ident is not None:  # a concurrent subscribe may not have started it yet
+                thread.join()
+                joined.append(thread)
+        with _LIVE_LOCK:
+            _LIVE.difference_update(live)
+            _DISPATCHERS.difference_update(joined)
+        if len(joined) < len(dispatchers):
+            time.sleep(0.01)
 
 
 atexit.register(_close_live_subscriptions)

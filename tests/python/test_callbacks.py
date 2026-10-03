@@ -470,6 +470,18 @@ _SHUTDOWN_SCRIPT = textwrap.dedent(
     entered = threading.Event()
     main_done = threading.Event()
 
+    if mode == "dispatcher-teardown":
+        # Widen the window after the dispatch loop returns: exit must still join the thread.
+        original_dispatch = sitos.subscription.Subscription._dispatch
+
+        def slow_dispatch(subscription):
+            original_dispatch(subscription)
+            if subscription is subscriptions[0]:
+                time.sleep(0.5)
+                print("TEARDOWN_DONE", flush=True)
+
+        sitos.subscription.Subscription._dispatch = slow_dispatch
+
     def keep_reading():
         stop = time.monotonic() + 0.5
         while time.monotonic() < stop:
@@ -485,6 +497,8 @@ _SHUTDOWN_SCRIPT = textwrap.dedent(
             keep_reading()
         elif mode == "in-flight-sleep":
             time.sleep(0.5)
+        elif mode == "dispatcher-teardown":
+            subscriptions[0].close()
         elif mode == "self-close-then-get":
             subscriptions[0].close()
             keep_reading()
@@ -538,6 +552,7 @@ _SHUTDOWN_SCRIPT = textwrap.dedent(
         "self-close-then-get",
         "store-close-then-sleep",
         "subscribe-during-shutdown",
+        "dispatcher-teardown",
     ],
 )
 def test_interpreter_shutdown_with_active_subscriptions(
@@ -565,6 +580,8 @@ def test_interpreter_shutdown_with_active_subscriptions(
         expected.add("CALLBACK_DONE")
     if mode == "subscribe-during-shutdown":
         expected.add("RESUBSCRIBE_REJECTED")
+    if mode == "dispatcher-teardown":
+        expected.add("TEARDOWN_DONE")
     lines = completed.stdout.split()
     assert sorted(lines) == sorted(expected), (completed.stdout, completed.stderr)
     assert "Fatal Python error" not in completed.stderr
