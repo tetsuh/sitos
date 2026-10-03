@@ -336,7 +336,8 @@ role, and verifies the canonical `zenoh/bytes;sitos.v1` payload-v1 representatio
 
 ## 3. GIL and Thread Design [P04]
 
-* zenoh threads in the C++ core do not acquire the GIL
+* zenoh threads in the C++ core do not acquire the GIL, except to call a Python storage engine
+  (see the last bullet)
 * Notifications to Python callbacks are one-way: “C++-side queue → dedicated Python dispatch
   thread (acquires the GIL)”. zenoh threads never block waiting for the GIL. Each ParamStore
   subscription owns one unbounded queue and one daemon dispatcher thread (§2.1.1); native

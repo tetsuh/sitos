@@ -53,6 +53,7 @@ void LogPythonError(const char* operation, nb::python_error& error) noexcept {
         "sitos Python storage engine %s raised; treated as an engine failure", operation,
         "exc_info"_a = nb::make_tuple(error.type(), error.value(), error.traceback()));
   } catch (...) {
+    // Logging must not turn the engine failure into a different error.
   }
 }
 
@@ -61,6 +62,7 @@ void LogEngineMessage(const char* operation, const char* problem) noexcept {
     SitosLogger().attr("error")("sitos Python storage engine %s %s; treated as an engine failure",
                                 operation, problem);
   } catch (...) {
+    // Logging must not turn the engine failure into a different error.
   }
 }
 
@@ -114,43 +116,44 @@ std::optional<std::vector<std::byte>> CallGet(const nb::handle& reader, std::str
   });
 }
 
-// Materializes the complete result before any sink runs, then orders it by key bytes, which
-// is UTF-8 code point order (DEC-28-003; C++ List contract).
-Entries CallList(const nb::handle& reader, std::string_view prefix) {
-  return WithGil([&]() -> Entries {
-    Entries entries;
-    try {
-      nb::object result = reader.attr("list")(nb::str(prefix.data(), prefix.size()));
-      for (nb::handle item : result) {
-        PyObject* key = nullptr;
-        PyObject* value = nullptr;
-        if (PyTuple_CheckExact(item.ptr()) && PyTuple_GET_SIZE(item.ptr()) == 2) {
-          key = PyTuple_GET_ITEM(item.ptr(), 0);
-          value = PyTuple_GET_ITEM(item.ptr(), 1);
-        }
-        if (key == nullptr || !PyUnicode_Check(key) || !PyBytes_CheckExact(value)) {
-          LogEngineMessage("list", "returned an entry that is not a (str, bytes) pair");
-          throw EngineFailure("Python storage engine list returned an invalid entry");
-        }
-        Py_ssize_t size = 0;
-        const char* utf8 = PyUnicode_AsUTF8AndSize(key, &size);
-        if (utf8 == nullptr) throw nb::python_error();
-        entries.emplace_back(std::string(utf8, static_cast<std::size_t>(size)), CopyBytes(value));
+// Requires the GIL. Materializes the complete result before any sink runs, then orders it by
+// key bytes, which is UTF-8 code point order (DEC-28-003; C++ List contract).
+Entries ListWithGil(const nb::handle& reader, std::string_view prefix) {
+  Entries entries;
+  try {
+    nb::object result = reader.attr("list")(nb::str(prefix.data(), prefix.size()));
+    for (nb::handle item : result) {
+      PyObject* key = nullptr;
+      PyObject* value = nullptr;
+      if (PyTuple_CheckExact(item.ptr()) && PyTuple_GET_SIZE(item.ptr()) == 2) {
+        key = PyTuple_GET_ITEM(item.ptr(), 0);
+        value = PyTuple_GET_ITEM(item.ptr(), 1);
       }
-    } catch (nb::python_error& error) {
-      LogPythonError("list", error);
-      throw EngineFailure("Python storage engine list raised");
+      if (key == nullptr || !PyUnicode_Check(key) || !PyBytes_CheckExact(value)) {
+        LogEngineMessage("list", "returned an entry that is not a (str, bytes) pair");
+        throw EngineFailure("Python storage engine list returned an invalid entry");
+      }
+      Py_ssize_t size = 0;
+      const char* utf8 = PyUnicode_AsUTF8AndSize(key, &size);
+      if (utf8 == nullptr) throw nb::python_error();
+      entries.emplace_back(std::string(utf8, static_cast<std::size_t>(size)), CopyBytes(value));
     }
-    std::ranges::sort(entries, {}, &Entries::value_type::first);
-    return entries;
-  });
+  } catch (nb::python_error& error) {
+    LogPythonError("list", error);
+    throw EngineFailure("Python storage engine list raised");
+  }
+  std::ranges::sort(entries, {}, &Entries::value_type::first);
+  return entries;
+}
+
+Entries CallList(const nb::handle& reader, std::string_view prefix) {
+  return WithGil([&] { return ListWithGil(reader, prefix); });
 }
 
 bool DeliverList(const Entries& entries, const EntrySink& sink) {
-  for (const auto& [key, value] : entries) {
-    if (!sink(key, value)) return false;
-  }
-  return true;
+  return std::ranges::all_of(entries, [&sink](const auto& entry) {
+    return sink(entry.first, entry.second);
+  });
 }
 
 class PythonStorageReader final : public StorageReader {
@@ -202,32 +205,8 @@ class PythonStorageEngine final : public StorageEngine {
 
   // DEC-28-004: an engine without take_snapshot uses the C++ copy fallback (N03).
   std::shared_ptr<const StorageReader> TakeSnapshot() const override {
-    std::optional<std::shared_ptr<const StorageReader>> native = WithGil(
-        [&]() -> std::optional<std::shared_ptr<const StorageReader>> {
-          if (!nb::hasattr(engine_.get(), "take_snapshot")) return std::nullopt;
-          nb::object reader;
-          try {
-            reader = engine_.get().attr("take_snapshot")();
-          } catch (nb::python_error& error) {
-            LogPythonError("take_snapshot", error);
-            throw EngineFailure("Python storage engine take_snapshot raised");
-          }
-          bool is_reader = false;
-          try {
-            is_reader = nb::isinstance(
-                reader, nb::module_::import_("sitos.engine").attr("StorageReader"));
-          } catch (nb::python_error& error) {
-            LogPythonError("take_snapshot", error);
-            throw EngineFailure("Python storage engine take_snapshot could not be checked");
-          }
-          if (!is_reader) {
-            LogEngineMessage("take_snapshot", "returned an object that is not a StorageReader");
-            throw EngineFailure("Python storage engine take_snapshot returned an invalid reader");
-          }
-          return std::make_shared<PythonStorageReader>(reader);
-        });
-    if (native) return *native;
-    return StorageEngine::TakeSnapshot();
+    auto reader = WithGil([this] { return PythonSnapshotWithGil(); });
+    return reader ? reader : StorageEngine::TakeSnapshot();
   }
 
  private:
@@ -243,6 +222,22 @@ class PythonStorageEngine final : public StorageEngine {
       LogPythonError(operation, error);
       return false;
     }
+  }
+
+  // Requires the GIL. Returns null when the engine has no take_snapshot.
+  std::shared_ptr<const StorageReader> PythonSnapshotWithGil() const {
+    if (!nb::hasattr(engine_.get(), "take_snapshot")) return nullptr;
+    try {
+      nb::object reader = engine_.get().attr("take_snapshot")();
+      if (nb::isinstance(reader, nb::module_::import_("sitos.engine").attr("StorageReader"))) {
+        return std::make_shared<PythonStorageReader>(reader);
+      }
+    } catch (nb::python_error& error) {
+      LogPythonError("take_snapshot", error);
+      throw EngineFailure("Python storage engine take_snapshot raised");
+    }
+    LogEngineMessage("take_snapshot", "returned an object that is not a StorageReader");
+    throw EngineFailure("Python storage engine take_snapshot returned an invalid reader");
   }
 
   PythonReference engine_;
@@ -277,7 +272,7 @@ class ProbeSink {
           if (!error_) error_ = error.what();
         }
       }
-      if (stop_after_ && entries_.size() >= *stop_after_) return false;
+      if (stop_after_.has_value() && entries_.size() >= *stop_after_) return false;
       return result_;
     };
   }
