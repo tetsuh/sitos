@@ -572,7 +572,7 @@ def test_raising_log_filter_does_not_stop_dispatch(store: sitos.ParamStore) -> N
         logger.removeFilter(raising_filter)
 
 
-def test_interrupted_exit_handler_stops_every_subscription_first(
+def test_interrupted_exit_handler_still_stops_and_joins_every_subscription(
     store: sitos.ParamStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     subscriptions = [
@@ -580,15 +580,25 @@ def test_interrupted_exit_handler_stops_every_subscription_first(
         for index in range(3)
     ]
     original_close = sitos.subscription.Subscription.close
+    interrupts: list[sitos.Subscription] = []
 
     def interrupting_close(subscription: sitos.Subscription) -> None:
-        raise KeyboardInterrupt  # stands in for Ctrl-C during the exit handler's join
+        # Ctrl-C during each subscription's first join attempt in the exit handler.
+        if subscription not in interrupts:
+            interrupts.append(subscription)
+            raise KeyboardInterrupt
+        original_close(subscription)
 
     monkeypatch.setattr(sitos.subscription.Subscription, "close", interrupting_close)
     try:
         with pytest.raises(KeyboardInterrupt):
             sitos.subscription._close_live_subscriptions()
         assert all(subscription._closed for subscription in subscriptions)
+        assert not any(subscription._thread.is_alive() for subscription in subscriptions)
+        assert not any(
+            subscription._thread in sitos.subscription._DISPATCHERS
+            for subscription in subscriptions
+        )
     finally:
         monkeypatch.setattr(sitos.subscription.Subscription, "close", original_close)
         sitos.subscription._SHUTTING_DOWN.clear()

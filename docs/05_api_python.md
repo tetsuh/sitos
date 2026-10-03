@@ -133,7 +133,10 @@ store is closed; destroying a ParamStore object without `close()` does not close
 concurrent second `close()` waits for the first one to finish unless it is called from one of
 that store's callbacks. At interpreter exit an `atexit` handler closes every live subscription and
 joins every dispatcher thread, including one whose callback is still running after closing its own
-subscription; `subscribe` then raises `RuntimeError` (DEC-26-007). Fork and subinterpreters are
+subscription; a Ctrl-C during exit is held until those joins finish, and `subscribe` then raises
+`RuntimeError` (DEC-26-007). A Ctrl-C that interrupts `Subscription.close()` or `ParamStore.close()`
+while it waits for a callback is raised after delivery has already stopped (and, for
+`ParamStore.close()`, after the store has closed); the interrupted join completes at exit. Fork and subinterpreters are
 not supported while subscriptions are live.
 
 ### 2.2 BufferPublisher

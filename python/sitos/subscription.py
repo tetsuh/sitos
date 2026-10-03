@@ -23,22 +23,36 @@ _DISPATCHERS: set[threading.Thread] = set()
 _SHUTTING_DOWN = threading.Event()
 
 
+class _DeferredInterrupt:
+    """Runs steps to completion, holding a KeyboardInterrupt until all have finished."""
+
+    def __init__(self) -> None:
+        self.interrupt: KeyboardInterrupt | None = None
+
+    def run(self, step: Callable[[], object]) -> None:
+        while True:
+            try:
+                step()
+                return
+            except KeyboardInterrupt as error:
+                self.interrupt = self.interrupt or error
+
+    def reraise(self) -> None:
+        if self.interrupt is not None:
+            raise self.interrupt
+
+
 def _stop_all(subscriptions: Iterable[Subscription]) -> None:
     """Stop delivery for every subscription even if an interrupt arrives meanwhile.
 
     Stopping never blocks on a callback, so a KeyboardInterrupt is held until every
-    subscription has stopped and is then re-raised; the later joins stay interruptible.
+    subscription has stopped and is then re-raised; ParamStore.close() joins stay
+    interruptible.
     """
-    interrupted: KeyboardInterrupt | None = None
+    deferred = _DeferredInterrupt()
     for subscription in subscriptions:
-        while True:
-            try:
-                subscription._stop_delivery()
-                break
-            except KeyboardInterrupt as error:
-                interrupted = interrupted or error
-    if interrupted is not None:
-        raise interrupted
+        deferred.run(subscription._stop_delivery)
+    deferred.reraise()
 
 
 def _log_exception(message: str) -> None:
@@ -155,24 +169,32 @@ class Subscription:
 
 
 def _close_live_subscriptions() -> None:
-    """DEC-26-007: close every subscription and join every dispatcher before finalization."""
+    """DEC-26-007: close every subscription and join every dispatcher before finalization.
+
+    A KeyboardInterrupt during exit is held until every dispatcher has been joined, so
+    exit always reaches quiescence first; a callback that never returns therefore
+    blocks exit even across Ctrl-C.
+    """
     current = threading.current_thread()
+    deferred = _DeferredInterrupt()
     while True:
         with _LIVE_LOCK:
             _SHUTTING_DOWN.set()
             live = list(_LIVE)
             dispatchers = [thread for thread in _DISPATCHERS if thread is not current]
         if not live and not dispatchers:
-            return
-        # Stop all delivery before any join: an interrupted exit then starts no new callback.
-        _stop_all(live)
+            break
+        # Stop all delivery before any join, so no new callback starts meanwhile.
         for subscription in live:
-            subscription.close()
+            deferred.run(subscription._stop_delivery)
+        for subscription in live:
+            deferred.run(subscription.close)
         for thread in dispatchers:
-            thread.join()
+            deferred.run(thread.join)
         with _LIVE_LOCK:
             _LIVE.difference_update(live)
             _DISPATCHERS.difference_update(dispatchers)
+    deferred.reraise()
 
 
 atexit.register(_close_live_subscriptions)
