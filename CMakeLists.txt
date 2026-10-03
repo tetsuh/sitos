@@ -164,6 +164,7 @@ endif()
 if(SITOS_BUILD_PYTHON)
   nanobind_add_module(_sitos MODULE
     python/bindings/buffer_publisher.cpp
+    python/bindings/callback_dispatcher.cpp
     python/bindings/client_binding.cpp
     python/bindings/gil_boundary.cpp
     python/bindings/module.cpp
@@ -200,6 +201,7 @@ if(SITOS_BUILD_PYTHON)
     python/sitos/publisher.py
     python/sitos/store.py
     python/sitos/engine.py
+    python/sitos/subscription.py
     python/sitos/node.py
     python/sitos/__init__.pyi
     python/sitos/_sitos.pyi
@@ -207,6 +209,7 @@ if(SITOS_BUILD_PYTHON)
     python/sitos/publisher.pyi
     python/sitos/store.pyi
     python/sitos/engine.pyi
+    python/sitos/subscription.pyi
     python/sitos/node.pyi
     python/sitos/py.typed
     DESTINATION sitos COMPONENT python)

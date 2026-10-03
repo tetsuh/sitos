@@ -26,6 +26,7 @@ void BindBufferPublisher(nanobind::module_& python_module);
 void BindStorageNode(nanobind::module_& python_module);
 namespace sitos::python::detail {
 void BindStorageEngineTrampoline(nanobind::module_& python_module);
+void BindCallbackDispatcher(nanobind::module_& python_module);
 }
 
 namespace nb = nanobind;
@@ -60,6 +61,7 @@ NB_MODULE(_sitos, python_module) {
   python_module.def("encode_value", &EncodeValue, "value"_a);
   python_module.def("decode_value", &DecodeValue, "payload"_a);
   sitos::python::detail::RegisterClientExceptions(python_module);
+  sitos::python::detail::BindCallbackDispatcher(python_module);
   BindParamStore(python_module);
   BindParamCache(python_module);
   BindBufferPublisher(python_module);

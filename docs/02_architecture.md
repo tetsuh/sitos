@@ -673,7 +673,7 @@ undeclares the native handle, waits for native callbacks, queued work, user call
 and guarantees no callback or LogSink invocation after return. Callback exceptions are contained and
 logged. Callbacks may submit nonblocking writes but must not perform blocking reads or subscription
 lifecycle operations from within the callback. This boundary is specified by ADR-0030; Python
-callback dispatch remains Issue #26.
+callback dispatch is specified in [05](05_api_python.md) §2.1.1 and §3.
 
 ## 8. Session Lifecycle (Overall Sequence)
 

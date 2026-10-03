@@ -1,4 +1,4 @@
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import TypeAlias, TypeVar, overload
 
 from ._sitos import (
@@ -14,6 +14,7 @@ from ._sitos import (
     TimeoutError as TimeoutError,
     TypeMismatchError as TypeMismatchError,
 )
+from .subscription import ParamChange as ParamChange, Subscription as Subscription
 
 BatchEntries: TypeAlias = Mapping[str, ParamInput] | Iterable[tuple[str, ParamInput]]
 _DefaultT = TypeVar("_DefaultT")
@@ -85,3 +86,6 @@ class ParamStore:
     ) -> bytes | _DefaultT: ...
     def contains(self, scope: str, key: str) -> bool: ...
     def list(self, scope: str, prefix: str = ...) -> Iterator[tuple[str, ParamValue]]: ...
+    def subscribe(
+        self, scope: str, prefix: str, callback: Callable[[ParamChange], object]
+    ) -> Subscription: ...
