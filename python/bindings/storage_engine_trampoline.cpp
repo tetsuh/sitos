@@ -119,43 +119,29 @@ std::optional<std::vector<std::byte>> CallGet(const nb::handle& reader, std::str
 Entries CallList(const nb::handle& reader, std::string_view prefix) {
   return WithGil([&]() -> Entries {
     Entries entries;
-    const char* problem = nullptr;
     try {
       nb::object result = reader.attr("list")(nb::str(prefix.data(), prefix.size()));
       for (nb::handle item : result) {
-        if (!PyTuple_CheckExact(item.ptr()) || PyTuple_GET_SIZE(item.ptr()) != 2) {
-          problem = "returned an entry that is not a (str, bytes) pair";
-          break;
+        PyObject* key = nullptr;
+        PyObject* value = nullptr;
+        if (PyTuple_CheckExact(item.ptr()) && PyTuple_GET_SIZE(item.ptr()) == 2) {
+          key = PyTuple_GET_ITEM(item.ptr(), 0);
+          value = PyTuple_GET_ITEM(item.ptr(), 1);
         }
-        PyObject* key = PyTuple_GET_ITEM(item.ptr(), 0);
-        PyObject* value = PyTuple_GET_ITEM(item.ptr(), 1);
-        if (!PyUnicode_Check(key) || !PyBytes_CheckExact(value)) {
-          problem = "returned an entry that is not a (str, bytes) pair";
-          break;
+        if (key == nullptr || !PyUnicode_Check(key) || !PyBytes_CheckExact(value)) {
+          LogEngineMessage("list", "returned an entry that is not a (str, bytes) pair");
+          throw EngineFailure("Python storage engine list returned an invalid entry");
         }
         Py_ssize_t size = 0;
         const char* utf8 = PyUnicode_AsUTF8AndSize(key, &size);
         if (utf8 == nullptr) throw nb::python_error();
-        std::string key_text(utf8, static_cast<std::size_t>(size));
-        if (!key_text.starts_with(prefix)) {
-          problem = "returned a key outside the requested prefix";
-          break;
-        }
-        entries.emplace_back(std::move(key_text), CopyBytes(value));
+        entries.emplace_back(std::string(utf8, static_cast<std::size_t>(size)), CopyBytes(value));
       }
     } catch (nb::python_error& error) {
       LogPythonError("list", error);
       throw EngineFailure("Python storage engine list raised");
     }
-    if (problem == nullptr) {
-      std::ranges::sort(entries, {}, &Entries::value_type::first);
-      const auto duplicate = std::ranges::adjacent_find(entries, {}, &Entries::value_type::first);
-      if (duplicate != entries.end()) problem = "returned a duplicate key";
-    }
-    if (problem != nullptr) {
-      LogEngineMessage("list", problem);
-      throw EngineFailure("Python storage engine list returned invalid entries");
-    }
+    std::ranges::sort(entries, {}, &Entries::value_type::first);
     return entries;
   });
 }

@@ -246,10 +246,6 @@ class FailingEngine(DictEngine):
     def list(self, prefix: str) -> Iterable[tuple[str, bytes]]:
         if self.mode == "raise":
             raise KeyError("engine list failure for the test")
-        if self.mode == "outside-prefix":
-            return [("elsewhere", b"v")]
-        if self.mode == "duplicate":
-            return [("a", b"1"), ("a", b"2")]
         if self.mode == "bad-shape":
             return [("a", b"1", b"extra")]
         return super().list(prefix)
@@ -282,7 +278,7 @@ def test_get_failures_surface_as_engine_failures(
     assert [record.name for record in caplog.records] == ["sitos"]
 
 
-@pytest.mark.parametrize("mode", ["raise", "outside-prefix", "duplicate", "bad-shape"])
+@pytest.mark.parametrize("mode", ["raise", "bad-shape"])
 def test_list_failures_surface_as_engine_failures(
     mode: str, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -643,79 +639,6 @@ def test_python_thread_node_calls_do_not_deadlock_with_engine_calls() -> None:
     assert lines[-1] == "STOPPED", (out, err)
     assert len(lines) == 2 and lines[0].startswith("STRESS_ROUNDS "), (out, err)
     assert int(lines[0].split()[1]) > 0, (out, err)
-
-
-_CONSTRUCTION_EXIT_SCRIPT = textwrap.dedent(
-    """
-    import sys
-    import threading
-    import time
-
-    import sitos
-    from sitos import _sitos
-
-    node_config = sys.argv[1]
-
-
-    class Engine(sitos.StorageEngine):
-        def get(self, key):
-            return None
-
-        def list(self, prefix):
-            return []
-
-        def put(self, key, value):
-            return None
-
-        def delete(self, key):
-            return None
-
-
-    nodes = []
-
-
-    def construct():
-        try:
-            # Keep the node referenced: its destructor must not run on this daemon thread.
-            nodes.append(
-                sitos.StorageNode(
-                    Engine(), prefix="sitos/construction", zenoh_config_json=node_config
-                )
-            )
-            print("CONSTRUCTED", flush=True)
-        except BaseException as error:
-            print(f"CONSTRUCT_FAILED {type(error).__name__}", flush=True)
-
-
-    # Hold construction at its native boundary, then exit while it is in progress; a daemon
-    # timer lets it continue only after the exit handlers have started.
-    _sitos._gil_test_arm("constructor")
-    threading.Thread(target=construct, daemon=True).start()
-    if not _sitos._gil_test_wait("constructor", 20000):
-        raise SystemExit("construction never reached the boundary")
-    timer = threading.Timer(0.3, _sitos._gil_test_release, args=("constructor",))
-    timer.daemon = True
-    timer.start()
-    print("EXITING", flush=True)
-    """
-)
-
-
-def test_interpreter_exit_waits_for_a_node_under_construction() -> None:
-    if getattr(sitos._sitos, "_gil_test_arm", None) is None:
-        pytest.skip("SITOS_PYTHON_TEST_SUPPORT is unavailable")
-    completed = subprocess.run(
-        [sys.executable, "-c", _CONSTRUCTION_EXIT_SCRIPT, _config("peer", _free_port())],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        env=os.environ.copy(),
-    )
-    assert completed.returncode == 0, completed.stderr
-    assert sorted(completed.stdout.split()) == ["CONSTRUCTED", "EXITING"], (
-        completed.stdout,
-        completed.stderr,
-    )
 
 
 def test_interpreter_exit_stops_a_node_with_an_in_flight_python_engine_call() -> None:

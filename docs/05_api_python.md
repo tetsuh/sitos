@@ -224,9 +224,9 @@ A `sitos.StorageEngine` subclass implements the C++ `StorageEngine` contract
 * Keys are relative strings and values are opaque payload bytes.
 * `put` and `delete` report failure only by returning `False` or raising.
 * `get` returns exactly `bytes` or `None`.
-* `list` returns `(str, bytes)` tuples in any order. sitos materializes the whole result,
-  rejects a malformed entry, a key outside the prefix, or a duplicate key, and delivers the entries
-  in ascending key order before any native consumer runs (DEC-28-003).
+* `list` returns unique `(str, bytes)` tuples for keys under the prefix, in any order. sitos
+  materializes the whole result, rejects an entry that is not such a tuple, and delivers the
+  entries in ascending key order before any native consumer runs (DEC-28-003).
 
 An exception raised by an engine method is logged with its traceback on
 `logging.getLogger("sitos")` and treated as an engine failure: writes fail, acknowledged writes
@@ -245,10 +245,9 @@ engine for production throughput.
 
 At interpreter exit, an `atexit` handler stops every StorageNode that uses a Python engine, which
 waits for in-flight engine calls before finalization. Starting such a node during interpreter
-shutdown raises `RuntimeError` (DEC-28-007). The exit handler also waits for a node that another
-thread is still constructing. The node's reference to the engine is released with the GIL held.
-As with any native extension, a daemon thread that is still running sitos operations when the
-interpreter finalizes can abort the process; finish or join such threads before exit.
+shutdown raises `RuntimeError` (DEC-28-007). The node's reference to the engine is released with
+the GIL held. Error handling is kept minimal (DEC-26-011): abnormal cases such as constructing a
+node on a daemon thread during interpreter exit are not supported.
 
 ### 2.5 SessionView (Issue #25)
 

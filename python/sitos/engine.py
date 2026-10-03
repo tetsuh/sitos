@@ -18,10 +18,9 @@ class StorageReader:
         raise NotImplementedError
 
     def list(self, prefix: str) -> Iterable[tuple[str, bytes]]:
-        """Return `(key, value)` pairs whose key starts with `prefix`, in any order.
+        """Return unique `(key, value)` pairs whose key starts with `prefix`, in any order.
 
-        sitos materializes the result, rejects malformed pairs, keys outside `prefix`,
-        and duplicate keys, and delivers the entries in ascending key order.
+        sitos materializes the result and delivers the entries in ascending key order.
         """
         raise NotImplementedError
 
