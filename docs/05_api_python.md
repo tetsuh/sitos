@@ -136,8 +136,8 @@ joins every dispatcher thread, including one whose callback is still running aft
 subscription; a Ctrl-C during exit is held until those joins finish, and `subscribe` then raises
 `RuntimeError` (DEC-26-007). A Ctrl-C that interrupts `Subscription.close()` or `ParamStore.close()`
 while it waits for a callback is raised after delivery has already stopped (and, for
-`ParamStore.close()`, after the store has closed); the interrupted join completes at exit. Fork and subinterpreters are
-not supported while subscriptions are live.
+`ParamStore.close()`, after the store has closed); the interrupted join completes at exit.
+Fork and subinterpreters are not supported while subscriptions are live.
 
 ### 2.2 BufferPublisher
 
