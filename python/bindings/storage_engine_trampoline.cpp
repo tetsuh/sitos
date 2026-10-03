@@ -85,7 +85,9 @@ class PythonReference {
   PyObject* object_;
 };
 
-/// Runs `call` holding the GIL, or throws when the interpreter can no longer run Python.
+/// Runs `call` holding the GIL, or throws when the interpreter can no longer run Python. The
+/// check is a best-effort backstop: the exit handler stops every Python-engine node, waiting for
+/// in-flight calls, before finalization (DEC-28-007).
 template <typename Call>
 auto WithGil(Call&& call) {
   if (!PythonUsable()) throw EngineFailure("Python interpreter is finalizing");

@@ -289,11 +289,14 @@ concurrently, so the engine must protect its own state (DEC-28-006). StorageNode
 release the GIL around native node work. Python engines suit prototypes and tests; prefer a C++
 engine for production throughput.
 
-At interpreter exit, an `atexit` handler stops every StorageNode that uses a Python engine, which
-waits for in-flight engine calls before finalization. Starting such a node during interpreter
-shutdown raises `RuntimeError` (DEC-28-007). The node's reference to the engine is released with
-the GIL held. Error handling is kept minimal (DEC-26-011): abnormal cases such as constructing a
-node on a daemon thread during interpreter exit are not supported.
+At interpreter exit, an `atexit` handler stops every StorageNode that uses a Python engine before
+finalization begins. Stopping waits for every in-flight engine call, including one that is still
+waiting for the GIL, which the handler releases while it waits; this stop is what keeps engine calls
+out of a finalizing interpreter. The adapter's own finalization check is only a best-effort
+backstop. Starting such a node during interpreter shutdown raises `RuntimeError` (DEC-28-007). The
+node's reference to the engine is released with the GIL held. Error handling is kept minimal
+(DEC-26-011): abnormal cases such as constructing a node on a daemon thread during interpreter exit
+are not supported.
 
 ### 2.5 SessionView (Issue #25)
 
