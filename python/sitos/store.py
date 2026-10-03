@@ -42,10 +42,15 @@ class ParamStore(_sitos.ParamStore):
         with self._subscriptions_lock:
             closing = self._closing
             if not closing:
-                # Start under the lock so a concurrent close() either sees this
-                # subscription or prevents it from ever starting.
-                subscription._start()
+                # Register, then start under the lock: a concurrent close() either sees this
+                # subscription or prevents it from ever starting, and an interrupt after
+                # the start cannot leave it unreachable from close().
                 self._subscriptions.add(subscription)
+                try:
+                    subscription._start()
+                except BaseException:
+                    self._subscriptions.discard(subscription)
+                    raise
         if closing:
             subscription.close()
             raise ValueError("ParamStore is closed")
@@ -71,11 +76,17 @@ class ParamStore(_sitos.ParamStore):
                 self._close_done.wait()
             return
         try:
+            # Stop all delivery before any join, so an interrupted join cannot leave a
+            # subscription delivering behind a store that reports itself closed.
+            for subscription in subscriptions:
+                subscription._stop_delivery()
             for subscription in subscriptions:
                 subscription.close()
-            super().close()
         finally:
-            self._close_done.set()
+            try:
+                super().close()
+            finally:
+                self._close_done.set()
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool:
         self.close()

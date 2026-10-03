@@ -128,7 +128,8 @@ in-flight callback with the GIL released, and returns only when no further callb
 (DEC-26-004). Called from the subscription's own callback, it returns without waiting. Closing
 another subscription from a callback waits for that subscription's in-flight callback, so two
 callbacks must not close each other's subscriptions. A subscription stays active until it or its
-store is closed; `ParamStore.close()` closes every subscription of that store first, and a
+store is closed; destroying a ParamStore object without `close()` does not close them.
+`ParamStore.close()` stops delivery for every subscription of that store, then joins them, and a
 concurrent second `close()` waits for the first one to finish unless it is called from one of
 that store's callbacks. At interpreter exit an `atexit` handler closes every live subscription and
 joins every dispatcher thread, including one whose callback is still running after closing its own

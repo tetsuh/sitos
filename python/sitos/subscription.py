@@ -23,6 +23,14 @@ _DISPATCHERS: set[threading.Thread] = set()
 _SHUTTING_DOWN = threading.Event()
 
 
+def _log_exception(message: str) -> None:
+    # A raising logging filter or handler must not end dispatch (DEC-26-005).
+    try:
+        _LOGGER.exception(message)
+    except Exception:
+        pass
+
+
 @dataclass(frozen=True, slots=True)
 class ParamChange:
     """One relative-key change delivered to a subscription callback (DEC-26-001)."""
@@ -65,6 +73,9 @@ class Subscription:
                     self._thread.start()
                 except BaseException:
                     self._stop_delivery()
+                    if self._thread.ident is not None:
+                        # Interrupted after the thread began: it must still be joined at exit.
+                        _DISPATCHERS.add(self._thread)
                     raise
                 _LIVE.add(self)
                 _DISPATCHERS.add(self._thread)
@@ -106,7 +117,7 @@ class Subscription:
                 except Exception:
                     # The change was dequeued but could not be converted (for example a STR
                     # value that is not valid UTF-8): report it and keep later changes flowing.
-                    _LOGGER.exception("sitos subscription change could not be converted; skipped")
+                    _log_exception("sitos subscription change could not be converted; skipped")
                     continue
                 if item is None or self._closed:
                     return
@@ -114,10 +125,10 @@ class Subscription:
                     self._callback(ParamChange(*item))
                 except Exception:
                     # DEC-26-005: report and keep dispatching later changes.
-                    _LOGGER.exception("sitos subscription callback raised; dispatch continues")
+                    _log_exception("sitos subscription callback raised; dispatch continues")
                 except BaseException:
                     # SystemExit and similar end this thread; report before closing.
-                    _LOGGER.exception("sitos subscription callback raised; subscription closed")
+                    _log_exception("sitos subscription callback raised; subscription closed")
                     raise
         finally:
             # A BaseException ends this thread; stop native delivery so nothing queues unread.
@@ -135,6 +146,9 @@ def _close_live_subscriptions() -> None:
             dispatchers = [thread for thread in _DISPATCHERS if thread is not current]
         if not live and not dispatchers:
             return
+        # Stop all delivery before any join: an interrupted exit then starts no new callback.
+        for subscription in live:
+            subscription._stop_delivery()
         for subscription in live:
             subscription.close()
         for thread in dispatchers:
