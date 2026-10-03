@@ -356,9 +356,7 @@ def test_store_close_closes_its_subscriptions(node: tuple[str, int]) -> None:
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
-def test_base_exception_in_callback_stops_delivery(
-    store: sitos.ParamStore, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_base_exception_in_callback_stops_delivery(store: sitos.ParamStore) -> None:
     prefix = _unique("system_exit")
     received: list[str] = []
 
@@ -366,14 +364,9 @@ def test_base_exception_in_callback_stops_delivery(
         received.append(change.key)
         raise SystemExit("leave the dispatcher")
 
-    with caplog.at_level(logging.ERROR, logger="sitos"):
-        subscription = store.subscribe("base", prefix, callback)
-        store.put("base", f"{prefix}first", 1)
-        _wait_until(lambda: not subscription._thread.is_alive(), "dispatcher kept running")
-    records = [record for record in caplog.records if record.name == "sitos"]
-    assert len(records) == 1
-    assert records[0].exc_info is not None
-    assert isinstance(records[0].exc_info[1], SystemExit)
+    subscription = store.subscribe("base", prefix, callback)
+    store.put("base", f"{prefix}first", 1)
+    _wait_until(lambda: not subscription._thread.is_alive(), "dispatcher kept running")
     # The dispatcher closed native delivery on exit, so later changes are not queued unread.
     assert subscription._closed
     store.put("base", f"{prefix}later", 2)
@@ -381,36 +374,6 @@ def test_base_exception_in_callback_stops_delivery(
     assert received == [f"{prefix}first"]
     assert subscription._channel._pending() == 0  # nothing queues unread
     subscription.close()
-
-
-def test_concurrent_store_close_waits_for_the_first_close(node: tuple[str, int]) -> None:
-    prefix, port = node
-    key_prefix = _unique("concurrent_close")
-    store = sitos.ParamStore(prefix=prefix, zenoh_config_json=_client_config(port))
-    started = threading.Event()
-    release = threading.Event()
-
-    def slow(change: sitos.ParamChange) -> None:
-        started.set()
-        release.wait(_DEADLINE)
-
-    store.subscribe("base", key_prefix, slow)
-    store.put("base", f"{key_prefix}block", 1, ack=False)
-    assert started.wait(_DEADLINE)
-
-    first = threading.Thread(target=store.close)
-    first.start()
-    _wait_until(lambda: store._closing, "first close did not start")
-    with pytest.raises(ValueError, match="ParamStore is closed"):
-        store.subscribe("base", key_prefix, lambda change: None)
-    second = threading.Thread(target=store.close)
-    second.start()
-    second.join(0.3)
-    assert second.is_alive(), "a second close returned before the first finished"
-    release.set()
-    first.join(_DEADLINE)
-    second.join(_DEADLINE)
-    assert not first.is_alive() and not second.is_alive()
 
 
 def test_store_close_from_two_callbacks_does_not_deadlock(node: tuple[str, int]) -> None:
@@ -516,123 +479,6 @@ def test_unconvertible_change_is_logged_and_skipped(caplog: pytest.LogCaptureFix
             process.stdin.write("STOP\n")
             process.stdin.flush()
         process.wait(timeout=_DEADLINE)
-
-
-def test_interrupted_store_close_still_stops_all_delivery_and_closes_the_store(
-    node: tuple[str, int], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    prefix, port = node
-    key_prefix = _unique("interrupted_close")
-    received: list[str] = []
-    store = sitos.ParamStore(prefix=prefix, zenoh_config_json=_client_config(port))
-    first = store.subscribe("base", f"{key_prefix}a/", lambda change: received.append(change.key))
-    second = store.subscribe("base", f"{key_prefix}b/", lambda change: received.append(change.key))
-    original_close = sitos.subscription.Subscription.close
-    interrupted: list[bool] = []
-
-    def interrupting_close(subscription: sitos.Subscription) -> None:
-        if not interrupted:
-            interrupted.append(True)
-            raise KeyboardInterrupt  # stands in for Ctrl-C during the first join
-        original_close(subscription)
-
-    monkeypatch.setattr(sitos.subscription.Subscription, "close", interrupting_close)
-    with pytest.raises(KeyboardInterrupt):
-        store.close()
-    monkeypatch.setattr(sitos.subscription.Subscription, "close", original_close)
-    assert first._closed and second._closed
-    with pytest.raises(ValueError, match="ParamStore is closed"):
-        store.get("base", "ready")
-    store.close()
-    first.close()
-    second.close()
-    assert received == []
-
-
-def test_raising_log_filter_does_not_stop_dispatch(store: sitos.ParamStore) -> None:
-    prefix = _unique("log_filter")
-    received: list[str] = []
-
-    def callback(change: sitos.ParamChange) -> None:
-        received.append(change.key)
-        if len(received) == 1:
-            raise RuntimeError("callback failure for the test")
-
-    def raising_filter(record: logging.LogRecord) -> bool:
-        raise ZeroDivisionError("filter failure for the test")
-
-    logger = logging.getLogger("sitos")
-    logger.addFilter(raising_filter)
-    try:
-        with store.subscribe("base", prefix, callback):
-            for index in range(3):
-                store.put("base", f"{prefix}{index}", index)
-            _wait_until(lambda: len(received) == 3, f"received only {received}")
-    finally:
-        logger.removeFilter(raising_filter)
-
-
-def test_interrupted_exit_handler_still_stops_and_joins_every_subscription(
-    store: sitos.ParamStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    subscriptions = [
-        store.subscribe("base", _unique(f"exit_stop/{index}"), lambda change: None)
-        for index in range(3)
-    ]
-    original_close = sitos.subscription.Subscription.close
-    interrupts: list[sitos.Subscription] = []
-
-    def interrupting_close(subscription: sitos.Subscription) -> None:
-        # Ctrl-C during each subscription's first join attempt in the exit handler.
-        if subscription not in interrupts:
-            interrupts.append(subscription)
-            raise KeyboardInterrupt
-        original_close(subscription)
-
-    monkeypatch.setattr(sitos.subscription.Subscription, "close", interrupting_close)
-    try:
-        with pytest.raises(KeyboardInterrupt):
-            sitos.subscription._close_live_subscriptions()
-        assert all(subscription._closed for subscription in subscriptions)
-        assert not any(subscription._thread.is_alive() for subscription in subscriptions)
-        assert not any(
-            subscription._thread in sitos.subscription._DISPATCHERS
-            for subscription in subscriptions
-        )
-    finally:
-        monkeypatch.setattr(sitos.subscription.Subscription, "close", original_close)
-        sitos.subscription._SHUTTING_DOWN.clear()
-        for subscription in subscriptions:
-            subscription.close()
-
-
-def test_store_close_stops_every_subscription_despite_an_interrupt_while_stopping(
-    node: tuple[str, int], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    prefix, port = node
-    store = sitos.ParamStore(prefix=prefix, zenoh_config_json=_client_config(port))
-    subscriptions = [
-        store.subscribe("base", _unique(f"stop_interrupt/{index}"), lambda change: None)
-        for index in range(3)
-    ]
-    original_stop = sitos.subscription.Subscription._stop_delivery
-    interrupted: list[bool] = []
-
-    def interrupting_stop(subscription: sitos.Subscription) -> None:
-        original_stop(subscription)
-        if not interrupted:
-            interrupted.append(True)
-            raise KeyboardInterrupt  # stands in for Ctrl-C right after the first stop
-
-    monkeypatch.setattr(sitos.subscription.Subscription, "_stop_delivery", interrupting_stop)
-    with pytest.raises(KeyboardInterrupt):
-        store.close()
-    monkeypatch.setattr(sitos.subscription.Subscription, "_stop_delivery", original_stop)
-    assert all(subscription._closed for subscription in subscriptions)
-    with pytest.raises(ValueError, match="ParamStore is closed"):
-        store.get("base", "ready")
-    for subscription in subscriptions:
-        subscription.close()
 
 
 def test_slow_subscription_does_not_delay_another(store: sitos.ParamStore) -> None:

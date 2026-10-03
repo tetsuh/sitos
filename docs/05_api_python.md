@@ -117,11 +117,10 @@ drains the queue holding the GIL and calls the callback serially. Nothing is dro
 no backpressure: a callback slower than the update rate grows the queue without bound (DEC-26-003).
 Because callbacks run on the dispatcher thread rather than a native thread, they may call `get`,
 `list`, acknowledged `put`/`put_batch`, and other ParamStore operations; a blocking call only
-delays this subscription's later notifications. An exception raised by a callback is logged with
-its traceback through `logging.getLogger("sitos")` and dispatch continues (DEC-26-005); a
-`BaseException` such as `SystemExit` is logged the same way, then ends the dispatcher and closes
-the subscription. A change that cannot be converted to Python, such as a STR value that is not
-valid UTF-8, is logged on the same logger and skipped; later changes are still delivered.
+delays this subscription's later notifications. An `Exception` raised by a callback, or by
+converting a change (for example a STR value that is not valid UTF-8), is logged with its traceback
+through `logging.getLogger("sitos")`, that change is skipped, and dispatch continues (DEC-26-005).
+A `BaseException` such as `SystemExit` ends the dispatcher and closes the subscription.
 
 `Subscription.close()` stops native delivery, discards changes that have not started, waits for an
 in-flight callback with the GIL released, and returns only when no further callback can start
@@ -129,15 +128,12 @@ in-flight callback with the GIL released, and returns only when no further callb
 another subscription from a callback waits for that subscription's in-flight callback, so two
 callbacks must not close each other's subscriptions. A subscription stays active until it or its
 store is closed; destroying a ParamStore object without `close()` does not close them.
-`ParamStore.close()` stops delivery for every subscription of that store, then joins them, and a
-concurrent second `close()` waits for the first one to finish unless it is called from one of
-that store's callbacks. At interpreter exit an `atexit` handler closes every live subscription and
-joins every dispatcher thread, including one whose callback is still running after closing its own
-subscription; a Ctrl-C during exit is held until those joins finish, and `subscribe` then raises
-`RuntimeError` (DEC-26-007). A Ctrl-C that interrupts `Subscription.close()` or `ParamStore.close()`
-while it waits for a callback is raised after delivery has already stopped (and, for
-`ParamStore.close()`, after the store has closed); the interrupted join completes at exit.
-Fork and subinterpreters are not supported while subscriptions are live.
+`ParamStore.close()` closes every subscription of that store, then the store. At interpreter exit an
+`atexit` handler closes every live subscription and joins every dispatcher thread, including one
+whose callback is still running after closing its own subscription; `subscribe` then raises
+`RuntimeError` (DEC-26-007). Error handling is kept minimal (DEC-26-011): concurrent `close()`
+calls, Ctrl-C during `close()` or exit (DEC-26-010), failing logging handlers, fork, and
+subinterpreters are not supported while subscriptions are live.
 
 ### 2.2 BufferPublisher
 
