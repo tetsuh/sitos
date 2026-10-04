@@ -15,6 +15,7 @@ A standard zenoh client can interoperate with sitos simply by following this spe
 <prefix>/buffers/<sid>/ephemeral/<key>
 <prefix>/meta/session/<sid>
 <prefix>/meta/ack/<uuid>
+<prefix>/meta/live/session/<sid>/<generation_uuid>   # liveliness token [ADR-0037]
 <prefix>/base/:batch                 # batch delivery [ADR-0018]
 <prefix>/session/<sid>/:batch        # batch delivery [ADR-0018]
 ```
@@ -430,6 +431,31 @@ changes on same-SID recreation and is required for Issue #107 BufferPublisher di
 or missing values are a type mismatch to that client. See ADR-0035.
 
 Deleted by CloseSession. A completed deletion (`deleted`) and an unknown sid return 0 replies.
+
+### 7.2 Session liveliness token
+
+> **Normative implementation:** Accepted ADR-0037 owns this mechanism; Issue #20 implements it.
+
+StorageNode declares one Zenoh liveliness token for each `active` Session:
+
+```
+<prefix>/meta/live/session/<sid>/<generation_uuid>
+```
+
+`<generation_uuid>` is the same canonical lowercase UUIDv4 text as the `generation_uuid` field of
+`meta/session/<sid>` (§7.1). The token carries no payload. It lives in the Zenoh liveliness space:
+ordinary subscribers and queryables on `<prefix>/**` never receive it, and it is not a parameter or
+buffer key.
+
+* The token is declared after the Session serves `snap/<sid>` and `session/<sid>` reads, and it is
+  withdrawn when the Session stops being active (`CloseSession`, `RetainSession`, node `Stop`).
+  Zenoh withdraws it when the node's session closes or is lost. A `retained`, `orphaned`,
+  `deleting`, or `delete_failed` Session has no token.
+* A liveliness subscriber on `<prefix>/meta/live/session/<sid>/*` observes a Put when a
+  generation's token appears and a Delete when it disappears. A subscriber declared with history
+  also receives a Put for each token that already exists.
+* ParamCache uses these events to report a stale cache and to rebuild it ([02] §5.1). A raw Zenoh
+  client may subscribe in the same way; no client publishes under this key.
 
 ## 8. Versioning [C04]
 

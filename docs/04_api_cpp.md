@@ -105,6 +105,9 @@ using ListSink = std::function<bool(std::string_view key, const ParamValue&)>;
 class Subscription;
 class Queryable;
 
+/// RAII handle for a liveliness token (ADR-0037). Destruction withdraws it.
+class LivelinessToken;
+
 } // namespace sitos
 ```
 
@@ -117,6 +120,14 @@ strictly positive; successful Get returns after terminal reply completion with n
 sink callback (ADR-0020). `ParamStore`/`ParamCache`/`StorageNode` do not expose raw zenoh-c
 types in the public API. An injected `std::shared_ptr<Transport>` can be passed directly to
 `ParamStore::Open`; configuration-aware Zenoh session creation remains an internal factory detail.
+
+`Transport` also has an optional liveliness capability (ADR-0037 §D3): `SupportsLiveliness()`,
+`DeclareLivelinessToken(key)`, and `DeclareLivelinessSubscriber(keyexpr, callback)`. The defaults
+return `false` and `Status::InvalidArgument`, so existing custom Transports compile unchanged. A
+liveliness subscriber always requests history and receives a `TransportSample` that carries only
+the token key and its kind (`Put` when the token appears, `Delete` when it disappears). Its
+callback can run inside a token declaration or withdrawal and must not block. The Zenoh Transport
+provides the capability.
 
 ### 1.1 Status / Python Exception Mapping
 
@@ -342,6 +353,15 @@ contract is `absent → Creating → Active` for `CreateSession` and
 `std::errc::no_such_file_or_directory`. The creator commits only after verifying under
 `session_mutex` that the same reservation still exists and remains `Creating`.
 
+On a Transport with the liveliness capability, an `Active` Session holds one liveliness token,
+`<prefix>/meta/live/session/<sid>/<generation_uuid>` (ADR-0037, [03] §7.2). `CreateSession`
+declares it after the Session is active; `CloseSession`, `RetainSession`, and `Stop` withdraw it.
+StorageNode declares and withdraws the token without holding the locks that guard the Session
+table, the catalog, or request handling, and keeps it only while the Session is active, so a
+`CreateSession` that races a close leaves no token behind. A liveliness callback must not call
+`Start` or `Stop` on the node. A failed declaration is
+logged as a warning and does not fail `CreateSession`; caches of that Session then report stale.
+
 A node-level host factory creates at most one durable `StorageEngine` for each Session that enables
 the durable capability; all durable keys in that Session share it. The factory result is uniquely
 owned by the Session, and RocksDB types and filesystem paths remain outside this public API.
@@ -496,6 +516,7 @@ class ParamCache {
 
   Result<void> Attach(std::string_view sid);
   void Detach() noexcept;
+  bool IsStale() const noexcept;  // ADR-0037
 };
 ```
 
@@ -550,7 +571,31 @@ call returns
 completion before the deadline is `Status::Timeout`; a receiver-side failure preserves its exact
 Status and message, including `OutcomeUnknown` and `Disconnected`. `Detach`, move assignment,
 destruction, and Python `close` complete an admitted wait with `Status::Disconnected` and quiesce
-before releasing state. Stale/reconnect behavior is future #20 behavior.
+before releasing state.
+
+**Session liveness and recovery (Issue #20, ADR-0037).** `bool IsStale() const noexcept` is true
+while the cache is attached and not bound to a live generation of its Session: the StorageNode
+Session that served it was closed, retained, stopped, or became unreachable, or its liveliness
+token has not been observed yet. The flag is advisory:
+
+* Reads keep returning last-known values while stale, with the same results and cost as before.
+* `Put`, `PutBatch`, and `WaitForLocalDelivery` are admitted as usual. The StorageNode is
+  authoritative, so a write made while stale can be replaced when the cache is rebuilt.
+* When an active Session with the same `sid` appears, one recovery worker thread per attached cache
+  rebuilds the cache with the Attach sequence and swaps the result in atomically. `IsStale()`
+  becomes false at the swap. A failed rebuild is retried at a fixed internal interval and is not
+  reported to the caller.
+* A call that races the swap completes as it does when it races `Detach`; a retry uses the new
+  state. A rebuild starts a new attach generation, so an admitted `WaitForLocalDelivery` completes
+  with `Status::Disconnected`.
+* `Attach` to a Session whose token was not announced before its first read succeeds and starts
+  stale; this includes a Session that does not exist yet. A failed liveliness declaration or worker
+  start fails `Attach`.
+* `Detach`, destruction, and move assignment stop the worker and may wait for one in-flight
+  recovery read, at most `ClientConfig::query_timeout`.
+* `IsStale()` returns false for a detached or moved-from cache, and always on a Transport without
+  the liveliness capability, where nothing else changes. A cache attached to a StorageNode that
+  declares no token stays stale.
 ## 6. SessionView — Read-Only Composite View
 
 `SessionView` is the host-process facade for an active session. It is opened through the Result-based
@@ -582,7 +627,7 @@ Large binary values belong to the route-selected `buffers/<sid>/durable/**` or
 |---|---|
 | `ParamValue` | Immutable. Can be freely shared |
 | `ParamStore` | All methods may be called concurrently |
-| `ParamCache` | Attach/Detach and local write sequencing are synchronized internally. Local reads are cache-only; stale/reconnect behavior is future #20 behavior |
+| `ParamCache` | Attach/Detach and local write sequencing are synchronized internally. Local reads are cache-only. `IsStale()` may be called concurrently with every other method. Each attached cache on a liveliness-capable Transport owns one recovery worker thread (ADR-0037) |
 | `BufferPublisher` | Push/Fence are externally serialized in v1. Move assignment/destruction quiesce late callbacks; moved-from calls return `Disconnected`. |
 | `StorageNode` | Ordinary independent-thread calls may run concurrently; `DurableBufferEngineFactory` and `LogSink` must not synchronously call `Stop`, destruction, or another waiting lifecycle operation on the same node, or wait for one |
 | `SessionView` | All methods may be called concurrently. List callbacks run on the caller thread outside internal locks; re-entry and Stop from inside a sink are safe |

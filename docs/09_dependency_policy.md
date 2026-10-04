@@ -116,10 +116,21 @@ public:
     virtual Result<Queryable> DeclareQueryable(
         std::string_view keyexpr,
         std::function<void(TransportQuery&)> callback) = 0;
+
+    // Optional liveliness capability (ADR-0037). The defaults report no support.
+    virtual bool SupportsLiveliness() const noexcept { return false; }
+    virtual Result<LivelinessToken> DeclareLivelinessToken(std::string_view key);
+    virtual Result<Subscription> DeclareLivelinessSubscriber(
+        std::string_view keyexpr,
+        std::function<void(const TransportSample&)> callback);
 };
 
 } // namespace sitos
 ```
+
+The liveliness hooks are optional (ADR-0037 §D3). The Zenoh adapter implements them with the stable
+zenoh-c liveliness API; a Transport that keeps the defaults returns `InvalidArgument` from both
+declarations, and StorageNode and ParamCache then skip Session liveliness.
 
 The abstract API above shows the implemented dependency boundary; Accepted ADR-0028 and ADR-0029
 reserve two disjoint attachment uses within that boundary. `AckAttachmentV1` is exact 17-byte

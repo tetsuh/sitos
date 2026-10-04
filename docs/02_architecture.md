@@ -569,6 +569,47 @@ existence preflight, so an unknown or empty session may attach successfully with
 clearing state. Move assignment and destruction use the same cancellation and quiescence boundary.
 No callback mutates the cache after Detach returns.
 
+#### Session liveness and recovery (ADR-0037)
+
+On a Transport with the liveliness capability, `Attach` first declares one liveliness subscriber
+for `<prefix>/meta/live/session/<sid>/*` ([03] §7.2) and then runs the sequence above. The cache
+is *bound* to the Session generation its state was read from; `IsStale()` is true while an
+attached cache is not bound.
+
+```text
+liveliness event for <sid>              effect on the cache
+Delete of the bound generation          unbind (stale)
+Put of another generation               unbind (stale)
+Put of the bound generation             none
+Delete of another generation            none
+
+recovery worker (one thread per attached cache):
+  while the cache is stale and a generation is live:
+    1. note the most recently announced generation and the event count;
+    2. run steps 1-4 of Attach into a new candidate;
+    3. if no liveliness event arrived since step 1: swap the candidate in atomically, bind it,
+       clear stale, and then quiesce the replaced state as Detach does;
+       otherwise discard the candidate and start over;
+    4. after a failed attempt, wait a fixed interval or until the next event.
+```
+
+* `Attach` binds only if the generation was announced before its first Get and no liveliness event
+  followed. Otherwise it still succeeds, the cache starts stale, and the worker rebuilds it once a
+  generation is live. An Attach to a Session that does not exist therefore starts stale.
+* The stale flag is advisory. Reads return last-known values from the old state until the swap and
+  never block on recovery. `Put`, `PutBatch`, and `WaitForLocalDelivery` are admitted as usual. The
+  StorageNode is authoritative: a rebuild replaces the cache contents, so a value written while
+  stale can be lost.
+* A rebuild creates a new attach generation. An operation in flight on the replaced state completes
+  as it does when it races `Detach`.
+* Liveliness callbacks only record the event and wake the worker. `Detach` undeclares the
+  liveliness subscriber and joins the worker before the quiescence above; the worker checks for the
+  stop request before each Get, so `Detach` can wait for one in-flight Get (at most
+  `ClientConfig::query_timeout`).
+* Convergence is eventual: the flag follows the liveliness events, and Zenoh decides how fast the
+  token of a crashed or unreachable node is withdrawn.
+* On a Transport without the capability the cache never reports stale and behaves as before.
+
 ### 5.2 Data Structures and Zero-Copy Reads [N01]
 
 ```cpp
@@ -709,6 +750,7 @@ External client        Controller(StorageNode)          Calc(ParamCache)
 | ParamCache delta application | zenoh subscriber thread. The writer lock is held only briefly for replacement |
 | ParamCache local reads | Any application thread (atomic State snapshot + shared map lock) [N07] |
 | ParamCache writes | Caller thread; submission occurs without lifecycle or map locks, then local sequencing |
+| ParamCache recovery | One worker thread per attached cache on a liveliness-capable Transport (ADR-0037). It runs the blocking Gets of a rebuild; liveliness callbacks on zenoh threads only record the event and wake it. `Detach` joins it |
 | ParamSubscription callbacks | Whichever Transport callback/caller thread owns the per-subscription drainer; serialized per subscription, no thread affinity |
 | Python callbacks | Dedicated dispatch thread + queue (the GIL is not acquired on zenoh threads) [P04] |
 
@@ -716,8 +758,9 @@ External client        Controller(StorageNode)          Calc(ParamCache)
 
 * APIs return `bool` / `std::optional` / `sitos::Result<T>` (error code +
   message). Exceptions are used only for unrecoverable cases such as constructor failure
-* Stale-state detection and reconnect recovery for ParamCache are future Issue #20 behavior;
-  they are not provided by the current API.
+* ParamCache reports a lost StorageNode Session through the advisory `IsStale()` flag and rebuilds
+  itself when the Session is re-created (ADR-0037, §5.1). A stale cache returns no error from reads
+  or writes; a failed rebuild is retried and is not reported to the caller.
 * Type-mismatched Get: arithmetic casts are allowed among numeric types (BOOL/S64/DP) [C05];
   all other cases return failure
 

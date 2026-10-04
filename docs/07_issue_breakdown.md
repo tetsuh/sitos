@@ -488,13 +488,14 @@ raw-Zenoh consumers such as #32 and #56. The accepted ADR-0032 implementation se
 
 ### #20 Disconnect/reconnect recovery
 * Milestone: v1.0
-* References: [02] §9, [01] N10
-* Implementation targets: `src/param_cache.cpp`,
-  `tests/integration/reconnect_test.cpp`
-* Scope: stale flag, approved liveness detection, and automatic refetch; the Issue remains blocked
-  until its failure model and Transport signal are defined
-* Acceptance criteria: integration — ParamCache recovers across the approved restart/failure model
-* Depends on: #19
+* References: [02] §5.1, §9, §10; [01] N10; ADR-0037
+* Implementation targets: `src/param_cache.cpp`, `src/storage_node.cpp`,
+  `src/transport/zenoh_transport.cpp`, `tests/integration/reconnect_test.cpp`
+* Scope: `IsStale()`, Session liveliness tokens, and automatic rebuild, as decided in ADR-0037
+  (owner decisions DEC-20-001 to DEC-20-009)
+* Acceptance criteria: integration — ParamCache recovers across a StorageNode restart and Session
+  re-creation and converges to the node-authoritative state; reads stay available while stale
+* Depends on: #19; follow-up: #201 (Python `stale` property)
 
 ### #99 ParamCache local-delivery fence
 * Milestone: v0.5
