@@ -175,6 +175,7 @@ with sitos.ParamCache(prefix="sitos", zenoh_config_json=None,
     cache.put_batch([("recon/a", 1), ("recon/a", 2)])
     exists = cache.contains("recon/fov")
     rows = list(cache.items("recon"))             # Eager owned local snapshot
+    outdated = cache.stale                         # Advisory Session liveness (ADR-0037)
     cache.detach()                                 # Re-attach remains possible
 ```
 
@@ -207,8 +208,11 @@ unobserved completion raises `TimeoutError`. A new call after `detach` raises `V
 cancels an admitted wait before draining binding operations, so a blocked wait is released promptly
 instead of consuming its timeout. A Python ParamCache recovers automatically after its StorageNode Session is lost and re-created
 (Issue #20, ADR-0037): reads return last-known values in between, and `detach`/`close` may wait for
-one in-flight recovery read. The stale flag itself is not exposed yet; a `stale` property is
-Issue #201. ParamCache
+one in-flight recovery read. The read-only `ParamCache.stale` property (Issue #201) returns the C++
+`IsStale()` flag: `True` while the attached cache is not bound to a live generation of its Session,
+for example after the Session was closed or its StorageNode stopped, and `False` again once the
+rebuild from the re-created Session completes. The flag is advisory; reads and writes behave the
+same while it is `True`. It is `False` for a detached or closed cache and never raises. ParamCache
 has no callback surface; a ParamCache notification API would need its own Issue (DEC-26-006).
 Issue #27 provides
 `ParamCache.get_array(key, *, dtype=...)` as a one-dimensional,

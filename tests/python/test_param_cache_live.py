@@ -95,6 +95,21 @@ def _new_cache(config: dict[str, object]):
     return sitos.ParamCache(**config)
 
 
+def _command(process: subprocess.Popen[str], command: str) -> str:
+    assert process.stdout is not None
+    _send(process, command)
+    return _readline_with_timeout(process.stdout)
+
+
+def _wait_until(predicate, timeout: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+    return True
+
+
 def _new_fence_cache(config: dict[str, object]) -> sitos.ParamCache:
     fence_config = dict(config)
     # Fence capability is intentionally unavailable for caller-supplied Zenoh
@@ -589,3 +604,25 @@ def test_terminal_close_waits_for_admitted_attach_and_releases_gil(live_cache_fi
         cache.attach("s1")
     cache.close()
     cache.detach()
+
+
+def test_stale_follows_the_session_across_close_and_recreation(live_cache_fixture) -> None:
+    process, config = live_cache_fixture
+    cache = _new_cache(config)
+    try:
+        assert _command(process, "CREATE_SESSION stale_s") == "SESSION_CREATED stale_s"
+        cache.attach("stale_s")
+        assert _wait_until(lambda: cache.stale is False), "stale did not clear after attach"
+        assert _command(process, "PUT_SESSION stale_s first 1") == "SESSION_PUT stale_s first"
+        assert _wait_until(lambda: cache.get("first", None) == 1)
+
+        assert _command(process, "CLOSE_SESSION stale_s") == "SESSION_CLOSED stale_s"
+        assert _wait_until(lambda: cache.stale is True), "stale did not follow the closed Session"
+        assert cache.get("first") == 1, "a stale cache keeps its last-known values"
+
+        assert _command(process, "CREATE_SESSION stale_s") == "SESSION_CREATED stale_s"
+        assert _wait_until(lambda: cache.stale is False), "stale did not clear after re-creation"
+        assert cache.get("first", None) is None, "the rebuild did not take the node state"
+    finally:
+        cache.close()
+    assert cache.stale is False

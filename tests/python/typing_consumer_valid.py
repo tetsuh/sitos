@@ -36,6 +36,11 @@ def _wait_for_local_delivery(cache: sitos.ParamCache) -> None:
     cache.wait_for_local_delivery(timeout_ms=1000)
 
 
+def _stale(cache: sitos.ParamCache) -> bool:
+    stale: bool = cache.stale
+    return stale
+
+
 def _buffer_publisher_surface(publisher: sitos.BufferPublisher) -> None:
     publisher.push("payload", b"bytes")
     applied: sitos.FenceReceipt = publisher.fence(sitos.FenceDurability.APPLIED, timeout=1.0)
