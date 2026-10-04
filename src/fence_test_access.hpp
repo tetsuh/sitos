@@ -400,13 +400,15 @@ class FenceTestAccess {
   static DispatchCapacityObservation ExerciseGlobalDispatchCapacity(
       std::size_t capacity, std::function<void()> overflow_action = {},
       std::optional<std::size_t> worker_count = std::nullopt,
-      std::chrono::milliseconds admission_timeout = std::chrono::seconds(5)) {
+      std::chrono::milliseconds admission_timeout = std::chrono::seconds(5),
+      std::function<void()> before_worker_dispatch = {}) {
     fence_internal::FenceDispatchCoordinator coordinator(capacity);
     auto first = coordinator.Register();
     auto second = coordinator.Register();
     std::mutex gate_mutex;
     std::condition_variable gate_condition;
     bool release = false;
+    std::size_t dispatched = 0;
     std::vector<std::uint64_t> tickets;
     const auto workers_to_start = worker_count.value_or(capacity);
     std::vector<std::thread> workers;
@@ -414,7 +416,13 @@ class FenceTestAccess {
     for (std::size_t index = 0; index < workers_to_start; ++index) {
       workers.emplace_back([&, index] {
         const auto& registration = index % 2 == 0 ? first : second;
+        if (before_worker_dispatch) before_worker_dispatch();
         auto admission = coordinator.Dispatch(registration, [] { return true; }, [] {});
+        {
+          std::scoped_lock lock(gate_mutex);
+          ++dispatched;
+          gate_condition.notify_all();
+        }
         if (admission.outcome != fence_internal::FenceDispatchCoordinator::Outcome::Admitted) {
           return;
         }
@@ -427,6 +435,13 @@ class FenceTestAccess {
         std::unique_lock lock(gate_mutex);
         gate_condition.wait(lock, [&release] { return release; });
       });
+    }
+    // Every worker dispatches before the overflow entry. Otherwise the overflow entry
+    // could take an earlier ticket than a worker, and the join below would wait for a
+    // worker that waits for that ticket.
+    {
+      std::unique_lock lock(gate_mutex);
+      gate_condition.wait(lock, [&] { return dispatched == workers_to_start; });
     }
     const auto admission_deadline = std::chrono::steady_clock::now() + admission_timeout;
     while (coordinator.Admitted() != capacity &&

@@ -4,9 +4,11 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #include "fence_test_support.hpp"
@@ -320,6 +322,20 @@ TEST(ReceiverCapacityPollTest, CleansUpWhenTheCapacityPollExpiresBelowCapacity) 
   EXPECT_FALSE(earlier_worker.overflow_rejected);
   ASSERT_EQ(earlier_worker.callback_tickets.size(), 1U);
   EXPECT_EQ(earlier_worker.callback_tickets.front(), 0U);
+}
+
+TEST(ReceiverCapacityPollTest, KeepsTheFirstTicketForAWorkerThatDispatchesAfterThePoll) {
+  // The worker dispatches well after the 1 ms capacity poll expires. The overflow
+  // dispatch must still queue behind it instead of taking the first ticket.
+  const auto late_worker =
+      sitos::fence_test_access::FenceTestAccess::ExerciseGlobalDispatchCapacity(
+          2, {}, 1, std::chrono::milliseconds(1),
+          [] { std::this_thread::sleep_for(std::chrono::milliseconds(50)); });
+
+  EXPECT_EQ(late_worker.admitted, 2U);
+  EXPECT_FALSE(late_worker.overflow_rejected);
+  ASSERT_EQ(late_worker.callback_tickets.size(), 1U);
+  EXPECT_EQ(late_worker.callback_tickets.front(), 0U);
 }
 
 }  // namespace
