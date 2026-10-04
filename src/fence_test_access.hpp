@@ -401,7 +401,7 @@ class FenceTestAccess {
       std::size_t capacity, std::function<void()> overflow_action = {},
       std::optional<std::size_t> worker_count = std::nullopt,
       std::chrono::milliseconds admission_timeout = std::chrono::seconds(5),
-      std::function<void()> before_worker_dispatch = {}) {
+      const std::function<void()>& before_worker_dispatch = {}) {
     fence_internal::FenceDispatchCoordinator coordinator(capacity);
     auto first = coordinator.Register();
     auto second = coordinator.Register();
@@ -411,6 +411,11 @@ class FenceTestAccess {
     std::size_t dispatched = 0;
     std::vector<std::uint64_t> tickets;
     const auto workers_to_start = worker_count.value_or(capacity);
+    const auto mark_dispatched = [&gate_mutex, &gate_condition, &dispatched] {
+      std::scoped_lock lock(gate_mutex);
+      ++dispatched;
+      gate_condition.notify_all();
+    };
     std::vector<std::thread> workers;
     workers.reserve(workers_to_start);
     for (std::size_t index = 0; index < workers_to_start; ++index) {
@@ -418,11 +423,7 @@ class FenceTestAccess {
         const auto& registration = index % 2 == 0 ? first : second;
         if (before_worker_dispatch) before_worker_dispatch();
         auto admission = coordinator.Dispatch(registration, [] { return true; }, [] {});
-        {
-          std::scoped_lock lock(gate_mutex);
-          ++dispatched;
-          gate_condition.notify_all();
-        }
+        mark_dispatched();
         if (admission.outcome != fence_internal::FenceDispatchCoordinator::Outcome::Admitted) {
           return;
         }
@@ -441,7 +442,8 @@ class FenceTestAccess {
     // worker that waits for that ticket.
     {
       std::unique_lock lock(gate_mutex);
-      gate_condition.wait(lock, [&] { return dispatched == workers_to_start; });
+      gate_condition.wait(
+          lock, [&dispatched, workers_to_start] { return dispatched == workers_to_start; });
     }
     const auto admission_deadline = std::chrono::steady_clock::now() + admission_timeout;
     while (coordinator.Admitted() != capacity &&
