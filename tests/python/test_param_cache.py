@@ -35,7 +35,20 @@ def test_public_param_cache_is_exported_without_deferred_apis() -> None:
     assert hasattr(sitos.ParamCache, "get_array")
     assert hasattr(sitos.ParamCache, "wait_for_local_delivery")
     assert not hasattr(sitos.ParamCache, "attach_base")
-    assert not hasattr(sitos.ParamCache, "stale")
+    assert hasattr(sitos.ParamCache, "stale")
+
+
+def test_stale_is_a_read_only_bool_that_is_false_when_detached_or_closed() -> None:
+    cache = sitos.ParamCache(query_timeout_ms=5000)
+    try:
+        assert cache.stale is False
+        with pytest.raises(AttributeError):
+            cache.stale = True  # type: ignore[misc]
+        cache.detach()
+        assert cache.stale is False
+    finally:
+        cache.close()
+    assert cache.stale is False
 
 
 def test_wait_for_local_delivery_is_keyword_only_and_validates_timeout() -> None:

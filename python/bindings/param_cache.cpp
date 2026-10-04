@@ -331,6 +331,12 @@ class PyParamCache {
     return ParamValueToPython(ConvertTyped(*shared, type));
   }
 
+  // ADR-0037 §D9 through Issue #201: false for a detached or closed cache, never raises.
+  bool Stale() const noexcept {
+    const auto lease = AcquireForDetach();
+    return lease.has_value() && lease->Native().IsStale();
+  }
+
   bool Contains(const nb::handle& key_input) {
     auto lease = Acquire();
     const auto key = nb::cast<std::string>(key_input);
@@ -464,6 +470,7 @@ void BindParamCache(nb::module_& python_module) {
           [missing](PyParamCache& self, const nb::handle& key, nb::object default_value,
                     nb::object type) { return self.Get(key, default_value, missing, type); },
           "key"_a, "default"_a.none() = missing, nb::kw_only(), "type"_a.none() = nb::none())
+      .def_prop_ro("stale", &PyParamCache::Stale)
       .def("contains", &PyParamCache::Contains, "key"_a)
       .def("items", &PyParamCache::Items, "prefix"_a = "")
       .def("get_array", &PyParamCache::GetArray, "key"_a, nb::kw_only(), "dtype"_a);

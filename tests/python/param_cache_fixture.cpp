@@ -61,6 +61,13 @@ class SnapshotBarrierTransport final : public sitos::Transport {
     return inner_->Get(keyexpr, sink, timeout);
   }
 
+  // The node's Session liveliness tokens (ADR-0037) reach the Python caches unchanged.
+  bool SupportsLiveliness() const noexcept override { return inner_->SupportsLiveliness(); }
+
+  sitos::Result<sitos::LivelinessToken> DeclareLivelinessToken(std::string_view key) override {
+    return inner_->DeclareLivelinessToken(key);
+  }
+
   sitos::Result<sitos::Subscription> DeclareSubscriber(
       std::string_view keyexpr,
       std::function<void(const sitos::TransportSample&)> callback) override {
@@ -325,6 +332,25 @@ int main(int argc, char** argv) {
       } else {
         protocol.Write("ERROR isolation");
       }
+    } else if (command.starts_with("CREATE_SESSION ")) {
+      const std::string name = command.substr(std::string("CREATE_SESSION ").size());
+      protocol.Write(node.CreateSession(name).IsOk() ? "SESSION_CREATED " + name
+                                                     : "ERROR create session");
+    } else if (command.starts_with("CLOSE_SESSION ")) {
+      const std::string name = command.substr(std::string("CLOSE_SESSION ").size());
+      protocol.Write(node.CloseSession(name).IsOk() ? "SESSION_CLOSED " + name
+                                                    : "ERROR close session");
+    } else if (command.starts_with("PUT_SESSION ")) {
+      std::istringstream fields(command);
+      std::string name;
+      std::string session;
+      std::string key;
+      std::int64_t value = 0;
+      fields >> name >> session >> key >> value;
+      const std::string scope = "session/" + session;
+      const bool stored = fields && store.Put(scope, key, value).IsOk() &&
+                          WaitForStoreValue(store, scope, key, value);
+      protocol.Write(stored ? "SESSION_PUT " + session + " " + key : "ERROR session put");
     } else if (command == "STOP") {
       node_transport.Release();
       break;
