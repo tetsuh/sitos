@@ -7,8 +7,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -25,6 +27,8 @@
 #include "transport/declaration_handle_test_access.hpp"
 
 namespace {
+
+using namespace std::chrono_literals;
 
 using sitos::Encoding;
 using sitos::InMemoryEngine;
@@ -52,11 +56,13 @@ class TokenFakeTransport final : public Transport {
       std::lock_guard lock(mutex);
       declared.push_back(owned);
       live.push_back(owned);
+      events.push_back("put:" + owned);
     }
     return Result<LivelinessToken>::Ok(LivelinessToken([this, owned] {
       if (withdraw_hook) withdraw_hook(owned);
       std::lock_guard lock(mutex);
       std::erase(live, owned);
+      events.push_back("delete:" + owned);
     }));
   }
 
@@ -96,6 +102,16 @@ class TokenFakeTransport final : public Transport {
     return live;
   }
 
+  void Record(std::string event) {
+    std::lock_guard lock(mutex);
+    events.push_back(std::move(event));
+  }
+
+  std::vector<std::string> Events() {
+    std::lock_guard lock(mutex);
+    return events;
+  }
+
   std::mutex mutex;
   bool supports_liveliness = true;
   bool fail_token = false;
@@ -104,6 +120,8 @@ class TokenFakeTransport final : public Transport {
   std::function<void(TransportQuery&)> query_callback;
   std::vector<std::string> declared;
   std::vector<std::string> live;
+  // Liveliness events in the order a subscriber would observe them, plus test markers.
+  std::vector<std::string> events;
 };
 
 class RecordingSink final : public sitos::LogSink {
@@ -208,20 +226,47 @@ TEST(StorageNodeLivelinessTest, AFailedDeclarationIsLoggedAndDoesNotFailCreateSe
   }));
 }
 
-TEST(StorageNodeLivelinessTest, ATokenDeclaredForASessionThatClosedMeanwhileIsWithdrawn) {
+TEST(StorageNodeLivelinessTest, ACloseThatRacesTheDeclarationWithdrawsTheTokenBeforeItReturns) {
   TokenFakeTransport transport;
   StorageNode node;
   ASSERT_TRUE(node.Start(std::make_shared<InMemoryEngine>(), transport, {.prefix = "sitos"}).IsOk());
-  // CloseSession wins the race against the declaration that CreateSession is still making.
+  // The declaration is held open after CreateSession activated the Session.
+  std::mutex gate_mutex;
+  std::condition_variable gate;
+  bool entered = false;
+  bool released = false;
   transport.declare_hook = [&](const std::string&) {
-    transport.declare_hook = {};
-    EXPECT_TRUE(node.CloseSession("s1").IsOk());
+    std::unique_lock lock(gate_mutex);
+    entered = true;
+    gate.notify_all();
+    gate.wait(lock, [&] { return released; });
   };
+  auto created = std::async(std::launch::async, [&] { return node.CreateSession("s1"); });
+  {
+    std::unique_lock lock(gate_mutex);
+    ASSERT_TRUE(gate.wait_for(lock, 5s, [&] { return entered; }));
+  }
 
-  ASSERT_TRUE(node.CreateSession("s1").IsOk());
+  auto closed = std::async(std::launch::async, [&] {
+    auto result = node.CloseSession("s1");
+    transport.Record("close-returned");
+    return result;
+  });
+  EXPECT_EQ(closed.wait_for(100ms), std::future_status::timeout)
+      << "CloseSession returned while the token was still being declared";
+  {
+    std::lock_guard lock(gate_mutex);
+    released = true;
+  }
+  gate.notify_all();
 
-  EXPECT_EQ(transport.declared.size(), 1U);
-  EXPECT_TRUE(transport.Live().empty()) << "a token outlived the active state of its Session";
+  ASSERT_TRUE(created.get().IsOk());
+  ASSERT_TRUE(closed.get().IsOk());
+  ASSERT_EQ(transport.declared.size(), 1U);
+  const auto& key = transport.declared[0];
+  EXPECT_EQ(transport.Events(),
+            (std::vector<std::string>{"put:" + key, "delete:" + key, "close-returned"}));
+  EXPECT_TRUE(transport.Live().empty());
   EXPECT_TRUE(node.ActiveSessions().empty());
 }
 

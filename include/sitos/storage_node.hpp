@@ -263,9 +263,12 @@ class StorageNode {
     SessionMeta metadata;
     FenceUuid generation_uuid{};
     std::shared_ptr<fence_internal::FenceSessionDispatch> fence_dispatch;
-    // ADR-0037 Session liveliness token. Moved in and out only under the unique
-    // session_mutex; declared and destroyed without the locks that guard the Session table,
-    // the catalog, or request handling.
+    // ADR-0037 Session liveliness token, guarded by liveliness_mutex. AnnounceSession holds the
+    // mutex from its activity check until the declared token is stored, and a closer takes the
+    // token under it after its commit, so a close waits for a declaration in progress and no
+    // declaration follows it. Lock order: catalog_mutex, then liveliness_mutex, then
+    // session_mutex. The token is withdrawn after the mutex is released.
+    std::mutex liveliness_mutex;
     LivelinessToken liveliness_token;
   };
 

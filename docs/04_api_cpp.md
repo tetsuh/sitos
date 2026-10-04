@@ -357,9 +357,11 @@ On a Transport with the liveliness capability, an `Active` Session holds one liv
 `<prefix>/meta/live/session/<sid>/<generation_uuid>` (ADR-0037, [03] §7.2). `CreateSession`
 declares it after the Session is active; `CloseSession`, `RetainSession`, and `Stop` withdraw it.
 StorageNode declares and withdraws the token without holding the locks that guard the Session
-table, the catalog, or request handling, and keeps it only while the Session is active, so a
-`CreateSession` that races a close leaves no token behind. A liveliness callback must not call
-`Start` or `Stop` on the node. A failed declaration is
+table, the catalog, or request handling. The declaration and the withdrawal of one Session are
+serialized: a `CloseSession` or `RetainSession` that races `CreateSession` waits for a declaration
+in progress and withdraws the token before it returns, and after its commit no token is declared
+for that generation. A liveliness callback that runs inside a declaration or withdrawal must not
+call `Start`, `Stop`, `CloseSession`, or `RetainSession` on the node. A failed declaration is
 logged as a warning and does not fail `CreateSession`; caches of that Session then report stale.
 
 A node-level host factory creates at most one durable `StorageEngine` for each Session that enables

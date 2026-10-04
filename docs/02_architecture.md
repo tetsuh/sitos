@@ -607,7 +607,10 @@ recovery worker (one thread per attached cache):
   stop request before each Get, so `Detach` can wait for one in-flight Get (at most
   `ClientConfig::query_timeout`).
 * Convergence is eventual: the flag follows the liveliness events, and Zenoh decides how fast the
-  token of a crashed or unreachable node is withdrawn.
+  token of a crashed or unreachable node is withdrawn. As with `Attach`, a rebuild cannot tell an
+  empty Session from one that no longer serves reads: if the Session closes while a cache rebuilds
+  from it, and the rebuild's zero-reply reads arrive before the token's withdrawal, the cache holds
+  an empty state until that withdrawal marks it stale a moment later (ADR-0037 Consequences).
 * On a Transport without the capability the cache never reports stale and behaves as before.
 
 ### 5.2 Data Structures and Zero-Copy Reads [N01]
