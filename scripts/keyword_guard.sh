@@ -25,7 +25,10 @@ if [[ -z "$WORDS" ]]; then
 fi
 
 words=()
-IFS=',' read -ra raw <<< "$WORDS"
+# Split the whole value on commas. A here-string read would stop at the first line break and
+# silently drop every later term of a secret stored with line breaks (ADV-206-001), so read up to
+# a NUL that never occurs; read then reports end of input, which is expected.
+IFS=',' read -r -d '' -a raw < <(printf '%s' "$WORDS") || true
 for w in "${raw[@]}"; do
   # Perl's Unicode White_Space property covers non-ASCII separators
   # that the locale-dependent tr [:space:] class can leave behind.
@@ -197,13 +200,24 @@ fi
 
 while IFS= read -r -d '' f; do
   safe=$(mask_path "$f")
+  # A tracked symlink's content is its target text. Scan that text and never follow the link,
+  # so the destination's untracked contents neither hide nor cause a hit (ADV-206-002).
+  scan_target="$f"
+  if [[ -L "$f" ]]; then
+    scan_target="$scan_dir/link"
+    if ! readlink -- "$f" >"$scan_target" 2>/dev/null; then
+      report "" "keyword guard: unable to scan tracked contents"
+      fail=1
+      continue
+    fi
+  fi
   for w in "${words[@]}"; do
     # -a: scan binary contents as text; -w: word boundaries;
     # -F: literal; -i: case-insensitive. grep status 1 means
     # ordinary no-match; every other failure is a scan failure.
     matches_file="$scan_dir/matches"
     hits=0
-    if grep -oaiwF -- "$w" "$f" >"$matches_file" 2>/dev/null; then
+    if grep -oaiwF -- "$w" "$scan_target" >"$matches_file" 2>/dev/null; then
       hits=$(wc -l <"$matches_file")
     else
       grep_status=$?

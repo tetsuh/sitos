@@ -190,7 +190,9 @@ the owner when unsure whether a term is public.
 
 * The secret holds a comma-separated list of single-word terms. All whitespace is removed from
   each term, including whitespace inside it, so a multi-word name must be listed as its separate
-  words. Terms match case-insensitively on word boundaries, in file contents and in paths.
+  words; line breaks count as whitespace. Terms match case-insensitively on word boundaries, in
+  file contents and in paths. A tracked symlink's content is its target text; the guard never
+  follows the link.
 * A failing scan reports the file and an occurrence count and masks the term; it never prints the
   list. A missing or empty secret fails the job.
 * A pull request from a fork receives no secret and fails the guard; re-run the change from a

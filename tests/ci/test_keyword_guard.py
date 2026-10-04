@@ -157,6 +157,28 @@ class KeywordGuardTest(unittest.TestCase):
         spaced = self.scan("Ac me", {"a.txt": "ac me\n"})
         self.assertEqual(spaced.returncode, 0)
 
+    def test_line_breaks_in_the_word_list_do_not_drop_later_terms(self) -> None:
+        # ADV-206-001: a secret stored with line breaks must keep every term after the first line.
+        cases = [
+            ("alpha,\nbeta", {"a.txt": "beta\n"}),
+            ("alpha,\r\nbeta", {"a.txt": "beta\n"}),
+            ("\nbeta", {"a.txt": "beta\n"}),
+            ("al\npha,beta", {"a.txt": "alpha\n"}),
+            ("alpha\nbeta", {"a.txt": "alphabeta\n"}),
+        ]
+        for words, tracked in cases:
+            with self.subTest(words=repr(words)):
+                completed = self.scan(words, tracked)
+                output = completed.stdout + completed.stderr
+                self.assertNotEqual(completed.returncode, 0, output)
+                self.assert_no_terms(output, ["alpha", "beta"])
+
+    def test_later_terms_of_a_multiline_list_are_masked_in_reports(self) -> None:
+        completed = self.scan("alpha,\nbeta", {"beta.txt": "alpha\n"})
+        output = completed.stdout + completed.stderr
+        self.assertNotEqual(completed.returncode, 0)
+        self.assert_no_terms(output, ["alpha", "beta"])
+
     def test_every_listed_term_is_checked(self) -> None:
         completed = self.scan("alpha, beta", {"a.txt": "beta\n"})
         self.assertNotEqual(completed.returncode, 0)
@@ -291,12 +313,42 @@ class KeywordGuardTest(unittest.TestCase):
 
     # Scan failures are never reported as clean.
 
-    def test_broken_working_tree_symlink_scan_failure_is_not_clean(self) -> None:
-        repo = self.base / "symlink-repo"
+    def _scan_links(self, words: str, links: dict[str, str], untracked: dict[str, str]):
+        self._runs += 1
+        repo = self.base / f"links-{self._runs}"
         repo.mkdir()
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
-        (repo / "broken-link").symlink_to("missing-target")
+        for name, target in links.items():
+            (repo / name).symlink_to(target)
         subprocess.run(["git", "-C", str(repo), "add", "--all"], check=True)
+        for relative_path, contents in untracked.items():
+            path = repo / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(contents, encoding="utf-8")
+        return _run_guard(repo, words)
+
+    def test_symlinks_are_scanned_by_their_tracked_target_text(self) -> None:
+        # ADV-206-002: a tracked symlink's content is its target text; the guard never follows it.
+        cases = [
+            ("needle", {"link.txt": "needle-target"}, {}, 1),
+            ("null", {"link.txt": "/dev/null"}, {}, 1),
+            ("needle", {"link.txt": "needle.txt"}, {"needle.txt": "clean\n"}, 1),
+            ("needle", {"link.txt": "needle-dir/target.txt"}, {"needle-dir/target.txt": "clean\n"}, 1),
+            ("needle", {"link.txt": "target.txt"}, {"target.txt": "needle\n"}, 0),
+            ("needle", {"link.txt": "missing-target"}, {}, 0),
+        ]
+        for words, links, untracked, expected in cases:
+            with self.subTest(target=next(iter(links.values())), untracked=sorted(untracked)):
+                completed = self._scan_links(words, links, untracked)
+                output = completed.stdout + completed.stderr
+                self.assertEqual(completed.returncode, expected, output)
+                self.assert_no_terms(output, [words])
+                if expected:
+                    self.assertIn("prohibited word in contents", output)
+
+    def test_unreadable_tracked_contents_are_not_clean(self) -> None:
+        repo = _make_repo(self.base, {"clean.txt": "safe\n", "gone.txt": "safe\n"})
+        (repo / "gone.txt").unlink()
         completed = _run_guard(repo, "needle")
         output = completed.stdout + completed.stderr
         self.assertNotEqual(completed.returncode, 0)
