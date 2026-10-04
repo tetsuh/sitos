@@ -149,6 +149,14 @@ class KeywordGuardTest(unittest.TestCase):
         self.assertIn("prohibited word in path notes/ -record.txt (1 occurrence(s))", output)
         self.assert_no_terms(output, [word])
 
+    def test_whitespace_inside_a_term_is_removed(self) -> None:
+        # Terms are single words: "Ac me" is the term "Acme", as CONTRIBUTING.md section 4.2 states.
+        joined = self.scan("Ac me", {"a.txt": "acme\n"})
+        self.assertNotEqual(joined.returncode, 0)
+        self.assert_no_terms(joined.stdout + joined.stderr, ["acme"])
+        spaced = self.scan("Ac me", {"a.txt": "ac me\n"})
+        self.assertEqual(spaced.returncode, 0)
+
     def test_every_listed_term_is_checked(self) -> None:
         completed = self.scan("alpha, beta", {"a.txt": "beta\n"})
         self.assertNotEqual(completed.returncode, 0)

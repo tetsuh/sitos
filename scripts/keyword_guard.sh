@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Internal-keyword guard (Issue #180). Scans every tracked file of the current Git repository,
-# contents and paths, for the prohibited words in KEYWORD_GUARD_WORDS: a comma-separated list,
-# matched case-insensitively on word boundaries. In CI the list comes from the repository secret
+# contents and paths, for the prohibited words in KEYWORD_GUARD_WORDS: a comma-separated list of
+# single-word terms, matched case-insensitively on word boundaries. All whitespace is removed from
+# each term; the masking below relies on accepted terms containing no whitespace. In CI the list comes from the repository secret
 # of the same name and is never stored in this repository.
 #
 # Reporting never discloses the prohibited text: after a valid list is parsed, every reporter
@@ -18,7 +19,7 @@ set -e
 set -o pipefail
 
 WORDS="${KEYWORD_GUARD_WORDS-}"
-if [ -z "$WORDS" ]; then
+if [[ -z "$WORDS" ]]; then
   echo "::error::KEYWORD_GUARD_WORDS repository secret is not set; configure it before merging."
   exit 1
 fi
@@ -29,9 +30,9 @@ for w in "${raw[@]}"; do
   # Perl's Unicode White_Space property covers non-ASCII separators
   # that the locale-dependent tr [:space:] class can leave behind.
   w="$(printf '%s' "$w" | perl -CSD -pe 's/\p{White_Space}//g')"
-  [ -n "$w" ] && words+=("$w")
+  [[ -n "$w" ]] && words+=("$w")
 done
-if [ "${#words[@]}" -eq 0 ]; then
+if [[ "${#words[@]}" -eq 0 ]]; then
   echo "::error::KEYWORD_GUARD_WORDS word list is empty after parsing; set the repository secret to a comma-separated list before merging."
   exit 1
 fi
@@ -63,7 +64,8 @@ mask_text() {
 }
 
 mask_path() {
-  mask_text "$1"
+  local path="$1"
+  mask_text "$path"
 }
 
 sanitize_diagnostic() {
@@ -122,7 +124,7 @@ contains_configured_term() {
 
 report() {
   local annotation_path="$1" message="$2" human masked_raw masked masked_path masked_message skeleton candidate human_is_safe
-  if [ -n "$annotation_path" ]; then
+  if [[ -n "$annotation_path" ]]; then
     human="$annotation_path: $message"
   else
     human="$message"
@@ -143,7 +145,7 @@ report() {
   else
     human_is_safe=0
   fi
-  if [ -n "$annotation_path" ]; then
+  if [[ -n "$annotation_path" ]]; then
     masked_path=$(mask_text "$annotation_path")
     masked_message=$(mask_text "$message")
     if ! annotation_path_is_safe "$masked_path"; then
@@ -158,9 +160,9 @@ report() {
   # the exact rendered command before checking it, so a configured
   # term cannot cross from the skeleton into a masked component (or
   # between any other rendered boundaries).
-  if [ "$human_is_safe" -eq 0 ] || ! skeleton_is_safe "$skeleton"; then
+  if [[ "$human_is_safe" -eq 0 ]] || ! skeleton_is_safe "$skeleton"; then
     printf '%s\n' "$masked"
-  elif [ -n "$annotation_path" ]; then
+  elif [[ -n "$annotation_path" ]]; then
     candidate=$(printf '::error file=%s::%s' "$masked_path" "$masked_message")
     if contains_configured_term "$candidate"; then
       printf '%s\n' "$masked"
@@ -205,13 +207,13 @@ while IFS= read -r -d '' f; do
       hits=$(wc -l <"$matches_file")
     else
       grep_status=$?
-      if [ "$grep_status" -ne 1 ]; then
+      if [[ "$grep_status" -ne 1 ]]; then
         report "" "keyword guard: unable to scan tracked contents"
         fail=1
       fi
     fi
-    if [ "$hits" -gt 0 ]; then
-      if [ "$safe" = "$f" ]; then
+    if [[ "$hits" -gt 0 ]]; then
+      if [[ "$safe" = "$f" ]]; then
         report "$f" "prohibited word in contents ($hits occurrence(s))"
       else
         report "" "prohibited word in contents of $f ($hits occurrence(s))"
@@ -225,7 +227,7 @@ while IFS= read -r -d '' f; do
       phits=$(wc -l <"$matches_file")
     else
       grep_status=$?
-      if [ "$grep_status" -eq 1 ]; then
+      if [[ "$grep_status" -eq 1 ]]; then
         phits=0
       else
         report "" "keyword guard: unable to scan tracked path"
@@ -233,14 +235,14 @@ while IFS= read -r -d '' f; do
         phits=0
       fi
     fi
-    if [ "$phits" -gt 0 ]; then
+    if [[ "$phits" -gt 0 ]]; then
       report "" "prohibited word in path $f ($phits occurrence(s))"
       fail=1
     fi
   done
 done <"$tracked_file"
 
-if [ "$fail" -eq 0 ]; then
+if [[ "$fail" -eq 0 ]]; then
   report_plain "keyword guard: clean"
 fi
 exit $fail

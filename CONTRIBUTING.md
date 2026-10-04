@@ -188,8 +188,9 @@ prohibited names is not stored in this repository: the `keyword-guard` workflow
 secret and runs `scripts/keyword_guard.sh` on every pull request and every push to `main`. Ask
 the owner when unsure whether a term is public.
 
-* The secret holds a comma-separated list; surrounding whitespace is ignored. Terms match
-  case-insensitively on word boundaries, in file contents and in paths.
+* The secret holds a comma-separated list of single-word terms. All whitespace is removed from
+  each term, including whitespace inside it, so a multi-word name must be listed as its separate
+  words. Terms match case-insensitively on word boundaries, in file contents and in paths.
 * A failing scan reports the file and an occurrence count and masks the term; it never prints the
   list. A missing or empty secret fails the job.
 * A pull request from a fork receives no secret and fails the guard; re-run the change from a
