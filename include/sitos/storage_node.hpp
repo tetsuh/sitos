@@ -263,6 +263,10 @@ class StorageNode {
     SessionMeta metadata;
     FenceUuid generation_uuid{};
     std::shared_ptr<fence_internal::FenceSessionDispatch> fence_dispatch;
+    // ADR-0037 Session liveliness token. Moved in and out only under the unique
+    // session_mutex; declared and destroyed without the locks that guard the Session table,
+    // the catalog, or request handling.
+    LivelinessToken liveliness_token;
   };
 
   struct SessionKeyHash {
@@ -284,6 +288,9 @@ class StorageNode {
     std::shared_ptr<StorageEngine> engine;
     std::string prefix;
     const std::shared_ptr<LogSink> log_sink;
+    // The Transport that Start used. It outlives this State; CreateSession declares Session
+    // liveliness tokens through it (ADR-0037).
+    Transport* transport = nullptr;
     DurableBufferEngineFactory durable_buffer_engine_factory;
     // ADR-0028 node-wide token registry and completion ring; owned by this live State.
     // Created by Start, cleared by Stop; never shared across State generations.

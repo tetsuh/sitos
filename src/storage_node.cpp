@@ -164,6 +164,8 @@ constexpr std::string_view kUnknownSubscriberEncoding =
 constexpr std::string_view kSubscriberPutFailed = "subscriber PUT failed";
 constexpr std::string_view kSubscriberDeleteFailed = "subscriber DELETE failed";
 constexpr std::string_view kSubscriberCallbackFailed = "subscriber callback exception";
+constexpr std::string_view kLivelinessTokenFailed =
+    "session liveliness token declaration failed; caches of the session report stale";
 constexpr std::string_view kMalformedBatchPayload = "malformed batch payload";
 constexpr std::string_view kInvalidBatchEntry = "invalid batch entry key";
 constexpr std::string_view kInvalidBatchOperation = "invalid batch operation or encoding";
@@ -741,6 +743,9 @@ Result<SessionLifecycleState> StorageNode::RetainSession(std::string_view sid) {
     return R::Err(Status::InvalidArgument, "only a durable-route session can be retained");
   }
 
+  // ADR-0037 §D2: a retained Session is no longer active, so its token is withdrawn. Declared
+  // before the catalog lock so that the withdrawal runs after that lock is released.
+  LivelinessToken released_token;
   std::scoped_lock catalog_lock(state->catalog_mutex);
   SessionLifecycleState current;
   {
@@ -785,6 +790,7 @@ Result<SessionLifecycleState> StorageNode::RetainSession(std::string_view sid) {
       record->lifecycle = SessionLifecycleState::kRetained;
       released_snapshot = std::move(record->snapshot);
       released_overlay = std::move(record->overlay);
+      released_token = std::move(record->liveliness_token);
     }
   }
   if (!committed) {
@@ -831,6 +837,7 @@ Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Transport
                                        std::move(config.log_sink),
                                        std::move(config.durable_buffer_engine_factory));
   state->ack_registry = std::make_shared<AckRegistry>();
+  state->transport = &transport;
   state->fence_dispatcher = transport.FenceDispatcher();
   state->fence_receiver_registry = std::make_shared<fence_internal::FenceReceiverRegistry>();
   if (durable_root.has_value()) {
@@ -897,12 +904,16 @@ void StorageNode::Stop() noexcept {
   // active Session admissions drain.
   for (;;) {
     std::shared_ptr<SessionRecord> record;
+    // ADR-0037 §D2: withdrawn right after the session lock is released.
+    LivelinessToken withdrawn;
     {
       std::unique_lock lock(state->session_mutex);
       if (state->sessions.empty()) break;
       auto node = state->sessions.extract(state->sessions.begin());
       record = std::move(node.mapped());
+      withdrawn = std::move(record->liveliness_token);
     }
+    withdrawn = LivelinessToken{};
     if (state->fence_dispatcher && record->fence_dispatch) {
       state->fence_dispatcher->CloseAndWait(record->fence_dispatch->durable);
       state->fence_dispatcher->CloseAndWait(record->fence_dispatch->ephemeral);
@@ -1051,6 +1062,12 @@ Result<void> StorageNode::CreateSession(const std::shared_ptr<State>& state, std
   record->snapshot = std::move(snapshot);
   record->overlay = std::make_shared<InMemoryEngine>();
   record->metadata = SessionMeta{NowIso8601(), FormatFenceUuid(record->generation_uuid)};
+  // Built while this thread still owns the Creating record; a closer may clear the metadata
+  // as soon as the Session is active.
+  const std::optional<std::string> liveliness_key =
+      state->transport != nullptr && state->transport->SupportsLiveliness()
+          ? BuildSessionLivelinessKey(state->prefix, key, record->metadata.generation_uuid)
+          : std::nullopt;
 
   if (options.durable_buffers) {
     auto created = state->catalog_mode
@@ -1069,6 +1086,26 @@ Result<void> StorageNode::CreateSession(const std::shared_ptr<State>& state, std
   }
   if (!committed) return Result<void>::Err(OperationInProgress());
   rollback.Dismiss();
+
+  // ADR-0037 §D2: announce the active Session to caches. A liveliness subscriber callback can
+  // run inside the declaration and the withdrawal, so both happen without the locks that guard
+  // the Session table, the catalog, or request handling.
+  // The token is kept only if the Session is still active; otherwise it is withdrawn right
+  // here, so no token outlives the active state of its Session.
+  if (liveliness_key.has_value()) {
+    auto declared = state->transport->DeclareLivelinessToken(*liveliness_key);
+    if (!declared.IsOk()) {
+      EmitLog(state->log_sink, LogLevel::kWarning, kNodeComponent, kLivelinessTokenFailed);
+    } else {
+      LivelinessToken token = std::move(declared).Value();
+      std::unique_lock lock(state->session_mutex);
+      if (auto it = state->sessions.find(key);
+          it != state->sessions.end() && it->second == record && record->IsActive() &&
+          record->lifecycle == SessionLifecycleState::kActive) {
+        record->liveliness_token = std::move(token);
+      }
+    }
+  }
   return Result<void>::Ok();
 }
 
@@ -1241,6 +1278,14 @@ Result<void> StorageNode::CloseSession(std::string_view sid) {
       return Result<void>::Err(NoSuchSession());
     }
     if (!record->BeginClose()) return Result<void>::Err(OperationInProgress());
+  }
+
+  // ADR-0037 §D2: the close is committed, so the Session is no longer active. Take the token
+  // under the lock and withdraw it after the lock is released.
+  {
+    LivelinessToken withdrawn;
+    std::unique_lock lock(state->session_mutex);
+    withdrawn = std::move(record->liveliness_token);
   }
 
   if (state->fence_dispatcher && record->fence_dispatch) {

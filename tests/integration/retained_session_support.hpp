@@ -95,6 +95,26 @@ class CatalogTransport final : public sitos::Transport {
         }));
   }
 
+  // ADR-0037: records the Session liveliness tokens the node currently holds.
+  bool SupportsLiveliness() const noexcept override { return true; }
+
+  sitos::Result<sitos::LivelinessToken> DeclareLivelinessToken(std::string_view key) override {
+    const std::string owned(key);
+    {
+      std::scoped_lock lock(mutex_);
+      live_tokens_.push_back(owned);
+    }
+    return sitos::Result<sitos::LivelinessToken>::Ok(sitos::LivelinessToken([this, owned] {
+      std::scoped_lock lock(mutex_);
+      std::erase(live_tokens_, owned);
+    }));
+  }
+
+  std::vector<std::string> LiveTokens() {
+    std::scoped_lock lock(mutex_);
+    return live_tokens_;
+  }
+
   void PutEphemeral(const std::string& sid, const std::string& key, std::vector<std::byte> bytes) {
     Deliver(sitos::TransportSample{"sitos/buffers/" + sid + "/ephemeral/" + key,
                                    bytes,
@@ -133,6 +153,7 @@ class CatalogTransport final : public sitos::Transport {
   std::mutex mutex_;
   std::function<void(const sitos::TransportSample&)> subscriber_;
   std::function<void(sitos::TransportQuery&)> queryable_;
+  std::vector<std::string> live_tokens_;
 };
 
 struct QueryOutcome {

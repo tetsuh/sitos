@@ -161,6 +161,26 @@ if(SITOS_WITH_ZENOH)
 endif()
 gtest_add_tests(TARGET sitos_param_cache_attach_test SOURCES unit/param_cache_attach_test.cpp)
 
+add_executable(sitos_param_cache_recovery_test unit/param_cache_recovery_test.cpp)
+target_link_libraries(sitos_param_cache_recovery_test PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_param_cache_recovery_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+sitos_enable_warnings(sitos_param_cache_recovery_test)
+if(SITOS_WITH_ZENOH)
+  sitos_copy_zenohc(sitos_param_cache_recovery_test)
+endif()
+gtest_add_tests(TARGET sitos_param_cache_recovery_test SOURCES unit/param_cache_recovery_test.cpp)
+
+add_executable(sitos_storage_node_liveliness_test unit/storage_node_liveliness_test.cpp)
+target_link_libraries(sitos_storage_node_liveliness_test PRIVATE GTest::gtest_main sitos::sitos)
+target_include_directories(sitos_storage_node_liveliness_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
+sitos_enable_warnings(sitos_storage_node_liveliness_test)
+if(SITOS_WITH_ZENOH)
+  sitos_copy_zenohc(sitos_storage_node_liveliness_test)
+endif()
+gtest_add_tests(
+  TARGET sitos_storage_node_liveliness_test
+  SOURCES unit/storage_node_liveliness_test.cpp)
+
 add_executable(sitos_param_cache_read_test unit/param_cache_read_test.cpp)
 target_link_libraries(sitos_param_cache_read_test PRIVATE GTest::gtest_main sitos::sitos)
 target_include_directories(sitos_param_cache_read_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
@@ -722,6 +742,13 @@ if(SITOS_WITH_ZENOH)
     sitos_enable_warnings(sitos_python_param_store_fixture)
     sitos_copy_zenohc(sitos_python_param_store_fixture)
   endif()
+
+  # Issue #20 / ADR-0037: ParamCache recovery after a StorageNode Session is lost and re-created.
+  add_executable(sitos_reconnect_test integration/reconnect_test.cpp)
+  target_link_libraries(sitos_reconnect_test PRIVATE GTest::gtest_main sitos::sitos)
+  sitos_enable_warnings(sitos_reconnect_test)
+  sitos_copy_zenohc(sitos_reconnect_test)
+  gtest_add_tests(TARGET sitos_reconnect_test SOURCES integration/reconnect_test.cpp)
 
   add_executable(sitos_param_cache_integration_test
     integration/param_cache_attach_test.cpp)
