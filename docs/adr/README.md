@@ -44,4 +44,4 @@ status so the offline documentation contract can detect index drift.
 | [0034](0034-storage-durability-barrier.md) | Define explicit storage durability barriers | Accepted |
 | [0035](0035-buffer-publisher-fences.md) | Define BufferPublisher fence discovery and public mapping | Accepted |
 | [0036](0036-retained-session-catalog.md) | Persist a retained-session catalog and reconcile it at StorageNode start | Accepted |
-| [0037](0037-param-cache-session-liveness-and-recovery.md) | Detect Session loss with liveliness tokens and rebuild ParamCache automatically | Proposed |
+| [0037](0037-param-cache-session-liveness-and-recovery.md) | Detect Session loss with liveliness tokens and rebuild ParamCache automatically | Accepted |

@@ -223,6 +223,41 @@ class Queryable {
   std::function<void()> reset_handler_;
 };
 
+/// A declared liveliness token (ADR-0037). The token is withdrawn when this object is
+/// destroyed or replaced by assignment. A Transport implementation passes the withdrawal
+/// action to the constructor; it runs exactly once and must not throw.
+class LivelinessToken {
+ public:
+  LivelinessToken() = default;
+  explicit LivelinessToken(std::function<void()> withdraw) : withdraw_(std::move(withdraw)) {}
+  ~LivelinessToken() { Reset(); }
+  LivelinessToken(LivelinessToken&& other) noexcept
+      : withdraw_(std::exchange(other.withdraw_, nullptr)) {}
+  LivelinessToken& operator=(LivelinessToken&& other) noexcept {
+    if (this != &other) {
+      Reset();
+      withdraw_ = std::exchange(other.withdraw_, nullptr);
+    }
+    return *this;
+  }
+
+  LivelinessToken(const LivelinessToken&) = delete;
+  LivelinessToken& operator=(const LivelinessToken&) = delete;
+
+ private:
+  void Reset() noexcept {
+    auto withdraw = std::exchange(withdraw_, nullptr);
+    if (!withdraw) return;
+    try {
+      withdraw();
+    } catch (...) {
+      // A withdrawal must not throw; contain a violation at this noexcept boundary.
+    }
+  }
+
+  std::function<void()> withdraw_;
+};
+
 /// Transport is the abstract interface that hides the underlying pub/sub
 /// library (zenoh). All higher-level components (StorageNode, ParamStore,
 /// ParamCache) depend only on this interface.
@@ -236,6 +271,28 @@ class Transport {
   virtual std::uint64_t FenceGeneration() const noexcept { return 0; }
   virtual std::shared_ptr<fence_internal::FenceDispatchCoordinator> FenceDispatcher() noexcept {
     return {};
+  }
+
+  /// Optional liveliness capability (ADR-0037 §D3). A Transport that does not provide it
+  /// keeps these defaults: StorageNode then declares no Session token, and ParamCache never
+  /// reports stale.
+  virtual bool SupportsLiveliness() const noexcept { return false; }
+
+  /// Declares a liveliness token at `key`. Matching liveliness subscribers observe a Put now
+  /// and a Delete when the returned handle is destroyed or the declaring session is lost.
+  virtual Result<LivelinessToken> DeclareLivelinessToken(std::string_view /*key*/) {
+    return Result<LivelinessToken>::Err(Status::InvalidArgument,
+                                        "transport does not support liveliness");
+  }
+
+  /// Declares a subscriber for liveliness tokens matching `keyexpr`. Tokens that already
+  /// exist are announced as Put samples (history). Each sample carries only the token key and
+  /// its kind: Put when the token appears, Delete when it disappears. The callback may run
+  /// inside this call or inside a token declaration or withdrawal, and it must not block.
+  virtual Result<Subscription> DeclareLivelinessSubscriber(
+      std::string_view /*keyexpr*/, std::function<void(const TransportSample&)> /*callback*/) {
+    return Result<Subscription>::Err(Status::InvalidArgument,
+                                     "transport does not support liveliness");
   }
 
   /// Put a value at the given key expression.

@@ -51,8 +51,23 @@ class ParamCache {
   ParamCache(ParamCache&&) noexcept;
   ParamCache& operator=(ParamCache&&) noexcept;
 
+  /// Attaches to a Session. On a Transport with liveliness, Attach also starts Session
+  /// liveness tracking and automatic recovery (ADR-0037); the cache starts stale when the
+  /// Session's liveliness token was not announced before the first read.
   Result<void> Attach(std::string_view sid);
+
+  /// Detaches and stops recovery. May wait for one in-flight recovery read, so it can block
+  /// for up to ClientConfig::query_timeout.
   void Detach() noexcept;
+
+  /// True while the cache is attached and not bound to a live generation of its Session
+  /// (ADR-0037): the StorageNode Session that served it stopped, closed, or became
+  /// unreachable, or its liveliness token has not been observed yet. Reads keep returning
+  /// last-known values and writes are still published while stale; a write made while stale
+  /// can be replaced when the cache is rebuilt from the re-created Session. The flag clears
+  /// when that rebuild completes. Returns false for a detached or moved-from cache and on a
+  /// Transport without liveliness.
+  bool IsStale() const noexcept;
 
   Result<std::shared_ptr<const ParamValue>> GetShared(std::string_view key) const;
 

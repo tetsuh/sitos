@@ -205,7 +205,10 @@ exception types, so a receiver-side `OutcomeUnknown` raises `OutcomeUnknownError
 cancelled by `detach`/`close` or Transport-generation replacement raises `DisconnectedError`, and an
 unobserved completion raises `TimeoutError`. A new call after `detach` raises `ValueError`; `close`
 cancels an admitted wait before draining binding operations, so a blocked wait is released promptly
-instead of consuming its timeout. Stale/reconnect state remains deferred to Issue #20. ParamCache
+instead of consuming its timeout. A Python ParamCache recovers automatically after its StorageNode Session is lost and re-created
+(Issue #20, ADR-0037): reads return last-known values in between, and `detach`/`close` may wait for
+one in-flight recovery read. The stale flag itself is not exposed yet; a `stale` property is
+Issue #201. ParamCache
 has no callback surface; a ParamCache notification API would need its own Issue (DEC-26-006).
 Issue #27 provides
 `ParamCache.get_array(key, *, dtype=...)` as a one-dimensional,

@@ -263,6 +263,13 @@ class StorageNode {
     SessionMeta metadata;
     FenceUuid generation_uuid{};
     std::shared_ptr<fence_internal::FenceSessionDispatch> fence_dispatch;
+    // ADR-0037 Session liveliness token, guarded by liveliness_mutex. AnnounceSession holds the
+    // mutex from its activity check until the declared token is stored, and a closer takes the
+    // token under it after its commit, so a close waits for a declaration in progress and no
+    // declaration follows it. Lock order: catalog_mutex, then liveliness_mutex, then
+    // session_mutex. The token is withdrawn after the mutex is released.
+    std::mutex liveliness_mutex;
+    LivelinessToken liveliness_token;
   };
 
   struct SessionKeyHash {
@@ -284,6 +291,9 @@ class StorageNode {
     std::shared_ptr<StorageEngine> engine;
     std::string prefix;
     const std::shared_ptr<LogSink> log_sink;
+    // The Transport that Start used. It outlives this State; CreateSession declares Session
+    // liveliness tokens through it (ADR-0037).
+    Transport* transport = nullptr;
     DurableBufferEngineFactory durable_buffer_engine_factory;
     // ADR-0028 node-wide token registry and completion ring; owned by this live State.
     // Created by Start, cleared by Stop; never shared across State generations.
@@ -454,6 +464,11 @@ class StorageNode {
                                                 std::vector<SubscriberDiagnostic>& diagnostics);
   static Result<void> CreateSession(const std::shared_ptr<State>& state, std::string_view sid,
                                     SessionOptions options);
+  // ADR-0037 §D2: declares the liveliness token of a Session that has just become active and
+  // keeps it only if the Session is still active.
+  static void AnnounceSession(const std::shared_ptr<State>& state, const std::string& sid,
+                              const std::shared_ptr<SessionRecord>& record,
+                              const std::string& liveliness_key);
   // Answers a get in the session or snap scope from the matching overlay or
   // snapshot; replies nothing for an unknown sid.
   static void ReplyScopedQuery(const std::shared_ptr<State>& state, std::string_view scope,

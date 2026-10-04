@@ -156,6 +156,26 @@ TEST_F(RetainedSessionCatalogTest, RetainRestartRediscoversStore) {
   EXPECT_EQ(MetaState(transport_, "run"), "retained");
 }
 
+// ADR-0037 §D2: only an active Session holds a liveliness token.
+TEST_F(RetainedSessionCatalogTest, RetainWithdrawsTheLivelinessTokenAndRestartDeclaresNone) {
+  ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
+  ASSERT_TRUE(node_->CreateSession("crashed", {.durable_buffers = true}).IsOk());
+  const auto generation = Record("run")->generation_uuid;
+  const std::string run_token = "sitos/meta/live/session/run/" + generation;
+  ASSERT_EQ(transport_.LiveTokens().size(), 2u);
+  EXPECT_EQ(transport_.LiveTokens()[0], run_token);
+
+  ASSERT_TRUE(node_->RetainSession("run").IsOk());
+  ASSERT_EQ(transport_.LiveTokens().size(), 1u);
+  EXPECT_NE(transport_.LiveTokens()[0], run_token);
+
+  // The retained Session and the orphaned one are reconciled without a token.
+  Restart();
+  EXPECT_EQ(MetaState(transport_, "run"), "retained");
+  EXPECT_EQ(MetaState(transport_, "crashed"), "orphaned");
+  EXPECT_TRUE(transport_.LiveTokens().empty());
+}
+
 TEST_F(RetainedSessionCatalogTest, RetainTwiceReturnsRetainedWithoutRewriting) {
   ASSERT_TRUE(node_->CreateSession("run", {.durable_buffers = true}).IsOk());
   ASSERT_TRUE(node_->RetainSession("run").IsOk());

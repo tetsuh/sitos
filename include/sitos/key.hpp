@@ -96,6 +96,22 @@ std::optional<std::string> BuildMetaSessionKey(std::string_view prefix, std::str
 /// Builds the ack key <prefix>/meta/ack/<uuid>.
 std::optional<std::string> BuildMetaAckKey(std::string_view prefix, std::string_view uuid);
 
+/// Builds the Session liveliness token key
+/// <prefix>/meta/live/session/<sid>/<generation_uuid> (ADR-0037).
+std::optional<std::string> BuildSessionLivelinessKey(std::string_view prefix, std::string_view sid,
+                                                     std::string_view generation_uuid);
+
+/// Builds the liveliness selector for a Session: <prefix>/meta/live/session/<sid> followed by
+/// one wildcard chunk, which matches the token of every generation of the Session.
+std::optional<std::string> BuildSessionLivelinessSelector(std::string_view prefix,
+                                                          std::string_view sid);
+
+/// Returns the generation of a Session liveliness token key for `sid`, or std::nullopt when
+/// `key` is not such a key.
+std::optional<std::string_view> ParseSessionLivelinessKey(std::string_view prefix,
+                                                          std::string_view sid,
+                                                          std::string_view key);
+
 /// Parses an incoming zenoh key expression that is expected to live under the
 /// given prefix. Strips the prefix and classifies the remainder according to
 /// docs/03 §1.1. Returns std::nullopt if the prefix does not match or the

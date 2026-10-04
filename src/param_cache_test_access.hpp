@@ -3,6 +3,7 @@
 #ifndef SITOS_PARAM_CACHE_TEST_ACCESS_HPP
 #define SITOS_PARAM_CACHE_TEST_ACCESS_HPP
 
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <optional>
@@ -32,6 +33,8 @@ class ParamCacheTestAccess {
   static void SetReadStateHook(ParamCache& cache, std::function<void()> hook);
   // Precondition: no callback is executing while the hook is being set.
   static void SetMutationHook(ParamCache& cache, std::function<void(std::size_t)> hook);
+  // Precondition: the cache is detached. Shortens the ADR-0037 rebuild retry interval.
+  static void SetRecoveryRetryInterval(ParamCache& cache, std::chrono::milliseconds interval);
 };
 
 }  // namespace sitos::param_cache_test_access

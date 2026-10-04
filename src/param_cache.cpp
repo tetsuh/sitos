@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -14,6 +16,8 @@
 #include <shared_mutex>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -116,15 +120,43 @@ struct ParamCache::Impl {
     std::size_t callback_mutation_count = 0;
   };
 
+  // ADR-0037 Session liveness for one attachment on a liveliness-capable Transport. The
+  // liveliness callback and the recovery worker share it, so it outlives a late callback.
+  struct Recovery {
+    std::mutex mutex;
+    std::condition_variable condition;
+    // Generations whose token is announced; the most recently announced one is last.
+    std::vector<std::string> live;
+    // The generation the active State was verified against; empty while the cache is stale.
+    std::string bound;
+    // Counts every liveliness event of the sid. A rebuild is kept only if it saw none.
+    std::uint64_t events = 0;
+    // Set once Attach has published its State; the worker does not rebuild before that.
+    bool armed = false;
+    std::atomic<bool> stop{false};
+    std::atomic<bool> stale{true};
+    Subscription subscription;
+    std::thread worker;
+  };
+
   explicit Impl(std::shared_ptr<Transport> transport_value, ClientConfig config_value)
       : transport(std::move(transport_value)), config(std::move(config_value)) {}
 
   std::shared_ptr<Transport> transport;
   ClientConfig config;
+  // Serializes Attach and Detach. The recovery worker never takes it, so Detach can join the
+  // worker while holding it (ADR-0037 §D8).
   std::mutex lifecycle_mutex;
   std::atomic<std::shared_ptr<State>> active_state;
+  // Written by Attach before the worker is armed, by the worker at a swap under
+  // Recovery::mutex, and by Detach after the worker is joined.
   Subscription subscription;
   Subscription marker_subscription;
+  // Non-null while attached on a liveliness-capable Transport.
+  std::atomic<std::shared_ptr<Recovery>> recovery;
+  // ADR-0037 §D8: fixed interval between rebuild attempts; an internal constant that only
+  // tests shorten.
+  std::chrono::milliseconds recovery_retry_interval{1000};
 };
 
 namespace param_cache_detail {
@@ -556,6 +588,183 @@ void CleanupCandidate(const std::shared_ptr<param_cache_detail::Access::Impl::St
   state->buffered_fence_observations.clear();
 }
 
+// The subscriptions and State of one Attach sequence before it is published.
+struct Candidate {
+  std::shared_ptr<param_cache_detail::Access::Impl::State> state;
+  Subscription subscription;
+  Subscription marker_subscription;
+};
+
+// Runs the Attach sequence of docs/02 §5.1 into `out`: declare the subscribers, read the
+// snapshot and the overlay, apply the buffered samples, and go live. A failure rolls the
+// candidate back. `cancel`, when set, is checked before each Get.
+Result<void> BuildCandidate(param_cache_detail::Access::Impl& impl, std::string_view sid,
+                            const std::atomic<bool>* cancel, Candidate& out) {
+  using Impl = param_cache_detail::Access::Impl;
+  auto state = std::make_shared<Impl::State>(impl.config.prefix, std::string(sid));
+  state->fence_dispatcher = impl.transport->FenceDispatcher();
+  if (state->fence_dispatcher) {
+    state->fence_registration = state->fence_dispatcher->Register();
+  }
+  if (impl.transport->SupportsFenceProfile()) {
+    state->fence_publisher = std::make_unique<fence_internal::FencePublisher>(
+        *impl.transport, state->publisher_uuid,
+        fence_internal::FencePublisherBinding{fence_internal::FencePublisherTarget::Cache,
+                                              state->prefix, state->sid, state->attach_generation,
+                                              std::nullopt, AckDurability::Applied});
+  }
+  Subscription subscription;
+  Subscription marker_subscription;
+  auto declared = impl.transport->DeclareSubscriber(
+      ScopeQuery(impl.config, "session/" + std::string(sid)),
+      [state](const TransportSample& sample) { DispatchSample(state, sample); });
+  if (!declared.IsOk()) {
+    CloseGate(state);
+    WaitForCallbacks(state);
+    return Result<void>::ErrFrom(declared);
+  }
+  subscription = std::move(declared).Value();
+  const auto marker_selector = state->prefix + "/meta/fence/cache/" + state->sid + "/**";
+  auto marker_declared = impl.transport->DeclareSubscriber(
+      marker_selector, [state](const TransportSample& sample) { DispatchSample(state, sample); });
+  if (!marker_declared.IsOk()) {
+    CleanupCandidate(state, subscription, marker_subscription);
+    return Result<void>::ErrFrom(marker_declared);
+  }
+  marker_subscription = std::move(marker_declared).Value();
+
+  const auto cancelled = [cancel] { return cancel != nullptr && cancel->load(); };
+  Impl::ValueMap snapshot;
+  Impl::ValueMap overlay;
+  const auto fetch = [&](std::string_view scope, bool is_snapshot, Impl::ValueMap& out_map) {
+    if (cancelled()) {
+      return Result<void>::Err(Status::Disconnected, "ParamCache recovery was stopped");
+    }
+    return Fetch(state, impl.transport, ScopeQuery(impl.config, std::string(scope) + std::string(sid)),
+                 is_snapshot, out_map, impl.config.query_timeout);
+  };
+  if (auto snapshot_result = fetch("snap/", true, snapshot); !snapshot_result.IsOk()) {
+    CleanupCandidate(state, subscription, marker_subscription);
+    return snapshot_result;
+  }
+  if (auto overlay_result = fetch("session/", false, overlay); !overlay_result.IsOk()) {
+    CleanupCandidate(state, subscription, marker_subscription);
+    return overlay_result;
+  }
+
+  {
+    std::lock_guard sequence_lock(state->sequence_mutex);
+    {
+      std::unique_lock map_lock(state->map_mutex);
+      state->snapshot_baseline = std::move(snapshot);
+      state->effective_map = state->snapshot_baseline;
+      for (auto& [key, value] : overlay) state->effective_map[key] = std::move(value);
+    }
+    ApplyMutations(*state, state->buffered);
+    state->callback_mutation_count += state->buffered.size();
+    for (const auto& observation : state->buffered_fence_observations) {
+      CompleteFenceObservation(*state, observation);
+    }
+    state->buffered.clear();
+    state->buffered_fence_observations.clear();
+    state->phase = Impl::Phase::Live;
+  }
+  out.state = std::move(state);
+  out.subscription = std::move(subscription);
+  out.marker_subscription = std::move(marker_subscription);
+  return Result<void>::Ok();
+}
+
+// Stops admission to a published State, completes an admitted local-delivery waiter, drops
+// its subscriptions, and waits for admitted operations and callbacks.
+void QuiesceState(const std::shared_ptr<param_cache_detail::Access::Impl::State>& state,
+                  Subscription& subscription, Subscription& marker_subscription) {
+  if (state->fence_publisher) state->fence_publisher->Close();
+  CloseGate(state);
+  if (state->fence_dispatcher) {
+    state->fence_dispatcher->CloseAndWait(state->fence_registration);
+  }
+  marker_subscription = Subscription{};
+  subscription = Subscription{};
+  WaitForCallbacks(state);
+  std::lock_guard sequence_lock(state->sequence_mutex);
+  state->phase = param_cache_detail::Access::Impl::Phase::Stopping;
+}
+
+// ADR-0037 §D4: a Delete of the bound generation and a Put of any other generation unbind
+// the cache. An unbound cache is stale, and the worker rebuilds it while a generation is
+// live. Runs on a Transport thread, so it only records the event and wakes the worker.
+void OnLiveliness(param_cache_detail::Access::Impl::Recovery& recovery, std::string_view prefix,
+                  std::string_view sid, const TransportSample& sample) {
+  const auto generation = ParseSessionLivelinessKey(prefix, sid, sample.key);
+  if (!generation.has_value()) return;
+  {
+    std::lock_guard lock(recovery.mutex);
+    ++recovery.events;
+    std::erase(recovery.live, *generation);
+    const bool put = sample.kind == TransportSample::Kind::Put;
+    if (put) recovery.live.emplace_back(*generation);
+    if ((put && recovery.bound != *generation) || (!put && recovery.bound == *generation)) {
+      recovery.bound.clear();
+      recovery.stale.store(true);
+    }
+  }
+  recovery.condition.notify_all();
+}
+
+// ADR-0037 §D5, §D6, §D8: the recovery worker of one attachment. It never takes
+// Impl::lifecycle_mutex, so Detach can join it while holding that mutex.
+void RecoveryLoop(param_cache_detail::Access::Impl* impl,
+                  const std::shared_ptr<param_cache_detail::Access::Impl::Recovery>& recovery,
+                  const std::string& sid) {
+  std::unique_lock lock(recovery->mutex);
+  for (;;) {
+    recovery->condition.wait(lock, [&recovery] {
+      return recovery->stop.load() ||
+             (recovery->armed && recovery->bound.empty() && !recovery->live.empty());
+    });
+    if (recovery->stop.load()) return;
+    const std::string target = recovery->live.back();
+    const std::uint64_t events = recovery->events;
+    lock.unlock();
+
+    Candidate candidate;
+    Result<void> built = Result<void>::Err(Status::Error, "ParamCache rebuild threw an exception");
+    try {
+      built = BuildCandidate(*impl, sid, &recovery->stop, candidate);
+    } catch (...) {
+      // No caller can receive an exception on this thread. Unwinding released the partial
+      // candidate; the attempt counts as a failed rebuild and is retried below.
+    }
+
+    lock.lock();
+    if (built.IsOk() && !recovery->stop.load() && recovery->events == events) {
+      // The check, the swap, and the bind are one step with respect to liveliness callbacks.
+      const auto replaced = LoadState(*impl);
+      StoreState(*impl, candidate.state);
+      std::swap(impl->subscription, candidate.subscription);
+      std::swap(impl->marker_subscription, candidate.marker_subscription);
+      recovery->bound = target;
+      recovery->stale.store(false);
+      lock.unlock();
+      if (replaced) QuiesceState(replaced, candidate.subscription, candidate.marker_subscription);
+      lock.lock();
+      continue;
+    }
+    lock.unlock();
+    if (built.IsOk()) {
+      CleanupCandidate(candidate.state, candidate.subscription, candidate.marker_subscription);
+    }
+    lock.lock();
+    if (!built.IsOk() && recovery->events == events) {
+      // A failed rebuild is retried after a fixed interval; an event or Detach ends the wait.
+      recovery->condition.wait_for(lock, impl->recovery_retry_interval, [&recovery, events] {
+        return recovery->stop.load() || recovery->events != events;
+      });
+    }
+  }
+}
+
 }  // namespace
 
 ParamCache::ParamCache(std::shared_ptr<Transport> transport, ClientConfig config)
@@ -746,94 +955,85 @@ Result<void> ParamCache::Attach(std::string_view sid) {
   std::lock_guard lifecycle_lock(impl_->lifecycle_mutex);
   if (LoadState(*impl_)) return InvalidArgument("ParamCache is already attached");
 
-  auto state = std::make_shared<Impl::State>(impl_->config.prefix, std::string(sid));
-  state->fence_dispatcher = impl_->transport->FenceDispatcher();
-  if (state->fence_dispatcher) {
-    state->fence_registration = state->fence_dispatcher->Register();
-  }
-  if (impl_->transport->SupportsFenceProfile()) {
-    state->fence_publisher = std::make_unique<fence_internal::FencePublisher>(
-        *impl_->transport, state->publisher_uuid,
-        fence_internal::FencePublisherBinding{fence_internal::FencePublisherTarget::Cache,
-                                              state->prefix, state->sid, state->attach_generation,
-                                              std::nullopt, AckDurability::Applied});
-  }
-  Subscription subscription;
-  Subscription marker_subscription;
-  auto declared = impl_->transport->DeclareSubscriber(
-      ScopeQuery(impl_->config, "session/" + std::string(sid)),
-      [state](const TransportSample& sample) { DispatchSample(state, sample); });
-  if (!declared.IsOk()) {
-    CloseGate(state);
-    WaitForCallbacks(state);
-    return Result<void>::ErrFrom(declared);
-  }
-  subscription = std::move(declared).Value();
-  const auto marker_selector = state->prefix + "/meta/fence/cache/" + state->sid + "/**";
-  auto marker_declared = impl_->transport->DeclareSubscriber(
-      marker_selector, [state](const TransportSample& sample) { DispatchSample(state, sample); });
-  if (!marker_declared.IsOk()) {
-    CleanupCandidate(state, subscription, marker_subscription);
-    return Result<void>::ErrFrom(marker_declared);
-  }
-  marker_subscription = std::move(marker_declared).Value();
-
-  param_cache_detail::Access::Impl::ValueMap snapshot;
-  param_cache_detail::Access::Impl::ValueMap overlay;
-  auto snapshot_result =
-      Fetch(state, impl_->transport, ScopeQuery(impl_->config, "snap/" + std::string(sid)), true,
-            snapshot, impl_->config.query_timeout);
-  if (!snapshot_result.IsOk()) {
-    CleanupCandidate(state, subscription, marker_subscription);
-    return snapshot_result;
-  }
-  auto overlay_result =
-      Fetch(state, impl_->transport, ScopeQuery(impl_->config, "session/" + std::string(sid)),
-            false, overlay, impl_->config.query_timeout);
-  if (!overlay_result.IsOk()) {
-    CleanupCandidate(state, subscription, marker_subscription);
-    return overlay_result;
+  // ADR-0037 §D5: the liveliness subscriber is declared once, before the first Get, and
+  // belongs to the attachment rather than to a candidate State.
+  std::shared_ptr<Impl::Recovery> recovery;
+  std::string announced;
+  std::uint64_t events = 0;
+  if (impl_->transport->SupportsLiveliness()) {
+    const auto selector = BuildSessionLivelinessSelector(impl_->config.prefix, sid);
+    if (!selector) return InvalidKey("invalid session liveliness selector");
+    recovery = std::make_shared<Impl::Recovery>();
+    auto declared = impl_->transport->DeclareLivelinessSubscriber(
+        *selector, [weak = std::weak_ptr(recovery), prefix = impl_->config.prefix,
+                    session = std::string(sid)](const TransportSample& sample) {
+          if (const auto target = weak.lock()) OnLiveliness(*target, prefix, session, sample);
+        });
+    if (!declared.IsOk()) return Result<void>::ErrFrom(declared);
+    recovery->subscription = std::move(declared).Value();
+    std::lock_guard lock(recovery->mutex);
+    if (!recovery->live.empty()) announced = recovery->live.back();
+    events = recovery->events;
   }
 
-  {
-    std::lock_guard sequence_lock(state->sequence_mutex);
+  Candidate candidate;
+  auto built = BuildCandidate(*impl_, sid, nullptr, candidate);
+  if (!built.IsOk()) {
+    if (recovery) recovery->subscription = Subscription{};
+    return built;
+  }
+  if (recovery) {
+    try {
+      recovery->worker = std::thread(RecoveryLoop, impl_.get(), recovery, std::string(sid));
+    } catch (const std::system_error&) {
+      CleanupCandidate(candidate.state, candidate.subscription, candidate.marker_subscription);
+      recovery->subscription = Subscription{};
+      return Result<void>::Err(Status::Error, "failed to start the ParamCache recovery worker");
+    }
+  }
+
+  StoreState(*impl_, candidate.state);
+  impl_->subscription = std::move(candidate.subscription);
+  impl_->marker_subscription = std::move(candidate.marker_subscription);
+  if (recovery) {
     {
-      std::unique_lock map_lock(state->map_mutex);
-      state->snapshot_baseline = std::move(snapshot);
-      state->effective_map = state->snapshot_baseline;
-      for (auto& [key, value] : overlay) state->effective_map[key] = std::move(value);
+      // ADR-0037 §D6 and §D7: bind only a generation announced before the first Get, and
+      // only if no liveliness event followed. Otherwise the cache starts stale.
+      std::lock_guard lock(recovery->mutex);
+      if (!announced.empty() && recovery->events == events) recovery->bound = announced;
+      recovery->stale.store(recovery->bound.empty());
+      recovery->armed = true;
     }
-    ApplyMutations(*state, state->buffered);
-    state->callback_mutation_count += state->buffered.size();
-    for (const auto& observation : state->buffered_fence_observations) {
-      CompleteFenceObservation(*state, observation);
-    }
-    state->buffered.clear();
-    state->buffered_fence_observations.clear();
-    state->phase = Impl::Phase::Live;
+    recovery->condition.notify_all();
+    impl_->recovery.store(recovery);
   }
-  StoreState(*impl_, state);
-  impl_->subscription = std::move(subscription);
-  impl_->marker_subscription = std::move(marker_subscription);
   return Result<void>::Ok();
 }
 
 void ParamCache::Detach() noexcept {
   if (!impl_) return;
   std::lock_guard lifecycle_lock(impl_->lifecycle_mutex);
+  // ADR-0037 §D8: stop recovery first. The worker checks the stop request before each Get,
+  // so this join waits for at most one in-flight Get.
+  if (const auto recovery = impl_->recovery.exchange(nullptr)) {
+    recovery->subscription = Subscription{};
+    {
+      std::lock_guard lock(recovery->mutex);
+      recovery->stop.store(true);
+    }
+    recovery->condition.notify_all();
+    if (recovery->worker.joinable()) recovery->worker.join();
+  }
   const auto state = LoadState(*impl_);
   if (!state) return;
-  if (state->fence_publisher) state->fence_publisher->Close();
-  CloseGate(state);
-  if (state->fence_dispatcher) {
-    state->fence_dispatcher->CloseAndWait(state->fence_registration);
-  }
-  impl_->marker_subscription = Subscription{};
-  impl_->subscription = Subscription{};
-  WaitForCallbacks(state);
-  std::lock_guard sequence_lock(state->sequence_mutex);
-  state->phase = Impl::Phase::Stopping;
+  QuiesceState(state, impl_->subscription, impl_->marker_subscription);
   StoreState(*impl_, nullptr);
+}
+
+bool ParamCache::IsStale() const noexcept {
+  if (!impl_) return false;
+  const auto recovery = impl_->recovery.load();
+  return recovery != nullptr && recovery->stale.load();
 }
 
 namespace param_cache_test_access {
@@ -883,6 +1083,15 @@ void ParamCacheTestAccess::SetMutationHook(ParamCache& cache,
   const auto state = cache.impl_ == nullptr ? nullptr : LoadState(*cache.impl_);
   if (!state) return;
   state->mutation_hook = std::move(hook);
+}
+
+}  // namespace param_cache_test_access
+
+namespace param_cache_test_access {
+
+void ParamCacheTestAccess::SetRecoveryRetryInterval(ParamCache& cache,
+                                                    std::chrono::milliseconds interval) {
+  if (cache.impl_) cache.impl_->recovery_retry_interval = interval;
 }
 
 }  // namespace param_cache_test_access
