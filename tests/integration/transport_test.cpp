@@ -13,13 +13,17 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -1030,4 +1034,127 @@ TEST(TransportApiTest, ForTestingQueryRoutesTypedErrorReplies) {
       sitos::TransportQuery::ForTesting([](std::string_view, std::span<const std::byte>,
                                            sitos::Encoding) { return sitos::Result<void>::Ok(); });
   EXPECT_EQ(reply_only.ReplyError(sitos::Status::StateLost).StatusCode(), sitos::Status::Error);
+}
+
+// ---------------------------------------------------------------------------
+// Liveliness (ADR-0037 §D3)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct LivelinessLog {
+  void Record(const sitos::TransportSample& sample) {
+    std::lock_guard lock(mutex);
+    events.push_back((sample.kind == sitos::TransportSample::Kind::Put ? "put:" : "delete:") +
+                     sample.key);
+    condition.notify_all();
+  }
+  bool WaitFor(std::size_t count) {
+    std::unique_lock lock(mutex);
+    return condition.wait_for(lock, std::chrono::seconds(5),
+                              [&] { return events.size() >= count; });
+  }
+  std::mutex mutex;
+  std::condition_variable condition;
+  std::vector<std::string> events;
+};
+
+}  // namespace
+
+TEST_F(TransportTest, LivelinessSubscriberSeesHistoryThenDeclarationsAndWithdrawals) {
+  ASSERT_TRUE(transport_->SupportsLiveliness());
+  const std::string first = "sitos/transport_test/meta/live/session/s1/generation-1";
+  const std::string second = "sitos/transport_test/meta/live/session/s1/generation-2";
+  auto declared = transport_->DeclareLivelinessToken(first);
+  ASSERT_TRUE(declared.IsOk()) << declared.Message();
+  std::optional<sitos::LivelinessToken> earlier(std::move(declared).Value());
+
+  auto log = std::make_shared<LivelinessLog>();
+  auto subscriber = transport_->DeclareLivelinessSubscriber(
+      "sitos/transport_test/meta/live/session/s1/*",
+      [log](const sitos::TransportSample& sample) { log->Record(sample); });
+  ASSERT_TRUE(subscriber.IsOk()) << subscriber.Message();
+  ASSERT_TRUE(log->WaitFor(1)) << "the token declared before the subscriber was not announced";
+
+  {
+    auto later = transport_->DeclareLivelinessToken(second);
+    ASSERT_TRUE(later.IsOk()) << later.Message();
+    ASSERT_TRUE(log->WaitFor(2));
+  }
+  ASSERT_TRUE(log->WaitFor(3)) << "destroying the handle did not withdraw the token";
+  earlier.reset();
+  ASSERT_TRUE(log->WaitFor(4));
+
+  std::lock_guard lock(log->mutex);
+  EXPECT_EQ(log->events, (std::vector<std::string>{"put:" + first, "put:" + second,
+                                                   "delete:" + second, "delete:" + first}));
+}
+
+TEST_F(TransportTest, OrdinarySubscribersDoNotReceiveLivelinessTokens) {
+  auto log = std::make_shared<LivelinessLog>();
+  auto ordinary = transport_->DeclareSubscriber(
+      "sitos/transport_test/**",
+      [log](const sitos::TransportSample& sample) { log->Record(sample); });
+  ASSERT_TRUE(ordinary.IsOk());
+  auto live = std::make_shared<LivelinessLog>();
+  auto subscriber = transport_->DeclareLivelinessSubscriber(
+      "sitos/transport_test/meta/live/session/s2/*",
+      [live](const sitos::TransportSample& sample) { live->Record(sample); });
+  ASSERT_TRUE(subscriber.IsOk());
+
+  {
+    auto token =
+        transport_->DeclareLivelinessToken("sitos/transport_test/meta/live/session/s2/generation");
+    ASSERT_TRUE(token.IsOk());
+    ASSERT_TRUE(live->WaitFor(1));
+  }
+  ASSERT_TRUE(live->WaitFor(2));
+
+  std::lock_guard lock(log->mutex);
+  EXPECT_TRUE(log->events.empty());
+}
+
+TEST(TransportApiTest, LivelinessIsUnsupportedByDefault) {
+  class Minimal final : public sitos::Transport {
+   public:
+    sitos::Result<void> Put(std::string_view, std::span<const std::byte>, sitos::Encoding,
+                            sitos::PutOptions) override {
+      return sitos::Result<void>::Ok();
+    }
+    sitos::Result<void> Delete(std::string_view, sitos::PutOptions) override {
+      return sitos::Result<void>::Ok();
+    }
+    sitos::Result<void> Get(std::string_view, const QueryResultSink&,
+                            std::chrono::milliseconds) override {
+      return sitos::Result<void>::Ok();
+    }
+    sitos::Result<sitos::Subscription> DeclareSubscriber(
+        std::string_view, std::function<void(const sitos::TransportSample&)>) override {
+      return sitos::Result<sitos::Subscription>::Ok(sitos::Subscription{});
+    }
+    sitos::Result<sitos::Queryable> DeclareQueryable(
+        std::string_view, std::function<void(sitos::TransportQuery&)>) override {
+      return sitos::Result<sitos::Queryable>::Ok(sitos::Queryable{});
+    }
+  };
+  Minimal transport;
+
+  EXPECT_FALSE(transport.SupportsLiveliness());
+  EXPECT_EQ(transport.DeclareLivelinessToken("a/b").StatusCode(), sitos::Status::InvalidArgument);
+  EXPECT_EQ(transport
+                .DeclareLivelinessSubscriber("a/*", [](const sitos::TransportSample&) {})
+                .StatusCode(),
+            sitos::Status::InvalidArgument);
+}
+
+TEST(TransportApiTest, LivelinessTokenRunsItsWithdrawalExactlyOnce) {
+  int withdrawals = 0;
+  {
+    sitos::LivelinessToken token([&withdrawals] { ++withdrawals; });
+    sitos::LivelinessToken moved(std::move(token));
+    sitos::LivelinessToken assigned([&withdrawals] { withdrawals += 10; });
+    assigned = std::move(moved);
+    EXPECT_EQ(withdrawals, 10) << "assignment must withdraw the replaced token";
+  }
+  EXPECT_EQ(withdrawals, 11);
 }

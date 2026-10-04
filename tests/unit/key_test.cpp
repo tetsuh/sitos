@@ -212,6 +212,28 @@ TEST(MetaKeyBuilderTest, BuildsMetaAck) {
   EXPECT_EQ(*key, "sitos/meta/ack/550e8400-e29b-41d4-a716-446655440000");
 }
 
+TEST(MetaKeyBuilderTest, BuildsAndParsesSessionLivelinessKeys) {
+  const std::string_view generation = "6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab";
+  const auto key = BuildSessionLivelinessKey("sitos/app", "s1", generation);
+  ASSERT_TRUE(key.has_value());
+  EXPECT_EQ(*key, "sitos/app/meta/live/session/s1/6f1c2d3e-4a5b-4c6d-8e9f-0123456789ab");
+  EXPECT_EQ(BuildSessionLivelinessSelector("sitos/app", "s1"),
+            std::optional<std::string>("sitos/app/meta/live/session/s1/*"));
+  EXPECT_EQ(ParseSessionLivelinessKey("sitos/app", "s1", *key),
+            std::optional<std::string_view>(generation));
+
+  EXPECT_FALSE(BuildSessionLivelinessKey("", "s1", generation));
+  EXPECT_FALSE(BuildSessionLivelinessKey("sitos", "bad/sid", generation));
+  EXPECT_FALSE(BuildSessionLivelinessKey("sitos", "s1", "bad/generation"));
+  EXPECT_FALSE(BuildSessionLivelinessSelector("sitos", "bad sid"));
+  EXPECT_FALSE(ParseSessionLivelinessKey("sitos/app", "s2", *key));
+  EXPECT_FALSE(ParseSessionLivelinessKey("sitos", "s1", *key));
+  EXPECT_FALSE(ParseSessionLivelinessKey("sitos/app", "s", *key));
+  EXPECT_FALSE(ParseSessionLivelinessKey("sitos/app", "s1", "sitos/app/meta/live/session/s1/"));
+  EXPECT_FALSE(ParseSessionLivelinessKey("sitos/app", "s1", "sitos/app/meta/live/session/s1/a/b"));
+  EXPECT_FALSE(ParseSessionLivelinessKey("sitos/app", "s1", "sitos/app/meta/session/s1"));
+}
+
 TEST(MetaKeyBuilderTest, RejectsInvalidMeta) {
   EXPECT_FALSE(BuildMetaSessionKey("", "abc-123"));
   EXPECT_FALSE(BuildMetaSessionKey("sitos", ""));

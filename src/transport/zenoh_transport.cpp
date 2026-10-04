@@ -1000,6 +1000,61 @@ class ZenohTransport : public Transport {
     return Result<Subscription>::Ok(std::move(subscription));
   }
 
+  // ADR-0037 §D3: the stable zenoh-c liveliness API. Tokens and liveliness subscribers live in
+  // the liveliness space, so ordinary subscribers and queryables never observe them.
+  bool SupportsLiveliness() const noexcept override { return session_valid_; }
+
+  Result<LivelinessToken> DeclareLivelinessToken(std::string_view key) override {
+    if (!session_valid_) {
+      return SemanticTransportError<LivelinessToken>(Status::Disconnected,
+                                                     TransportErrc::kErrDisconnected);
+    }
+    auto ke = MakeKeyexpr(key);
+    if (!ke.IsOk()) return Result<LivelinessToken>::ErrFrom(ke);
+
+    auto token = std::make_shared<z_owned_liveliness_token_t>();
+    const z_result_t decl_rc = z_liveliness_declare_token(z_session_loan(&session_), token.get(),
+                                                          ke.Value().loan(), nullptr);
+    if (decl_rc != Z_OK) return Result<LivelinessToken>::Err(MakeZenohError(decl_rc));
+    return Result<LivelinessToken>::Ok(LivelinessToken(
+        [token] { static_cast<void>(z_liveliness_undeclare_token(z_move(*token))); }));
+  }
+
+  Result<Subscription> DeclareLivelinessSubscriber(
+      std::string_view keyexpr_str, std::function<void(const TransportSample&)> callback) override {
+    if (!session_valid_) {
+      return SemanticTransportError<Subscription>(Status::Disconnected,
+                                                  TransportErrc::kErrDisconnected);
+    }
+    if (!callback) {
+      return SemanticTransportError<Subscription>(Status::InvalidArgument,
+                                                  TransportErrc::kErrInvalidArg);
+    }
+
+    auto ke = MakeKeyexpr(keyexpr_str);
+    if (!ke.IsOk()) return Result<Subscription>::ErrFrom(ke);
+    Subscription subscription;
+
+    subscription.impl_ = std::make_unique<Subscription::Impl>();
+    subscription.impl_->callback_state = std::make_shared<SubscriberState>(std::move(callback));
+    auto* context = new std::shared_ptr<SubscriberState>(subscription.impl_->callback_state);
+
+    z_owned_closure_sample_t closure;
+    z_closure_sample(&closure, OnSubscriberSample, DropSubscriberContext, context);
+
+    z_liveliness_subscriber_options_t options;
+    z_liveliness_subscriber_options_default(&options);
+    options.history = true;
+    const z_result_t decl_rc = z_liveliness_declare_subscriber(
+        z_session_loan(&session_), &subscription.impl_->subscriber, ke.Value().loan(),
+        z_move(closure), &options);
+    if (decl_rc != Z_OK) {
+      subscription.Reset();
+      return Result<Subscription>::Err(MakeZenohError(decl_rc));
+    }
+    return Result<Subscription>::Ok(std::move(subscription));
+  }
+
   Result<Queryable> DeclareQueryable(std::string_view keyexpr_str,
                                      std::function<void(TransportQuery&)> callback) override {
     // An empty callback is a programming error; return an error rather than

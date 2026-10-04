@@ -199,6 +199,55 @@ std::optional<std::string> BuildMetaSessionKey(std::string_view prefix, std::str
   return result;
 }
 
+namespace {
+
+constexpr std::string_view kSessionLiveliness = "/meta/live/session/";
+
+}  // namespace
+
+std::optional<std::string> BuildSessionLivelinessSelector(std::string_view prefix,
+                                                          std::string_view sid) {
+  if (!IsValidPrefix(prefix) || !IsValidSessionId(sid)) return std::nullopt;
+  std::string result;
+  result.reserve(prefix.size() + kSessionLiveliness.size() + sid.size() + 2);
+  result.append(prefix);
+  result.append(kSessionLiveliness);
+  result.append(sid);
+  result.append("/*");
+  return result;
+}
+
+std::optional<std::string> BuildSessionLivelinessKey(std::string_view prefix, std::string_view sid,
+                                                     std::string_view generation_uuid) {
+  if (!IsValidPrefix(prefix) || !IsValidSessionId(sid) || !IsValidAckUuid(generation_uuid)) {
+    return std::nullopt;
+  }
+  std::string result;
+  result.reserve(prefix.size() + kSessionLiveliness.size() + sid.size() + 1 +
+                 generation_uuid.size());
+  result.append(prefix);
+  result.append(kSessionLiveliness);
+  result.append(sid);
+  result.push_back('/');
+  result.append(generation_uuid);
+  return result;
+}
+
+std::optional<std::string_view> ParseSessionLivelinessKey(std::string_view prefix,
+                                                          std::string_view sid,
+                                                          std::string_view key) {
+  if (!key.starts_with(prefix)) return std::nullopt;
+  key.remove_prefix(prefix.size());
+  if (!key.starts_with(kSessionLiveliness)) return std::nullopt;
+  key.remove_prefix(kSessionLiveliness.size());
+  if (!key.starts_with(sid)) return std::nullopt;
+  key.remove_prefix(sid.size());
+  if (!key.starts_with('/')) return std::nullopt;
+  key.remove_prefix(1);
+  if (!IsValidAckUuid(key)) return std::nullopt;
+  return key;
+}
+
 std::optional<std::string> BuildMetaAckKey(std::string_view prefix, std::string_view uuid) {
   if (!IsValidPrefix(prefix) || !IsValidAckUuid(uuid)) {
     return std::nullopt;
