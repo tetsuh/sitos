@@ -179,6 +179,21 @@ class KeywordGuardTest(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assert_no_terms(output, ["alpha", "beta"])
 
+    def test_a_file_named_dash_is_scanned_as_a_file(self) -> None:
+        # ADV-206-003: grep reads "-" as standard input, which is the tracked-file enumeration.
+        cases = [
+            ("needle", {"-": "needle\n"}),
+            ("needle", {"-": "safe\n", "z.txt": "needle\n"}),
+            ("alpha,beta", {"-": "safe\n", "z.txt": "BETA\n"}),
+        ]
+        for words, tracked in cases:
+            with self.subTest(words=words, tracked=sorted(tracked)):
+                completed = self.scan(words, tracked)
+                output = completed.stdout + completed.stderr
+                self.assertNotEqual(completed.returncode, 0, output)
+                self.assertIn("prohibited word in contents", output)
+                self.assert_no_terms(output, words.split(","))
+
     def test_every_listed_term_is_checked(self) -> None:
         completed = self.scan("alpha, beta", {"a.txt": "beta\n"})
         self.assertNotEqual(completed.returncode, 0)

@@ -198,11 +198,14 @@ if ! git ls-files -z >"$tracked_file" 2>/dev/null; then
   exit 1
 fi
 
-while IFS= read -r -d '' f; do
+# The enumeration arrives on descriptor 3, so no command in the loop can consume it from
+# standard input (ADV-206-003).
+while IFS= read -r -d '' f <&3; do
   safe=$(mask_path "$f")
   # A tracked symlink's content is its target text. Scan that text and never follow the link,
   # so the destination's untracked contents neither hide nor cause a hit (ADV-206-002).
-  scan_target="$f"
+  # "./" keeps a tracked file named "-" from being read as standard input by grep.
+  scan_target="./$f"
   if [[ -L "$f" ]]; then
     scan_target="$scan_dir/link"
     if ! readlink -- "$f" >"$scan_target" 2>/dev/null; then
@@ -254,7 +257,7 @@ while IFS= read -r -d '' f; do
       fail=1
     fi
   done
-done <"$tracked_file"
+done 3<"$tracked_file"
 
 if [[ "$fail" -eq 0 ]]; then
   report_plain "keyword guard: clean"
