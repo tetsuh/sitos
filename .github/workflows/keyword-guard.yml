@@ -1,0 +1,44 @@
+name: keyword-guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege: the job only reads the repository, and it does not need the token after checkout.
+permissions:
+  contents: read
+
+jobs:
+  keyword-guard:
+    runs-on: ubuntu-latest
+    steps:
+      # A fork pull request receives no repository secret, so the guard cannot scan it. Fail
+      # loudly instead of passing unscanned (DEC-180-002). Reading a contributor-controlled tree
+      # with `pull_request_target`, the usual way to obtain the secret, would expose a write-scoped
+      # token to that tree, which this repository does not accept.
+      - name: Reject unscannable fork pull requests
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::error::Fork pull requests cannot be scanned by the keyword guard."
+          echo "Re-run the branch from a branch in this repository before merging."
+          exit 1
+
+      - uses: actions/checkout@v5
+        with:
+          # Do not leave the token in the checked-out tree's git config.
+          persist-credentials: false
+
+      # The guard's own tests use synthetic terms only, so they need no secret.
+      - name: Test the keyword guard
+        run: python3 -B tests/ci/test_keyword_guard.py -v
+
+      # Scans every tracked file, contents and paths, for the prohibited words of the
+      # KEYWORD_GUARD_WORDS repository secret (DEC-180-001). The list never appears in this
+      # repository or in the job output.
+      - name: Scan tracked files for prohibited words
+        env:
+          KEYWORD_GUARD_WORDS: ${{ secrets.KEYWORD_GUARD_WORDS }}
+        run: bash scripts/keyword_guard.sh
