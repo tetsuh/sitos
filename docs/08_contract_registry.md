@@ -61,6 +61,7 @@ open decision (`—` when settled); implementers and consumers are listed separa
 | `buffers/<sid>/{durable\|ephemeral}/<key>` value scope (plain opaque bytes) | Normative | Implemented | [ADR-0032](adr/0032-mixed-session-buffer-routes.md) | — | #56; fences via #107 |
 | Typed query error reply (`{"v":1,"status":<n>}` Zenoh error reply for `StateLost` and `CatalogUnavailable`) | Normative | Implemented | [ADR-0036](adr/0036-retained-session-catalog.md); [03](03_wire_protocol.md) §4.5 | — | #190 `TransportQuery::ReplyError` and client `Transport::Get`; #108 StorageNode session/snap and durable-buffer routing |
 | `meta/session/<sid>.state` catalog lifecycle values (`retained`, `orphaned`, `deleting`, `delete_failed`) | Normative | Implemented | [ADR-0036](adr/0036-retained-session-catalog.md); [03](03_wire_protocol.md) §7.1 | — | #108 StorageNode metadata |
+| Session liveliness token (`meta/live/session/<sid>/<generation_uuid>`, a Zenoh liveliness token declared for each active Session) | Planned | Planned | [ADR-0037](adr/0037-param-cache-session-liveness-and-recovery.md) | ADR-0037 | #20 StorageNode declaration, Transport liveliness hooks, and ParamCache recovery |
 
 ## 3. Stable identifiers
 
