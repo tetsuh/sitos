@@ -69,6 +69,9 @@
       "configurePreset": "dev-linux",
       "output": {
         "outputOnFailure": true
+      },
+      "execution": {
+        "timeout": 120
       }
     },
     {
@@ -76,6 +79,9 @@
       "configurePreset": "dev-windows",
       "output": {
         "outputOnFailure": true
+      },
+      "execution": {
+        "timeout": 120
       }
     }
   ]
