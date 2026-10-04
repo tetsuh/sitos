@@ -303,7 +303,7 @@ before returning and retains no Session record or other resource after enumerati
 
 > **Normative implementation:** Accepted ADR-0029 owns the same-publisher Fence mechanism below;
 > #158 implements the shared primitive, #99 exposes it through ParamCache local-delivery waits, and
-> #107 consumes it later for synchronized buffer publication.
+> #107 consumes it for synchronized buffer publication.
 
 > **Normative implementation:** Accepted ADR-0035 owns the BufferPublisher discovery and receipt
 > mechanism; Issue #107 implements it.
