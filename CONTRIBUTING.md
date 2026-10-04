@@ -185,7 +185,7 @@ explicit owner instruction for that PR at its current head.
 Internal project names must never appear in tracked files, including their paths. The list of
 prohibited names is not stored in this repository: the `keyword-guard` workflow
 (`.github/workflows/keyword-guard.yml`) reads it from the `KEYWORD_GUARD_WORDS` repository
-secret and runs `scripts/keyword_guard.sh` on every pull request and every push to `main`. Ask
+secret and runs `scripts/keyword_guard.sh` on every pull request and every push to any branch. Ask
 the owner when unsure whether a term is public.
 
 * The secret holds a comma-separated list of single-word terms. All whitespace is removed from

@@ -1,9 +1,9 @@
 name: keyword-guard
 
+# Every push to any branch and every pull request, as Issue #180 requires.
 on:
   pull_request:
   push:
-    branches: [main]
 
 # Least privilege: the job only reads the repository, and it does not need the token after checkout.
 permissions:

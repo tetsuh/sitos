@@ -408,6 +408,11 @@ class KeywordGuardTest(unittest.TestCase):
         self.assertIn("python3 -B tests/ci/test_keyword_guard.py", workflow)
         triggers = workflow.split("\npermissions:", 1)[0]
         self.assertNotIn("pull_request_target", triggers)
+        # Every push and every pull request (Issue #180): no branch or path filter.
+        self.assertIn("\n  pull_request:\n", triggers)
+        self.assertIn("\n  push:\n", triggers)
+        for narrowing in ("branches", "paths", "tags"):
+            self.assertNotIn(narrowing, triggers)
         self.assertIn("persist-credentials: false", workflow)
 
 
