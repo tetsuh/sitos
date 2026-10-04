@@ -21,8 +21,10 @@ project.
 3. **Conventional Commits**: header line
    `<type>(<scope>): <summary> (#<issue>)`; body is `- ` bullet list only.
 4. **English only** in code, comments, commit messages, issues, PRs, and docs.
-5. **No internal keywords**: never commit `xcynthia`, `paramdb`, `demeter`, or
-   similar internal project names to the public repository.
+5. **No internal keywords**: never commit internal project names to the public
+   repository. The list is supplied through the CI keyword-guard secret, not stored
+   here; ask the owner when unsure whether a term is public. See
+   [CONTRIBUTING.md](CONTRIBUTING.md) §4.2.
 6. **Transport isolation**: raw zenoh-cpp API is allowed only under
    `src/transport/`.
 7. **Wire / protocol changes require an ADR**: see

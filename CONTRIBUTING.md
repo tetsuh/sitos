@@ -180,6 +180,29 @@ explicit owner instruction for that PR at its current head.
 * Independent secondary review is optional and owner-directed; use it when its value justifies the
   available human time and AI subscription or token budget
 
+### 4.2 Internal-Keyword Guard
+
+Internal project names must never appear in tracked files, including their paths. The list of
+prohibited names is not stored in this repository: the `keyword-guard` workflow
+(`.github/workflows/keyword-guard.yml`) reads it from the `KEYWORD_GUARD_WORDS` repository
+secret and runs `scripts/keyword_guard.sh` on every pull request and every push to any branch. Ask
+the owner when unsure whether a term is public.
+
+* The secret holds a comma-separated list of single-word terms. All whitespace is removed from
+  each term, including whitespace inside it, so a multi-word name must be listed as its separate
+  words; line breaks count as whitespace. Terms match case-insensitively on word boundaries, in
+  file contents and in paths. A tracked symlink's content is its target text; the guard never
+  follows the link.
+* A failing scan reports the file and an occurrence count and masks the term; it never prints the
+  list. A missing or empty secret fails the job.
+* A pull request from a fork receives no secret and fails the guard; re-run the change from a
+  branch of this repository.
+* Setup (owner, once): in the repository settings under *Secrets and variables* → *Actions*, create
+  the repository secret `KEYWORD_GUARD_WORDS` with the comma-separated list, then add the
+  `keyword-guard` job to the required checks of the `main` ruleset.
+* Run the guard locally with `KEYWORD_GUARD_WORDS="<terms>" bash scripts/keyword_guard.sh` from
+  the repository root, and its tests with `python3 -B tests/ci/test_keyword_guard.py`.
+
 ## 5. Instruction Template for AI Implementers
 
 Prompt structure when assigning an issue to implementation AI:
