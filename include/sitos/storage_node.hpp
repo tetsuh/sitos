@@ -461,6 +461,11 @@ class StorageNode {
                                                 std::vector<SubscriberDiagnostic>& diagnostics);
   static Result<void> CreateSession(const std::shared_ptr<State>& state, std::string_view sid,
                                     SessionOptions options);
+  // ADR-0037 §D2: declares the liveliness token of a Session that has just become active and
+  // keeps it only if the Session is still active.
+  static void AnnounceSession(const std::shared_ptr<State>& state, const std::string& sid,
+                              const std::shared_ptr<SessionRecord>& record,
+                              const std::string& liveliness_key);
   // Answers a get in the session or snap scope from the matching overlay or
   // snapshot; replies nothing for an unknown sid.
   static void ReplyScopedQuery(const std::shared_ptr<State>& state, std::string_view scope,

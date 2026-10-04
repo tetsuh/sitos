@@ -636,20 +636,18 @@ Result<void> BuildCandidate(param_cache_detail::Access::Impl& impl, std::string_
   const auto cancelled = [cancel] { return cancel != nullptr && cancel->load(); };
   Impl::ValueMap snapshot;
   Impl::ValueMap overlay;
-  auto snapshot_result =
-      cancelled() ? Result<void>::Err(Status::Disconnected, "ParamCache recovery was stopped")
-                  : Fetch(state, impl.transport, ScopeQuery(impl.config, "snap/" + std::string(sid)),
-                          true, snapshot, impl.config.query_timeout);
-  if (!snapshot_result.IsOk()) {
+  const auto fetch = [&](std::string_view scope, bool is_snapshot, Impl::ValueMap& out_map) {
+    if (cancelled()) {
+      return Result<void>::Err(Status::Disconnected, "ParamCache recovery was stopped");
+    }
+    return Fetch(state, impl.transport, ScopeQuery(impl.config, std::string(scope) + std::string(sid)),
+                 is_snapshot, out_map, impl.config.query_timeout);
+  };
+  if (auto snapshot_result = fetch("snap/", true, snapshot); !snapshot_result.IsOk()) {
     CleanupCandidate(state, subscription, marker_subscription);
     return snapshot_result;
   }
-  auto overlay_result =
-      cancelled()
-          ? Result<void>::Err(Status::Disconnected, "ParamCache recovery was stopped")
-          : Fetch(state, impl.transport, ScopeQuery(impl.config, "session/" + std::string(sid)),
-                  false, overlay, impl.config.query_timeout);
-  if (!overlay_result.IsOk()) {
+  if (auto overlay_result = fetch("session/", false, overlay); !overlay_result.IsOk()) {
     CleanupCandidate(state, subscription, marker_subscription);
     return overlay_result;
   }

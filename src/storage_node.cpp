@@ -1087,26 +1087,29 @@ Result<void> StorageNode::CreateSession(const std::shared_ptr<State>& state, std
   if (!committed) return Result<void>::Err(OperationInProgress());
   rollback.Dismiss();
 
-  // ADR-0037 §D2: announce the active Session to caches. A liveliness subscriber callback can
-  // run inside the declaration and the withdrawal, so both happen without the locks that guard
-  // the Session table, the catalog, or request handling.
-  // The token is kept only if the Session is still active; otherwise it is withdrawn right
-  // here, so no token outlives the active state of its Session.
-  if (liveliness_key.has_value()) {
-    auto declared = state->transport->DeclareLivelinessToken(*liveliness_key);
-    if (!declared.IsOk()) {
-      EmitLog(state->log_sink, LogLevel::kWarning, kNodeComponent, kLivelinessTokenFailed);
-    } else {
-      LivelinessToken token = std::move(declared).Value();
-      std::unique_lock lock(state->session_mutex);
-      if (auto it = state->sessions.find(key);
-          it != state->sessions.end() && it->second == record && record->IsActive() &&
-          record->lifecycle == SessionLifecycleState::kActive) {
-        record->liveliness_token = std::move(token);
-      }
-    }
-  }
+  if (liveliness_key.has_value()) AnnounceSession(state, key, record, *liveliness_key);
   return Result<void>::Ok();
+}
+
+// A liveliness subscriber callback can run inside the declaration and the withdrawal, so both
+// happen without the locks that guard the Session table, the catalog, or request handling. The
+// token is kept only if the Session is still active; otherwise it is withdrawn right here, so
+// no token outlives the active state of its Session.
+void StorageNode::AnnounceSession(const std::shared_ptr<State>& state, const std::string& sid,
+                                  const std::shared_ptr<SessionRecord>& record,
+                                  const std::string& liveliness_key) {
+  auto declared = state->transport->DeclareLivelinessToken(liveliness_key);
+  if (!declared.IsOk()) {
+    EmitLog(state->log_sink, LogLevel::kWarning, kNodeComponent, kLivelinessTokenFailed);
+    return;
+  }
+  LivelinessToken token = std::move(declared).Value();
+  std::unique_lock lock(state->session_mutex);
+  if (auto it = state->sessions.find(sid);
+      it != state->sessions.end() && it->second == record && record->IsActive() &&
+      record->lifecycle == SessionLifecycleState::kActive) {
+    record->liveliness_token = std::move(token);
+  }
 }
 
 Result<void> StorageNode::DurableLifecycle::CreateFactoryStore(const State& state,

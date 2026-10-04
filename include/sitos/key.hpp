@@ -101,8 +101,8 @@ std::optional<std::string> BuildMetaAckKey(std::string_view prefix, std::string_
 std::optional<std::string> BuildSessionLivelinessKey(std::string_view prefix, std::string_view sid,
                                                      std::string_view generation_uuid);
 
-/// Builds the liveliness selector <prefix>/meta/live/session/<sid>/*, which matches the token
-/// of every generation of the Session.
+/// Builds the liveliness selector for a Session: <prefix>/meta/live/session/<sid> followed by
+/// one wildcard chunk, which matches the token of every generation of the Session.
 std::optional<std::string> BuildSessionLivelinessSelector(std::string_view prefix,
                                                           std::string_view sid);
 
