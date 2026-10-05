@@ -189,11 +189,14 @@ def test_storage_node_python_process_topology_and_delivery() -> None:
         while time.monotonic() < deadline and not cache_ready:
             cache.detach()
             cache.attach(sid)
+            # ADR-0037: the cache may rebuild once after attach; use it only once bound.
+            while cache.stale and time.monotonic() < deadline:
+                time.sleep(0.01)
             try:
-                cache_ready = cache.get(base_key) == base_value
+                cache_ready = cache.stale is False and cache.get(base_key) == base_value
             except sitos.NotFoundError:
                 cache_ready = False
-        assert cache_ready, "ParamCache did not observe the base snapshot"
+        assert cache_ready, "ParamCache did not bind to the Session and observe the base snapshot"
         assert _request(node_parent, "GET", sid, live_key) is None
         assert cache.contains(live_key) is False
 
