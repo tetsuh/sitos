@@ -110,6 +110,14 @@ def _wait_until(predicate, timeout: float = 10.0) -> bool:
     return True
 
 
+def _attach_bound(cache: sitos.ParamCache, sid: str = "s1") -> None:
+    # ADR-0037: when the Session token arrives after the first read, the cache rebuilds
+    # once after attach, and a write that races that swap fails as if the cache were
+    # detached. Wait until the cache is bound before using it.
+    cache.attach(sid)
+    assert _wait_until(lambda: cache.stale is False), f"cache attached to {sid} stayed stale"
+
+
 def _new_fence_cache(config: dict[str, object]) -> sitos.ParamCache:
     fence_config = dict(config)
     # Fence capability is intentionally unavailable for caller-supplied Zenoh
@@ -130,7 +138,7 @@ def test_wait_for_local_delivery_succeeds_after_local_write(live_cache_fixture) 
     _, config = live_cache_fixture
     cache = _new_fence_cache(config)
     try:
-        cache.attach("s1")
+        _attach_bound(cache)
         cache.put("waited", 7)
         cache.wait_for_local_delivery(timeout_ms=5000)
         assert cache.get("waited") == 7
@@ -294,6 +302,7 @@ def test_attach_observes_controlled_concurrent_delta(live_cache_fixture) -> None
         attach.join(timeout=5)
         assert not attach.is_alive()
         assert result == [None]
+        assert _wait_until(lambda: cache.stale is False), "cache attached to s1 stayed stale"
         assert cache.get("during_attach") == 7
     finally:
         if not released:
@@ -307,7 +316,7 @@ def test_values_typed_get_default_batch_and_owned_items(live_cache_fixture) -> N
     assert process.stdout is not None
     cache = _new_cache(config)
     try:
-        cache.attach("s1")
+        _attach_bound(cache)
         values = {
             "value/bool": True,
             "value/s64": -7,
@@ -366,7 +375,7 @@ def test_numpy_get_array_is_zero_copy_and_owned_after_overwrite(live_cache_fixtu
     _, config = live_cache_fixture
     cache = _new_cache(config)
     try:
-        cache.attach("s1")
+        _attach_bound(cache)
         source = np.array([1, 2, 3, 4], dtype=np.int16)
         cache.put("array", source)
         first = cache.get_array("array", dtype=np.int16)
@@ -386,7 +395,7 @@ def test_numpy_get_array_is_zero_copy_and_owned_after_overwrite(live_cache_fixtu
         assert updated.tolist() == [5, 6, 7, 8]
         cache.detach()
         assert first.tolist() == [1, 2, 3, 4]
-        cache.attach("s1")
+        _attach_bound(cache)
         cache.put("empty", np.array([], dtype=np.uint8))
         empty = cache.get_array("empty", dtype=np.uint8)
         assert empty.size == 0
@@ -401,7 +410,7 @@ def test_get_array_is_read_only_zero_copy_and_survives_overwrite(live_cache_fixt
     _, config = live_cache_fixture
     cache = _new_cache(config)
     try:
-        cache.attach("s1")
+        _attach_bound(cache)
         source = numpy.array([1, 2, 3, 4], dtype=numpy.uint16)
         cache.put("array", source)
         source[0] = 99
@@ -438,7 +447,7 @@ def test_get_array_rejects_dtype_and_size_mismatches(live_cache_fixture) -> None
     _, config = live_cache_fixture
     cache = _new_cache(config)
     try:
-        cache.attach("s1")
+        _attach_bound(cache)
         cache.put("bytes", b"abc")
         with pytest.raises(sitos.TypeMismatchError):
             cache.get_array("bytes", dtype=numpy.uint16)
@@ -455,7 +464,7 @@ def test_invalid_inputs_leave_existing_local_state_unchanged(live_cache_fixture)
     _, config = live_cache_fixture
     cache = _new_cache(config)
     try:
-        cache.attach("s1")
+        _attach_bound(cache)
         cache.put("stable", 11)
         with pytest.raises(ValueError, match="two items"):
             cache.put_batch([("stable", 12, "extra")])
@@ -491,7 +500,7 @@ def test_write_reaches_cpp_peer_without_base_or_other_session_mutation(
     assert process.stdout is not None
     cache = _new_cache(config)
     try:
-        cache.attach("s1")
+        _attach_bound(cache)
         _send(process, "PEER_COUNT")
         previous_callback_count = int(_readline_with_timeout(process.stdout).split()[1])
         cache.put("peer_value", 41)
