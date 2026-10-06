@@ -30,10 +30,14 @@ can be in-memory, RocksDB, or your own.
 
 ## Status
 
-sitos 0.1.0 is the first public release. Until 1.0, fixes ship in patch releases. New features and
-breaking changes to the C++ API, the Python API, or the wire format ship in minor releases. The
-design is described in the [architecture document](docs/02_architecture.md) and the
-[ADRs](docs/adr/README.md).
+sitos 0.1.0 is the first public release. Until 1.0, fixes ship in patch releases, and new features
+and breaking changes to the C++ or Python API ship in minor releases. Wire compatibility is broken
+only in a major release. The design is described in the
+[architecture document](docs/02_architecture.md) and the [ADRs](docs/adr/README.md).
+
+Known issue: an acknowledged `ParamStore.put` can time out while a ParamCache is attached to the
+same Session, although the value is still delivered
+([#217](https://github.com/tetsuh/sitos/issues/217)).
 
 ## Install
 
@@ -42,14 +46,16 @@ pip install sitos
 ```
 
 The PyPI wheel is published for Linux x86_64 and CPython 3.12. It bundles the Zenoh runtime and the
-in-memory engine. For the C++ library, RocksDB, Windows, or other Python versions, build from
-source as described [below](#build-from-source).
+in-memory engine. CPython 3.12 is the only Python version supported today. For the C++ library,
+RocksDB, or Windows, build from source as described [below](#build-from-source).
 
 ## Quickstart (Python)
 
 The StorageNode, the writer, and the reader run as separate processes. Save the three scripts below
 and run them in three terminals, in this order. They find each other on the local host without any
-configuration.
+configuration through Zenoh multicast scouting. Where multicast is blocked, as in some containers
+and corporate networks, pass a Zenoh configuration with explicit endpoints through
+`zenoh_config_json`.
 
 `node.py` serves the key space and opens the Session `run1`:
 
