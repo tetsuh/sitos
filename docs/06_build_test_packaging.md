@@ -483,7 +483,8 @@ hosted-site workflow.
   PR receives normal CI and wheel validation and requires current-head owner merge authorization;
   automation does not approve or merge it.
 * Merging the authorized version PR is the expected path that creates the tag and GitHub Release
-  with GitHub-generated source archives. A canonical `v*` tag requests the protected `pypi`
+  with GitHub-generated source archives. release-please sets `include-component-in-tag` to false, so
+  the tag is `vX.Y.Z` without a `sitos-` prefix. A canonical `v*` tag requests the protected `pypi`
   environment before the publication job starts. The owner verifies the version PR, GitHub Release,
   and tag commit before environment approval because the workflow does not authenticate the tag
   creator. After approval, the job confirms exact version agreement among the tag, CMake,
