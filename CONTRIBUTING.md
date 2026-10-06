@@ -151,6 +151,10 @@ Rules:
 
 * 1 PR = 1 issue. Keep diffs small (guideline: 500 lines or less for
   implementation + tests. If larger, consider splitting the issue)
+* The PR title is a plain-language sentence that ends with the issue reference, for example
+  `Expose the ParamCache stale flag (#201)`. It is not a Conventional Commits header: the
+  generated merge commit carries the PR title in its body, and release-please would read a
+  Conventional title there as a second change. ADR PRs keep the `[ADR]` marker that [10] requires.
 * Required items in the PR template:
   - `Closes #NN`
   - Copy of the frozen Issue checklist
@@ -234,7 +238,10 @@ the Issue side may remain unchecked when closed).
    the shared C++/Python version. Before 1.0, fixes bump patch, features and breaking changes bump
    minor, and moving to 1.0 requires an explicit owner decision.
 4. The version PR follows the normal review, green-CI, and current-head owner merge authorization
-   rules. Automation never approves or merges it.
+   rules. Automation never approves or merges it. Before the merge, check `CHANGELOG.md` for an
+   entry listed twice, once for a merge commit and once for its original commit (a PR merged under
+   a Conventional title). Remove the entry that links the merge commit, and merge before anything
+   else lands on `main`, because release-please regenerates the version PR on every `main` push.
 5. Merging the authorized version PR is the expected path that creates the `v*` tag and GitHub
    Release. A tag push requests the protected `pypi` environment before job execution, but the
    workflow does not prove that release-please created the tag. The owner verifies the version PR,

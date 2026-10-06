@@ -15,7 +15,9 @@ project.
 ## Absolute Rules (Summary)
 
 1. **One issue, one branch, one PR**: branch name
-   `feat/<n>-<short-kebab-description>`, PR body contains `Closes #<n>`.
+   `feat/<n>-<short-kebab-description>`, PR body contains `Closes #<n>`. The PR
+   title is a plain-language sentence ending with `(#<n>)`, not a Conventional
+   Commits header (see [CONTRIBUTING.md](CONTRIBUTING.md) §4).
 2. **TDD**: write the AC tests first and confirm RED before implementation.
    Record the command, failing test, expected reason, and one representative failure line.
 3. **Conventional Commits**: header line
