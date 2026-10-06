@@ -588,6 +588,9 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         self.assertEqual(package["changelog-path"], "CHANGELOG.md")
         self.assertEqual(package["initial-version"], "0.1.0")
         self.assertIs(package["include-v-in-tag"], True)
+        # wheels.yml publishes only from canonical vX.Y.Z tags; a component prefix
+        # (sitos-vX.Y.Z) would skip publication.
+        self.assertIs(package["include-component-in-tag"], False)
         self.assertIs(package["bump-minor-pre-major"], True)
         self.assertIs(package["bump-patch-for-minor-pre-major"], False)
         self.assertIn(
