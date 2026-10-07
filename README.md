@@ -33,7 +33,8 @@ can be in-memory, RocksDB, or your own.
 sitos 0.1.0 is the first public release. Until 1.0, fixes ship in patch releases, and new features
 and breaking changes to the C++ or Python API ship in minor releases. Wire compatibility is broken
 only in a major release. The design is described in the
-[architecture document](docs/02_architecture.md) and the [ADRs](docs/adr/README.md).
+[architecture document](https://github.com/tetsuh/sitos/blob/main/docs/02_architecture.md) and the
+[ADRs](https://github.com/tetsuh/sitos/blob/main/docs/adr/README.md).
 
 Known issue: an acknowledged `ParamStore.put` can time out while a ParamCache is attached to the
 same Session, although the value is still delivered
@@ -93,8 +94,8 @@ independent deployments apart on the same network.
 
 ## Core components
 
-The [architecture document](docs/02_architecture.md) describes the complete component model and
-lifecycle:
+The [architecture document](https://github.com/tetsuh/sitos/blob/main/docs/02_architecture.md)
+describes the complete component model and lifecycle:
 
 - **StorageNode** connects Zenoh queryables and subscribers to a storage engine and owns session
   snapshots and overlays.
@@ -102,8 +103,9 @@ lifecycle:
 - **ParamCache** attaches to a session and provides synchronized local reads, including zero-copy
   byte and NumPy views.
 
-The [Python API](docs/05_api_python.md) and [C++ API](docs/04_api_cpp.md) documents cover the full
-surface, including acknowledged writes, subscriptions, fences, custom engines, and error types.
+The [Python API](https://github.com/tetsuh/sitos/blob/main/docs/05_api_python.md) and
+[C++ API](https://github.com/tetsuh/sitos/blob/main/docs/04_api_cpp.md) documents cover the
+full surface, including acknowledged writes, subscriptions, fences, custom engines, and error types.
 
 ## Build from source
 
@@ -143,34 +145,36 @@ A local Python wheel can be built from the same source tree:
 python -m build --wheel python --outdir dist
 ```
 
-See [build, test, and packaging](docs/06_build_test_packaging.md) for optional Zenoh and RocksDB
-configuration, installed CMake consumers, and repaired-wheel validation.
+See [build, test, and packaging](https://github.com/tetsuh/sitos/blob/main/docs/06_build_test_packaging.md)
+for optional Zenoh and RocksDB configuration, installed CMake consumers, and repaired-wheel
+validation.
 
 ## Examples
 
-- [C++ quickstart](examples/cpp/quickstart.cpp) opens one transport, starts an in-memory
-  StorageNode, submits values with ParamStore, creates a session, and reads them through ParamCache.
-- [Python quickstart](examples/python/quickstart.py) runs the public Python APIs in isolated
-  processes with bounded startup, observation, and cleanup.
+- [C++ quickstart](https://github.com/tetsuh/sitos/blob/main/examples/cpp/quickstart.cpp)
+  opens one transport, starts an in-memory StorageNode, submits values with ParamStore, creates a
+  session, and reads them through ParamCache.
+- [Python quickstart](https://github.com/tetsuh/sitos/blob/main/examples/python/quickstart.py)
+  runs the public Python APIs in isolated processes with bounded startup, observation, and cleanup.
 
 These examples are executable acceptance tutorials rather than installed library artifacts. Follow
 the build document's example configuration before running them.
 
 ## Documentation
 
-- [Overview and document map](docs/00_overview.md)
-- [Requirements](docs/01_requirements.md)
-- [Architecture](docs/02_architecture.md)
-- [Wire protocol](docs/03_wire_protocol.md)
-- [C++ API](docs/04_api_cpp.md)
-- [Python API](docs/05_api_python.md)
-- [Build, test, and packaging](docs/06_build_test_packaging.md)
-- [Issue roadmap](docs/07_issue_breakdown.md)
-- [Public contract registry](docs/08_contract_registry.md)
-- [Dependency policy](docs/09_dependency_policy.md)
-- [ADR process](docs/10_adr_process.md)
-- [Contributing](CONTRIBUTING.md)
+- [Overview and document map](https://github.com/tetsuh/sitos/blob/main/docs/00_overview.md)
+- [Requirements](https://github.com/tetsuh/sitos/blob/main/docs/01_requirements.md)
+- [Architecture](https://github.com/tetsuh/sitos/blob/main/docs/02_architecture.md)
+- [Wire protocol](https://github.com/tetsuh/sitos/blob/main/docs/03_wire_protocol.md)
+- [C++ API](https://github.com/tetsuh/sitos/blob/main/docs/04_api_cpp.md)
+- [Python API](https://github.com/tetsuh/sitos/blob/main/docs/05_api_python.md)
+- [Build, test, and packaging](https://github.com/tetsuh/sitos/blob/main/docs/06_build_test_packaging.md)
+- [Issue roadmap](https://github.com/tetsuh/sitos/blob/main/docs/07_issue_breakdown.md)
+- [Public contract registry](https://github.com/tetsuh/sitos/blob/main/docs/08_contract_registry.md)
+- [Dependency policy](https://github.com/tetsuh/sitos/blob/main/docs/09_dependency_policy.md)
+- [ADR process](https://github.com/tetsuh/sitos/blob/main/docs/10_adr_process.md)
+- [Contributing](https://github.com/tetsuh/sitos/blob/main/CONTRIBUTING.md)
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](https://github.com/tetsuh/sitos/blob/main/LICENSE).

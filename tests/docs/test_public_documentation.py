@@ -6,12 +6,14 @@ from __future__ import annotations
 import re
 import tempfile
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 ALLOWED_EXTERNAL_HOSTS = {"github.com", "zenoh.io", "adr.github.io"}
+REPOSITORY_URL = "https://github.com/tetsuh/sitos/"
+REPOSITORY_FILE_URL = f"{REPOSITORY_URL}blob/main/"
 CI_BADGE = "![CI](https://github.com/tetsuh/sitos/actions/workflows/ci.yml/badge.svg)"
 POINTER_BYTES = (
     b"# Development workflow moved\n\n"
@@ -774,8 +776,23 @@ class PublicDocumentationTest(unittest.TestCase):
         for command in README_COMMANDS:
             self.assertIn(command, lines)
         tokens = parse_markdown(ROOT / "README.md", readme)
-        destinations = {token.destination for token in tokens}
-        self.assertTrue(README_TARGETS <= destinations)
+        repository_paths = set()
+        for token in tokens:
+            if token.destination.startswith("#"):
+                continue
+            self.assertTrue(
+                token.destination.startswith("https://"),
+                f"README.md:{token.line}: PyPI cannot resolve {token.destination!r}",
+            )
+            if token.destination.startswith((f"{REPOSITORY_URL}blob/", f"{REPOSITORY_URL}tree/")):
+                self.assertTrue(
+                    token.destination.startswith(REPOSITORY_FILE_URL),
+                    f"README.md:{token.line}: link repository files through {REPOSITORY_FILE_URL}",
+                )
+                path = token.destination.removeprefix(REPOSITORY_FILE_URL)
+                resolve_local_target(replace(token, destination=path), ROOT)
+                repository_paths.add(path.split("#", 1)[0])
+        self.assertTrue(README_TARGETS <= repository_paths)
         for component in ("StorageNode", "ParamStore", "ParamCache"):
             self.assertIn(component, readme)
         images = [token.raw for token in tokens if token.image]
