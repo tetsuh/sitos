@@ -893,6 +893,14 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
                     ),
                     f"{path.name} must keep wire breaks for major releases [C04]",
                 )
+                self.assertIsNotNone(
+                    re.search(
+                        r"breaking changes to the C\+\+ or Python API "
+                        r"(?:bump minor|ship in minor releases)",
+                        normalized,
+                    ),
+                    f"{path.name} must limit the pre-1.0 minor bump to API changes",
+                )
                 self.assertIsNone(
                     re.search(r"features (?:and|or) breaking changes bump minor", normalized),
                     f"{path.name} must limit the pre-1.0 minor bump to API changes",
