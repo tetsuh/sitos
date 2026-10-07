@@ -906,10 +906,15 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
                     f"{path.name} must limit the pre-1.0 minor bump to API changes",
                 )
                 if path.name != "README.md":
-                    self.assertTrue(
-                        "commit body carries `Release-As: 1.0.0`" in normalized,
-                        f"{path.name} must release a pre-1.0 wire break as 1.0.0",
-                    )
+                    for clause in (
+                        "A pre-1.0 wire break is released as 1.0.0 only with owner approval",
+                        "commit body carries `Release-As: 1.0.0`",
+                        "a generated 0.x version PR that contains a wire break is not merged",
+                    ):
+                        self.assertTrue(
+                            clause in normalized,
+                            f"{path.name} must state the pre-1.0 wire-break release path: {clause}",
+                        )
 
 
 if __name__ == "__main__":
