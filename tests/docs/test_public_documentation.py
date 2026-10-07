@@ -12,7 +12,8 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 ALLOWED_EXTERNAL_HOSTS = {"github.com", "zenoh.io", "adr.github.io"}
-REPOSITORY_FILE_URL = "https://github.com/tetsuh/sitos/blob/main/"
+REPOSITORY_URL = "https://github.com/tetsuh/sitos/"
+REPOSITORY_FILE_URL = f"{REPOSITORY_URL}blob/main/"
 CI_BADGE = "![CI](https://github.com/tetsuh/sitos/actions/workflows/ci.yml/badge.svg)"
 POINTER_BYTES = (
     b"# Development workflow moved\n\n"
@@ -783,7 +784,11 @@ class PublicDocumentationTest(unittest.TestCase):
                 token.destination.startswith("https://"),
                 f"README.md:{token.line}: PyPI cannot resolve {token.destination!r}",
             )
-            if token.destination.startswith(REPOSITORY_FILE_URL):
+            if token.destination.startswith((f"{REPOSITORY_URL}blob/", f"{REPOSITORY_URL}tree/")):
+                self.assertTrue(
+                    token.destination.startswith(REPOSITORY_FILE_URL),
+                    f"README.md:{token.line}: link repository files through {REPOSITORY_FILE_URL}",
+                )
                 path = token.destination.removeprefix(REPOSITORY_FILE_URL)
                 resolve_local_target(replace(token, destination=path), ROOT)
                 repository_paths.add(path.split("#", 1)[0])
