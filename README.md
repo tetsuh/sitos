@@ -36,10 +36,6 @@ only in a major release. The design is described in the
 [architecture document](https://github.com/tetsuh/sitos/blob/main/docs/02_architecture.md) and the
 [ADRs](https://github.com/tetsuh/sitos/blob/main/docs/adr/README.md).
 
-Known issue: an acknowledged `ParamStore.put` can time out while a ParamCache is attached to the
-same Session, although the value is still delivered
-([#217](https://github.com/tetsuh/sitos/issues/217)).
-
 ## Install
 
 ```bash
