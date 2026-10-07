@@ -905,6 +905,11 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
                     re.search(r"features (?:and|or) breaking changes bump minor", normalized),
                     f"{path.name} must limit the pre-1.0 minor bump to API changes",
                 )
+                if path.name != "README.md":
+                    self.assertTrue(
+                        "commit body carries `Release-As: 1.0.0`" in normalized,
+                        f"{path.name} must release a pre-1.0 wire break as 1.0.0",
+                    )
 
 
 if __name__ == "__main__":
