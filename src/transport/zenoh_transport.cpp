@@ -856,7 +856,7 @@ class ZenohTransport : public Transport {
 
   ~ZenohTransport() override {
     {
-      std::lock_guard<std::mutex> lock(queriers_mutex_);
+      std::scoped_lock lock(queriers_mutex_);
       queriers_.clear();
     }
     if (session_valid_) {
@@ -993,7 +993,7 @@ class ZenohTransport : public Transport {
     for (;;) {
       z_matching_status_t status{};
       const z_result_t rc =
-          z_querier_get_matching_status(z_querier_loan(querier.Value().get()), &status);
+          z_querier_get_matching_status(querier.Value()->loan(), &status);
       if (rc != Z_OK) return Result<bool>::Err(MakeZenohError(rc));
       if (status.matching) return Result<bool>::Ok(true);
       const auto now = std::chrono::steady_clock::now();
@@ -1122,26 +1122,22 @@ class ZenohTransport : public Transport {
     return Result<Subscription>::Ok(std::move(subscription));
   }
 
-  using SharedQuerier = std::shared_ptr<z_owned_querier_t>;
+  using SharedQuerier = std::shared_ptr<ZenohOwned<z_owned_querier_t>>;
 
   Result<SharedQuerier> MatchingQuerier(std::string_view keyexpr) {
-    std::lock_guard<std::mutex> lock(queriers_mutex_);
+    std::scoped_lock lock(queriers_mutex_);
     std::string key(keyexpr);
     if (auto found = queriers_.find(key); found != queriers_.end()) {
       return Result<SharedQuerier>::Ok(found->second);
     }
     auto ke = MakeKeyexpr(keyexpr);
     if (!ke.IsOk()) return Result<SharedQuerier>::ErrFrom(ke);
-    auto* owned = new z_owned_querier_t;
-    z_internal_querier_null(owned);
-    SharedQuerier querier(owned, [](z_owned_querier_t* q) {
-      z_drop(z_move(*q));
-      delete q;
-    });
+    auto querier = std::make_shared<ZenohOwned<z_owned_querier_t>>();
     const z_result_t rc =
-        z_declare_querier(z_session_loan(&session_), querier.get(), ke.Value().loan(), nullptr);
+        z_declare_querier(z_session_loan(&session_), querier->get(), ke.Value().loan(), nullptr);
     if (rc != Z_OK) return Result<SharedQuerier>::Err(MakeZenohError(rc));
-    queriers_.emplace(std::move(key), querier);
+    querier->mark_valid();
+    queriers_.try_emplace(std::move(key), querier);
     return Result<SharedQuerier>::Ok(std::move(querier));
   }
 
