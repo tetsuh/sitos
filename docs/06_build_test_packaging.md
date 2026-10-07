@@ -477,8 +477,11 @@ hosted-site workflow.
 ## 8. Release
 
 * Semantic versioning [C04]. CMake is the single C++/Python version source. The first public
-  release is `v0.1.0`; before 1.0, fixes bump patch and features or breaking changes bump minor.
-  Moving to 1.0 requires an explicit owner decision.
+  release is `v0.1.0`; before 1.0, fixes bump patch, and features and breaking changes to the C++
+  or Python API bump minor. Wire compatibility is broken only in a major release
+  ([03_wire_protocol.md](03_wire_protocol.md) §8). A pre-1.0 wire break is released as 1.0.0 only
+  with owner approval: its commit body carries `Release-As: 1.0.0`, and a generated 0.x version PR
+  that contains a wire break is not merged. Moving to 1.0 requires an explicit owner decision.
 * release-please derives `CHANGELOG.md` and the version PR from Conventional Commits. The version
   PR receives normal CI and wheel validation and requires current-head owner merge authorization;
   automation does not approve or merge it.

@@ -235,8 +235,11 @@ the Issue side may remain unchecked when closed).
    TestPyPI and verify the exact published wheel in an isolated environment. TestPyPI is a
    validation service, not a user distribution channel.
 3. release-please generates `CHANGELOG.md` and a version PR from Conventional Commits. CMake owns
-   the shared C++/Python version. Before 1.0, fixes bump patch, features and breaking changes bump
-   minor, and moving to 1.0 requires an explicit owner decision.
+   the shared C++/Python version. Before 1.0, fixes bump patch, and features and breaking changes to
+   the C++ or Python API bump minor. Wire compatibility is broken only in a major release (C04,
+   [docs/03](docs/03_wire_protocol.md) §8). A pre-1.0 wire break is released as 1.0.0 only with
+   owner approval: its commit body carries `Release-As: 1.0.0`, and a generated 0.x version PR that
+   contains a wire break is not merged. Moving to 1.0 requires an explicit owner decision.
 4. The version PR follows the normal review, green-CI, and current-head owner merge authorization
    rules. Automation never approves or merges it. Before the merge, check `CHANGELOG.md` for an
    entry listed twice, once for a merge commit and once for its original commit (a PR merged under

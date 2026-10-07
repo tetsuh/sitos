@@ -879,6 +879,43 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
             combined,
         )
 
+    def test_pre_1_0_rule_keeps_wire_breaks_for_major_releases(self) -> None:
+        for path in (
+            ROOT / "README.md",
+            ROOT / "CONTRIBUTING.md",
+            ROOT / "docs" / "06_build_test_packaging.md",
+        ):
+            normalized = re.sub(r"\s+", " ", read(path))
+            with self.subTest(path=path.name):
+                self.assertIsNotNone(
+                    re.search(
+                        r"(?i)wire compatibility is broken only in a major release", normalized
+                    ),
+                    f"{path.name} must keep wire breaks for major releases [C04]",
+                )
+                self.assertIsNotNone(
+                    re.search(
+                        r"breaking changes to the C\+\+ or Python API "
+                        r"(?:bump minor|ship in minor releases)",
+                        normalized,
+                    ),
+                    f"{path.name} must limit the pre-1.0 minor bump to API changes",
+                )
+                self.assertIsNone(
+                    re.search(r"features (?:and|or) breaking changes bump minor", normalized),
+                    f"{path.name} must limit the pre-1.0 minor bump to API changes",
+                )
+                if path.name != "README.md":
+                    for clause in (
+                        "A pre-1.0 wire break is released as 1.0.0 only with owner approval",
+                        "commit body carries `Release-As: 1.0.0`",
+                        "a generated 0.x version PR that contains a wire break is not merged",
+                    ):
+                        self.assertTrue(
+                            clause in normalized,
+                            f"{path.name} must state the pre-1.0 wire-break release path: {clause}",
+                        )
+
 
 if __name__ == "__main__":
     unittest.main()
