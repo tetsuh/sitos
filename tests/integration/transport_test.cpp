@@ -939,6 +939,44 @@ TEST_F(TransportTest, EmptyQueryableCallbackIsSafe) {
   // Destruction of the (empty) handle must not crash; it goes out of scope.
 }
 
+// Issue #217: an acknowledged write waits for a StorageNode queryable before it
+// submits, because Zenoh session open can return before the node is connected.
+TEST_F(TransportTest, MatchingQueryableWaitEndsAtTheDeadlineWithoutAQueryable) {
+  const auto started = std::chrono::steady_clock::now();
+  const auto matched = transport_->WaitForMatchingQueryable(
+      "sitos/test/matching/absent/meta/ack/*", started + std::chrono::milliseconds(300));
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  ASSERT_TRUE(matched.IsOk()) << matched.Message();
+  EXPECT_FALSE(matched.Value());
+  EXPECT_GE(elapsed, std::chrono::milliseconds(250));
+  EXPECT_LT(elapsed, std::chrono::seconds(2));
+}
+
+TEST_F(TransportTest, MatchingQueryableWaitEndsWhenAPrefixQueryableIsDeclared) {
+  std::optional<sitos::Result<sitos::Queryable>> queryable;
+  std::thread declarer([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    queryable.emplace(
+        transport_->DeclareQueryable("sitos/test/matching/node/**", [](sitos::TransportQuery&) {}));
+  });
+  const auto started = std::chrono::steady_clock::now();
+  const auto matched = transport_->WaitForMatchingQueryable(
+      "sitos/test/matching/node/meta/ack/*", started + std::chrono::seconds(5));
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  declarer.join();
+  ASSERT_TRUE(queryable.has_value() && queryable->IsOk());
+  ASSERT_TRUE(matched.IsOk()) << matched.Message();
+  EXPECT_TRUE(matched.Value());
+  EXPECT_GE(elapsed, std::chrono::milliseconds(250));
+  EXPECT_LT(elapsed, std::chrono::seconds(4));
+
+  const auto again = transport_->WaitForMatchingQueryable(
+      "sitos/test/matching/node/meta/ack/*",
+      std::chrono::steady_clock::now() + std::chrono::seconds(5));
+  ASSERT_TRUE(again.IsOk()) << again.Message();
+  EXPECT_TRUE(again.Value());
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
