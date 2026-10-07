@@ -72,7 +72,8 @@ with sitos.ParamStore(prefix="sitos", zenoh_config_json=None,
 `put_batch` also accepts a Mapping. Pair iterables preserve caller order and duplicate keys;
 all entries are validated before one wire submission. `put` and `put_batch` acknowledge the
 StorageNode by default and submit data exactly once. Within `ack_timeout_ms`, an acknowledged write
-first waits until a StorageNode for the prefix is reachable (ADR-0038). Pass `ack=False` for
+first waits until a StorageNode for the prefix is reachable (ADR-0038); it submits once after the
+wait, also when the wait reaches the deadline or fails. Pass `ack=False` for
 submission-only behavior;
 `ack_timeout_ms` is still checked as an integer but its positivity is ignored in that mode. The
 option arguments are keyword-only, `ack` must be an exact bool, and `ack_timeout_ms` must be a

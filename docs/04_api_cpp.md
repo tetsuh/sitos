@@ -215,7 +215,8 @@ base-only; session Delete returns `Status::InvalidKey`, and snapshot writes retu
 buffer DELETE is unsupported in v0.4. `Put` and `PutBatch` are acknowledged by default: they
 submit one message and wait up to `WriteOptions::ack_timeout` (3000 ms by default) for the
 StorageNode result. Within the same deadline, an acknowledged write first waits until a
-StorageNode for the prefix is reachable, and then submits once (ADR-0038). Pass `WriteOptions{.ack = false}` for submission-only behavior. `Delete`
+StorageNode for the prefix is reachable (ADR-0038). It submits once after the wait, also when the
+wait reaches the deadline or fails, and then polls for the result as before. Pass `WriteOptions{.ack = false}` for submission-only behavior. `Delete`
 remains acknowledgement-free. Acknowledgement proves StorageNode application only, not ParamCache
 visibility. `PutBatch` uses the canonical `:batch` key and sends one `sitos.v1.batch` message; an
 empty valid batch sends no message.
