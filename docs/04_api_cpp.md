@@ -129,6 +129,13 @@ the token key and its kind (`Put` when the token appears, `Delete` when it disap
 callback can run inside a token declaration or withdrawal and must not block. The Zenoh Transport
 provides the capability.
 
+`Transport` also has an optional queryable-matching capability (ADR-0038):
+`WaitForMatchingQueryable(keyexpr, deadline)` returns `true` once a queryable that matches
+`keyexpr` is reachable and `false` when `deadline` passes first. An acknowledged write calls it with
+`<prefix>/meta/ack/*` before its single submission, because a Zenoh session can open before the
+StorageNode is connected. The default returns `true` at once, so existing custom Transports compile
+unchanged and submit without waiting. The Zenoh Transport provides the capability.
+
 ### 1.1 Status / Python Exception Mapping
 
 | Status | C++ condition | Python exception |
@@ -207,7 +214,9 @@ base-only; session Delete returns `Status::InvalidKey`, and snapshot writes retu
 `Status::ReadOnly`. Raw Transport DELETE remains supported for both base and session routes;
 buffer DELETE is unsupported in v0.4. `Put` and `PutBatch` are acknowledged by default: they
 submit one message and wait up to `WriteOptions::ack_timeout` (3000 ms by default) for the
-StorageNode result. Pass `WriteOptions{.ack = false}` for submission-only behavior. `Delete`
+StorageNode result. Within the same deadline, an acknowledged write first waits until a
+StorageNode for the prefix is reachable (ADR-0038). It submits once after the wait, also when the
+wait reaches the deadline or fails, and then polls for the result as before. Pass `WriteOptions{.ack = false}` for submission-only behavior. `Delete`
 remains acknowledgement-free. Acknowledgement proves StorageNode application only, not ParamCache
 visibility. `PutBatch` uses the canonical `:batch` key and sends one `sitos.v1.batch` message; an
 empty valid batch sends no message.

@@ -81,6 +81,18 @@ class ScriptedTransport final : public sitos::Transport {
     std::chrono::milliseconds timeout;
     Clock::time_point at;
   };
+  struct WaitRecord {
+    std::string keyexpr;
+    Clock::time_point deadline;
+  };
+
+  Result<bool> WaitForMatchingQueryable(std::string_view keyexpr,
+                                        Clock::time_point deadline) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    waits.push_back({std::string(keyexpr), deadline});
+    events.push_back("wait");
+    return wait_result;
+  }
 
   Result<void> Put(std::string_view key, std::span<const std::byte> payload, Encoding encoding,
                    sitos::PutOptions options) override {
@@ -88,6 +100,7 @@ class ScriptedTransport final : public sitos::Transport {
       std::lock_guard<std::mutex> lock(mutex_);
       puts.push_back({std::string(key), std::vector<std::byte>(payload.begin(), payload.end()),
                       encoding.id, options.ack_token});
+      events.push_back("put");
     }
     if (put_delay > 0ms) std::this_thread::sleep_for(put_delay);
     return put_result;
@@ -101,6 +114,7 @@ class ScriptedTransport final : public sitos::Transport {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       gets.push_back({std::string(keyexpr), timeout, Clock::now()});
+      events.push_back("get");
       if (!script.empty()) {
         step = script.front();
         script.erase(script.begin());
@@ -155,16 +169,27 @@ class ScriptedTransport final : public sitos::Transport {
     std::lock_guard<std::mutex> lock(mutex_);
     return gets;
   }
+  std::vector<WaitRecord> Waits() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return waits;
+  }
+  std::vector<std::string> Events() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return events;
+  }
 
   std::vector<Step> script;
   Result<void> put_result = Result<void>::Ok();
   std::chrono::milliseconds put_delay{0};
   bool simulate_window = false;
+  Result<bool> wait_result = Result<bool>::Ok(true);
 
  private:
   mutable std::mutex mutex_;
   std::vector<PutRecord> puts;
   std::vector<GetRecord> gets;
+  std::vector<WaitRecord> waits;
+  std::vector<std::string> events;
 };
 
 ScriptedTransport::Step Reply(AckResultV1 result) {
@@ -387,6 +412,57 @@ TEST(AckClientTest, InvalidInputsAreRejectedBeforeSubmission) {
             Status::InvalidArgument);
   EXPECT_TRUE(transport.Puts().empty()) << "definite NotSubmitted";
   EXPECT_TRUE(transport.Gets().empty());
+  EXPECT_TRUE(transport.Waits().empty());
+}
+
+// Issue #217: Zenoh session open can return before the StorageNode is
+// connected, and a sample sent then is lost. Submission therefore first waits,
+// within the total deadline, until a StorageNode queryable matches the ack key.
+TEST(AckClientTest, WaitsForAMatchingStorageNodeQueryableBeforeTheSubmission) {
+  ScriptedTransport transport;
+  transport.script = {Reply(PutOk())};
+  const auto started = Clock::now();
+  const auto result = Submit(transport, 3000ms);
+  const auto finished = Clock::now();
+  ASSERT_TRUE(result.IsOk()) << result.Message();
+
+  const auto waits = transport.Waits();
+  ASSERT_EQ(waits.size(), 1u);
+  EXPECT_EQ(waits[0].keyexpr, std::string(kPrefix) + "/meta/ack/*");
+  EXPECT_GE(waits[0].deadline, started + 3000ms) << "the wait shares the total deadline";
+  EXPECT_LE(waits[0].deadline, finished + 3000ms);
+  EXPECT_EQ(transport.Events(), (std::vector<std::string>{"wait", "put", "get"}));
+}
+
+TEST(AckClientTest, SubmitsOnceWhenNoStorageNodeQueryableMatchesBeforeTheDeadline) {
+  ScriptedTransport transport;
+  transport.wait_result = Result<bool>::Ok(false);
+  const auto result = Submit(transport, 300ms);
+  EXPECT_EQ(result.StatusCode(), Status::Timeout);
+  EXPECT_EQ(transport.Puts().size(), 1u) << "an unmatched wait does not skip the submission";
+  ASSERT_FALSE(transport.Events().empty());
+  EXPECT_EQ(transport.Events().front(), "wait");
+}
+
+TEST(AckClientTest, SubmitsOnceWhenTheMatchingWaitFails) {
+  ScriptedTransport transport;
+  transport.wait_result =
+      Result<bool>::Err(Status::Disconnected, "session closed",
+                        std::make_error_code(std::errc::not_connected));
+  transport.script = {Reply(PutOk())};
+  const auto result = Submit(transport, 3000ms);
+  ASSERT_TRUE(result.IsOk()) << result.Message();
+  EXPECT_EQ(transport.Events(), (std::vector<std::string>{"wait", "put", "get"}));
+}
+
+TEST(AckClientTest, DefaultTransportReportsAMatchWithoutWaiting) {
+  ScriptedTransport transport;
+  const auto started = Clock::now();
+  const auto matched = transport.sitos::Transport::WaitForMatchingQueryable(
+      "sitos/meta/ack/*", started + 5000ms);
+  ASSERT_TRUE(matched.IsOk());
+  EXPECT_TRUE(matched.Value());
+  EXPECT_LT(Clock::now() - started, 1000ms);
 }
 
 }  // namespace

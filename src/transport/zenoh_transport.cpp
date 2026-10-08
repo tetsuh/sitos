@@ -12,7 +12,9 @@
 #pragma warning(pop)
 #endif
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -23,7 +25,9 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <type_traits>
+#include <unordered_map>
 
 #include "../fence_internal.hpp"
 #include "config_failure.hpp"
@@ -851,6 +855,10 @@ class ZenohTransport : public Transport {
   }
 
   ~ZenohTransport() override {
+    {
+      std::scoped_lock lock(queriers_mutex_);
+      queriers_.clear();
+    }
     if (session_valid_) {
       z_close(z_session_loan_mut(&session_), nullptr);
     }
@@ -969,6 +977,31 @@ class ZenohTransport : public Transport {
   Result<Subscription> DeclareSubscriber(
       std::string_view keyexpr_str, std::function<void(const TransportSample&)> callback) override {
     return DeclareSampleSubscriber(keyexpr_str, std::move(callback), SubscriberSpace::kData);
+  }
+
+  // ADR-0038: session open can return before the StorageNode is connected, and a sample sent
+  // then is lost. A querier's matching status reports whether a queryable for `keyexpr` is
+  // reachable; only StorageNode declares queryables. One querier per key expression is kept for
+  // the session's lifetime, so repeated acknowledged writes do not redeclare it.
+  Result<bool> WaitForMatchingQueryable(std::string_view keyexpr,
+                                        std::chrono::steady_clock::time_point deadline) override {
+    if (!session_valid_) {
+      return SemanticTransportError<bool>(Status::Disconnected, TransportErrc::kErrDisconnected);
+    }
+    auto querier = MatchingQuerier(keyexpr);
+    if (!querier.IsOk()) return Result<bool>::ErrFrom(querier);
+    // The deadline is checked before every status read, so a match seen after it is not reported.
+    for (;;) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) return Result<bool>::Ok(false);
+      z_matching_status_t status{};
+      const z_result_t rc =
+          z_querier_get_matching_status(querier.Value()->loan(), &status);
+      if (rc != Z_OK) return Result<bool>::Err(MakeZenohError(rc));
+      if (status.matching) return Result<bool>::Ok(true);
+      std::this_thread::sleep_for(
+          std::min<std::chrono::steady_clock::duration>(kMatchingPollInterval, deadline - now));
+    }
   }
 
   // ADR-0037 §D3: the stable zenoh-c liveliness API. Tokens and liveliness subscribers live in
@@ -1090,6 +1123,29 @@ class ZenohTransport : public Transport {
     return Result<Subscription>::Ok(std::move(subscription));
   }
 
+  using SharedQuerier = std::shared_ptr<ZenohOwned<z_owned_querier_t>>;
+
+  Result<SharedQuerier> MatchingQuerier(std::string_view keyexpr) {
+    std::scoped_lock lock(queriers_mutex_);
+    std::string key(keyexpr);
+    if (auto found = queriers_.find(key); found != queriers_.end()) {
+      return Result<SharedQuerier>::Ok(found->second);
+    }
+    auto ke = MakeKeyexpr(keyexpr);
+    if (!ke.IsOk()) return Result<SharedQuerier>::ErrFrom(ke);
+    auto querier = std::make_shared<ZenohOwned<z_owned_querier_t>>();
+    const z_result_t rc =
+        z_declare_querier(z_session_loan(&session_), querier->get(), ke.Value().loan(), nullptr);
+    if (rc != Z_OK) return Result<SharedQuerier>::Err(MakeZenohError(rc));
+    querier->mark_valid();
+    queriers_.try_emplace(std::move(key), querier);
+    return Result<SharedQuerier>::Ok(std::move(querier));
+  }
+
+  static constexpr std::chrono::milliseconds kMatchingPollInterval{10};
+
+  std::mutex queriers_mutex_;
+  std::unordered_map<std::string, SharedQuerier> queriers_;
   std::mutex submission_mutex_;
   const std::uint64_t fence_generation_ = NextFenceTransportGeneration();
   std::shared_ptr<fence_internal::FenceDispatchCoordinator> fence_dispatcher_ =

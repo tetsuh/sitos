@@ -123,6 +123,11 @@ public:
     virtual Result<Subscription> DeclareLivelinessSubscriber(
         std::string_view keyexpr,
         std::function<void(const TransportSample&)> callback);
+
+    // Optional queryable-matching capability (ADR-0038). The default reports a match at once.
+    virtual Result<bool> WaitForMatchingQueryable(
+        std::string_view keyexpr,
+        std::chrono::steady_clock::time_point deadline);
 };
 
 } // namespace sitos
@@ -131,6 +136,10 @@ public:
 The liveliness hooks are optional (ADR-0037 §D3). The Zenoh adapter implements them with the stable
 zenoh-c liveliness API; a Transport that keeps the defaults returns `InvalidArgument` from both
 declarations, and StorageNode and ParamCache then skip Session liveliness.
+
+The queryable-matching hook is optional too (ADR-0038). The Zenoh adapter implements it with a
+cached querier and the stable `z_querier_get_matching_status`; a Transport that keeps the default
+reports a match at once, so an acknowledged write submits without waiting.
 
 The abstract API above shows the implemented dependency boundary; Accepted ADR-0028 and ADR-0029
 reserve two disjoint attachment uses within that boundary. `AckAttachmentV1` is exact 17-byte
