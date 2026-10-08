@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/tetsuh/sitos/compare/v0.1.0...v0.1.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **store:** wait for a reachable StorageNode before an acknowledged write ([#217](https://github.com/tetsuh/sitos/issues/217)) ([0dc54c6](https://github.com/tetsuh/sitos/commit/0dc54c693147c534e08879e5dc05b2e1cf4a8b68))
+* **transport:** check the matching deadline before every status read ([#217](https://github.com/tetsuh/sitos/issues/217)) ([552630f](https://github.com/tetsuh/sitos/commit/552630f1b7f91384ef895f0ce1d9c0e138032d9b))
+
 ## 0.1.0 (2026-10-05)
 
 
