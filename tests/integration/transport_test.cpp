@@ -977,6 +977,39 @@ TEST_F(TransportTest, MatchingQueryableWaitEndsWhenAPrefixQueryableIsDeclared) {
   EXPECT_TRUE(again.Value());
 }
 
+TEST_F(TransportTest, MatchingQueryableWaitReportsNoMatchOnceTheDeadlineHasPassed) {
+  auto queryable =
+      transport_->DeclareQueryable("sitos/test/matching/late/**", [](sitos::TransportQuery&) {});
+  ASSERT_TRUE(queryable.IsOk());
+  const auto present = transport_->WaitForMatchingQueryable(
+      "sitos/test/matching/late/meta/ack/*",
+      std::chrono::steady_clock::now() + std::chrono::seconds(5));
+  ASSERT_TRUE(present.IsOk() && present.Value()) << "the queryable must be visible first";
+
+  const auto expired = transport_->WaitForMatchingQueryable(
+      "sitos/test/matching/late/meta/ack/*",
+      std::chrono::steady_clock::now() - std::chrono::milliseconds(1));
+  ASSERT_TRUE(expired.IsOk()) << expired.Message();
+  EXPECT_FALSE(expired.Value()) << "a match seen after the deadline is not a match within it";
+}
+
+TEST_F(TransportTest, MatchingQueryableWaitIgnoresAQueryableDeclaredAfterTheDeadline) {
+  std::optional<sitos::Result<sitos::Queryable>> queryable;
+  std::thread declarer([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    queryable.emplace(transport_->DeclareQueryable("sitos/test/matching/after/**",
+                                                   [](sitos::TransportQuery&) {}));
+  });
+  const auto started = std::chrono::steady_clock::now();
+  const auto matched = transport_->WaitForMatchingQueryable(
+      "sitos/test/matching/after/meta/ack/*", started + std::chrono::milliseconds(100));
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  declarer.join();
+  ASSERT_TRUE(matched.IsOk()) << matched.Message();
+  EXPECT_FALSE(matched.Value());
+  EXPECT_LT(elapsed, std::chrono::milliseconds(300));
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
