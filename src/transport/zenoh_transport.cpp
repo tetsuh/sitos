@@ -990,14 +990,15 @@ class ZenohTransport : public Transport {
     }
     auto querier = MatchingQuerier(keyexpr);
     if (!querier.IsOk()) return Result<bool>::ErrFrom(querier);
+    // The deadline is checked before every status read, so a match seen after it is not reported.
     for (;;) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) return Result<bool>::Ok(false);
       z_matching_status_t status{};
       const z_result_t rc =
           z_querier_get_matching_status(querier.Value()->loan(), &status);
       if (rc != Z_OK) return Result<bool>::Err(MakeZenohError(rc));
       if (status.matching) return Result<bool>::Ok(true);
-      const auto now = std::chrono::steady_clock::now();
-      if (now >= deadline) return Result<bool>::Ok(false);
       std::this_thread::sleep_for(
           std::min<std::chrono::steady_clock::duration>(kMatchingPollInterval, deadline - now));
     }
