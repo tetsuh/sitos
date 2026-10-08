@@ -29,7 +29,9 @@ inline constexpr std::chrono::milliseconds kAckQueryRetryDelay{100};
 
 /// Submits one acknowledged Put/PutBatch and polls for its AckResultV1.
 ///
-/// The total deadline starts immediately before the sole data Put. Each query
+/// The total deadline starts after input validation. Within it, the helper first
+/// waits until a StorageNode queryable matches <prefix>/meta/ack/* (ADR-0038),
+/// then performs the sole data Put whether or not the wait matched. Each query
 /// window is min(1000 ms, remaining); only one query is active at a time; at
 /// least 100 ms separates two queries; there is no attempt-count limit. The
 /// data write is never resubmitted.

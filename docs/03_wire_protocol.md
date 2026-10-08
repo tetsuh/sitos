@@ -305,8 +305,10 @@ Acknowledged Put and PutBatch use one data submission followed by bounded result
    rule applies to acknowledgement-free batches. Stop clears all token state.
 4. A canonical empty `sitos.v1.batch` short-circuits in the client helper with Batch/`Ok` and
    `applied_count = 0`, generating no token and performing no submission or query. Otherwise the
-   client helper starts the total deadline immediately before the sole data Put, then polls
-   only the acknowledgement query (query windows of `min(1000 ms, remaining)`, one active query,
+   client helper starts the total deadline after local input and option validation, waits within
+   it until a StorageNode queryable matches `<prefix>/meta/ack/*` (ADR-0038; an unmatched or failed
+   wait still leads to the submission), performs the sole data Put, and then polls, for the rest of
+   the same deadline, only the acknowledgement query (query windows of `min(1000 ms, remaining)`, one active query,
    at least 100 ms apart, no attempt count) and never resubmits the data write. After each query
    quiesces, a protocol error (wrong reply key or Encoding, malformed result → `Status::Error`)
    takes precedence, then one valid decoded result, otherwise the zero reply or Get failure is
