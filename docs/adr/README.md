@@ -45,4 +45,4 @@ status so the offline documentation contract can detect index drift.
 | [0035](0035-buffer-publisher-fences.md) | Define BufferPublisher fence discovery and public mapping | Accepted |
 | [0036](0036-retained-session-catalog.md) | Persist a retained-session catalog and reconcile it at StorageNode start | Accepted |
 | [0037](0037-param-cache-session-liveness-and-recovery.md) | Detect Session loss with liveliness tokens and rebuild ParamCache automatically | Accepted |
-| [0038](0038-wait-for-a-storage-node-before-an-acknowledged-write.md) | Wait for a reachable StorageNode before an acknowledged write | Proposed |
+| [0038](0038-wait-for-a-storage-node-before-an-acknowledged-write.md) | Wait for a reachable StorageNode before an acknowledged write | Accepted |
