@@ -295,11 +295,12 @@ class Transport {
                                      "transport does not support liveliness");
   }
 
-  /// Optional queryable-matching capability (ADR-0038). Waits until a queryable that matches
-  /// `keyexpr` is reachable or `deadline` passes, and returns whether one matched. An
-  /// acknowledged write calls it before its single submission, because a session can open
-  /// before the StorageNode is connected. The default reports a match at once, so a Transport
-  /// that does not provide the capability submits without waiting.
+  /// Optional queryable-matching capability (ADR-0038, ADR-0039). Waits until a queryable that
+  /// matches `keyexpr` is reachable or `deadline` passes, and returns whether one matched. An
+  /// acknowledged write calls it before its single submission, and a client query calls it
+  /// before the query, because a session can open before the StorageNode is connected. The
+  /// default reports a match at once, so a Transport that does not provide the capability
+  /// submits and queries without waiting.
   virtual Result<bool> WaitForMatchingQueryable(
       std::string_view /*keyexpr*/, std::chrono::steady_clock::time_point /*deadline*/) {
     return Result<bool>::Ok(true);

@@ -51,7 +51,9 @@ Issue #23 provides a non-callback Python facade over the synchronous C++ ParamSt
 adds acknowledged writes with C++-matching options.
 Each instance opens and owns its own Transport/session from `zenoh_config_json`; raw session or
 Transport sharing is not part of this API. `query_timeout_ms` is a positive integer in the same
-milliseconds unit as C++ `ClientConfig`.
+milliseconds unit as C++ `ClientConfig`. `get`, `contains`, and `list` first wait, within that
+timeout, until a StorageNode for the prefix is reachable (ADR-0039); with no reachable node they
+report "not found" or an empty list after about the full timeout.
 
 ```python
 import sitos
@@ -144,7 +146,8 @@ subinterpreters are not supported while subscriptions are live.
 > implements it.
 
 `BufferPublisher` mirrors the C++ explicit byte-publication API. Construction binds one active
-Session generation by querying `meta/session/<sid>` with the configured query timeout; a missing
+Session generation by querying `meta/session/<sid>` with the configured query timeout, after
+waiting within that timeout until a StorageNode for the prefix is reachable (ADR-0039); a missing
 reply raises `NotFoundError`, while malformed metadata raises `TypeMismatchError`. `push` accepts `bytes`, supported contiguous fixed-width NumPy arrays, and contiguous
 buffer-protocol objects, copying the value before returning; non-contiguous arrays are rejected.
 `fence` takes `FenceDurability.APPLIED` (stable value 0) or `.SYNCED` (stable value 1) and a
@@ -166,7 +169,8 @@ receipt = publisher.fence(sitos.FenceDurability.SYNCED, timeout=2.0)
 Issue #24 provides a non-callback, session-only Python facade over C++ ParamCache under ADR-0022 and
 ADR-0023. Each instance opens and owns its Transport/session from `zenoh_config_json`; it has no
 `attach_base` or raw Transport-injection API. `query_timeout_ms` is a positive integer used by the
-initial snapshot and overlay fetches.
+initial snapshot and overlay fetches; each fetch first waits, within that timeout, until a
+StorageNode for the prefix is reachable (ADR-0039).
 
 ```python
 with sitos.ParamCache(prefix="sitos", zenoh_config_json=None,
