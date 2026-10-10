@@ -13,6 +13,7 @@
 #include "fence_internal.hpp"
 #include "sitos/ack.hpp"
 #include "sitos/param_value.hpp"
+#include "storage_node_reachability.hpp"
 
 namespace sitos {
 
@@ -306,6 +307,9 @@ Result<FenceUuid> DiscoverSessionGeneration(Transport& transport, const ClientCo
 
   std::optional<FenceUuid> generation;
   bool invalid_reply = false;
+  // ADR-0039: wait for a reachable StorageNode within the query timeout before querying.
+  const auto query_timeout = storage_node_reachability::WaitForStorageNodeWithin(
+      transport, config.prefix, config.query_timeout);
   auto query = transport.Get(
       *metadata_key,
       [&metadata_key, &invalid_reply, &generation](
@@ -336,7 +340,7 @@ Result<FenceUuid> DiscoverSessionGeneration(Transport& transport, const ClientCo
         generation = parsed;
         return true;
       },
-      config.query_timeout);
+      query_timeout);
   if (!query.IsOk()) return Result<FenceUuid>::ErrFrom(query);
   if (invalid_reply) {
     return Result<FenceUuid>::Err(Status::TypeMismatch, "invalid session metadata");

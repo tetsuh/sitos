@@ -13,6 +13,7 @@
 
 #include "sitos/batch.hpp"
 #include "sitos/key.hpp"
+#include "storage_node_reachability.hpp"
 
 namespace sitos {
 namespace {
@@ -157,8 +158,7 @@ Result<AckResultV1> SubmitAcknowledgedWrite(Transport& transport, std::string_vi
   // is lost. Wait within the total deadline until the node's queryable matches the ack key. The
   // wait never skips or repeats the single submission, so an unmatched or failed wait still
   // submits once.
-  static_cast<void>(
-      transport.WaitForMatchingQueryable(std::string(prefix) + "/meta/ack/*", deadline_at));
+  storage_node_reachability::WaitForStorageNode(transport, prefix, deadline_at);
   PutOptions options;
   options.ack_token = token;
   std::optional<ErrorInfo> latest_error;

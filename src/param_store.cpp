@@ -16,6 +16,7 @@
 
 #include "ack_client.hpp"
 #include "list_prefix_validation.hpp"
+#include "storage_node_reachability.hpp"
 
 namespace sitos {
 namespace {
@@ -289,6 +290,9 @@ Result<ParamValue> ParamStore::Get(std::string_view scope, std::string_view key)
   }
 
   std::optional<Result<ParamValue>> callback_result;
+  // ADR-0039: wait for a reachable StorageNode within the query timeout before querying.
+  const auto query_timeout = storage_node_reachability::WaitForStorageNodeWithin(
+      *transport_, config_.prefix, config_.query_timeout);
   auto transport_result = transport_->Get(
       *full_key,
       [&callback_result, &full_key](std::string_view actual_key, std::span<const std::byte> payload,
@@ -297,7 +301,7 @@ Result<ParamValue> ParamStore::Get(std::string_view scope, std::string_view key)
         callback_result = DecodeReply(*full_key, actual_key, payload, encoding);
         return callback_result->IsOk();
       },
-      config_.query_timeout);
+      query_timeout);
   if (!transport_result.IsOk()) return Result<ParamValue>::ErrFrom(transport_result);
   if (callback_result.has_value()) return std::move(*callback_result);
   return Result<ParamValue>::Err(Status::NotFound, "parameter not found");
@@ -326,6 +330,9 @@ Result<void> ParamStore::List(std::string_view scope, std::string_view prefix,
   std::vector<std::pair<std::string, ParamValue>> values;
   std::optional<Result<void>> callback_error;
 
+  // ADR-0039: wait for a reachable StorageNode within the query timeout before querying.
+  const auto query_timeout = storage_node_reachability::WaitForStorageNodeWithin(
+      *transport_, config_.prefix, config_.query_timeout);
   auto transport_result = transport_->Get(
       selector,
       [&context, &callback_error, &values](std::string_view full_key,
@@ -337,7 +344,7 @@ Result<void> ParamStore::List(std::string_view scope, std::string_view prefix,
         }
         return true;
       },
-      config_.query_timeout);
+      query_timeout);
   if (!transport_result.IsOk()) return Result<void>::ErrFrom(transport_result);
   if (callback_error.has_value()) return *callback_error;
 
