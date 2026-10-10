@@ -164,19 +164,21 @@ Conventions:
 
 ### 4.1 Responsibilities
 
-1. Declare zenoh `queryable`: respond to get requests for `<prefix>/**`
-   - `base/**` → engine
-   - `snap/<sid>/**` → view in the snapshot table
-   - `session/<sid>/**` → overlay table
-   - `buffers/<sid>/durable/**` → the Session's durable buffer engine
-   - `buffers/<sid>/ephemeral/**` → no replies; ephemeral is live-only [ADR-0032]
-2. Declare zenoh `subscriber`: receive put/delete for `<prefix>/**`
+1. Declare zenoh `subscriber`: receive put/delete for `<prefix>/**`
    - `base/**` → apply to engine
    - `session/<sid>/**` → apply to overlay
    - put to `snap/**` → ignore + warning log (read-only)
    - buffer PUTs → capability admission and durable write-once handling; Zenoh fanout is
      independent [ADR-0032]
    - buffer DELETEs and control routes → reject as unsupported in v0.4
+2. Declare zenoh `queryable`: respond to get requests for `<prefix>/**`. Start declares it last,
+   after the subscriber is declared and callbacks are admitted; clients treat it as readiness
+   [ADR-0040]
+   - `base/**` → engine
+   - `snap/<sid>/**` → view in the snapshot table
+   - `session/<sid>/**` → overlay table
+   - `buffers/<sid>/durable/**` → the Session's durable buffer engine
+   - `buffers/<sid>/ephemeral/**` → no replies; ephemeral is live-only [ADR-0032]
 3. Session lifecycle (a conceptual responsibility implemented inside StorageNode):
    - `StorageNode::CreateSession(sid, options)`: reserve a `Creating` Session record, create the
      snapshot, overlay, metadata, capabilities, and, only when enabled, one durable engine:
