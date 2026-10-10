@@ -183,6 +183,7 @@ class FakeTransport final : public Transport {
       std::function<void(TransportQuery&)> callback) override {
     declared_keyexpr = std::string(keyexpr);
     query_callback = std::move(callback);
+    if (before_queryable_declaration) before_queryable_declaration();
     if (queryable_failure.has_value()) {
       query_callback = {};
       return Result<Queryable>::Err(queryable_failure->status, queryable_failure->message,
@@ -238,6 +239,8 @@ class FakeTransport final : public Transport {
   bool invoke_subscriber_during_declare = false;
   // Runs when the queryable is declared, as a remote client that observes it would act.
   std::function<void()> on_queryable_declared;
+  // Runs at the start of every queryable declaration, including one that then fails.
+  std::function<void()> before_queryable_declaration;
   bool clear_callbacks_on_reset = false;
   int queryable_declarations = 0;
   int subscriber_declarations = 0;
@@ -395,6 +398,24 @@ TEST(StorageNodeLifecycleTest, StagingCallbacksCannotTouchEngine) {
   EXPECT_EQ(transport.subscriber_declarations, 1);
   EXPECT_FALSE(engine->Get("staged", [](std::string_view, Bytes) { return true; }));
   EXPECT_FALSE(node.IsStarted());
+}
+
+// ADR-0040 §D2: callbacks are admitted before the queryable is declared, so a sample received
+// before a failing queryable declaration stays applied while Start returns the error.
+TEST(StorageNodeLifecycleTest, SampleBeforeAFailedQueryableDeclarationStaysApplied) {
+  FakeTransport transport;
+  transport.fail_queryable = true;
+  transport.before_queryable_declaration = [&] {
+    transport.InvokeSubscriber("sitos/base/early", TransportSample::Kind::Put,
+                               {std::byte{0x04}, std::byte{0xAA}},
+                               Encoding{std::string(Encoding::kSitosV1)});
+  };
+  auto engine = std::make_shared<InMemoryEngine>();
+  StorageNode node(transport);
+
+  EXPECT_FALSE(node.Start(engine, {}).IsOk());
+  EXPECT_FALSE(node.IsStarted());
+  EXPECT_TRUE(engine->Get("early", [](std::string_view, Bytes) { return true; }));
 }
 
 // ADR-0040: clients treat a matching queryable as readiness (ADR-0038, ADR-0039), so a
