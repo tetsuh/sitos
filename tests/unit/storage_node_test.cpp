@@ -159,6 +159,11 @@ class FakeTransport final : public Transport {
       return Result<Subscription>::Err(std::make_error_code(std::errc::io_error));
     }
     ++subscriber_declarations;
+    if (invoke_subscriber_during_declare) {
+      InvokeSubscriber(std::string(keyexpr.substr(0, keyexpr.size() - 3)) + "/base/staged",
+                       TransportSample::Kind::Put, {std::byte{0x04}, std::byte{0xAA}},
+                       Encoding{std::string(Encoding::kSitosV1)});
+    }
     return Result<Subscription>::Ok(
         transport_test_access::DeclarationHandleTestAccess::MakeSubscription([this] {
           ++subscriber_resets;
@@ -196,6 +201,7 @@ class FakeTransport final : public Transport {
       query.keyexpr = std::string(keyexpr) + "/base/staged";
       query_callback(query);
     }
+    if (on_queryable_declared) on_queryable_declared();
     return Result<Queryable>::Ok(
         transport_test_access::DeclarationHandleTestAccess::MakeQueryable([this] {
           ++queryable_resets;
@@ -229,6 +235,9 @@ class FakeTransport final : public Transport {
   std::optional<ErrorInfo> queryable_failure;
   std::optional<ErrorInfo> subscriber_failure;
   bool invoke_queryable_during_declare = false;
+  bool invoke_subscriber_during_declare = false;
+  // Runs when the queryable is declared, as a remote client that observes it would act.
+  std::function<void()> on_queryable_declared;
   bool clear_callbacks_on_reset = false;
   int queryable_declarations = 0;
   int subscriber_declarations = 0;
@@ -297,27 +306,34 @@ TEST(StorageNodeLifecycleTest, RollsBackPartialDeclarationAndAllowsRetry) {
   ASSERT_FALSE(result.IsOk());
   EXPECT_EQ(result.Error(), std::make_error_code(std::errc::io_error));
   EXPECT_FALSE(node.IsStarted());
-  EXPECT_EQ(transport.queryable_resets, 1);
+  EXPECT_EQ(transport.queryable_declarations, 0) << "ADR-0040: the queryable is declared last";
   EXPECT_EQ(transport.subscriber_declarations, 0);
 
   transport.fail_subscriber = false;
   ASSERT_TRUE(node.Start(std::make_shared<InMemoryEngine>(), {}).IsOk());
   EXPECT_TRUE(node.IsStarted());
   node.Stop();
-  EXPECT_EQ(transport.queryable_resets, 2);
+  EXPECT_EQ(transport.queryable_resets, 1);
   EXPECT_EQ(transport.subscriber_resets, 1);
 }
 
-TEST(StorageNodeLifecycleTest, QueryableFailureDoesNotDeclareSubscriberAndCanRetry) {
+TEST(StorageNodeLifecycleTest, QueryableFailureRollsBackTheActiveSubscriberAndCanRetry) {
   FakeTransport transport;
   transport.fail_queryable = true;
+  auto engine = std::make_shared<InMemoryEngine>();
   StorageNode node(transport);
 
-  auto result = node.Start(std::make_shared<InMemoryEngine>(), {});
+  auto result = node.Start(engine, {});
   ASSERT_FALSE(result.IsOk());
   EXPECT_EQ(result.Error(), std::make_error_code(std::errc::io_error));
-  EXPECT_EQ(transport.subscriber_declarations, 0);
+  EXPECT_EQ(transport.subscriber_declarations, 1);
+  EXPECT_EQ(transport.subscriber_resets, 1);
   EXPECT_FALSE(node.IsStarted());
+  // The rolled-back State admits no callback that is still delivered.
+  transport.InvokeSubscriber("sitos/base/late", TransportSample::Kind::Put,
+                             {std::byte{0x04}, std::byte{0xAA}},
+                             Encoding{std::string(Encoding::kSitosV1)});
+  EXPECT_FALSE(engine->Get("late", [](std::string_view, Bytes) { return true; }));
 
   transport.fail_queryable = false;
   ASSERT_TRUE(node.Start(std::make_shared<InMemoryEngine>(), {}).IsOk());
@@ -335,7 +351,8 @@ TEST(StorageNodeLifecycleTest, QueryableFailurePreservesErrorInfoAndCanRetry) {
   EXPECT_EQ(result.StatusCode(), Status::Disconnected);
   EXPECT_EQ(result.Message(), "queryable offline");
   EXPECT_EQ(result.Error(), cause);
-  EXPECT_EQ(transport.subscriber_declarations, 0);
+  EXPECT_EQ(transport.subscriber_declarations, 1);
+  EXPECT_EQ(transport.subscriber_resets, 1);
   EXPECT_FALSE(node.IsStarted());
 
   transport.queryable_failure.reset();
@@ -355,7 +372,7 @@ TEST(StorageNodeLifecycleTest, SubscriberFailurePreservesErrorInfoAndRollsBack) 
   EXPECT_EQ(result.StatusCode(), Status::InvalidArgument);
   EXPECT_EQ(result.Message(), "subscriber rejected");
   EXPECT_EQ(result.Error(), cause);
-  EXPECT_EQ(transport.queryable_resets, 1);
+  EXPECT_EQ(transport.queryable_declarations, 0);
   EXPECT_EQ(transport.subscriber_declarations, 0);
   EXPECT_FALSE(node.IsStarted());
 
@@ -363,20 +380,43 @@ TEST(StorageNodeLifecycleTest, SubscriberFailurePreservesErrorInfoAndRollsBack) 
   ASSERT_TRUE(node.Start(std::make_shared<InMemoryEngine>(), {}).IsOk());
   EXPECT_TRUE(node.IsStarted());
   node.Stop();
-  EXPECT_EQ(transport.queryable_resets, 2);
+  EXPECT_EQ(transport.queryable_resets, 1);
   EXPECT_EQ(transport.subscriber_resets, 1);
 }
 
 TEST(StorageNodeLifecycleTest, StagingCallbacksCannotTouchEngine) {
   FakeTransport transport;
-  transport.invoke_queryable_during_declare = true;
-  transport.fail_subscriber = true;
+  transport.invoke_subscriber_during_declare = true;
+  transport.fail_queryable = true;
   auto engine = std::make_shared<InMemoryEngine>();
   StorageNode node(transport);
 
   EXPECT_FALSE(node.Start(engine, {}).IsOk());
+  EXPECT_EQ(transport.subscriber_declarations, 1);
   EXPECT_FALSE(engine->Get("staged", [](std::string_view, Bytes) { return true; }));
   EXPECT_FALSE(node.IsStarted());
+}
+
+// ADR-0040: clients treat a matching queryable as readiness (ADR-0038, ADR-0039), so a
+// client acting the moment the queryable is declared is served.
+TEST(StorageNodeLifecycleTest, ClientActingAtQueryableDeclarationIsServed) {
+  FakeTransport transport;
+  auto engine = std::make_shared<InMemoryEngine>();
+  ASSERT_TRUE(engine->Put("stored", std::vector<std::byte>{std::byte{0x01}}));
+  std::size_t replies = 0;
+  transport.on_queryable_declared = [&] {
+    replies = transport.Invoke("sitos/base/stored").size();
+    transport.InvokeSubscriber("sitos/base/written", TransportSample::Kind::Put,
+                               {std::byte{0x04}, std::byte{0xAA}},
+                               Encoding{std::string(Encoding::kSitosV1)});
+  };
+  StorageNode node(transport);
+
+  ASSERT_TRUE(node.Start(engine, {}).IsOk());
+  EXPECT_EQ(replies, 1u) << "a query at the declaration is answered";
+  EXPECT_TRUE(engine->Get("written", [](std::string_view, Bytes) { return true; }))
+      << "a write at the declaration is applied";
+  node.Stop();
 }
 
 TEST(StorageNodeLifecycleTest, StopWaitsForSubscriberCallback) {
