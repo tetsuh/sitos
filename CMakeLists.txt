@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(sitos VERSION 0.1.1 LANGUAGES CXX) # x-release-please-version
+project(sitos VERSION 0.1.2 LANGUAGES CXX) # x-release-please-version
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
