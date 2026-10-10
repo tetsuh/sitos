@@ -56,10 +56,19 @@ class MetadataTransport final : public sitos::Transport {
   sitos::Result<void> Delete(std::string_view, sitos::PutOptions) override {
     return sitos::Result<void>::Ok();
   }
+  sitos::Result<bool> WaitForMatchingQueryable(
+      std::string_view keyexpr, std::chrono::steady_clock::time_point deadline) override {
+    wait_keys.emplace_back(keyexpr);
+    wait_deadlines.push_back(deadline);
+    events.emplace_back("wait");
+    return sitos::Result<bool>::Ok(true);
+  }
+
   sitos::Result<void> Get(std::string_view keyexpr, const QueryResultSink& sink,
                           std::chrono::milliseconds timeout) override {
     last_get_key = std::string(keyexpr);
     last_timeout = timeout;
+    events.push_back("get:" + std::string(keyexpr));
     if (metadata_status.has_value() && keyexpr.find("/meta/ack/") == std::string_view::npos) {
       return sitos::Result<void>::Err(*metadata_status, metadata_message, metadata_cause);
     }
@@ -134,6 +143,9 @@ class MetadataTransport final : public sitos::Transport {
   std::string metadata_encoding = std::string(sitos::Encoding::kSitosV1);
   std::uint64_t generation = 1;
   std::chrono::milliseconds last_timeout{};
+  std::vector<std::string> wait_keys;
+  std::vector<std::chrono::steady_clock::time_point> wait_deadlines;
+  std::vector<std::string> events;
 };
 
 }  // namespace
@@ -276,7 +288,8 @@ TEST(BufferPublisherApiTest, DiscoversGenerationAndOwnsPushPayloadSubmission) {
   auto opened = BufferPublisher::Open(transport, config, "sid", BufferClass::Durable);
   ASSERT_TRUE(opened.IsOk()) << opened.Message();
   EXPECT_EQ(transport->last_get_key, "sitos/meta/session/sid");
-  EXPECT_EQ(transport->last_timeout, std::chrono::milliseconds{1234});
+  EXPECT_GT(transport->last_timeout, std::chrono::milliseconds::zero());
+  EXPECT_LE(transport->last_timeout, std::chrono::milliseconds{1234});
   std::vector<std::byte> payload{std::byte{0x01}, std::byte{0x02}};
   auto publisher = std::move(opened).Value();
   ASSERT_TRUE(publisher.Push("value", payload).IsOk());
@@ -287,6 +300,23 @@ TEST(BufferPublisherApiTest, DiscoversGenerationAndOwnsPushPayloadSubmission) {
 
   payload[0] = std::byte{0xff};
   EXPECT_EQ(transport->last_options.fence_lane->sequence, 1U);
+}
+
+// Issue #228: the metadata query of Open first waits, within the query timeout, until a
+// StorageNode queryable matches the prefix's ack key expression (ADR-0039).
+TEST(BufferPublisherApiTest, OpenWaitsForAStorageNodeBeforeTheMetadataQuery) {
+  auto transport = std::make_shared<MetadataTransport>();
+  ClientConfig config;
+  config.query_timeout = std::chrono::milliseconds{4000};
+  const auto started = std::chrono::steady_clock::now();
+  auto opened = BufferPublisher::Open(transport, config, "sid", BufferClass::Durable);
+  const auto finished = std::chrono::steady_clock::now();
+  ASSERT_TRUE(opened.IsOk()) << opened.Message();
+  ASSERT_EQ(transport->events,
+            (std::vector<std::string>{"wait", "get:sitos/meta/session/sid"}));
+  EXPECT_EQ(transport->wait_keys[0], "sitos/meta/ack/*");
+  EXPECT_GE(transport->wait_deadlines[0], started + std::chrono::milliseconds{4000});
+  EXPECT_LE(transport->wait_deadlines[0], finished + std::chrono::milliseconds{4000});
 }
 
 TEST(BufferPublisherApiTest, AppliedFenceReturnsReceiptAndSyncedEphemeralIsLocal) {
