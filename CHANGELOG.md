@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/tetsuh/sitos/compare/v0.1.1...v0.1.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* **store:** wait for a reachable StorageNode before each client query ([#228](https://github.com/tetsuh/sitos/issues/228)) ([7f069a3](https://github.com/tetsuh/sitos/commit/7f069a39a44432667de745486802403f6fc94b42))
+
 ## [0.1.1](https://github.com/tetsuh/sitos/compare/v0.1.0...v0.1.1) (2026-10-08)
 
 
