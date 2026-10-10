@@ -139,7 +139,8 @@ declarations, and StorageNode and ParamCache then skip Session liveliness.
 
 The queryable-matching hook is optional too (ADR-0038). The Zenoh adapter implements it with a
 cached querier and the stable `z_querier_get_matching_status`; a Transport that keeps the default
-reports a match at once, so an acknowledged write submits without waiting.
+reports a match at once, so an acknowledged write submits, and a client query runs, without
+waiting (ADR-0039).
 
 The abstract API above shows the implemented dependency boundary; Accepted ADR-0028 and ADR-0029
 reserve two disjoint attachment uses within that boundary. `AckAttachmentV1` is exact 17-byte

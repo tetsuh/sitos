@@ -73,13 +73,24 @@ class FakeTransport final : public Transport {
     return delete_result;
   }
 
+  Result<bool> WaitForMatchingQueryable(std::string_view keyexpr,
+                                        std::chrono::steady_clock::time_point deadline) override {
+    std::lock_guard lock(mutex_);
+    waits.emplace_back(std::string(keyexpr), deadline);
+    events.emplace_back("wait");
+    if (wait_delay > std::chrono::milliseconds::zero()) std::this_thread::sleep_for(wait_delay);
+    return wait_result;
+  }
+
   Result<void> Get(std::string_view keyexpr, const QueryResultSink& sink,
-                   std::chrono::milliseconds) override {
+                   std::chrono::milliseconds timeout) override {
     std::vector<ReplyRecord> reply_copy;
     Result<void> result = Result<void>::Ok();
     {
       std::lock_guard lock(mutex_);
       get_keys.emplace_back(keyexpr);
+      get_timeouts.push_back(timeout);
+      events.emplace_back("get");
       reply_copy = replies;
       if (keyexpr.find("/meta/ack/") != std::string_view::npos) {
         if (!ack_payloads.empty()) {
@@ -143,6 +154,11 @@ class FakeTransport final : public Transport {
   std::vector<PutRecord> puts;
   std::vector<std::string> deletes;
   std::vector<std::string> get_keys;
+  std::vector<std::chrono::milliseconds> get_timeouts;
+  std::vector<std::pair<std::string, std::chrono::steady_clock::time_point>> waits;
+  std::vector<std::string> events;
+  Result<bool> wait_result = Result<bool>::Ok(true);
+  std::chrono::milliseconds wait_delay{0};
   std::vector<ReplyRecord> replies;
   std::optional<sitos::AckResultV1> ack_reply;
   std::deque<std::optional<ReplyRecord>> ack_payloads;
@@ -276,6 +292,88 @@ TEST(ParamStoreTest, ExactGetAndContainsMapZeroReplyAndDecodeErrors) {
   auto malformed = store.Get("base", "key");
   ASSERT_FALSE(malformed.IsOk());
   EXPECT_EQ(malformed.StatusCode(), sitos::Status::Error);
+}
+
+// Issue #228: a Zenoh session can open before the StorageNode is connected, so a query sent
+// right away gets no reply. Get and List first wait, within the query timeout, until a
+// StorageNode queryable matches the prefix's ack key expression (ADR-0039).
+TEST(ParamStoreTest, GetAndListWaitForAStorageNodeWithinTheQueryTimeout) {
+  auto transport = std::make_shared<FakeTransport>();
+  sitos::ClientConfig config;
+  config.query_timeout = 4000ms;
+  auto store_result = sitos::ParamStore::Open(transport, config);
+  ASSERT_TRUE(store_result.IsOk()) << store_result.Message();
+  auto store = std::move(store_result).Value();
+
+  const auto started = std::chrono::steady_clock::now();
+  static_cast<void>(store.Get("base", "missing"));
+  const auto finished = std::chrono::steady_clock::now();
+  ASSERT_EQ(transport->events, (std::vector<std::string>{"wait", "get"}));
+  ASSERT_EQ(transport->waits.size(), 1u);
+  EXPECT_EQ(transport->waits[0].first, "sitos/meta/ack/*");
+  EXPECT_GE(transport->waits[0].second, started + 4000ms);
+  EXPECT_LE(transport->waits[0].second, finished + 4000ms);
+  ASSERT_EQ(transport->get_timeouts.size(), 1u);
+  EXPECT_GT(transport->get_timeouts[0], 0ms);
+  EXPECT_LE(transport->get_timeouts[0], 4000ms) << "the wait and the query share one timeout";
+
+  static_cast<void>(store.List("base", "", [](std::string_view, const ParamValue&) { return true; }));
+  EXPECT_EQ(transport->events, (std::vector<std::string>{"wait", "get", "wait", "get"}));
+  EXPECT_EQ(transport->waits[1].first, "sitos/meta/ack/*");
+}
+
+TEST(ParamStoreTest, QueriesStillRunWhenTheStorageNodeWaitDoesNotMatch) {
+  auto transport = std::make_shared<FakeTransport>();
+  transport->wait_result = Result<bool>::Ok(false);
+  auto store_result = sitos::ParamStore::Open(transport);
+  ASSERT_TRUE(store_result.IsOk());
+  auto store = std::move(store_result).Value();
+  transport->replies.push_back(
+      {"sitos/base/key", ParamValue(7).Encode(), Encoding{std::string(Encoding::kSitosV1)}});
+  auto value = store.Get("base", "key");
+  ASSERT_TRUE(value.IsOk()) << value.Message();
+  EXPECT_EQ(transport->events, (std::vector<std::string>{"wait", "get"}));
+  ASSERT_EQ(transport->get_timeouts.size(), 1u);
+  EXPECT_GT(transport->get_timeouts[0], 0ms) << "a zero timeout is rejected by Transport::Get";
+}
+
+TEST(ParamStoreTest, QueriesStillRunWhenTheStorageNodeWaitFails) {
+  auto transport = std::make_shared<FakeTransport>();
+  transport->wait_result = Result<bool>::Err(sitos::Status::Disconnected, "session closed",
+                                             std::make_error_code(std::errc::not_connected));
+  auto store_result = sitos::ParamStore::Open(transport);
+  ASSERT_TRUE(store_result.IsOk());
+  auto store = std::move(store_result).Value();
+  transport->replies.push_back(
+      {"sitos/base/key", ParamValue(7).Encode(), Encoding{std::string(Encoding::kSitosV1)}});
+  auto value = store.Get("base", "key");
+  ASSERT_TRUE(value.IsOk()) << value.Message();
+  EXPECT_EQ(value.Value().As<std::int64_t>(), 7) << "the query's own result is reported";
+  EXPECT_EQ(transport->events, (std::vector<std::string>{"wait", "get"}));
+}
+
+TEST(ParamStoreTest, TheQueryGetsOnlyTheTimeLeftAfterTheStorageNodeWait) {
+  auto transport = std::make_shared<FakeTransport>();
+  transport->wait_delay = 400ms;
+  sitos::ClientConfig config;
+  config.query_timeout = 1000ms;
+  auto store_result = sitos::ParamStore::Open(transport, config);
+  ASSERT_TRUE(store_result.IsOk());
+  auto store = std::move(store_result).Value();
+  static_cast<void>(store.Get("base", "missing"));
+  ASSERT_EQ(transport->get_timeouts.size(), 1u);
+  EXPECT_GT(transport->get_timeouts[0], 0ms);
+  EXPECT_LE(transport->get_timeouts[0], 601ms) << "the wait used 400 ms of the 1000 ms budget";
+
+  transport->wait_delay = 300ms;
+  sitos::ClientConfig short_config;
+  short_config.query_timeout = 200ms;
+  auto short_result = sitos::ParamStore::Open(transport, short_config);
+  ASSERT_TRUE(short_result.IsOk());
+  auto short_store = std::move(short_result).Value();
+  static_cast<void>(short_store.Get("base", "missing"));
+  ASSERT_EQ(transport->get_timeouts.size(), 2u);
+  EXPECT_EQ(transport->get_timeouts[1], 1ms) << "an exhausted budget leaves the 1 ms minimum";
 }
 
 TEST(ParamStoreTest, RejectsUnexpectedExactRepliesAndContainsPreservesErrors) {

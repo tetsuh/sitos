@@ -57,13 +57,21 @@ class FakeTransport final : public Transport {
   }
   Result<void> Delete(std::string_view, PutOptions) override { return Result<void>::Ok(); }
 
+  Result<bool> WaitForMatchingQueryable(std::string_view keyexpr,
+                                        std::chrono::steady_clock::time_point deadline) override {
+    std::lock_guard lock(mutex);
+    waits.push_back({std::string(keyexpr), deadline, calls.size()});
+    return Result<bool>::Ok(true);
+  }
+
   Result<void> Get(std::string_view keyexpr, const QueryResultSink& sink,
-                   std::chrono::milliseconds) override {
+                   std::chrono::milliseconds timeout) override {
     std::function<void()> hook;
     std::vector<Reply> replies_copy;
     {
       std::lock_guard lock(mutex);
       calls.push_back("get:" + std::string(keyexpr));
+      get_timeouts.push_back(timeout);
       hook = get_hook;
       replies_copy = replies[std::string(keyexpr)];
     }
@@ -123,8 +131,16 @@ class FakeTransport final : public Transport {
     callback(sample);
   }
 
+  struct WaitRecord {
+    std::string keyexpr;
+    std::chrono::steady_clock::time_point deadline;
+    std::size_t calls_before;
+  };
+
   std::mutex mutex;
   std::vector<std::string> calls;
+  std::vector<WaitRecord> waits;
+  std::vector<std::chrono::milliseconds> get_timeouts;
   std::unordered_map<std::string, std::vector<Reply>> replies;
   std::unordered_map<std::string, std::function<Result<void>()>> get_result_factories;
   std::function<void()> get_hook;
@@ -192,6 +208,35 @@ TEST(ParamCacheTest, AttachUsesSubscriberFirstAndAppliesSnapshotOverlayAndBuffer
   EXPECT_EQ(transport->calls[3], "get:sitos/session/s1/**");
   EXPECT_EQ(Access::Get(cache, "inherited")->As<std::int64_t>(), 3);
   EXPECT_EQ(Access::Get(cache, "overlaid")->As<std::int64_t>(), 2);
+}
+
+// Issue #228: each Attach query first waits, within the query timeout, until a StorageNode
+// queryable matches the prefix's ack key expression (ADR-0039).
+TEST(ParamCacheTest, AttachQueriesWaitForAStorageNodeWithinTheQueryTimeout) {
+  auto transport = std::make_shared<FakeTransport>();
+  sitos::ClientConfig config;
+  config.query_timeout = std::chrono::milliseconds(4000);
+  auto result = ParamCache::Open(transport, config);
+  ASSERT_TRUE(result.IsOk());
+  auto cache = std::move(result).Value();
+  const auto started = std::chrono::steady_clock::now();
+  ASSERT_TRUE(cache.Attach("s1").IsOk());
+  const auto finished = std::chrono::steady_clock::now();
+
+  ASSERT_EQ(transport->calls.size(), 4U);
+  ASSERT_EQ(transport->waits.size(), 2U);
+  EXPECT_EQ(transport->waits[0].keyexpr, "sitos/meta/ack/*");
+  EXPECT_EQ(transport->waits[0].calls_before, 2U) << "the wait precedes the snapshot query";
+  EXPECT_EQ(transport->waits[1].keyexpr, "sitos/meta/ack/*");
+  EXPECT_EQ(transport->waits[1].calls_before, 3U) << "the wait precedes the overlay query";
+  for (const auto& wait : transport->waits) {
+    EXPECT_GE(wait.deadline, started + std::chrono::milliseconds(4000));
+    EXPECT_LE(wait.deadline, finished + std::chrono::milliseconds(4000));
+  }
+  for (const auto timeout : transport->get_timeouts) {
+    EXPECT_GT(timeout, std::chrono::milliseconds::zero());
+    EXPECT_LE(timeout, std::chrono::milliseconds(4000));
+  }
 }
 
 TEST(ParamCacheTest, DeclarationCallbackIsBufferedBeforeInitialGet) {

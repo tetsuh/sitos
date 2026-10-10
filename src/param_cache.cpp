@@ -27,6 +27,7 @@
 #include "param_cache_test_access.hpp"
 #include "sitos/batch.hpp"
 #include "sitos/key.hpp"
+#include "storage_node_reachability.hpp"
 
 namespace sitos {
 using namespace fence_internal;
@@ -564,7 +565,10 @@ Result<void> Fetch(const std::shared_ptr<param_cache_detail::Access::Impl::State
     if (!ok) protocol_error = std::move(decoded);
     return ok;
   };
-  auto result = transport->Get(query, sink, timeout);
+  // ADR-0039: wait for a reachable StorageNode within the query timeout before querying.
+  const auto query_timeout =
+      storage_node_reachability::WaitForStorageNodeWithin(*transport, state->prefix, timeout);
+  auto result = transport->Get(query, sink, query_timeout);
   if (!result.IsOk()) return Result<void>::ErrFrom(result);
   if (invalid) return Result<void>::ErrFrom(protocol_error);
   return Result<void>::Ok();

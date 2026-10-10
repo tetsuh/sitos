@@ -132,9 +132,10 @@ provides the capability.
 `Transport` also has an optional queryable-matching capability (ADR-0038):
 `WaitForMatchingQueryable(keyexpr, deadline)` returns `true` once a queryable that matches
 `keyexpr` is reachable and `false` when `deadline` passes first. An acknowledged write calls it with
-`<prefix>/meta/ack/*` before its single submission, because a Zenoh session can open before the
-StorageNode is connected. The default returns `true` at once, so existing custom Transports compile
-unchanged and submit without waiting. The Zenoh Transport provides the capability.
+`<prefix>/meta/ack/*` before its single submission, and a client query calls it with the same key
+expression before the query (ADR-0039), because a Zenoh session can open before the StorageNode is
+connected. The default returns `true` at once, so existing custom Transports compile unchanged and
+submit and query without waiting. The Zenoh Transport provides the capability.
 
 ### 1.1 Status / Python Exception Mapping
 
@@ -221,7 +222,10 @@ remains acknowledgement-free. Acknowledgement proves StorageNode application onl
 visibility. `PutBatch` uses the canonical `:batch` key and sends one `sitos.v1.batch` message; an
 empty valid batch sends no message.
 
-`Get` waits for synchronous Transport completion. Zero replies map to `NotFound`, while
+`Get` and `List` first wait, within `ClientConfig::query_timeout`, until a StorageNode for the
+prefix is reachable, and then query with the time left (ADR-0039). When no StorageNode is
+reachable, they therefore report their result after about the full query timeout. `Get` waits for
+synchronous Transport completion. Zero replies map to `NotFound`, while
 `Contains` maps them to `Ok(false)`. `List` collects and validates all matching replies,
 sorts relative keys lexicographically, then invokes the sink on the caller thread. A false
 sink result is normal early termination; sink exceptions propagate unchanged. Raw prefixes
