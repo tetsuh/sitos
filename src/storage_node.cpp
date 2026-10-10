@@ -858,25 +858,31 @@ Result<void> StorageNode::Start(std::shared_ptr<StorageEngine> engine, Transport
       DurableLifecycle::LatchCatalogUnavailable(*state);
     }
   }
+  // ADR-0040: clients treat a matching queryable as readiness (ADR-0038, ADR-0039), so the
+  // subscriber is declared and callbacks are admitted before the queryable is declared last.
   const std::string declaration_key = state->prefix + "/**";
-  auto queryable_result = transport.DeclareQueryable(
-      declaration_key, [state](TransportQuery& query) { OnQuery(state, query); });
-  if (!queryable_result.IsOk()) return Result<void>::ErrFrom(queryable_result);
-  Queryable queryable = std::move(queryable_result).Value();
-
   auto subscriber_result = transport.DeclareSubscriber(
       declaration_key, [state](const TransportSample& sample) { DispatchSample(state, sample); });
   if (!subscriber_result.IsOk()) return Result<void>::ErrFrom(subscriber_result);
   Subscription subscriber = std::move(subscriber_result).Value();
 
+  state->Activate();
+  auto queryable_result = transport.DeclareQueryable(
+      declaration_key, [state](TransportQuery& query) { OnQuery(state, query); });
+  if (!queryable_result.IsOk()) {
+    // Roll back like Stop: callbacks admitted since activation finish before the undeclaration.
+    Quiesce(state);
+    return Result<void>::ErrFrom(queryable_result);
+  }
+  Queryable queryable = std::move(queryable_result).Value();
+
   {
     std::scoped_lock lock(lifecycle_mutex_);
-    // Sole activation/linearization point for Start.
+    // Sole publication/linearization point for Start.
     transport_ = &transport;
     queryable_ = std::move(queryable);
     subscriber_ = std::move(subscriber);
     state_ = state;
-    state->Activate();
   }
   return Result<void>::Ok();
 }
@@ -894,6 +900,12 @@ void StorageNode::Stop() noexcept {
     subscriber = std::move(subscriber_);
   }
 
+  Quiesce(state);
+  subscriber = Subscription{};
+  queryable = Queryable{};
+}
+
+void StorageNode::Quiesce(const std::shared_ptr<State>& state) noexcept {
   // Stop closes callback admission first. A marker that already claimed its
   // token therefore completes with the stop boundary status before quiescence,
   // while callbacks queued only in the Fence dispatcher fail State admission.
@@ -942,9 +954,6 @@ void StorageNode::Stop() noexcept {
   // is dropped; a later Start never recovers old results.
   state->ack_registry->Clear();
   state->fence_receiver_registry->Clear();
-
-  subscriber = Subscription{};
-  queryable = Queryable{};
 }
 
 bool StorageNode::IsStarted() const noexcept {

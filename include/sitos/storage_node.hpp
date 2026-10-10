@@ -435,6 +435,7 @@ class StorageNode {
   };
 
   static SessionAccess AcquireSession(const std::shared_ptr<State>& state, std::string_view sid);
+  static void Quiesce(const std::shared_ptr<State>& state) noexcept;
   static void OnQuery(const std::shared_ptr<State>& state, TransportQuery& query);
   static void DispatchSample(const std::shared_ptr<State>& state, const TransportSample& sample);
   static void OnSample(const std::shared_ptr<State>& state, const TransportSample& sample,
