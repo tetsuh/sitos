@@ -220,7 +220,7 @@ struct SessionRecord {
     FenceDispatchRegistration ephemeral_fence_dispatch;
 };
 
-// Lives inside StorageNode's callback-shared long-lived State (see §4.4 / ADR-0017).
+// Lives inside StorageNode's callback-shared long-lived State (see §4.4 / ADR-0040).
 struct State /* excerpt */ {
     std::string prefix;  // validated key prefix used by callbacks
     std::shared_ptr<StorageEngine> engine;
@@ -419,45 +419,8 @@ StorageNode::Start(engine, transport, config):
   state->prefix = config.prefix  // validated before State ownership
   state->durable_buffer_engine_factory = move(config.durable_buffer_engine_factory)
   log_sink = config.log_sink
-  queryable_result = transport->DeclareQueryable(state->prefix + "/**",
-    [state, log_sink](TransportQuery& q) {
-      gate_lease = state->callback_gate.acquire()
-      if not gate_lease: return
-      try:
-        selector = ParseQuerySelector(state->prefix, q.keyexpr)
-        if not selector: return  // invalid or ephemeral query: normal no-reply
-        switch (selector.kind):
-          case Base:
-            ReplyFromReader(q, *state->engine, selector.relative_selector)
-          case Snapshot:
-            if lease = AcquireActiveAdmission(*state, selector.sid):
-              ReplyFromReader(q, *lease.session.snapshot, selector.relative_selector)
-          case Session:
-            if lease = AcquireActiveAdmission(*state, selector.sid):
-              ReplyFromReader(q, *lease.session.overlay, selector.relative_selector)
-          case Buffer:
-            if selector.buffer_class == Durable:
-              owned = []
-              {
-                if lease = AcquireActiveAdmission(*state, selector.sid):
-                  if lease.session.options.durable_buffers:
-                    // Collect while admission protects the engine and copy every view.
-                    owned = CollectOwnedEntries(*lease.session.durable_buffers,
-                                                selector.relative_selector)
-              }  // release Session admission before any reply callback
-              for entry in owned:
-                q.Reply(entry.full_key, entry.bytes, Encoding{"zenoh/bytes"})
-            else:
-              // No replies: StorageNode retains no ephemeral state.
-          case MetaSession:
-            if lease = AcquireActiveAdmission(*state, selector.sid):
-              q.Reply(q.keyexpr, SessionJson(selector.sid), kSitosV1)
-      catch (...):
-        EmitLog(log_sink, LogLevel::kError, kNodeComponent, kQueryCallbackFailed)
-    })
-  if queryable_result.is_error: return queryable_result.error
-  queryable = move(queryable_result.value)
-
+  // ADR-0040: the subscriber is declared and callbacks are admitted before the queryable,
+  // which clients treat as readiness (ADR-0038, ADR-0039), is declared last.
   subscriber_result = transport->DeclareSubscriber(state->prefix + "/**",
     [state, log_sink](const TransportSample& s) {
       gate_lease = state->callback_gate.acquire()
@@ -523,13 +486,54 @@ StorageNode::Start(engine, transport, config):
         EmitLog(log_sink, LogLevel::kError, kNodeComponent, kSubscriberCallbackFailed)
         EmitDiagnosticsNoThrow(log_sink, diagnostics)
     })
-  if subscriber_result.is_error: reset(queryable); return subscriber_result.error
+  if subscriber_result.is_error: return subscriber_result.error
   subscriber = move(subscriber_result.value)
-  // Commit both handles and activate the State at one linearization point.
+  state->Activate()
+
+  queryable_result = transport->DeclareQueryable(state->prefix + "/**",
+    [state, log_sink](TransportQuery& q) {
+      gate_lease = state->callback_gate.acquire()
+      if not gate_lease: return
+      try:
+        selector = ParseQuerySelector(state->prefix, q.keyexpr)
+        if not selector: return  // invalid or ephemeral query: normal no-reply
+        switch (selector.kind):
+          case Base:
+            ReplyFromReader(q, *state->engine, selector.relative_selector)
+          case Snapshot:
+            if lease = AcquireActiveAdmission(*state, selector.sid):
+              ReplyFromReader(q, *lease.session.snapshot, selector.relative_selector)
+          case Session:
+            if lease = AcquireActiveAdmission(*state, selector.sid):
+              ReplyFromReader(q, *lease.session.overlay, selector.relative_selector)
+          case Buffer:
+            if selector.buffer_class == Durable:
+              owned = []
+              {
+                if lease = AcquireActiveAdmission(*state, selector.sid):
+                  if lease.session.options.durable_buffers:
+                    // Collect while admission protects the engine and copy every view.
+                    owned = CollectOwnedEntries(*lease.session.durable_buffers,
+                                                selector.relative_selector)
+              }  // release Session admission before any reply callback
+              for entry in owned:
+                q.Reply(entry.full_key, entry.bytes, Encoding{"zenoh/bytes"})
+            else:
+              // No replies: StorageNode retains no ephemeral state.
+          case MetaSession:
+            if lease = AcquireActiveAdmission(*state, selector.sid):
+              q.Reply(q.keyexpr, SessionJson(selector.sid), kSitosV1)
+      catch (...):
+        EmitLog(log_sink, LogLevel::kError, kNodeComponent, kQueryCallbackFailed)
+    })
+  if queryable_result.is_error:
+    Quiesce(state)  // Stop's teardown: drain callbacks, release Sessions/catalog/registries
+    return queryable_result.error  // the subscriber is undeclared on return
+  queryable = move(queryable_result.value)
+  // Publish both handles and the State at one linearization point.
   node.queryable_ = move(queryable)
   node.subscriber_ = move(subscriber)
   node.state_ = state
-  state->Activate()
 ```
 
 `ReplyFromReader` uses exact `Get` for a single-key selector and `List` for a terminal `/**`

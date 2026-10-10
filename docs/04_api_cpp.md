@@ -351,8 +351,9 @@ public:
     StorageNode& operator=(StorageNode&&) = delete;
 };
 
-// Start stages both Transport declarations and activates the node only after
-// both succeed. Stop is idempotent and waits for callbacks already in flight.
+// Start declares the subscriber, admits callbacks, and declares the queryable last,
+// so a reachable queryable means the node is ready (ADR-0040). A failed Start rolls
+// back like Stop. Stop is idempotent and waits for callbacks already in flight.
 ```
 
 `SessionOptions` enables durable buffers, ephemeral buffers, both, or neither. Stage #141

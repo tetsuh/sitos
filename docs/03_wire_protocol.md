@@ -307,7 +307,8 @@ Acknowledged Put and PutBatch use one data submission followed by bounded result
    `applied_count = 0`, generating no token and performing no submission or query. Otherwise the
    client helper starts the total deadline after local input and option validation, waits within
    it until a StorageNode queryable matches `<prefix>/meta/ack/*` (ADR-0038; an unmatched or failed
-   wait still leads to the submission), performs the sole data Put, and then polls, for the rest of
+   wait still leads to the submission; StorageNode declares that queryable only after its subscriber
+   is declared and it admits callbacks, ADR-0040), performs the sole data Put, and then polls, for the rest of
    the same deadline, only the acknowledgement query (query windows of `min(1000 ms, remaining)`, one active query,
    at least 100 ms apart, no attempt count) and never resubmits the data write. After each query
    quiesces, a protocol error (wrong reply key or Encoding, malformed result → `Status::Error`)
