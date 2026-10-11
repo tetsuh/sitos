@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/tetsuh/sitos/compare/v0.1.2...v0.1.3) (2026-10-11)
+
+
+### Bug Fixes
+
+* **store:** declare the StorageNode queryable after the subscriber is active ([#224](https://github.com/tetsuh/sitos/issues/224)) ([0c798fc](https://github.com/tetsuh/sitos/commit/0c798fc001da91b04ee6fa84159cd2e06c6876ee))
+
 ## [0.1.2](https://github.com/tetsuh/sitos/compare/v0.1.1...v0.1.2) (2026-10-10)
 
 
