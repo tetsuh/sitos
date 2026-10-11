@@ -163,6 +163,7 @@ class FakeTransport final : public Transport {
   Result<Queryable> DeclareQueryable(std::string_view,
                                      std::function<void(TransportQuery&)> callback) override {
     query_callback = std::move(callback);
+    if (on_queryable_declared) on_queryable_declared();
     return Result<Queryable>::Ok(
         transport_test_access::DeclarationHandleTestAccess::MakeQueryable([] {}));
   }
@@ -190,6 +191,8 @@ class FakeTransport final : public Transport {
 
   std::function<void(const TransportSample&)> subscriber_callback;
   std::function<void(TransportQuery&)> query_callback;
+  // Runs when the queryable is declared, as a writer that waits for it (ADR-0038) would act.
+  std::function<void()> on_queryable_declared;
 };
 
 std::vector<std::byte> MakeBatch(
@@ -587,6 +590,26 @@ TEST(StorageNodeAckTest, StopClearsTokenState) {
   h.Start();
   EXPECT_EQ(h.RegistryEntries(), 0u);
   EXPECT_FALSE(h.QueryAck(token).has_value()) << "a later Start does not recover old results";
+}
+
+// ADR-0040: the queryable is declared last, so a writer that acts as soon as it matches is
+// neither lost nor left without an acknowledgement (#224).
+TEST(StorageNodeAckTest, WriteAtQueryableDeclarationIsAppliedAndAcknowledged) {
+  Harness h;
+  const AckToken token = GenerateAckToken();
+  bool subscriber_declared = false;
+  std::optional<AckResultV1> result;
+  h.transport.on_queryable_declared = [&] {
+    subscriber_declared = static_cast<bool>(h.transport.subscriber_callback);
+    if (!subscriber_declared) return;
+    h.Put("sitos/base/a", token);
+    result = h.QueryAck(token);
+  };
+  h.Start();
+
+  EXPECT_TRUE(subscriber_declared) << "the subscriber is declared before the queryable";
+  EXPECT_EQ(h.engine->Puts(), (std::vector<std::string>{"a"}));
+  ExpectResult(result, AckOperationKind::Put, Status::Ok, 1, kAckNoFailedIndex);
 }
 
 TEST(StorageNodeAckTest, ConcurrentRecordingAndQueryingIsSafe) {

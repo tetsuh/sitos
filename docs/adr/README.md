@@ -24,7 +24,7 @@ status so the offline documentation contract can detect index drift.
 | [0014](0014-session-scoped-buffers.md) | Add a session-scoped, disk-backed buffers key space | Superseded by ADR-0032 |
 | [0015](0015-optional-http-gateway-component.md) | Ship an optional HTTP gateway component on cpp-httplib | Superseded by ADR-0027 |
 | [0016](0016-use-canonical-zenoh-bytes-encodings.md) | Use canonical zenoh bytes encodings | Accepted |
-| [0017](0017-atomic-storage-node-lifecycle.md) | Use atomic, quiescent StorageNode lifecycle transitions | Accepted |
+| [0017](0017-atomic-storage-node-lifecycle.md) | Use atomic, quiescent StorageNode lifecycle transitions | Superseded by ADR-0040 |
 | [0018](0018-use-zenoh-valid-batch-key-segment.md) | Use a zenoh-valid batch key segment | Accepted |
 | [0019](0019-client-result-status-configuration.md) | Additive client result and configuration foundation | Accepted |
 | [0020](0020-synchronously-complete-transport-get.md) | Synchronously complete Transport Get requests | Accepted |
@@ -47,3 +47,4 @@ status so the offline documentation contract can detect index drift.
 | [0037](0037-param-cache-session-liveness-and-recovery.md) | Detect Session loss with liveliness tokens and rebuild ParamCache automatically | Accepted |
 | [0038](0038-wait-for-a-storage-node-before-an-acknowledged-write.md) | Wait for a reachable StorageNode before an acknowledged write | Accepted |
 | [0039](0039-wait-for-a-storage-node-before-a-client-query.md) | Wait for a reachable StorageNode before a client query | Accepted |
+| [0040](0040-declare-the-storage-node-queryable-last.md) | Declare the StorageNode queryable last, as its readiness signal | Accepted |
