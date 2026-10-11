@@ -809,6 +809,8 @@ class PublicDocumentationTest(unittest.TestCase):
 
         publisher = section("### 2.2 BufferPublisher")
         self.assertIn("buffer route for its class is enabled by a C++ `StorageNode`", publisher)
+        self.assertIn("`push` still returns normally", publisher)
+        self.assertIn("the StorageNode drops each value with a warning", publisher)
         self.assertIn("only `fence` reports the failure", publisher)
         node = section("### 2.4 StorageNode / Engines")
         self.assertIn("Sessions created by the Python `StorageNode` have no buffer routes", node)
