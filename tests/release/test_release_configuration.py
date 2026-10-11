@@ -26,6 +26,7 @@ INTEROP_LATEST_REQUIREMENTS = ROOT / "tests" / "interop" / "requirements-latest.
 INTEROP_LOCK = ROOT / "tests" / "interop" / "requirements.txt"
 INTEROP_LATEST_LOCK = ROOT / "tests" / "interop" / "requirements-latest.txt"
 WHEEL_TOOLS_REQUIREMENTS = ROOT / ".github" / "wheel-tools-requirements.txt"
+VCPKG_MANIFEST = ROOT / "vcpkg.json"
 
 RELEASE_PLEASE_SHA = "45996ed1f6d02564a971a2fa1b5860e934307cf7"
 PYPI_PUBLISH_SHA = "dc37677b2e1c63e2034f94d8a5b11f265b73ba33"
@@ -603,6 +604,18 @@ class ReleaseConfigurationContractTest(unittest.TestCase):
         bootstrap = manifest_version == "0.0.0" and cmake_version == "0.1.0"
         released = manifest_version == cmake_version
         self.assertTrue(bootstrap or released, (manifest_version, cmake_version))
+
+    def test_vcpkg_manifest_declares_no_version(self) -> None:
+        # release-please does not update vcpkg.json, and its hash is part of the
+        # vcpkg CI cache keys, so the manifest states no version at all.
+        manifest = json.loads(read(VCPKG_MANIFEST))
+        for field in ("version", "version-string", "version-semver", "version-date"):
+            self.assertNotIn(field, manifest)
+        self.assertEqual(manifest["name"], "sitos")
+        self.assertEqual(
+            manifest["builtin-baseline"], "40f3c709db80acf154ac4b17a1f83c564ebd022e"
+        )
+        self.assertEqual(manifest["features"]["rocksdb"]["dependencies"], ["rocksdb"])
 
     def test_release_please_workflow_is_pinned_and_owner_gated(self) -> None:
         self.assertTrue(RELEASE_WORKFLOW.exists(), "release-please workflow is missing")
