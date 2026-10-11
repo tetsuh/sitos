@@ -158,6 +158,12 @@ native state without stopping shared StorageNode/Transport objects. Custom `zeno
 currently rejected by normal BufferPublisher Open because the transport cannot prove that the
 required Fence QoS profile is configured. See ADR-0035.
 
+A `BufferPublisher` needs a Session whose buffer route for its class is enabled by a C++
+`StorageNode` (docs/04 §3); Sessions created by the Python `StorageNode` have none (§2.4). With a
+disabled route, `push` still returns normally: the StorageNode drops each value with a warning, and
+only `fence` reports the failure. A publisher that never fences is not told that its values were
+not applied.
+
 ```python
 publisher = sitos.BufferPublisher("sid", sitos.BufferClass.DURABLE)
 publisher.push("images/0001", b"owned bytes")
@@ -244,6 +250,12 @@ The binding opens and owns its Zenoh transport; raw Transport/session injection 
 `InMemoryEngine` exposes no direct CRUD methods. RocksDB implementation belongs to Issue #8;
 publication/distribution readiness belongs to Issue #35. Custom Python engines are §2.4.1. Any
 other `engine` argument raises `TypeError`.
+
+Sessions created by the Python `StorageNode` have no buffer routes: `create_session(sid)` maps to
+the one-argument C++ overload, which enables neither durable nor ephemeral buffers. Buffers need a
+C++ `StorageNode` whose `CreateSession(sid, SessionOptions)` enables the route, plus a durable
+buffer engine factory or `durable_root` for durable buffers (docs/04 §3). A Python `BufferPublisher`
+can publish to such a node (§2.2).
 
 Independent StorageNode, ParamStore, and ParamCache sessions must run in separate processes while
 using the pinned zenoh-c 1.9.0 runtime. Same-process independently opened sessions are unsupported.
