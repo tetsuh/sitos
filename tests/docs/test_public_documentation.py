@@ -798,6 +798,22 @@ class PublicDocumentationTest(unittest.TestCase):
         images = [token.raw for token in tokens if token.image]
         self.assertEqual(images, [CI_BADGE])
 
+    def test_python_buffer_route_contract(self) -> None:
+        text = (ROOT / "docs/05_api_python.md").read_text(encoding="utf-8")
+        sections = re.split(r"^(?=### )", text, flags=re.MULTILINE)
+
+        def section(heading: str) -> str:
+            matches = [part for part in sections if part.startswith(heading)]
+            self.assertEqual(len(matches), 1, heading)
+            return " ".join(matches[0].split())
+
+        publisher = section("### 2.2 BufferPublisher")
+        self.assertIn("buffer route for its class is enabled by a C++ `StorageNode`", publisher)
+        self.assertIn("only `fence` reports the failure", publisher)
+        node = section("### 2.4 StorageNode / Engines")
+        self.assertIn("Sessions created by the Python `StorageNode` have no buffer routes", node)
+        self.assertIn("`CreateSession(sid, SessionOptions)`", node)
+
     def test_contributing_contract(self) -> None:
         path = ROOT / "CONTRIBUTING.md"
         self.assertTrue(path.is_file(), "root CONTRIBUTING.md must exist")
