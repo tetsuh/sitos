@@ -4,16 +4,16 @@ colorama==0.4.6 ; sys_platform == 'win32' \
     --hash=sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44 \
     --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6
     # via pytest
-eclipse-zenoh==1.10.1 \
-    --hash=sha256:1950fdc8de72e5a3847d845d57e72dedf35275725e42be46a26454cfabb54c8c \
-    --hash=sha256:44e368a6a509cf385d3657f48ed99f1d677ce9877e8893e15b9cf1b504dc9150 \
-    --hash=sha256:476bfca6f15f1c68e71037efbbf61b880719ea1a8eaadc6f9df978e144cf44d2 \
-    --hash=sha256:9e99d5801e0e12a10dbc5d976d227ec7a1ff73d86c20ff4315102b8237ac3ee8 \
-    --hash=sha256:ad269f1cb3e4a66a0130ea63a0b2bca214cbbe75181baa4fe12f27ddb5c42221 \
-    --hash=sha256:e601b9883746b742eb7210ec73348c9980a2e65cbd54b4a8017662de9aeb15cb \
-    --hash=sha256:eb73bce18afe43fdd799d2cf3f066c7ce353d2552ae2776badffe6144352e79f \
-    --hash=sha256:f2351b810dbda09f6dbe668ca965560bf8cee98075b28b8b71e88428f613ed35 \
-    --hash=sha256:faa4071aea57650594e8f4ea39147f791fbd6105cbd7afe15e96dc3589bd83db
+eclipse-zenoh==1.10.2 \
+    --hash=sha256:21f1fe4016f2b508193d3a50b00621d084ac351db0e390211eae87a77a0dec6a \
+    --hash=sha256:39ab8569449bd655ae8a4ae99422303b5c09a515df38d90135387854baccf796 \
+    --hash=sha256:545fd22a684b7023423e3a85c17b615a0a7a791344bbc7aade67e121e78ca2d5 \
+    --hash=sha256:945e6df323befcea5b8dc281e5493d4fec192c2bb6ab1d9e91bcaf13632235be \
+    --hash=sha256:a1a36b27671a2a1bd958248c6adfb1ca13456f7de1865d9669f50f0b0e85e602 \
+    --hash=sha256:a338f4d1a0a736cbae4e1f5becdd2e81a6a2e5934ffa8a4b1436cf0fbac7fb2e \
+    --hash=sha256:cd3c922c9f018568f9c7c8747f1aad81b646f5d8e98cc24bfa4aa160f35cdb96 \
+    --hash=sha256:d732e89381c1ad28ee587ad11da4ed2d8b12d985f32d0485658c81b125f4ef9b \
+    --hash=sha256:e7903cb5d8a28e0056c10e0bc872e07ca6e11463b41013c3bdf05fb586f0c768
     # via -r tests/interop/requirements-latest.in
 exceptiongroup==1.3.1 ; python_full_version < '3.11' \
     --hash=sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219 \
