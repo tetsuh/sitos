@@ -49,7 +49,7 @@ mypy 1.18.2
 - Source: https://github.com/python/mypy
 - License: MIT.
 
-packaging 26.2
+packaging 26.3
 - Role: wheel metadata validation library; not bundled in the standard wheel.
 - Source: https://github.com/pypa/packaging
 - License: Apache-2.0 OR BSD-2-Clause.
